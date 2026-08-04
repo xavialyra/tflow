@@ -1,0 +1,11 @@
+/target/
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Local logs and temporary files
+*.log
+*.tmp
