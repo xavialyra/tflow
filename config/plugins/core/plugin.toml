@@ -11,6 +11,10 @@ key = "alt+a"
 label = "Apps"
 view = "apps:default"
 
+[views.dmenu]
+type = "launcher"
+display = "text"
+
 [views.capture]
 type = "capture"
 

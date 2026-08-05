@@ -229,7 +229,7 @@ pub fn sanitize_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, ViewType};
+    use crate::config::{Command, DisplayType, ViewType};
     use std::collections::BTreeMap;
 
     fn test_config() -> Config {
@@ -238,6 +238,7 @@ mod tests {
             "core:default".to_string(),
             View {
                 view_type: ViewType::Launcher,
+                display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 display_prefix: None,
                 discover: None,
@@ -253,6 +254,7 @@ mod tests {
             "apps:main".to_string(),
             View {
                 view_type: ViewType::Launcher,
+                display: DisplayType::Text,
                 sources: Vec::new(),
                 display_prefix: Some("app".to_string()),
                 discover: Some("printf '%s\\n' '{\"label\":\"Termius\"}'".to_string()),
@@ -276,6 +278,7 @@ mod tests {
         );
         Config {
             default_view: "core:default".to_string(),
+            dmenu_view: "core:dmenu".to_string(),
             default_rule: "default".to_string(),
             rules: BTreeMap::from([("default".to_string(), crate::config::Rule { filter: true })]),
             views,

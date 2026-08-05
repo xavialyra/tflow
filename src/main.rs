@@ -71,15 +71,19 @@ fn main() -> Result<()> {
     let invoked_as_dmenu = invoked_as_dmenu();
 
     if args.dmenu || args.dmenu0 || invoked_as_dmenu {
-        if args.config.is_some() || args.check {
-            bail!("dmenu mode cannot be combined with --config or --check");
+        if args.check {
+            bail!("dmenu mode cannot be combined with --check");
         }
+        let config_path = args.config.unwrap_or_else(default_config_path);
+        let config = Config::load(&config_path)?;
+        let display = config.dmenu_view()?.display;
         let outcome = dmenu::run(dmenu::Options {
             prompt: args.prompt,
             lines: args.lines,
             initial: args.initial,
             index: args.index,
             dmenu0: args.dmenu0,
+            display,
             with_nth: args.with_nth,
             accept_nth: args.accept_nth,
             match_nth: args.match_nth,

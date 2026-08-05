@@ -1,7 +1,9 @@
 use crate::app::{InputDecoder, Key};
+use crate::config::DisplayType;
 use crate::discovery::matches_query;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value};
 use std::fmt::Write as FmtWrite;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -14,6 +16,7 @@ pub struct Options {
     pub initial: String,
     pub index: bool,
     pub dmenu0: bool,
+    pub display: DisplayType,
     pub with_nth: Option<String>,
     pub accept_nth: Option<String>,
     pub match_nth: Option<String>,
@@ -25,9 +28,11 @@ pub enum Outcome {
     Cancelled,
 }
 
-struct Candidate {
+pub(crate) struct Candidate {
     raw: Vec<u8>,
     text: String,
+    #[allow(dead_code)]
+    pub(crate) metadata: Value,
     index: usize,
 }
 
@@ -35,6 +40,7 @@ struct DmenuApp {
     candidates: Vec<Candidate>,
     prompt: String,
     lines: Option<usize>,
+    display: DisplayType,
     index_output: bool,
     with_nth: Option<FieldFormat>,
     accept_nth: Option<FieldFormat>,
@@ -166,6 +172,7 @@ impl DmenuApp {
             candidates,
             prompt: sanitize_for_display(&options.prompt),
             lines: options.lines,
+            display: options.display,
             index_output: options.index,
             with_nth,
             accept_nth,
@@ -279,11 +286,13 @@ impl DmenuApp {
     }
 
     fn display_text(&self, candidate: &Candidate) -> String {
-        let rendered = self
-            .with_nth
-            .as_ref()
-            .map(|format| format.render(&candidate.text, self.delimiter, " "))
-            .unwrap_or_else(|| candidate.text.clone());
+        let rendered = match self.display {
+            DisplayType::Text => self
+                .with_nth
+                .as_ref()
+                .map(|format| format.render(&candidate.text, self.delimiter, " "))
+                .unwrap_or_else(|| candidate.text.clone()),
+        };
         sanitize_for_display(&rendered)
     }
 
@@ -471,18 +480,40 @@ fn parse_candidates(input: &[u8], separator: RecordSeparator) -> Vec<Candidate> 
             } else {
                 record
             };
-            let text_bytes = if separator == RecordSeparator::Newline {
-                record.split(|byte| *byte == 0).next().unwrap_or(record)
+            let (text_bytes, metadata) = if separator == RecordSeparator::Newline {
+                parse_rofi_record(record)
             } else {
-                record
+                (record, Value::Object(Map::new()))
             };
             Candidate {
                 raw: text_bytes.to_vec(),
                 text: String::from_utf8_lossy(text_bytes).into_owned(),
+                metadata,
                 index,
             }
         })
         .collect()
+}
+
+fn parse_rofi_record(record: &[u8]) -> (&[u8], Value) {
+    let Some(metadata_start) = record.iter().position(|byte| *byte == 0) else {
+        return (record, Value::Object(Map::new()));
+    };
+
+    let text = &record[..metadata_start];
+    let mut metadata = Map::new();
+    for entry in record[metadata_start + 1..].split(|byte| *byte == 0) {
+        let Some(separator) = entry.iter().position(|byte| *byte == 0x1f) else {
+            continue;
+        };
+        let key = String::from_utf8_lossy(&entry[..separator]);
+        if key.is_empty() {
+            continue;
+        }
+        let value = String::from_utf8_lossy(&entry[separator + 1..]);
+        metadata.insert(key.into_owned(), Value::String(value.into_owned()));
+    }
+    (text, Value::Object(metadata))
 }
 
 fn parse_delimiter(value: Option<&str>) -> Result<FieldDelimiter> {
@@ -710,6 +741,7 @@ mod tests {
         Candidate {
             raw: text.as_bytes().to_vec(),
             text: text.to_string(),
+            metadata: Value::Object(Map::new()),
             index: 0,
         }
     }
@@ -778,6 +810,7 @@ mod tests {
             initial: String::new(),
             index: false,
             dmenu0: false,
+            display: DisplayType::Text,
             with_nth: Some("1".to_string()),
             accept_nth: Some("2".to_string()),
             match_nth: Some("3".to_string()),
@@ -810,6 +843,19 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[1].raw, b"two");
         assert_eq!(candidates[1].index, 1);
+        assert!(candidates[1].metadata.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_rofi_metadata_without_a_protocol_namespace() {
+        let candidates = parse_candidates(
+            b"Firefox\0icon\x1ffirefox,web-browser\0urgent\x1ftrue\n",
+            RecordSeparator::Newline,
+        );
+        assert_eq!(candidates[0].raw, b"Firefox");
+        assert_eq!(candidates[0].text, "Firefox");
+        assert_eq!(candidates[0].metadata["icon"], "firefox,web-browser");
+        assert_eq!(candidates[0].metadata["urgent"], "true");
     }
 
     #[test]

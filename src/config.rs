@@ -11,6 +11,7 @@ pub type ViewRef = String;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub default_view: ViewRef,
+    pub dmenu_view: ViewRef,
     pub default_rule: String,
     pub rules: BTreeMap<String, Rule>,
     pub views: BTreeMap<ViewRef, View>,
@@ -21,6 +22,13 @@ pub struct Config {
 pub struct Rule {
     #[serde(default = "default_true")]
     pub filter: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DisplayType {
+    #[default]
+    Text,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -36,6 +44,8 @@ pub enum ViewType {
 pub struct View {
     #[serde(rename = "type", default)]
     pub view_type: ViewType,
+    #[serde(default)]
+    pub display: DisplayType,
     #[serde(default)]
     pub sources: Vec<ViewRef>,
     #[serde(default)]
@@ -74,6 +84,8 @@ pub struct Command {
 struct RawConfig {
     #[serde(default = "default_view_name")]
     default_view: String,
+    #[serde(default = "default_dmenu_view_name")]
+    dmenu_view: String,
     #[serde(default = "default_rule_name")]
     default_rule: String,
     #[serde(default)]
@@ -193,6 +205,7 @@ impl Config {
 
         Ok(Self {
             default_view: raw.default_view,
+            dmenu_view: raw.dmenu_view,
             default_rule: raw.default_rule,
             rules: raw.rules,
             views,
@@ -333,6 +346,17 @@ impl Config {
         self.views.get(view_ref)
     }
 
+    pub fn dmenu_view(&self) -> Result<&View> {
+        let view = self
+            .views
+            .get(&self.dmenu_view)
+            .with_context(|| format!("dmenu view {:?} is not defined", self.dmenu_view))?;
+        if view.view_type != ViewType::Launcher {
+            bail!("dmenu view {:?} must be a launcher view", self.dmenu_view);
+        }
+        Ok(view)
+    }
+
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
         let plugin = view_ref
             .split_once(':')
@@ -423,6 +447,7 @@ fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View 
     }
     View {
         view_type: ViewType::Launcher,
+        display: DisplayType::Text,
         sources: Vec::new(),
         display_prefix: provider.display_prefix,
         discover: provider.discover,
@@ -438,6 +463,7 @@ fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View 
 fn default_aggregate_view(source_refs: Vec<ViewRef>) -> View {
     View {
         view_type: ViewType::Launcher,
+        display: DisplayType::Text,
         sources: source_refs,
         display_prefix: None,
         discover: None,
@@ -713,6 +739,10 @@ fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
 
 fn default_view_name() -> String {
     "core:default".to_string()
+}
+
+fn default_dmenu_view_name() -> String {
+    "core:dmenu".to_string()
 }
 
 fn default_rule_name() -> String {

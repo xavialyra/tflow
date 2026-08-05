@@ -79,7 +79,7 @@ printf 'one\0two\0three\0' |
 find . -name '*.rs' | tui-launcher --dmenu
 ```
 
-The dmenu UI reads keyboard input and draws through `/dev/tty`. Standard input is consumed as a newline-delimited snapshot before the selector opens; `--dmenu0` uses NUL-delimited records and NUL-terminated output. On acceptance, standard output contains the complete selected input line followed by a newline. `Esc`, `Ctrl-C`, and `Ctrl-D` cancel with a non-zero exit status. If the query does not match an entry, the query text itself is returned. Rofi icon metadata after a NUL separator is ignored by the text-only renderer.
+The dmenu UI reads keyboard input and draws through `/dev/tty`. It loads the configured dedicated dmenu view (default: `core:dmenu`) for display settings, but does not run that view's discovery, sources, or commands. Standard input is consumed as a newline-delimited snapshot before the selector opens; `--dmenu0` uses NUL-delimited records and NUL-terminated output. On acceptance, standard output contains the complete selected input line followed by a newline. `Esc`, `Ctrl-C`, and `Ctrl-D` cancel with a non-zero exit status. If the query does not match an entry, the query text itself is returned. Rofi metadata after a NUL separator is parsed into generic candidate metadata; the current text renderer ignores it.
 
 The available dmenu options are:
 
@@ -94,7 +94,17 @@ The available dmenu options are:
 - `--nth-delimiter CHARACTER` sets the single ASCII field delimiter and defaults to Tab; use `--nth-delimiter=whitespace` to treat runs of whitespace as one field delimiter;
 - setting any field format to `0` leaves that part unchanged.
 
-Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Dmenu mode is independent of the configuration and does not run plugin discovery or view commands. It cannot be combined with `--config` or `--check`.
+Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Set `dmenu_view = "core:dmenu"` in the root config to choose the dedicated display view; no dmenu view-selection CLI flag is provided yet. Dmenu mode can use `--config`, but cannot be combined with `--check`. The dedicated view is a launcher view with no discovery or commands:
+
+```toml
+# config/config.toml
+dmenu_view = "core:dmenu"
+
+# plugins/core/plugin.toml
+[views.dmenu]
+type = "launcher"
+display = "text"
+```
 
 ## Views and plugins
 
