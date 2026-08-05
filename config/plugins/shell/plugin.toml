@@ -1,7 +1,3 @@
-[plugin]
-id = "shell"
-api = 1
-
 [views.default]
 type = "launcher"
 display_prefix = "shell"

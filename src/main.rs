@@ -3,6 +3,7 @@ mod config;
 mod discovery;
 mod dmenu;
 mod pty;
+mod runtime_log;
 mod terminal;
 mod vt;
 
@@ -115,9 +116,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let runtime_log =
+        runtime_log::RuntimeLog::open().context("could not initialize the launcher runtime log")?;
     let mut terminal = terminal::Terminal::enter()
         .with_context(|| "could not initialize the launcher terminal")?;
-    let mut app = App::new(&config);
+    let mut app = App::with_runtime_log(&config, runtime_log);
     app.run(&mut terminal)
 }
 

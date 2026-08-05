@@ -1,8 +1,17 @@
 use crate::config::{Config, Rule, View};
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
-use std::process::Command;
+use std::io::{self, Read};
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 struct DiscoveryItem {
@@ -28,6 +37,11 @@ pub struct DiscoveryResult {
     pub errors: Vec<String>,
 }
 
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_DISCOVERY_STDOUT: usize = 1024 * 1024;
+const MAX_DISCOVERY_STDERR: usize = 64 * 1024;
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 pub fn discover(
     config: &Config,
     view_ref: &str,
@@ -35,6 +49,7 @@ pub fn discover(
     rule: &Rule,
     query: &str,
     source_prefix: Option<&str>,
+    log_file: Option<&Path>,
 ) -> Result<DiscoveryResult> {
     let mut result = DiscoveryResult::default();
 
@@ -62,18 +77,18 @@ pub fn discover(
         process.env("LAUNCHER_VIEW_REF", &source_ref);
         process.env("LAUNCHER_PROVIDER", plugin_name(&source_ref));
         process.env("LAUNCHER_QUERY", query);
+        if let Some(log_file) = log_file {
+            process.env("LAUNCHER_LOG_FILE", log_file);
+        }
         if let Some(root) = config.plugin_root(&source_ref) {
             process.current_dir(root);
             process.env("LAUNCHER_PLUGIN_DIR", root);
         }
 
-        let output = match process.output() {
+        let output = match run_discovery_command(process) {
             Ok(output) => output,
             Err(error) => {
-                result.errors.push(format!(
-                    "{}: could not run discovery command: {}",
-                    source_ref, error
-                ));
+                result.errors.push(format!("{}: {}", source_ref, error));
                 continue;
             }
         };
@@ -100,6 +115,129 @@ pub fn discover(
     }
 
     Ok(result)
+}
+
+fn run_discovery_command(process: Command) -> Result<std::process::Output> {
+    run_bounded_command(
+        process,
+        DISCOVERY_TIMEOUT,
+        MAX_DISCOVERY_STDOUT,
+        MAX_DISCOVERY_STDERR,
+    )
+}
+
+fn run_bounded_command(
+    mut process: Command,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> Result<std::process::Output> {
+    unsafe {
+        process.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    process
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = process
+        .spawn()
+        .context("could not spawn discovery command")?;
+    let stdout_reader = child
+        .stdout
+        .take()
+        .context("discovery command has no stdout pipe")?;
+    let stderr_reader = child
+        .stderr
+        .take()
+        .context("discovery command has no stderr pipe")?;
+    let stdout_exceeded = Arc::new(AtomicBool::new(false));
+    let stderr_exceeded = Arc::new(AtomicBool::new(false));
+    let stdout_thread = spawn_limited_reader(stdout_reader, stdout_limit, &stdout_exceeded);
+    let stderr_thread = spawn_limited_reader(stderr_reader, stderr_limit, &stderr_exceeded);
+    let deadline = Instant::now() + timeout;
+
+    let process_result: Result<std::process::ExitStatus> = loop {
+        if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
+            terminate_child(&mut child);
+            break Err(anyhow!("discovery output exceeded configured limits"));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(&mut child);
+                break Err(anyhow!(error).context("could not inspect discovery command"));
+            }
+        }
+
+        if Instant::now() >= deadline {
+            terminate_child(&mut child);
+            break Err(anyhow!("discovery timed out after {:?}", timeout));
+        }
+        thread::sleep(PROCESS_POLL_INTERVAL);
+    };
+
+    let stdout = join_reader(stdout_thread, "stdout")?;
+    let stderr = join_reader(stderr_thread, "stderr")?;
+    if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
+        return Err(anyhow!("discovery output exceeded configured limits"));
+    }
+    let status = process_result?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_limited_reader<R>(
+    reader: R,
+    limit: usize,
+    exceeded: &Arc<AtomicBool>,
+) -> thread::JoinHandle<io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    let exceeded = Arc::clone(exceeded);
+    thread::spawn(move || read_limited(reader, limit, &exceeded))
+}
+
+fn read_limited(mut reader: impl Read, limit: usize, exceeded: &AtomicBool) -> io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..count.min(remaining)]);
+        if count > remaining {
+            exceeded.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(output)
+}
+
+fn join_reader(reader: thread::JoinHandle<io::Result<Vec<u8>>>, stream: &str) -> Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| anyhow!("discovery {} reader panicked", stream))?
+        .with_context(|| format!("could not read discovery {}", stream))
+}
+
+fn terminate_child(child: &mut Child) {
+    let process_group = -(child.id() as libc::pid_t);
+    if unsafe { libc::kill(process_group, libc::SIGKILL) } != 0 {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 fn parse_items(
@@ -231,6 +369,7 @@ mod tests {
     use super::*;
     use crate::config::{Command, DisplayType, ViewType};
     use std::collections::BTreeMap;
+    use std::io::Cursor;
 
     fn test_config() -> Config {
         let mut views = BTreeMap::new();
@@ -279,6 +418,7 @@ mod tests {
         Config {
             default_view: "core:default".to_string(),
             dmenu_view: "core:dmenu".to_string(),
+            command_view: "core:command".to_string(),
             default_rule: "default".to_string(),
             rules: BTreeMap::from([("default".to_string(), crate::config::Rule { filter: true })]),
             views,
@@ -312,6 +452,7 @@ mod tests {
             &crate::config::Rule { filter: true },
             "",
             None,
+            None,
         )
         .unwrap();
         assert_eq!(result.items[0].source_view, "apps:main");
@@ -321,5 +462,31 @@ mod tests {
     #[test]
     fn strips_terminal_controls_from_items() {
         assert_eq!(sanitize_text("\u{1b}[31mred\u{1b}[0m\n"), "red");
+    }
+
+    #[test]
+    fn bounded_reader_keeps_only_the_configured_prefix() {
+        let exceeded = AtomicBool::new(false);
+        let output = read_limited(Cursor::new(b"abcdef"), 3, &exceeded).unwrap();
+        assert_eq!(output, b"abc");
+        assert!(exceeded.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn discovery_timeout_terminates_the_process_group() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 1"]);
+        let error = run_bounded_command(command, Duration::from_millis(50), 1024, 1024)
+            .expect_err("the discovery command should time out");
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn discovery_output_limit_returns_an_error() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf 123456"]);
+        let error = run_bounded_command(command, Duration::from_secs(1), 3, 1024)
+            .expect_err("the discovery command should exceed its output limit");
+        assert!(error.to_string().contains("output exceeded"));
     }
 }

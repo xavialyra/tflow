@@ -1,2 +1,3 @@
 default_view = "core:default"
 dmenu_view = "core:dmenu"
+command_view = "core:command"

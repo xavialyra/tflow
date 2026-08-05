@@ -1,17 +1,19 @@
-[plugin]
-id = "core"
-api = 1
-
 [views.default]
 type = "launcher"
 sources = ["sys:default", "shell:default", "trans:default", "apps:default"]
 
-[views.default.commands.apps]
-key = "alt+a"
-label = "Apps"
-view = "apps:default"
-
 [views.dmenu]
+type = "launcher"
+display = "text"
+
+[views.messages]
+type = "launcher"
+display = "text"
+display_prefix = "log"
+filter = true
+discover = { file = "scripts/messages.sh" }
+
+[views.command]
 type = "launcher"
 display = "text"
 

@@ -136,13 +136,9 @@ plugins/apps/
     └── common.sh
 ```
 
-The manifest declares the plugin ID and API version. Its view definitions are relative to that plugin namespace:
+The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `1` when it is omitted. Its view definitions are relative to that directory namespace:
 
 ```toml
-[plugin]
-id = "apps"
-api = 1
-
 [views.main]
 type = "launcher"
 discover_shell = "bash"
@@ -154,7 +150,7 @@ label = "Open"
 run = { file = "scripts/open.sh" }
 ```
 
-Plugin IDs must match their directory names. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands.
+Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
 The root config file contains the default view and global rules:
 
@@ -172,12 +168,12 @@ sources = ["sys:default", "apps:default"]
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those launcher views. A source view keeps its own discovery configuration and remains the owner of the resulting item commands.
+A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands. A source view keeps its own discovery configuration and remains the owner of the resulting item commands.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
 ```toml
-[views.default.commands.apps]
+[views.main.commands.apps]
 key = "alt+a"
 label = "Apps"
 view = "apps:default"
@@ -189,7 +185,7 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-`Esc` returns to the parent view when the query is empty. A capture or embedded view is treated as a temporary child of the view that launched it.
+`Esc` returns to the parent view when the query is empty. A capture or embedded view is treated as a temporary child of the view that launched it. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command returns to the parent frame before executing it.
 
 ## View commands
 
@@ -259,7 +255,8 @@ View discovery scripts receive:
 - `LAUNCHER_VIEW`;
 - `LAUNCHER_VIEW_REF`;
 - `LAUNCHER_RULE`;
-- `LAUNCHER_QUERY`.
+- `LAUNCHER_QUERY`;
+- `LAUNCHER_LOG_FILE`, the append-only runtime log path.
 
 A root launcher view runs discovery for each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
 
@@ -268,9 +265,26 @@ app terminal
 ssh prod
 ```
 
-If `display_prefix` is omitted, the view name is used. `default_discover` is used for an unqualified query and `query_discover` is used after a matching prefix. A view with only `query_discover` is route-only and is not queried for the initial list.
+When a view with an explicit `display_prefix` is not a source of the current view, the same prefix enters that launcher view through the normal view stack. For example, a standalone view with `display_prefix = "log"` is entered with `log timeout`; `timeout` becomes its query. Source selection stays in the current frame, while view routing pushes a new frame.
+
+If `display_prefix` is omitted, the view name is used for source display and selection. `default_discover` is used for an unqualified source query and `query_discover` is used after a matching source prefix. A standalone prefixed view should provide `discover`, because its prefix is removed before its first discovery request.
 
 `discover_shell` selects the discovery interpreter and defaults to `sh`. Set it to `bash` when the script uses Bash syntax.
+
+The core plugin provides a normal log launcher without adding it to `core:default`:
+
+```toml
+[views.messages]
+type = "launcher"
+display_prefix = "log"
+discover = { file = "scripts/messages.sh" }
+```
+
+The script can read the runtime log directly:
+
+```sh
+cat "$LAUNCHER_LOG_FILE"
+```
 
 ## Command environment
 
@@ -285,7 +299,8 @@ Command scripts receive:
 - `LAUNCHER_VIEW_REF`;
 - `LAUNCHER_COMMAND`;
 - `LAUNCHER_RULE`;
-- `LAUNCHER_QUERY`.
+- `LAUNCHER_QUERY`;
+- `LAUNCHER_LOG_FILE`.
 
 `LAUNCHER_PROVIDER` remains available as an alias for the source plugin name for compatibility with older scripts.
 
@@ -299,9 +314,14 @@ Command `shell` selects the command interpreter. When omitted, the source view's
 - `Esc`: clear the query, then return to the parent view or quit at the root;
 - `Ctrl-C`: quit;
 - `Ctrl-U`: clear the query;
-- `Ctrl-W`: delete the previous word.
+- `Ctrl-W`: delete the previous word;
+- `Ctrl-K`: open the command launcher view for the selected item's source view.
 
-Discovery is debounced globally by 120ms and executed by a background worker. Older results are discarded when a newer view/query request exists. If `Enter` is pressed while discovery is pending, it waits for the matching result before executing the view command.
+The launcher footer occupies one fixed row. It keeps the current view on the left and view commands on the right. A current error temporarily replaces the left side and includes its occurrence time; the latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+
+When additional view commands do not fit, `Ctrl-K commands` navigates to the command launcher view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
+
+Discovery is debounced globally by 120ms and executed by a background worker. Older results are discarded when a newer view/query request exists. Each discovery command receives a null stdin, has a 10-second timeout, and is limited to 1 MiB of stdout and 64 KiB of stderr. Timed-out or oversized commands report an error for that source. If `Enter` is pressed while discovery is pending, it waits for the matching result before executing the view command.
 
 ## Legacy configuration
 

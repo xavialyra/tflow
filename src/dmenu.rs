@@ -271,7 +271,7 @@ impl DmenuApp {
                 self.message = None;
                 None
             }
-            Key::Char(_) | Key::Alt(_) => None,
+            Key::Char(_) | Key::Alt(_) | Key::CtrlK => None,
         }
     }
 

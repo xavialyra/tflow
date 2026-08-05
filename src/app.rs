@@ -1,11 +1,13 @@
 use crate::config::{Command, Config, ViewType, normalize_key};
-use crate::discovery::{DiscoveryResult, Item, discover, sanitize_text};
+use crate::discovery::{DiscoveryResult, Item, discover, matches_query, sanitize_text};
 use crate::pty::{self, EmbeddedOutcome};
+use crate::runtime_log::{LogLevel, LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -13,12 +15,14 @@ use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+const ERROR_DISPLAY_DURATION: Duration = Duration::from_secs(5);
 const INPUT_POLL_MS: i32 = 80;
 
 struct DiscoveryRequest {
     id: u64,
     view: String,
     input: String,
+    log_file: Option<PathBuf>,
 }
 
 struct DiscoveryResponse {
@@ -37,13 +41,12 @@ struct LauncherFrame {
     selected: usize,
     active_rule: String,
     query: String,
-    errors: Vec<String>,
-    message: String,
     refresh_deadline: Option<Instant>,
     requested_input: String,
     results_input: String,
     discovery_pending: bool,
     pending_command: Option<Key>,
+    command_owner: Option<String>,
 }
 
 impl LauncherFrame {
@@ -55,13 +58,12 @@ impl LauncherFrame {
             selected: 0,
             active_rule: default_rule.to_string(),
             query: String::new(),
-            errors: Vec::new(),
-            message: String::new(),
             refresh_deadline: None,
             requested_input: String::new(),
             results_input: String::new(),
             discovery_pending: false,
             pending_command: None,
+            command_owner: None,
         }
     }
 }
@@ -88,10 +90,18 @@ pub struct App<'a> {
     next_request_id: u64,
     latest_request_id: u64,
     requested_view: String,
+    runtime_log: RuntimeLog,
+    active_error: Option<LogRecord>,
+    active_error_deadline: Option<Instant>,
 }
 
 impl<'a> App<'a> {
+    #[cfg(test)]
     pub fn new(config: &'a Config) -> Self {
+        Self::with_runtime_log(config, RuntimeLog::disabled())
+    }
+
+    pub fn with_runtime_log(config: &'a Config, runtime_log: RuntimeLog) -> Self {
         let (discovery_tx, request_rx) = mpsc::channel();
         let (response_tx, discovery_rx) = mpsc::channel();
         let worker_config = config.clone();
@@ -109,6 +119,9 @@ impl<'a> App<'a> {
             next_request_id: 0,
             latest_request_id: 0,
             requested_view: String::new(),
+            runtime_log,
+            active_error: None,
+            active_error_deadline: None,
         }
     }
 
@@ -116,6 +129,7 @@ impl<'a> App<'a> {
         self.request_discovery()?;
 
         loop {
+            self.clear_expired_error();
             if self.collect_discoveries(terminal)? {
                 return Ok(());
             }
@@ -150,9 +164,56 @@ impl<'a> App<'a> {
             .expect("launcher always has a root view")
     }
 
+    fn record_info(&mut self, source_view: Option<&str>, command: Option<&str>, message: &str) {
+        self.runtime_log
+            .record(LogLevel::Info, source_view, command, message);
+    }
+
+    fn record_error(&mut self, source_view: Option<&str>, command: Option<&str>, message: &str) {
+        let record = self
+            .runtime_log
+            .record(LogLevel::Error, source_view, command, message);
+        self.active_error = Some(record);
+        self.active_error_deadline = Some(Instant::now() + ERROR_DISPLAY_DURATION);
+    }
+
+    fn clear_expired_error(&mut self) {
+        if self
+            .active_error_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.clear_active_error();
+        }
+    }
+
+    fn clear_active_error(&mut self) {
+        self.active_error = None;
+        self.active_error_deadline = None;
+    }
+
+    fn record_command_status(
+        &mut self,
+        invocation: &CommandInvocation,
+        status: &str,
+        success: bool,
+    ) {
+        if success {
+            self.clear_active_error();
+            self.record_info(Some(&invocation.source_view), Some(&invocation.id), status);
+        } else {
+            self.record_error(Some(&invocation.source_view), Some(&invocation.id), status);
+        }
+    }
+
     fn handle_key(&mut self, key: Key, terminal: &mut Terminal) -> Result<CommandResult> {
         match key {
             Key::CtrlC | Key::CtrlD => Ok(CommandResult::Exit),
+            Key::CtrlK => {
+                if self.current().view != self.config.command_view {
+                    self.open_command_view()?;
+                }
+                Ok(CommandResult::Continue)
+            }
             Key::Escape => {
                 if !self.current().input.is_empty() {
                     self.current_mut().input.clear();
@@ -166,12 +227,14 @@ impl<'a> App<'a> {
             }
             Key::Enter | Key::Alt(_) => self.handle_command_key(key, terminal),
             Key::Up => {
+                self.clear_active_error();
                 if !self.current().items.is_empty() {
                     self.current_mut().selected = self.current().selected.saturating_sub(1);
                 }
                 Ok(CommandResult::Continue)
             }
             Key::Down => {
+                self.clear_active_error();
                 if !self.current().items.is_empty() {
                     let last = self.current().items.len() - 1;
                     self.current_mut().selected = (self.current().selected + 1).min(last);
@@ -217,14 +280,23 @@ impl<'a> App<'a> {
     }
 
     fn handle_command_key(&mut self, key: Key, terminal: &mut Terminal) -> Result<CommandResult> {
-        if !self.results_current() {
-            self.current_mut().pending_command = Some(key);
-            self.refresh_now()?;
+        if self.current().command_owner.is_some() && !matches!(key, Key::Enter) {
             return Ok(CommandResult::Continue);
+        }
+        if !self.results_current() {
+            if self.current().command_owner.is_some() {
+                self.refresh_now()?;
+            } else {
+                self.current_mut().pending_command = Some(key);
+                self.refresh_now()?;
+                return Ok(CommandResult::Continue);
+            }
         }
 
         if self.resolve_command(key).is_none() {
-            self.current_mut().message = format!("no command for {}", key_display(key));
+            let view = self.current().view.clone();
+            let message = format!("no command for {}", key_display(key));
+            self.record_error(Some(&view), None, &message);
             return Ok(CommandResult::Continue);
         }
         if self.execute_command(key, terminal)? {
@@ -234,13 +306,78 @@ impl<'a> App<'a> {
     }
 
     fn schedule_refresh(&mut self) {
-        self.current_mut().refresh_deadline = Some(Instant::now() + SEARCH_DEBOUNCE);
-        self.current_mut().pending_command = None;
+        self.clear_active_error();
+        let frame = self.current_mut();
+        frame.refresh_deadline = Some(Instant::now() + SEARCH_DEBOUNCE);
+        frame.pending_command = None;
+    }
+
+    fn refresh_command_view(&mut self) {
+        let owner = self.current().command_owner.clone();
+        let input = self.current().input.clone();
+        let default_rule = self.config.default_rule.clone();
+        let owner_name = owner.clone().unwrap_or_default();
+        let mut items = owner
+            .as_deref()
+            .and_then(|owner| self.config.view(owner))
+            .map(|view| {
+                view.commands
+                    .values()
+                    .filter_map(|command| {
+                        let key = normalize_key(&command.key).ok()?;
+                        let text = sanitize_text(&command.label);
+                        (!text.is_empty()).then_some(Item {
+                            prefix: "cmd".to_string(),
+                            text,
+                            value: Some(key),
+                            metadata: Value::Null,
+                            source_view: owner_name.clone(),
+                        })
+                    })
+                    .filter(|item| matches_query(&item.text, &input))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        items.sort_by(|left, right| {
+            compare_bindings(
+                left.value.as_deref().unwrap_or_default(),
+                right.value.as_deref().unwrap_or_default(),
+            )
+        });
+        let frame = self.current_mut();
+        frame.items = items;
+        frame.selected = frame.selected.min(frame.items.len().saturating_sub(1));
+        frame.active_rule = default_rule;
+        frame.query = input.clone();
+        frame.requested_input = input.clone();
+        frame.results_input = input;
+        frame.discovery_pending = false;
+        frame.refresh_deadline = None;
     }
 
     fn request_discovery(&mut self) -> Result<()> {
-        let view = self.current().view.clone();
-        let input = self.current().input.clone();
+        if self.current().command_owner.is_some() {
+            self.refresh_command_view();
+            return Ok(());
+        }
+
+        let current_view = self.current().view.clone();
+        let current_input = self.current().input.clone();
+        if let Some((target_view, query)) = self
+            .config
+            .resolve_view_route(&current_view, &current_input)
+        {
+            let parent = self.current_mut();
+            parent.input.clear();
+            parent.refresh_deadline = None;
+            parent.discovery_pending = false;
+            parent.pending_command = None;
+            self.open_view_with_input(&target_view, &query)?;
+            return Ok(());
+        }
+
+        let view = current_view;
+        let input = current_input;
         self.current_mut().refresh_deadline = None;
         if self.current().discovery_pending
             && self.requested_view == view
@@ -259,6 +396,7 @@ impl<'a> App<'a> {
                 id: self.latest_request_id,
                 view,
                 input,
+                log_file: self.runtime_log.path().map(PathBuf::from),
             })
             .context("could not queue discovery request")
     }
@@ -278,34 +416,75 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    fn response_matches(&self, response: &DiscoveryResponse) -> bool {
+        response.id == self.latest_request_id
+            && response.view == self.current().view
+            && response.input == self.current().input
+    }
+
     fn collect_discoveries(&mut self, terminal: &mut Terminal) -> Result<bool> {
         while let Ok(response) = self.discovery_rx.try_recv() {
-            if response.id != self.latest_request_id
-                || response.view != self.current().view
-                || response.input != self.current().input
-            {
+            if !self.response_matches(&response) {
+                let response_view = response.view.clone();
+                match &response.result {
+                    Ok(result) => {
+                        for error in &result.errors {
+                            self.runtime_log.record(
+                                LogLevel::Error,
+                                Some(&response_view),
+                                None,
+                                error,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.runtime_log
+                            .record(LogLevel::Error, Some(&response_view), None, error);
+                    }
+                }
                 continue;
             }
 
-            let pending_command = {
-                let frame = self.current_mut();
-                frame.discovery_pending = false;
-                frame.active_rule = response.active_rule;
-                frame.query = response.query;
-                match response.result {
-                    Ok(result) => {
+            let response_view = response.view.clone();
+            let active_rule = response.active_rule.clone();
+            let query = response.query.clone();
+            let input = response.input.clone();
+            let pending_command;
+            match response.result {
+                Ok(result) => {
+                    let errors = result.errors;
+                    {
+                        let frame = self.current_mut();
+                        frame.discovery_pending = false;
+                        frame.active_rule = active_rule;
+                        frame.query = query;
                         frame.items = result.items;
-                        frame.errors = result.errors;
+                        frame.results_input = input;
+                        frame.selected = frame.selected.min(frame.items.len().saturating_sub(1));
+                        pending_command = frame.pending_command.take();
                     }
-                    Err(error) => {
-                        frame.items.clear();
-                        frame.errors = vec![error];
+                    if errors.is_empty() {
+                        self.clear_active_error();
+                    } else {
+                        for error in errors {
+                            self.record_error(Some(&response_view), None, &error);
+                        }
                     }
                 }
-                frame.results_input = response.input;
-                frame.selected = frame.selected.min(frame.items.len().saturating_sub(1));
-                frame.pending_command.take()
-            };
+                Err(error) => {
+                    {
+                        let frame = self.current_mut();
+                        frame.discovery_pending = false;
+                        frame.active_rule = active_rule;
+                        frame.query = query;
+                        frame.items.clear();
+                        frame.results_input = input;
+                        frame.selected = 0;
+                        pending_command = frame.pending_command.take();
+                    }
+                    self.record_error(Some(&response_view), None, &error);
+                }
+            }
 
             if let Some(key) = pending_command
                 && self.execute_command(key, terminal)?
@@ -324,23 +503,43 @@ impl<'a> App<'a> {
     }
 
     fn input_timeout_ms(&self) -> i32 {
-        let Some(deadline) = self.current().refresh_deadline else {
-            return INPUT_POLL_MS;
-        };
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let now = Instant::now();
+        let refresh_remaining = self
+            .current()
+            .refresh_deadline
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let error_remaining = self
+            .active_error_deadline
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let remaining = [refresh_remaining, error_remaining]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or_else(|| Duration::from_millis(INPUT_POLL_MS as u64));
         remaining.as_millis().min(INPUT_POLL_MS as u128).max(1) as i32
     }
 
-    fn resolve_command(&self, key: Key) -> Option<CommandInvocation> {
-        let key = command_key(key)?;
+    fn command_owner(&self) -> Option<&str> {
         let frame = self.current();
-        if let Some(item) = frame.items.get(frame.selected)
-            && item.source_view != frame.view
-            && let Some(invocation) = self.find_command(&item.source_view, &key)
-        {
-            return Some(invocation);
+        frame.command_owner.as_deref().or_else(|| {
+            frame
+                .items
+                .get(frame.selected)
+                .map(|item| item.source_view.as_str())
+        })
+    }
+
+    fn resolve_command(&self, key: Key) -> Option<CommandInvocation> {
+        let frame = self.current();
+        if frame.command_owner.is_some() {
+            let binding = frame
+                .items
+                .get(frame.selected)
+                .and_then(|item| item.value.as_deref())?;
+            return self.find_command(frame.command_owner.as_deref()?, binding);
         }
-        self.find_command(&frame.view, &key)
+        let key = command_key(key)?;
+        self.find_command(self.command_owner()?, &key)
     }
 
     fn find_command(&self, view_ref: &str, key: &str) -> Option<CommandInvocation> {
@@ -355,15 +554,14 @@ impl<'a> App<'a> {
     }
 
     fn visible_commands(&self) -> Vec<(String, String)> {
-        let frame = self.current();
+        let Some(owner) = self.command_owner() else {
+            return Vec::new();
+        };
         let mut commands = BTreeMap::new();
-        if let Some(item) = frame.items.get(frame.selected)
-            && item.source_view != frame.view
-        {
-            self.add_view_commands(&mut commands, &item.source_view);
-        }
-        self.add_view_commands(&mut commands, &frame.view);
-        commands.into_iter().collect()
+        self.add_view_commands(&mut commands, owner);
+        let mut commands = commands.into_iter().collect::<Vec<_>>();
+        commands.sort_by(|left, right| compare_bindings(&left.0, &right.0));
+        commands
     }
 
     fn add_view_commands(&self, commands: &mut BTreeMap<String, String>, view_ref: &str) {
@@ -381,22 +579,39 @@ impl<'a> App<'a> {
         let Some(invocation) = self.resolve_command(key) else {
             return Ok(false);
         };
-        let item = self.current().items.get(self.current().selected).cloned();
+        let command_view = self.current().command_owner.is_some();
+        let item = if command_view {
+            let parent = self
+                .frames
+                .get(self.frames.len().saturating_sub(2))
+                .context("command view has no parent frame")?;
+            parent.items.get(parent.selected).cloned()
+        } else {
+            self.current().items.get(self.current().selected).cloned()
+        };
         let command = invocation.command.clone();
+        if command_view {
+            self.frames.pop();
+        }
         let current_view = self.current().view.clone();
 
         if command.run.is_none() {
             if let Some(target) = &command.view {
                 self.open_view(target)?;
             } else {
-                self.current_mut().message = format!("{} has no command", invocation.id);
+                let message = format!("{} has no command", invocation.id);
+                self.record_error(
+                    Some(&invocation.source_view),
+                    Some(&invocation.id),
+                    &message,
+                );
             }
             return Ok(false);
         }
 
         let prepared = self.prepare_command(&invocation, item.as_ref())?;
         if command.exit {
-            self.execute_exit(prepared, terminal)?;
+            self.execute_exit(prepared, terminal, &invocation)?;
             return Ok(true);
         }
 
@@ -407,13 +622,13 @@ impl<'a> App<'a> {
             .map(|view| view.view_type);
         match target_type {
             Some(ViewType::Capture) => {
-                self.execute_capture(prepared, terminal, &invocation.id, item.as_ref())?;
+                self.execute_capture(prepared, terminal, &invocation, item.as_ref())?;
             }
             Some(ViewType::Embedded) => {
-                self.execute_embedded(prepared, terminal, &invocation.id, item.as_ref())?;
+                self.execute_embedded(prepared, terminal, &invocation, item.as_ref())?
             }
             Some(ViewType::Launcher) | None => {
-                self.execute_oneshot(prepared, terminal)?;
+                self.execute_oneshot(prepared, terminal, &invocation)?;
                 if let Some(target) = command.view.as_deref()
                     && target != current_view
                 {
@@ -487,6 +702,12 @@ impl<'a> App<'a> {
                 root.to_string_lossy().to_string(),
             ));
         }
+        if let Some(path) = self.runtime_log.path() {
+            environment.push((
+                "LAUNCHER_LOG_FILE".to_string(),
+                path.to_string_lossy().to_string(),
+            ));
+        }
         Ok(PreparedCommand {
             argv: vec![
                 shell.to_string(),
@@ -515,13 +736,21 @@ impl<'a> App<'a> {
         &mut self,
         prepared: PreparedCommand,
         terminal: &mut Terminal,
+        invocation: &CommandInvocation,
     ) -> Result<()> {
         terminal.leave()?;
         let result = Self::process(&prepared).status();
         terminal.reenter()?;
         match result {
-            Ok(status) => self.current_mut().message = status_message(&status),
-            Err(error) => self.current_mut().message = error.to_string(),
+            Ok(status) => {
+                let message = status_message(&status);
+                self.record_command_status(invocation, &message, status.success());
+            }
+            Err(error) => self.record_error(
+                Some(&invocation.source_view),
+                Some(&invocation.id),
+                &error.to_string(),
+            ),
         }
         Ok(())
     }
@@ -530,14 +759,14 @@ impl<'a> App<'a> {
         &mut self,
         prepared: PreparedCommand,
         terminal: &mut Terminal,
-        command_id: &str,
+        invocation: &CommandInvocation,
         item: Option<&Item>,
     ) -> Result<()> {
         terminal.leave()?;
         let result = Self::process(&prepared)
             .stdin(Stdio::null())
             .output()
-            .with_context(|| format!("could not run command {}", command_id));
+            .with_context(|| format!("could not run command {}", invocation.id));
         terminal.reenter()?;
         let (text, status) = match result {
             Ok(output) => {
@@ -549,14 +778,25 @@ impl<'a> App<'a> {
                     }
                     text.push_str(&stderr);
                 }
-                (sanitize_text(&text), status_message(&output.status))
+                let status = status_message(&output.status);
+                self.record_command_status(invocation, &status, output.status.success());
+                (sanitize_text(&text), status)
             }
-            Err(error) => (error.to_string(), "failed".to_string()),
+            Err(error) => {
+                let message = error.to_string();
+                self.record_error(
+                    Some(&invocation.source_view),
+                    Some(&invocation.id),
+                    &message,
+                );
+                (message, "failed".to_string())
+            }
         };
         let title = format!(
             "{} / {}",
-            item.map(|item| item.text.as_str()).unwrap_or(command_id),
-            command_id
+            item.map(|item| item.text.as_str())
+                .unwrap_or(&invocation.id),
+            invocation.id
         );
         self.show_capture(terminal, &title, &text, &status)
     }
@@ -565,7 +805,7 @@ impl<'a> App<'a> {
         &mut self,
         prepared: PreparedCommand,
         terminal: &mut Terminal,
-        command_id: &str,
+        invocation: &CommandInvocation,
         item: Option<&Item>,
     ) -> Result<()> {
         let outcome = pty::run(
@@ -575,19 +815,36 @@ impl<'a> App<'a> {
             terminal,
             &format!(
                 "{} / {}",
-                item.map(|item| item.text.as_str()).unwrap_or(command_id),
-                command_id
+                item.map(|item| item.text.as_str())
+                    .unwrap_or(&invocation.id),
+                invocation.id
             ),
         )?;
-        self.current_mut().message = embedded_status_message(outcome);
+        let message = embedded_status_message(outcome);
+        let success = matches!(outcome, EmbeddedOutcome::ReturnedToLauncher)
+            || matches!(outcome, EmbeddedOutcome::Exited(0));
+        self.record_command_status(invocation, &message, success);
         Ok(())
     }
 
-    fn execute_exit(&mut self, prepared: PreparedCommand, terminal: &mut Terminal) -> Result<()> {
+    fn execute_exit(
+        &mut self,
+        prepared: PreparedCommand,
+        terminal: &mut Terminal,
+        invocation: &CommandInvocation,
+    ) -> Result<()> {
         terminal.leave()?;
         let status = Self::process(&prepared).status();
-        if let Ok(status) = status {
-            self.current_mut().message = status_message(&status);
+        match status {
+            Ok(status) => {
+                let message = status_message(&status);
+                self.record_command_status(invocation, &message, status.success());
+            }
+            Err(error) => self.record_error(
+                Some(&invocation.source_view),
+                Some(&invocation.id),
+                &error.to_string(),
+            ),
         }
         Ok(())
     }
@@ -621,7 +878,26 @@ impl<'a> App<'a> {
         }
     }
 
+    fn open_command_view(&mut self) -> Result<()> {
+        self.clear_active_error();
+        let command_view_ref = self.config.command_view.clone();
+        self.config.command_view()?;
+        let command_owner = self
+            .current()
+            .items
+            .get(self.current().selected)
+            .map(|item| item.source_view.clone());
+        let mut frame = LauncherFrame::new(&command_view_ref, &self.config.default_rule);
+        frame.command_owner = command_owner;
+        self.frames.push(frame);
+        self.request_discovery()
+    }
+
     fn open_view(&mut self, view_ref: &str) -> Result<()> {
+        self.open_view_with_input(view_ref, "")
+    }
+
+    fn open_view_with_input(&mut self, view_ref: &str, input: &str) -> Result<()> {
         let view = self
             .config
             .view(view_ref)
@@ -629,8 +905,10 @@ impl<'a> App<'a> {
         if view.view_type != ViewType::Launcher {
             bail!("view {:?} cannot be opened as a launcher view", view_ref);
         }
-        self.frames
-            .push(LauncherFrame::new(view_ref, &self.config.default_rule));
+        self.clear_active_error();
+        let mut frame = LauncherFrame::new(view_ref, &self.config.default_rule);
+        frame.input = input.to_string();
+        self.frames.push(frame);
         self.request_discovery()
     }
 
@@ -638,6 +916,7 @@ impl<'a> App<'a> {
         if self.frames.len() <= 1 {
             return Ok(());
         }
+        self.clear_active_error();
         self.frames.pop();
         self.current_mut().discovery_pending = false;
         self.current_mut().pending_command = None;
@@ -648,9 +927,8 @@ impl<'a> App<'a> {
         let (width, height) = terminal.size();
         let width = width as usize;
         let height = height as usize;
-        let footer = self.footer_lines(width);
-        let footer_height = footer.len();
-        let list_height = height.saturating_sub(2 + footer_height);
+        let footer = self.footer_line(width);
+        let list_height = height.saturating_sub(3);
         let frame = self.current();
         let mut lines = Vec::with_capacity(height);
         let prefix_width = prefix_column_width(&frame.items, width);
@@ -696,7 +974,7 @@ impl<'a> App<'a> {
         while lines.len() < 2 + list_height {
             lines.push(String::new());
         }
-        lines.extend(footer);
+        lines.push(footer);
 
         let mut stdout = io::stdout().lock();
         stdout.write_all(b"\x1b[H")?;
@@ -718,23 +996,23 @@ impl<'a> App<'a> {
         stdout.flush().context("could not draw launcher")
     }
 
-    fn footer_lines(&self, width: usize) -> Vec<String> {
+    fn footer_line(&self, width: usize) -> String {
+        // Leave the terminal's last column unused so a full row cannot trigger autowrap.
+        let width = width.saturating_sub(1);
         let frame = self.current();
-        let mut parts = Vec::new();
-        if frame.items.is_empty() {
-            parts.push("Type to search".to_string());
+        let left = self
+            .active_error
+            .as_ref()
+            .map(|error| error.label.clone())
+            .unwrap_or_else(|| frame.view.clone());
+        let left_width = UnicodeWidthStr::width(left.as_str());
+        let right_budget = if left_width + 2 < width {
+            width - left_width - 2
         } else {
-            parts.push("Up/Down select".to_string());
-        }
-        for (key, label) in self.visible_commands() {
-            parts.push(format!("{} {}", display_binding(&key), label));
-        }
-        if !frame.input.is_empty() {
-            parts.push("Ctrl-U clear".to_string());
-        }
-        parts.push("Esc clear/quit".to_string());
-        parts.push("Ctrl-C quit".to_string());
-        wrap_hint(&parts, width)
+            (width * 3 / 5).max(1).min(width.saturating_sub(1))
+        };
+        let right = command_footer_text(&self.visible_commands(), right_budget);
+        footer_row(&left, &right, width)
     }
 }
 
@@ -757,6 +1035,7 @@ fn discovery_worker(
             rule,
             &rule_query,
             source_prefix.as_deref(),
+            request.log_file.as_deref(),
         )
         .map_err(|error| error.to_string());
         let response = DiscoveryResponse {
@@ -800,6 +1079,7 @@ fn key_display(key: Key) -> String {
         Key::Backspace => "Backspace".to_string(),
         Key::CtrlC => "Ctrl-C".to_string(),
         Key::CtrlD => "Ctrl-D".to_string(),
+        Key::CtrlK => "Ctrl-K".to_string(),
         Key::CtrlU => "Ctrl-U".to_string(),
         Key::CtrlW => "Ctrl-W".to_string(),
         Key::Char(character) => character.to_string(),
@@ -815,25 +1095,67 @@ fn display_binding(key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-fn wrap_hint(parts: &[String], width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
+fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
+    match (left == "enter", right == "enter") {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => left.cmp(right),
     }
-    let mut lines = vec![String::new()];
-    for part in parts {
-        let separator = if lines.last().is_some_and(|line| !line.is_empty()) {
-            " | "
-        } else {
-            " "
-        };
-        let candidate = format!("{}{}{}", lines.last().unwrap(), separator, part);
-        if !lines.last().unwrap().is_empty() && UnicodeWidthStr::width(candidate.as_str()) > width {
-            lines.push(format!(" {}", part));
-        } else {
-            *lines.last_mut().unwrap() = candidate;
+}
+
+fn command_footer_text(commands: &[(String, String)], width: usize) -> String {
+    if commands.is_empty() || width == 0 {
+        return String::new();
+    }
+    let formatted = commands
+        .iter()
+        .map(|(key, label)| format!("{} {}", display_binding(key), label))
+        .collect::<Vec<_>>();
+    let full = formatted.join(" | ");
+    if UnicodeWidthStr::width(full.as_str()) <= width {
+        return full;
+    }
+
+    let more = "Ctrl-K commands";
+    let more_width = UnicodeWidthStr::width(more);
+    let mut visible = Vec::new();
+    let mut used = 0;
+    for command in formatted {
+        let command_width = UnicodeWidthStr::width(command.as_str());
+        let separator = if visible.is_empty() { 0 } else { 3 };
+        let required = used + separator + command_width + 3 + more_width;
+        if required > width {
+            break;
         }
+        used += separator + command_width;
+        visible.push(command);
     }
-    lines
+    visible.push(more.to_string());
+    clip(visible.join(" | ").as_str(), width)
+}
+
+fn footer_row(left: &str, right: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if right.is_empty() {
+        return clip(left, width);
+    }
+
+    let gap = 2;
+    if UnicodeWidthStr::width(left) + gap + UnicodeWidthStr::width(right) <= width {
+        let padding = width - UnicodeWidthStr::width(left) - gap - UnicodeWidthStr::width(right);
+        return format!("{}{}{}", left, " ".repeat(padding + gap), right);
+    }
+
+    let right_budget = (width * 3 / 5).max(1).min(width.saturating_sub(1));
+    let right = clip(right, right_budget);
+    let left_budget = width.saturating_sub(UnicodeWidthStr::width(right.as_str()) + 1);
+    let left = clip(left, left_budget);
+    let padding = width.saturating_sub(
+        UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()),
+    );
+    format!("{}{}{}", left, " ".repeat(padding), right)
 }
 
 fn prefix_column_width(items: &[Item], width: usize) -> usize {
@@ -965,7 +1287,7 @@ enum CommandResult {
     Exit,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Key {
     Char(char),
     Alt(char),
@@ -975,6 +1297,7 @@ pub(crate) enum Key {
     Down,
     Escape,
     CtrlC,
+    CtrlK,
     CtrlD,
     CtrlU,
     CtrlW,
@@ -1101,6 +1424,7 @@ fn control_key(byte: u8) -> Option<Key> {
         0x7f | 0x08 => Some(Key::Backspace),
         0x03 => Some(Key::CtrlC),
         0x04 => Some(Key::CtrlD),
+        0x0b => Some(Key::CtrlK),
         0x15 => Some(Key::CtrlU),
         0x17 => Some(Key::CtrlW),
         _ => None,
@@ -1113,5 +1437,192 @@ fn utf8_width(first: u8) -> usize {
         0xE0..=0xEF => 3,
         0xF0..=0xF7 => 4,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Command, DisplayType, Rule, View};
+    use std::collections::BTreeMap;
+
+    fn test_config() -> Config {
+        let command = |key: &str, label: &str| Command {
+            key: key.to_string(),
+            label: label.to_string(),
+            run: Some(":".to_string()),
+            shell: None,
+            view: None,
+            exit: false,
+        };
+        let launcher = |commands| View {
+            view_type: ViewType::Launcher,
+            display: DisplayType::Text,
+            sources: Vec::new(),
+            display_prefix: None,
+            discover: None,
+            default_discover: None,
+            query_discover: None,
+            discover_shell: None,
+            run_shell: None,
+            filter: true,
+            commands,
+        };
+        Config {
+            default_view: "core:default".to_string(),
+            dmenu_view: "core:dmenu".to_string(),
+            command_view: "core:command".to_string(),
+            default_rule: "default".to_string(),
+            rules: BTreeMap::from([("default".to_string(), Rule { filter: true })]),
+            views: BTreeMap::from([
+                (
+                    "core:default".to_string(),
+                    launcher(BTreeMap::from([
+                        ("run".to_string(), command("enter", "Run")),
+                        ("apps".to_string(), command("alt+a", "Apps")),
+                        ("shell".to_string(), command("alt+s", "Shell")),
+                    ])),
+                ),
+                (
+                    "apps:main".to_string(),
+                    launcher(BTreeMap::from([(
+                        "open".to_string(),
+                        command("enter", "Open"),
+                    )])),
+                ),
+                ("core:command".to_string(), launcher(BTreeMap::new())),
+            ]),
+            plugin_roots: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn launcher_view_stack_returns_to_parent() {
+        let config = test_config();
+        let mut app = App::new(&config);
+        assert_eq!(app.current().view, "core:default");
+
+        app.open_view("apps:main").unwrap();
+        assert_eq!(app.frames.len(), 2);
+        assert_eq!(app.current().view, "apps:main");
+
+        app.pop_view().unwrap();
+        assert_eq!(app.frames.len(), 1);
+        assert_eq!(app.current().view, "core:default");
+    }
+
+    #[test]
+    fn stale_discovery_responses_do_not_match_current_input() {
+        let config = test_config();
+        let mut app = App::new(&config);
+        app.latest_request_id = 2;
+        app.current_mut().input = "new".to_string();
+
+        let response = |id: u64, input: &str| DiscoveryResponse {
+            id,
+            view: "core:default".to_string(),
+            input: input.to_string(),
+            active_rule: "default".to_string(),
+            query: input.to_string(),
+            result: Ok(DiscoveryResult::default()),
+        };
+        assert!(app.response_matches(&response(2, "new")));
+        assert!(!app.response_matches(&response(1, "new")));
+        assert!(!app.response_matches(&response(2, "old")));
+
+        let mut wrong_view = response(2, "new");
+        wrong_view.view = "apps:main".to_string();
+        assert!(!app.response_matches(&wrong_view));
+    }
+
+    #[test]
+    fn footer_displays_command_status() {
+        let config = test_config();
+        let mut app = App::new(&config);
+        app.current_mut().items.push(Item {
+            prefix: "core".to_string(),
+            text: "item".to_string(),
+            value: Some("value".to_string()),
+            metadata: Value::Null,
+            source_view: "core:default".to_string(),
+        });
+        app.record_error(Some("core:default"), None, "command finished");
+        let footer = app.footer_line(120);
+        assert!(!footer.contains('\n'));
+        assert!(footer.contains("command finished"));
+        assert!(footer.contains("Enter Run"));
+        assert!(footer.contains("Alt-A Apps"));
+        assert!(footer.contains("Alt-S Shell"));
+        assert!(!footer.contains("Ctrl-K commands"));
+        assert!(UnicodeWidthStr::width(app.footer_line(50).as_str()) < 50);
+
+        app.clear_active_error();
+        let narrow_footer = app.footer_line(40);
+        assert!(narrow_footer.contains("Ctrl-K commands"));
+
+        app.record_error(
+            Some("very-long-source-view"),
+            None,
+            "a long discovery error",
+        );
+        let error_footer = app.footer_line(40);
+        assert!(error_footer.contains("Ctrl-K commands"));
+
+        app.active_error_deadline = Some(Instant::now() - Duration::from_secs(1));
+        app.clear_expired_error();
+        assert!(app.active_error.is_none());
+        assert!(app.active_error_deadline.is_none());
+    }
+
+    #[test]
+    fn command_view_uses_the_selected_item_view_as_owner() {
+        let config = test_config();
+        let mut app = App::new(&config);
+        app.current_mut().items.push(Item {
+            prefix: "app".to_string(),
+            text: "Item".to_string(),
+            value: Some("value".to_string()),
+            metadata: Value::Null,
+            source_view: "apps:main".to_string(),
+        });
+        app.open_command_view().unwrap();
+        assert_eq!(app.current().view, "core:command");
+        assert_eq!(app.current().command_owner.as_deref(), Some("apps:main"));
+        assert_eq!(app.current().items[0].text, "Open");
+        assert_eq!(app.current().items[0].value.as_deref(), Some("enter"));
+    }
+
+    #[test]
+    fn decodes_control_and_navigation_keys() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(
+            decoder.feed(b"\r\x1b[A\x1b[B\x7f\x03\x04\x0b\x15\x17"),
+            vec![
+                Key::Enter,
+                Key::Up,
+                Key::Down,
+                Key::Backspace,
+                Key::CtrlC,
+                Key::CtrlD,
+                Key::CtrlK,
+                Key::CtrlU,
+                Key::CtrlW,
+            ]
+        );
+    }
+
+    #[test]
+    fn decodes_alt_and_utf8_input() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed(b"\x1ba"), vec![Key::Alt('a')]);
+        assert!(decoder.feed(&[0xe4]).is_empty());
+        assert_eq!(decoder.feed(&[0xb8, 0xad]), vec![Key::Char('中')]);
+    }
+
+    #[test]
+    fn keeps_incomplete_escape_sequences_pending() {
+        let mut decoder = InputDecoder::default();
+        assert!(decoder.feed(b"\x1b[").is_empty());
+        assert_eq!(decoder.feed(b"A"), vec![Key::Up]);
     }
 }
