@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, bail};
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::AsRawFd;
 
 pub struct Terminal {
     input_fd: libc::c_int,
+    output_fd: libc::c_int,
     original: libc::termios,
     raw: libc::termios,
     active: bool,
@@ -12,7 +13,10 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn enter() -> Result<Self> {
-        let input_fd = io::stdin().as_raw_fd();
+        Self::enter_with_fds(io::stdin().as_raw_fd(), io::stdout().as_raw_fd())
+    }
+
+    pub fn enter_with_fds(input_fd: libc::c_int, output_fd: libc::c_int) -> Result<Self> {
         if unsafe { libc::isatty(input_fd) } != 1 {
             bail!("tui-launcher needs to run inside a terminal");
         }
@@ -30,6 +34,7 @@ impl Terminal {
 
         let mut terminal = Self {
             input_fd,
+            output_fd,
             original,
             raw,
             active: true,
@@ -44,11 +49,8 @@ impl Terminal {
             return Ok(());
         }
 
-        let mut stdout = io::stdout().lock();
-        stdout
-            .write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H")
+        self.write_output(b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H")
             .context("could not restore terminal screen")?;
-        stdout.flush().context("could not flush terminal screen")?;
         self.screen_active = false;
 
         if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &self.original) } != 0 {
@@ -76,12 +78,35 @@ impl Terminal {
         if !self.active || self.screen_active {
             return Ok(());
         }
-        let mut stdout = io::stdout().lock();
-        stdout
-            .write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
+        self.write_output(b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
             .context("could not resume launcher screen")?;
-        stdout.flush().context("could not flush launcher screen")?;
         self.screen_active = true;
+        Ok(())
+    }
+
+    pub fn write_output(&self, bytes: &[u8]) -> Result<()> {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let count = unsafe {
+                libc::write(
+                    self.output_fd,
+                    bytes[offset..].as_ptr().cast(),
+                    bytes.len() - offset,
+                )
+            };
+            if count > 0 {
+                offset += count as usize;
+                continue;
+            }
+            if count < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error).context("could not write terminal output");
+            }
+            bail!("could not write terminal output: write returned zero");
+        }
         Ok(())
     }
 
@@ -131,8 +156,7 @@ impl Drop for Terminal {
         if !self.active {
             return;
         }
-        let _ = io::stdout().write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m");
-        let _ = io::stdout().flush();
+        let _ = self.write_output(b"\x1b[?25h\x1b[?1049l\x1b[0m");
         unsafe {
             libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &self.original);
         }

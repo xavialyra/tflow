@@ -1,113 +1,309 @@
 # tui-launcher
 
-`tui-launcher` is a small dmenu-style TUI workflow launcher. It merges newline-delimited output from ordinary discovery commands, routes input by configured prefixes, and runs the selected item with an ordinary CLI command.
+`tui-launcher` is a small dmenu-style TUI workflow launcher. It runs ordinary discovery and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
 
-The MVP intentionally has no tabs, sessions, panes, or daemon. One action runs at a time and returns to the launcher unless it uses `takeover` mode.
+The launcher separates three concepts:
 
-## Run the example
+- a plugin namespace, such as `apps` or `ssh`;
+- a concrete view reference, such as `apps:main` or `apps:detail`;
+- a view type, such as `launcher`, `capture`, or `embedded`.
 
-```bash
-cargo run -- --config config.example.toml
+Several concrete views can use the same view type. For example, `default` and `app` can both be launcher views while keeping separate discovery data and commands.
+
+## Run
+
+The launcher reads its configuration from the XDG configuration directory:
+
+```text
+$XDG_CONFIG_HOME/tui-launcher/
+├── config.toml
+└── plugins/
+    └── apps/
+        ├── plugin.toml
+        └── scripts/
 ```
 
-The example includes:
+When `XDG_CONFIG_HOME` is unset, `$HOME/.config/tui-launcher/` is used. The loader reads `config.toml` and only its sibling `plugins/` directory. Plugin configuration is never embedded in the executable, and no project-local or system directory is scanned unless `TUI_LAUNCHER_CONFIG` or `--config` explicitly points there.
 
-- a default merged rule for actions and bookmarks
-- `ssh ` prefix discovery with a query argument
-- `:` prefix for system actions
-- `capture` output for scripts
-- `takeover` for SSH
+The configuration path is selected in this order:
 
-The built-in configuration automatically includes every provider with a `discover` or `default_discover` command in the initial result list. It includes an `app` provider when `fzf` is installed; that provider reads desktop entries from the XDG application directories, caches the index under `$XDG_CACHE_HOME/tui-launcher` for five minutes, uses fzf for fuzzy discovery, and launches the selected entry with `gio launch`. It also provides a read-only `tr` provider with only a `query_discover` command, so `tr :zh hello` runs Translate Shell only after the prefix is entered and displays the result as a launcher item. The launcher treats a displayed provider prefix followed by a space as a global provider selector, so `sys date`, `shell `, `app term`, and `tr :zh hello` only query the matching provider.
+1. `--config PATH`;
+2. `TUI_LAUNCHER_CONFIG`;
+3. `$XDG_CONFIG_HOME/tui-launcher/config.toml`;
+4. `$HOME/.config/tui-launcher/config.toml`.
 
-The binary also contains a small built-in configuration, so it can run without any user file:
+The repository includes `mise.toml` for project-local development. It pins Rust 1.97.1 with the default profile, adds the debug and release target directories to `PATH`, and points `TUI_LAUNCHER_CONFIG` at the checked-in project configuration:
 
 ```bash
-cargo run
+mise install
+mise exec -- cargo run
 ```
 
-The default user configuration path is `~/.config/tui-launcher/config.toml`, or `$XDG_CONFIG_HOME/tui-launcher/config.toml` when `XDG_CONFIG_HOME` is set. If that file does not exist, the built-in configuration is used unchanged. When it does exist, it is recursively merged on top of the built-in configuration:
-
-- tables such as `rules` and `providers` are merged by key
-- arrays such as `providers = [...]` and command arguments are replaced
-- scalar values are replaced
-
-This lets a user add a rule or override one provider without copying the whole default configuration.
-
-Keys:
-
-- `Enter`: run the selected item
-- `Up` / `Down`: move through results
-- `Esc`: clear the query, then quit when the query is empty
-- `Ctrl-C`: quit
-- `Ctrl-U`: clear the query
-- `Ctrl-W`: delete the previous word
-
-The input is updated immediately while discovery refresh is debounced globally by 120ms and executed by a background worker. Older results are discarded when a newer query exists. `Enter` flushes a pending refresh and waits for the latest result before running the selected item.
-
-## Configuration
+Outside the mise environment, the launcher uses the XDG path. Use `--config PATH` only when deliberately selecting another complete configuration root. The path's sibling `plugins/` directory is used for plugin packages.
 
 ```toml
-# Providers with `discover` or `default_discover` participate in the default list.
+disabled_plugins = ["trans"]
+```
 
+Validate the active configuration without opening the TUI:
 
-[providers.apps]
-display_prefix = "app"
-discover = '''
-my-app-list --json
-'''
-query_discover = '''
-my-app-query --json "$LAUNCHER_QUERY"
-'''
-run = '''
-exec my-app-run "$LAUNCHER_VALUE"
-'''
-mode = "capture"
+```bash
+mise exec -- cargo run -- --check
+```
 
-[providers.hosts]
-display_prefix = "ssh"
+## dmenu mode
+
+`-d` / `--dmenu` reads plain-text candidates from standard input and writes the selected original line to standard output. It uses the launcher's full-screen layout by default, so it can be composed with ordinary CLI commands without mixing terminal control sequences into the result stream:
+
+```bash
+printf '%s\n' 'Option 1' 'Option 2' 'Option 3' \
+  | tui-launcher --dmenu
+
+# Fuzzel-style field selection uses a literal delimiter. Normalize ps output
+# first because ps separates columns with runs of variable-width spaces.
+ps aux |
+  awk '{$1 = $1; print}' |
+  tui-launcher --dmenu --with-nth=2,11 --nth-delimiter=' '
+
+printf '1\tFirst\n2\tSecond\n' |
+  tui-launcher --dmenu --with-nth=2
+
+# Treat runs of spaces and tabs as one field delimiter.
+ps aux |
+  tui-launcher --dmenu --with-nth=2,11 --nth-delimiter=whitespace
+
+# NUL-delimited records also use NUL-terminated output.
+printf 'one\0two\0three\0' |
+  tui-launcher --dmenu0
+
+find . -name '*.rs' | tui-launcher --dmenu
+```
+
+The dmenu UI reads keyboard input and draws through `/dev/tty`. Standard input is consumed as a newline-delimited snapshot before the selector opens; `--dmenu0` uses NUL-delimited records and NUL-terminated output. On acceptance, standard output contains the complete selected input line followed by a newline. `Esc`, `Ctrl-C`, and `Ctrl-D` cancel with a non-zero exit status. If the query does not match an entry, the query text itself is returned. Rofi icon metadata after a NUL separator is ignored by the text-only renderer.
+
+The available dmenu options are:
+
+- `--prompt TEXT` changes the query prompt;
+- `--lines N` limits the visible result rows; without it, the result area fills the available launcher view;
+- `--initial TEXT` sets the initial query;
+- `--dmenu0` reads and writes NUL-delimited records;
+- `--index` prints the selected zero-based input index instead of its text;
+- `--with-nth N|FMT` changes the displayed fields, such as `2,11` or `{1} {2}`;
+- `--accept-nth N|FMT` changes the text written to standard output;
+- `--match-nth N|FMT` changes the fields used for matching;
+- `--nth-delimiter CHARACTER` sets the single ASCII field delimiter and defaults to Tab; use `--nth-delimiter=whitespace` to treat runs of whitespace as one field delimiter;
+- setting any field format to `0` leaves that part unchanged.
+
+Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Dmenu mode is independent of the configuration and does not run plugin discovery or view commands. It cannot be combined with `--config` or `--check`.
+
+## Views and plugins
+
+A plugin is a namespace containing one or more views. View references use the fully qualified `plugin:view` form:
+
+```text
+core:default
+apps:main
+apps:detail
+```
+
+A view has a `type` which determines its renderer and input model:
+
+- `launcher`: query input, discovery results, selection, and view commands;
+- `capture`: captured command output and return controls;
+- `embedded`: a managed PTY with input forwarded to the child.
+
+`exit` is not a view. A command with `exit = true` returns an exit event after its script finishes.
+
+A plugin is packaged as a directory so its configuration and scripts stay together:
+
+```text
+plugins/apps/
+├── plugin.toml
+├── scripts/
+│   ├── discover.sh
+│   └── open.sh
+└── lib/
+    └── common.sh
+```
+
+The manifest declares the plugin ID and API version. Its view definitions are relative to that plugin namespace:
+
+```toml
+[plugin]
+id = "apps"
+api = 1
+
+[views.main]
+type = "launcher"
 discover_shell = "bash"
-query_discover = '''
-my-host-list --json "$LAUNCHER_QUERY"
+discover = { file = "scripts/discover.sh" }
+
+[views.main.commands.open]
+key = "enter"
+label = "Open"
+run = { file = "scripts/open.sh" }
+```
+
+Plugin IDs must match their directory names. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands.
+
+The root config file contains the default view and global rules:
+
+```toml
+default_view = "core:default"
+```
+
+The `core` plugin can aggregate launcher views from several plugin packages:
+
+```toml
+[views.default]
+type = "launcher"
+sources = ["sys:default", "apps:default"]
+```
+
+This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
+
+A view with `sources` displays the results of those launcher views. A source view keeps its own discovery configuration and remains the owner of the resulting item commands.
+
+Commands can open another concrete view. The command belongs in the owning plugin manifest:
+
+```toml
+[views.default.commands.apps]
+key = "alt+a"
+label = "Apps"
+view = "apps:default"
+```
+
+The runtime keeps a view stack. Opening `apps:main` from `core:default` produces:
+
+```text
+[core:default, apps:main]
+```
+
+`Esc` returns to the parent view when the query is empty. A capture or embedded view is treated as a temporary child of the view that launched it.
+
+## View commands
+
+Commands belong to a concrete view. `Enter` is not a special provider action; it is an ordinary command binding:
+
+```toml
+[views.main.commands.open]
+key = "enter"
+label = "Open"
+run = '''
+gio launch "$LAUNCHER_VALUE"
 '''
+```
+
+A command can run a script and optionally route its output to a built-in view:
+
+```toml
+[views.main.commands.inspect]
+key = "alt+i"
+label = "Inspect"
+view = "core:capture"
+run = '''
+printf 'desktop file: %s\n' "$LAUNCHER_VALUE"
+'''
+```
+
+An interactive command can target the embedded view:
+
+```toml
+[views.main.commands.shell]
+key = "alt+s"
+label = "Shell"
+view = "core:embedded"
+run = '''
+exec sh
+'''
+```
+
+A command that has a `view` but no `run` is a view navigation command. A command with `exit = true` transfers the terminal to its script and exits the launcher after it finishes:
+
+```toml
+[views.main.commands.connect]
+key = "enter"
+label = "Connect"
+exit = true
 run = '''
 exec ssh "$LAUNCHER_VALUE"
 '''
-mode = "takeover"
 ```
 
-`discover` is the common shell script and writes one JSON object per line to stdout. Each result must contain a `label` and may contain a stable `value` plus arbitrary `metadata`, for example `{"label":"Termius","value":"termius.desktop","metadata":{"desktop_file":"/.../termius.desktop"}}`. The query is available to every discovery script as `LAUNCHER_QUERY`. If default and query discovery differ, use `default_discover` for the default list and `query_discover` for a matched provider prefix. A provider with only `query_discover` is route-only and is not called for the initial default list. A provider with `filter = false` is responsible for applying its own query filtering, as the built-in fzf and trans providers do. `discover_shell` selects the interpreter and defaults to `sh`.
+The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
 
-`display_prefix` is shown in the first column of the result list and also acts as a global provider selector when followed by a space in the default search. The discovery label is shown in the second column. If `display_prefix` is omitted, the provider ID is used. Run scripts receive the label through `LAUNCHER_ITEM`, the stable value through `LAUNCHER_VALUE`, and the original metadata JSON through `LAUNCHER_METADATA`.
+Only `Enter` and `Alt+<character>` are available for plugin commands. Plain characters remain search input. `Esc`, `Ctrl-C`, `Ctrl-D`, arrows, and input editing controls are reserved by the launcher or the active child view.
 
-The selected item is available to action scripts as:
+## Discovery
 
-- `LAUNCHER_ITEM`
-- `LAUNCHER_VALUE`
-- `LAUNCHER_METADATA`
-- `LAUNCHER_PROVIDER`
-- `LAUNCHER_RULE`
-- `LAUNCHER_QUERY`
+A launcher view with `discover`, `default_discover`, or `query_discover` writes one JSON object per line. Each item must contain a `label` and may contain a stable `value` plus arbitrary `metadata`. Discovery fields can contain inline shell text or a plugin-relative file reference such as `discover = { file = "scripts/discover.sh" }`:
 
-Discovery and run commands are shell scripts. `discover_shell` and `run_shell` select their interpreters and default to `sh`; use `bash` when the script needs Bash syntax. Dynamic item data is passed through environment variables rather than interpolated into the script.
-
-Action modes:
-
-- `oneshot`: restore the terminal, run the command, then return to the launcher
-- `capture`: capture stdout/stderr and show the result in a temporary view
-- `embedded`: run the command in a managed PTY and relay its terminal output; a bare `Esc` stops it and returns to the launcher
-- `takeover`: restore the terminal, run the command directly, and exit the launcher after it finishes
-
-The current embedded mode uses a small VT screen for the child content and keeps the launcher title, input area, status line, and hint line fixed around it. It intentionally supports only common text-terminal control sequences.
-
-Validate a configuration without opening the TUI:
-
-```bash
-cargo run -- --config config.example.toml --check
+```json
+{"label":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}
 ```
 
-## Current boundary
+View discovery scripts receive:
 
-Embedded actions run in their own PTY. The launcher parses common text-terminal sequences into a child screen, draws that screen between its fixed top and bottom areas, updates the PTY size, and returns to the launcher when the child exits or when a bare `Esc` is pressed. Input escape sequences for arrows, function keys, and Alt combinations are forwarded to the child.
+- `LAUNCHER_PLUGIN`;
+- `LAUNCHER_PLUGIN_DIR` when the view belongs to a file-backed plugin;
+- `LAUNCHER_VIEW`;
+- `LAUNCHER_VIEW_REF`;
+- `LAUNCHER_RULE`;
+- `LAUNCHER_QUERY`.
 
-The embedded screen does not yet implement the full terminal protocol: rich styles, mouse reporting, terminal graphics, and every private mode are outside this MVP. Applications that need an unrestricted real terminal should use `takeover`; `embedded` reserves only a bare `Esc` for returning to the launcher.
+A root launcher view runs discovery for each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
+
+```text
+app terminal
+ssh prod
+```
+
+If `display_prefix` is omitted, the view name is used. `default_discover` is used for an unqualified query and `query_discover` is used after a matching prefix. A view with only `query_discover` is route-only and is not queried for the initial list.
+
+`discover_shell` selects the discovery interpreter and defaults to `sh`. Set it to `bash` when the script uses Bash syntax.
+
+## Command environment
+
+Command scripts receive:
+
+- `LAUNCHER_ITEM`;
+- `LAUNCHER_VALUE`;
+- `LAUNCHER_METADATA`;
+- `LAUNCHER_PLUGIN`;
+- `LAUNCHER_PLUGIN_DIR` when the command belongs to a file-backed plugin;
+- `LAUNCHER_VIEW`;
+- `LAUNCHER_VIEW_REF`;
+- `LAUNCHER_COMMAND`;
+- `LAUNCHER_RULE`;
+- `LAUNCHER_QUERY`.
+
+`LAUNCHER_PROVIDER` remains available as an alias for the source plugin name for compatibility with older scripts.
+
+Command `shell` selects the command interpreter. When omitted, the source view's `run_shell` is used, then `sh`. File-backed plugin commands run with the plugin directory as their working directory, so relative paths and `LAUNCHER_PLUGIN_DIR` are stable.
+
+## Keys
+
+- `Enter`: execute the current view's Enter command;
+- `Alt+<character>`: execute a view command;
+- `Up` / `Down`: move through results;
+- `Esc`: clear the query, then return to the parent view or quit at the root;
+- `Ctrl-C`: quit;
+- `Ctrl-U`: clear the query;
+- `Ctrl-W`: delete the previous word.
+
+Discovery is debounced globally by 120ms and executed by a background worker. Older results are discarded when a newer view/query request exists. If `Enter` is pressed while discovery is pending, it waits for the matching result before executing the view command.
+
+## Legacy configuration
+
+The loader still accepts the old `[providers.<name>]` format inside the configuration file. Each provider is converted to `<name>:default`, and providers with discovery scripts are added to `core:default` when that aggregate view exists. The old `run` field becomes an `Enter` command.
+
+Legacy modes are mapped as follows:
+
+```text
+oneshot  -> command without a target view
+capture  -> view = "core:capture"
+embedded -> view = "core:embedded"
+takeover -> exit = true
+```
+
+New configuration should use the `config.toml` plus `plugins/<id>/plugin.toml` layout and namespaced plugin views directly.

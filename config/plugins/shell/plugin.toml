@@ -1,0 +1,14 @@
+[plugin]
+id = "shell"
+api = 1
+
+[views.default]
+type = "launcher"
+display_prefix = "shell"
+discover = { file = "scripts/discover.sh" }
+
+[views.default.commands.open]
+key = "enter"
+label = "Open shell"
+view = "core:embedded"
+run = { file = "scripts/open.sh" }

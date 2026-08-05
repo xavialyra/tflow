@@ -1,0 +1,10 @@
+[plugin]
+id = "trans"
+api = 1
+
+[views.default]
+type = "launcher"
+display_prefix = "tr"
+discover_shell = "bash"
+filter = false
+query_discover = { file = "scripts/query_discover.sh" }

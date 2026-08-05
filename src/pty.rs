@@ -4,6 +4,8 @@ use anyhow::{Context, Result, bail};
 use std::ffi::CString;
 use std::io::{self, Write};
 use std::os::fd::RawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -20,6 +22,7 @@ pub enum EmbeddedOutcome {
 pub fn run(
     command: &[String],
     environment: &[(String, String)],
+    working_dir: Option<&Path>,
     terminal: &Terminal,
     title: &str,
 ) -> Result<EmbeddedOutcome> {
@@ -32,6 +35,12 @@ pub fn run(
         .map(|argument| CString::new(argument.as_str()))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("embedded command contains a NUL byte")?;
+    let working_dir_cstring = working_dir
+        .map(|path| {
+            CString::new(path.as_os_str().as_bytes())
+                .context("embedded working directory contains a NUL byte")
+        })
+        .transpose()?;
     let environment_cstrings = environment
         .iter()
         .map(|(key, value)| {
@@ -60,7 +69,11 @@ pub fn run(
     }
 
     if pid == 0 {
-        exec_child(&command_cstrings, &environment_cstrings);
+        exec_child(
+            &command_cstrings,
+            &environment_cstrings,
+            working_dir_cstring.as_ref(),
+        );
     }
 
     set_nonblocking(master)?;
@@ -74,7 +87,16 @@ pub fn run(
     outcome
 }
 
-fn exec_child(command: &[CString], environment: &[(CString, CString)]) -> ! {
+fn exec_child(
+    command: &[CString],
+    environment: &[(CString, CString)],
+    working_dir: Option<&CString>,
+) -> ! {
+    if let Some(working_dir) = working_dir
+        && unsafe { libc::chdir(working_dir.as_ptr()) } != 0
+    {
+        unsafe { libc::_exit(127) };
+    }
     for (key, value) in environment {
         unsafe {
             libc::setenv(key.as_ptr(), value.as_ptr(), 1);

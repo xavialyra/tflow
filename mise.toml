@@ -1,0 +1,9 @@
+[tools]
+rust = { version = "1.97.1", profile = "default" }
+
+[env]
+TUI_LAUNCHER_CONFIG = "{{config_root}}/config/config.toml"
+_.path = [
+  "{{config_root}}/target/debug",
+  "{{config_root}}/target/release",
+]

@@ -1,0 +1,18 @@
+[plugin]
+id = "core"
+api = 1
+
+[views.default]
+type = "launcher"
+sources = ["sys:default", "shell:default", "trans:default", "apps:default"]
+
+[views.default.commands.apps]
+key = "alt+a"
+label = "Apps"
+view = "apps:default"
+
+[views.capture]
+type = "capture"
+
+[views.embedded]
+type = "embedded"

@@ -1,5 +1,5 @@
-use crate::config::{Config, Rule};
-use anyhow::{Context, Result};
+use crate::config::{Config, Rule, View};
+use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
 use std::process::Command;
@@ -19,7 +19,7 @@ pub struct Item {
     pub text: String,
     pub value: Option<String>,
     pub metadata: Value,
-    pub provider: String,
+    pub source_view: String,
 }
 
 #[derive(Debug, Default)]
@@ -30,53 +30,49 @@ pub struct DiscoveryResult {
 
 pub fn discover(
     config: &Config,
+    view_ref: &str,
     rule_name: &str,
     rule: &Rule,
     query: &str,
-    provider_prefix: Option<&str>,
+    source_prefix: Option<&str>,
 ) -> Result<DiscoveryResult> {
     let mut result = DiscoveryResult::default();
 
-    for provider_name in config.providers.keys().map(String::as_str) {
-        let provider = config
-            .providers
-            .get(provider_name)
-            .with_context(|| format!("provider {:?} is not configured", provider_name))?;
-
-        let display_prefix = provider
-            .display_prefix
-            .clone()
-            .unwrap_or_else(|| provider_name.to_string());
-        if provider_prefix.is_some_and(|prefix| prefix != display_prefix) {
+    for (source_ref, view) in config.source_views(view_ref)? {
+        let display_prefix = display_prefix(&source_ref, view);
+        if source_prefix.is_some_and(|prefix| prefix != display_prefix) {
             continue;
         }
-        let script = if provider_prefix.is_some() {
-            provider
-                .query_discover
-                .as_ref()
-                .or(provider.discover.as_ref())
+
+        let script = if source_prefix.is_some() {
+            view.query_discover.as_ref().or(view.discover.as_ref())
         } else {
-            provider
-                .default_discover
-                .as_ref()
-                .or(provider.discover.as_ref())
+            view.default_discover.as_ref().or(view.discover.as_ref())
         };
         let Some(script) = script else {
             continue;
         };
-        let shell = provider.discover_shell.as_deref().unwrap_or("sh");
+
+        let shell = view.discover_shell.as_deref().unwrap_or("sh");
         let mut process = Command::new(shell);
         process.args(["-c", script, "tui-launcher"]);
         process.env("LAUNCHER_RULE", rule_name);
-        process.env("LAUNCHER_PROVIDER", provider_name);
+        process.env("LAUNCHER_PLUGIN", plugin_name(&source_ref));
+        process.env("LAUNCHER_VIEW", view_name(&source_ref));
+        process.env("LAUNCHER_VIEW_REF", &source_ref);
+        process.env("LAUNCHER_PROVIDER", plugin_name(&source_ref));
         process.env("LAUNCHER_QUERY", query);
+        if let Some(root) = config.plugin_root(&source_ref) {
+            process.current_dir(root);
+            process.env("LAUNCHER_PLUGIN_DIR", root);
+        }
 
         let output = match process.output() {
             Ok(output) => output,
             Err(error) => {
                 result.errors.push(format!(
                     "{}: could not run discovery command: {}",
-                    provider_name, error
+                    source_ref, error
                 ));
                 continue;
             }
@@ -89,43 +85,86 @@ pub fn discover(
             } else {
                 stderr
             };
-            result.errors.push(format!("{}: {}", provider_name, detail));
+            result.errors.push(format!("{}: {}", source_ref, detail));
         }
 
-        for (line_number, line) in String::from_utf8_lossy(&output.stdout).lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let parsed = match serde_json::from_str::<DiscoveryItem>(line) {
-                Ok(item) => item,
-                Err(error) => {
-                    result.errors.push(format!(
-                        "{}: invalid discovery JSON on line {}: {}",
-                        provider_name,
-                        line_number + 1,
-                        error
-                    ));
-                    continue;
-                }
-            };
-            let text = sanitize_text(&parsed.label);
-            if text.is_empty() {
-                continue;
-            }
-            if rule.filter && provider.filter && !matches_query(&text, query) {
-                continue;
-            }
-            result.items.push(Item {
-                prefix: display_prefix.clone(),
-                text,
-                value: parsed.value,
-                metadata: parsed.metadata,
-                provider: provider_name.to_string(),
-            });
-        }
+        parse_items(
+            &mut result,
+            &source_ref,
+            view,
+            &display_prefix,
+            rule,
+            query,
+            &String::from_utf8_lossy(&output.stdout),
+        );
     }
 
     Ok(result)
+}
+
+fn parse_items(
+    result: &mut DiscoveryResult,
+    source_ref: &str,
+    view: &View,
+    display_prefix: &str,
+    rule: &Rule,
+    query: &str,
+    stdout: &str,
+) {
+    for (line_number, line) in stdout.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed = match serde_json::from_str::<DiscoveryItem>(line) {
+            Ok(item) => item,
+            Err(error) => {
+                result.errors.push(format!(
+                    "{}: invalid discovery JSON on line {}: {}",
+                    source_ref,
+                    line_number + 1,
+                    error
+                ));
+                continue;
+            }
+        };
+        let text = sanitize_text(&parsed.label);
+        if text.is_empty() {
+            continue;
+        }
+        if rule.filter && view.filter && !matches_query(&text, query) {
+            continue;
+        }
+        result.items.push(Item {
+            prefix: display_prefix.to_string(),
+            text,
+            value: parsed.value,
+            metadata: parsed.metadata,
+            source_view: source_ref.to_string(),
+        });
+    }
+}
+
+fn display_prefix(source_ref: &str, view: &View) -> String {
+    view.display_prefix.clone().unwrap_or_else(|| {
+        source_ref
+            .split_once(':')
+            .map(|(_, view_name)| view_name.to_string())
+            .unwrap_or_else(|| source_ref.to_string())
+    })
+}
+
+fn plugin_name(view_ref: &str) -> &str {
+    view_ref
+        .split_once(':')
+        .map(|(plugin, _)| plugin)
+        .unwrap_or(view_ref)
+}
+
+fn view_name(view_ref: &str) -> &str {
+    view_ref
+        .split_once(':')
+        .map(|(_, view)| view)
+        .unwrap_or(view_ref)
 }
 
 pub fn matches_query(text: &str, query: &str) -> bool {
@@ -190,6 +229,59 @@ pub fn sanitize_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Command, ViewType};
+    use std::collections::BTreeMap;
+
+    fn test_config() -> Config {
+        let mut views = BTreeMap::new();
+        views.insert(
+            "core:default".to_string(),
+            View {
+                view_type: ViewType::Launcher,
+                sources: vec!["apps:main".to_string()],
+                display_prefix: None,
+                discover: None,
+                default_discover: None,
+                query_discover: None,
+                discover_shell: None,
+                run_shell: None,
+                filter: true,
+                commands: BTreeMap::new(),
+            },
+        );
+        views.insert(
+            "apps:main".to_string(),
+            View {
+                view_type: ViewType::Launcher,
+                sources: Vec::new(),
+                display_prefix: Some("app".to_string()),
+                discover: Some("printf '%s\\n' '{\"label\":\"Termius\"}'".to_string()),
+                default_discover: None,
+                query_discover: None,
+                discover_shell: None,
+                run_shell: None,
+                filter: true,
+                commands: BTreeMap::from([(
+                    "open".to_string(),
+                    Command {
+                        key: "enter".to_string(),
+                        label: "Open".to_string(),
+                        run: None,
+                        shell: None,
+                        view: None,
+                        exit: false,
+                    },
+                )]),
+            },
+        );
+        Config {
+            default_view: "core:default".to_string(),
+            default_rule: "default".to_string(),
+            rules: BTreeMap::from([("default".to_string(), crate::config::Rule { filter: true })]),
+            views,
+            plugin_roots: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn matches_all_query_tokens() {
@@ -206,6 +298,21 @@ mod tests {
         assert_eq!(item.label, "Termius");
         assert_eq!(item.value.as_deref(), Some("termius.desktop"));
         assert_eq!(item.metadata["kind"], "app");
+    }
+
+    #[test]
+    fn discovered_items_keep_their_source_view() {
+        let result = discover(
+            &test_config(),
+            "core:default",
+            "default",
+            &crate::config::Rule { filter: true },
+            "",
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.items[0].source_view, "apps:main");
+        assert_eq!(result.items[0].prefix, "app");
     }
 
     #[test]

@@ -1,0 +1,16 @@
+[plugin]
+id = "apps"
+api = 1
+
+[views.default]
+type = "launcher"
+display_prefix = "app"
+discover_shell = "bash"
+filter = false
+default_discover = { file = "scripts/default_discover.sh" }
+query_discover = { file = "scripts/query_discover.sh" }
+
+[views.default.commands.open]
+key = "enter"
+label = "Open"
+run = { file = "scripts/open.sh" }

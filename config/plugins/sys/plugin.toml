@@ -1,0 +1,14 @@
+[plugin]
+id = "sys"
+api = 1
+
+[views.default]
+type = "launcher"
+display_prefix = "sys"
+discover = { file = "scripts/discover.sh" }
+
+[views.default.commands.run]
+key = "enter"
+label = "Run"
+view = "core:capture"
+run = { file = "scripts/run.sh" }
