@@ -1,4 +1,5 @@
 mod app;
+mod command_runner;
 mod config;
 mod discovery;
 mod dmenu;

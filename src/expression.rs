@@ -656,14 +656,9 @@ mod tests {
             &mut self,
             name: &str,
             args: Vec<Value>,
-            named_args: BTreeMap<String, Value>,
+            _named_args: BTreeMap<String, Value>,
         ) -> Result<Value> {
             match name {
-                "datafetch" => {
-                    assert_eq!(args, vec![Value::String("aa".to_string())]);
-                    assert!(named_args.is_empty());
-                    Ok(serde_json::json!({"items": [1, 2]}))
-                }
                 "echo" => Ok(args.into_iter().next().unwrap_or(Value::Null)),
                 _ => bail!("unknown test method {name:?}"),
             }
@@ -684,11 +679,11 @@ mod tests {
 
     #[test]
     fn parses_references_and_calls() {
-        let template = Template::parse("{{ datafetch(runtime:provider_name) }}").unwrap();
+        let template = Template::parse("{{ echo(runtime:provider_name) }}").unwrap();
         assert_eq!(
             &template.parts,
             &[TemplatePart::Expr(Expr::Call {
-                name: "datafetch".to_string(),
+                name: "echo".to_string(),
                 args: vec![Expr::Ref {
                     namespace: "runtime".to_string(),
                     path: "provider_name".to_string(),
@@ -700,8 +695,8 @@ mod tests {
 
     #[test]
     fn nested_placeholder_is_syntactic_sugar_for_an_expression_argument() {
-        let direct = Template::parse("{{ datafetch(runtime:provider_name) }}").unwrap();
-        let nested = Template::parse("{{ datafetch({{ runtime:provider_name }}) }}").unwrap();
+        let direct = Template::parse("{{ echo(runtime:provider_name) }}").unwrap();
+        let nested = Template::parse("{{ echo({{ runtime:provider_name }}) }}").unwrap();
         assert_eq!(direct, nested);
     }
 
@@ -785,11 +780,11 @@ mod tests {
         let mut methods = TestMethods;
         let mut evaluation = context(&config, &runtime, &mut methods);
         assert_eq!(
-            Template::parse("{{ datafetch(runtime:provider_name) }}")
+            Template::parse("{{ echo(runtime:provider_name) }}")
                 .unwrap()
                 .evaluate_value(&mut evaluation)
                 .unwrap(),
-            serde_json::json!({"items": [1, 2]})
+            Value::String("aa".to_string())
         );
     }
 

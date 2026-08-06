@@ -25,6 +25,7 @@ impl RuntimeStore {
         &self.value
     }
 
+    #[cfg(test)]
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }

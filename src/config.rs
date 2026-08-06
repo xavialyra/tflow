@@ -1276,15 +1276,8 @@ mod tests {
         .unwrap();
 
         let config = Config::load(&config_path).unwrap();
-        let data_ref: crate::projection::DataRef = toml::from_str(
-            r#"
-            provider = "config"
-            match = "$.aa.*.bb"
-            "#,
-        )
-        .unwrap();
         assert_eq!(
-            data_ref.project(config.config_value.clone()).unwrap(),
+            crate::projection::apply_path(config.config_value.clone(), "$.aa.*.bb").unwrap(),
             serde_json::json!([1, 2])
         );
         fs::remove_dir_all(root).unwrap();

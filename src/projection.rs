@@ -1,42 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use jsonpath_rfc9535::JsonPath;
-use serde::Deserialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct DataRef {
-    pub provider: String,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(rename = "match", default)]
-    pub matcher: Option<String>,
-}
-
-impl DataRef {
-    pub fn validate(&self) -> Result<()> {
-        if self.provider.trim().is_empty() {
-            bail!("data request provider cannot be empty");
-        }
-        if self.provider == "script" && self.target.as_deref().is_none_or(str::is_empty) {
-            bail!("script data request requires a target");
-        }
-        if let Some(matcher) = &self.matcher {
-            JsonPath::parse(matcher)
-                .with_context(|| format!("invalid JSONPath match {:?}", matcher))?;
-        }
-        Ok(())
-    }
-
-    pub fn project(&self, source: Value) -> Result<Value> {
-        self.validate()?;
-        apply_match(source, self.matcher.as_deref())
-    }
-}
-
-pub(crate) fn apply_match(source: Value, matcher: Option<&str>) -> Result<Value> {
-    let expression = matcher.unwrap_or("$");
+pub(crate) fn apply_path(source: Value, expression: &str) -> Result<Value> {
     let path = JsonPath::parse(expression)
-        .with_context(|| format!("invalid JSONPath match {:?}", expression))?;
+        .with_context(|| format!("invalid JSONPath expression {:?}", expression))?;
     let values = path.query_values(&source);
     match values.as_slice() {
         [] => Ok(Value::Null),
@@ -52,66 +20,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_and_runtime_requests_apply_jsonpath() {
-        let config = serde_json::json!({
+    fn path_selects_values_from_an_object() {
+        let source = serde_json::json!({
             "aa": {
                 "a": {"bb": 1},
                 "b": {"bb": 2}
             }
         });
-        let runtime = serde_json::json!({
-            "view": {
-                "current": {
-                    "command": [{"id": "open"}]
-                }
-            }
-        });
-        let config_ref: DataRef = toml::from_str(
-            r#"
-            provider = "config"
-            match = "$.aa.*.bb"
-            "#,
-        )
-        .unwrap();
         assert_eq!(
-            config_ref.project(config.clone()).unwrap(),
+            apply_path(source, "$.aa.*.bb").unwrap(),
             serde_json::json!([1, 2])
         );
+    }
 
-        let runtime_ref: DataRef = toml::from_str(
-            r#"
-            provider = "runtime"
-            match = "$.view.current.command"
-            "#,
-        )
-        .unwrap();
+    #[test]
+    fn path_keeps_a_single_match_value_shape() {
+        let source = serde_json::json!({"items": [1, 2]});
         assert_eq!(
-            runtime_ref.project(runtime).unwrap(),
-            serde_json::json!([{"id": "open"}])
+            apply_path(source, "$.items").unwrap(),
+            serde_json::json!([1, 2])
         );
     }
 
     #[test]
-    fn a_single_match_keeps_the_selected_value_shape() {
+    fn path_returns_null_when_nothing_matches() {
         let source = serde_json::json!({"items": [1, 2]});
-        let data_ref = DataRef {
-            provider: "config".to_string(),
-            target: None,
-            matcher: Some("$.items".to_string()),
-        };
-        assert_eq!(data_ref.project(source).unwrap(), serde_json::json!([1, 2]));
-    }
-
-    #[test]
-    fn script_requests_require_a_target() {
-        let data_ref = DataRef {
-            provider: "script".to_string(),
-            target: None,
-            matcher: None,
-        };
-        let error = data_ref
-            .project(Value::Null)
-            .expect_err("script requests require a target");
-        assert!(error.to_string().contains("requires a target"));
+        assert_eq!(apply_path(source, "$.missing").unwrap(), Value::Null);
     }
 }

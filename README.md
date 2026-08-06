@@ -133,7 +133,7 @@ type = "capture"
 type = "embedded"
 ```
 
-The built-in engines are `launcher`, `capture`, and `embedded`. Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `datafetch(...)` is a method call resolved by the caller's method registry. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
+The built-in engines are `launcher`, `capture`, and `embedded`. Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
 
 `exit` is not a view. A command with `exit = true` returns an exit event after its script finishes.
 
@@ -213,14 +213,16 @@ commands = "{{ runtime:view.current.command }}"
 label = "query: {{ runtime:view.current.query }}"
 ```
 
-A reference uses `namespace:path`, such as `config:commands.script` or `runtime:view.current.query`. A method call uses `name(...)` and can receive references as arguments:
+A reference uses `namespace:path`, such as `config:commands.script` or `runtime:view.current.query`. Method calls can receive references and other method results as arguments:
 
 ```toml
-items = '{{ datafetch(runtime:provider_request) }}'
+items = '{{ path(runtime:view.current, "$.items") }}'
+values = '{{ script("scripts/query.sh", params = {query = runtime:view.current.query}) }}'
+selected = '{{ path(script("scripts/query.sh"), "$.items") }}'
 run = "{{ config:commands.script }} --query {{ runtime:view.current.query }}"
 ```
 
-The engine resolves provider methods through its provider registry. The built-in providers are `config`, `runtime`, and `script`; an engine can register additional providers without changing the expression parser. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Provider methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle. The script provider receives `params` as JSON on stdin, with bounded input/output and timeout limits.
+The built-in expression methods are `path` and `script`. `path(value, jsonpath)` applies a JSONPath expression to any JSON value; no match returns `null`, one match keeps its value type, and multiple matches return an array. `script(target, params = ...)` runs a plugin-relative shell script and parses its output as JSON. Script parameters are written as JSON to stdin, with bounded input/output and timeout limits. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle.
 
 ## View commands
 

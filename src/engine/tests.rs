@@ -1,4 +1,3 @@
-use super::provider::{DataProvider, ProviderContext};
 use super::*;
 use crate::config::{Config, EngineDefinition};
 use crate::engine::{EngineDriver, EngineHost, SessionEffect};
@@ -9,19 +8,6 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::Path;
-
-struct StaticProvider;
-
-impl DataProvider for StaticProvider {
-    fn fetch(
-        &self,
-        _target: Option<&str>,
-        _params: Option<&Value>,
-        _context: &ProviderContext<'_>,
-    ) -> Result<Value> {
-        Ok(serde_json::json!({"source": "static"}))
-    }
-}
 
 #[test]
 fn registry_accepts_custom_engine_implementations() {
@@ -100,20 +86,20 @@ fn runtime_store_tracks_revisions_and_json_pointer_updates() {
 }
 
 #[test]
-fn registry_resolves_a_runtime_request() {
+fn expression_path_projects_a_runtime_value() {
     let config = Value::Null;
     let runtime = serde_json::json!({"items": [1, 2]});
     let references = TreeReferences {
         config: &config,
         runtime: &runtime,
     };
-    let mut providers = DataProviderRegistry::new(&config, &runtime, 0, Path::new("."));
+    let mut methods = ExpressionMethods::new(Path::new("."));
     let mut context = EvalContext {
         references: &references,
-        methods: &mut providers,
+        methods: &mut methods,
     };
     assert_eq!(
-        Template::parse(r#"{{ datafetch(provider = "runtime", match = "$.items") }}"#)
+        Template::parse(r#"{{ path(runtime:items, "$") }}"#)
             .unwrap()
             .evaluate_value(&mut context)
             .unwrap(),
@@ -122,34 +108,8 @@ fn registry_resolves_a_runtime_request() {
 }
 
 #[test]
-fn registry_accepts_engine_specific_providers() {
-    let config = Value::Null;
-    let runtime = Value::Null;
-    let references = TreeReferences {
-        config: &config,
-        runtime: &runtime,
-    };
-    let mut providers = DataProviderRegistry::new(&config, &runtime, 0, Path::new("."));
-    providers.register("static", StaticProvider);
-    let mut context = EvalContext {
-        references: &references,
-        methods: &mut providers,
-    };
-    assert_eq!(
-        Template::parse(r#"{{ datafetch(provider = "static") }}"#)
-            .unwrap()
-            .evaluate_value(&mut context)
-            .unwrap(),
-        serde_json::json!({"source": "static"})
-    );
-}
-
-#[test]
-fn registry_passes_script_params_to_the_provider() {
-    let root = env::temp_dir().join(format!(
-        "tui-launcher-engine-provider-{}",
-        std::process::id()
-    ));
+fn expression_script_passes_json_params() {
+    let root = env::temp_dir().join(format!("tui-launcher-engine-script-{}", std::process::id()));
     fs::remove_dir_all(&root).ok();
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("params.sh"), "cat\n").unwrap();
@@ -159,39 +119,37 @@ fn registry_passes_script_params_to_the_provider() {
         config: &config,
         runtime: &runtime,
     };
-    let mut providers = DataProviderRegistry::new(&config, &runtime, 0, &root);
+    let mut methods = ExpressionMethods::new(&root);
     let mut context = EvalContext {
         references: &references,
-        methods: &mut providers,
+        methods: &mut methods,
     };
     assert_eq!(
-        Template::parse(
-            r#"{{ datafetch(provider = "script", target = "params.sh", params = {query = "fire"}) }}"#,
-        )
-        .unwrap()
-        .evaluate_value(&mut context)
-        .unwrap(),
+        Template::parse(r#"{{ script("params.sh", params = {query = "fire"}) }}"#,)
+            .unwrap()
+            .evaluate_value(&mut context)
+            .unwrap(),
         serde_json::json!({"query": "fire"})
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn script_provider_paths_cannot_escape_the_root() {
+fn expression_script_paths_cannot_escape_the_root() {
     let config = Value::Null;
     let runtime = Value::Null;
     let references = TreeReferences {
         config: &config,
         runtime: &runtime,
     };
-    let mut providers = DataProviderRegistry::new(&config, &runtime, 0, Path::new("."));
+    let mut methods = ExpressionMethods::new(Path::new("."));
     let mut context = EvalContext {
         references: &references,
-        methods: &mut providers,
+        methods: &mut methods,
     };
-    let error = Template::parse(r#"{{ datafetch(provider = "script", target = "../test.sh") }}"#)
+    let error = Template::parse(r#"{{ script("../test.sh") }}"#)
         .unwrap()
         .evaluate_value(&mut context)
-        .expect_err("provider paths must remain below the root");
+        .expect_err("script paths must remain below the root");
     assert!(error.to_string().contains("must stay below"));
 }

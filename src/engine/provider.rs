@@ -1,6 +1,6 @@
-use crate::discovery::run_bounded_command_with_stdin;
-use crate::expression::{MethodResolver, value_to_text};
-use crate::projection::DataRef;
+use crate::command_runner::run_bounded_command_with_stdin;
+use crate::expression::MethodResolver;
+use crate::projection::apply_path;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -14,165 +14,56 @@ const MAX_SCRIPT_STDOUT: usize = 1024 * 1024;
 const MAX_SCRIPT_STDERR: usize = 64 * 1024;
 const MAX_SCRIPT_STDIN: usize = 64 * 1024;
 
-#[derive(Clone, Copy)]
-pub struct ProviderContext<'a> {
-    pub config: &'a Value,
-    pub runtime: &'a Value,
-    #[allow(dead_code)]
-    pub runtime_revision: u64,
-    pub script_root: &'a Path,
+pub struct ExpressionMethods<'a> {
+    script_root: &'a Path,
 }
 
-pub trait DataProvider {
-    fn fetch(
-        &self,
-        target: Option<&str>,
-        params: Option<&Value>,
-        context: &ProviderContext<'_>,
-    ) -> Result<Value>;
-}
-
-struct ConfigProvider;
-struct RuntimeProvider;
-struct ScriptProvider;
-
-impl DataProvider for ConfigProvider {
-    fn fetch(
-        &self,
-        _target: Option<&str>,
-        params: Option<&Value>,
-        context: &ProviderContext<'_>,
-    ) -> Result<Value> {
-        reject_params("config", params)?;
-        Ok(context.config.clone())
-    }
-}
-
-impl DataProvider for RuntimeProvider {
-    fn fetch(
-        &self,
-        _target: Option<&str>,
-        params: Option<&Value>,
-        context: &ProviderContext<'_>,
-    ) -> Result<Value> {
-        reject_params("runtime", params)?;
-        Ok(context.runtime.clone())
-    }
-}
-
-impl DataProvider for ScriptProvider {
-    fn fetch(
-        &self,
-        target: Option<&str>,
-        params: Option<&Value>,
-        context: &ProviderContext<'_>,
-    ) -> Result<Value> {
-        let target = target
-            .filter(|target| !target.is_empty())
-            .context("script provider requires a target")?;
-        run_script(target, context.script_root, params)
-    }
-}
-
-fn reject_params(provider: &str, params: Option<&Value>) -> Result<()> {
-    if params.is_some_and(|value| !value.is_null()) {
-        bail!("{} provider does not accept params", provider);
-    }
-    Ok(())
-}
-
-pub struct DataProviderRegistry<'a> {
-    context: ProviderContext<'a>,
-    providers: BTreeMap<String, Box<dyn DataProvider>>,
-}
-
-impl<'a> DataProviderRegistry<'a> {
-    pub fn new(
-        config: &'a Value,
-        runtime: &'a Value,
-        runtime_revision: u64,
-        script_root: &'a Path,
-    ) -> Self {
-        let context = ProviderContext {
-            config,
-            runtime,
-            runtime_revision,
-            script_root,
-        };
-        let mut registry = Self {
-            context,
-            providers: BTreeMap::new(),
-        };
-        registry.register("config", ConfigProvider);
-        registry.register("runtime", RuntimeProvider);
-        registry.register("script", ScriptProvider);
-        registry
+impl<'a> ExpressionMethods<'a> {
+    pub fn new(script_root: &'a Path) -> Self {
+        Self { script_root }
     }
 
-    pub fn register<P>(&mut self, name: impl Into<String>, provider: P)
-    where
-        P: DataProvider + 'static,
-    {
-        self.providers.insert(name.into(), Box::new(provider));
+    fn path(&self, args: Vec<Value>, named_args: BTreeMap<String, Value>) -> Result<Value> {
+        if !named_args.is_empty() || args.len() != 2 {
+            bail!("path expects a value and a JSONPath expression")
+        }
+        let mut args = args.into_iter();
+        let source = args.next().expect("path source exists");
+        let expression = args.next().expect("path expression exists");
+        let expression = expression
+            .as_str()
+            .context("path requires a string JSONPath expression")?;
+        apply_path(source, expression)
     }
 
-    fn fetch(&self, args: Vec<Value>, named_args: BTreeMap<String, Value>) -> Result<Value> {
+    fn script(&self, args: Vec<Value>, named_args: BTreeMap<String, Value>) -> Result<Value> {
         if args.len() > 1 {
-            bail!("datafetch accepts at most one request argument");
+            bail!("script accepts at most one positional target")
         }
-        if let Some(request) = args.into_iter().next() {
-            if !named_args.is_empty() {
-                bail!("datafetch cannot combine a request object with named arguments");
-            }
-            return self.fetch_request(request);
+        if let Some(name) = named_args
+            .keys()
+            .find(|name| *name != "target" && *name != "params")
+        {
+            bail!("script does not accept named argument {:?}", name)
         }
-        let provider = named_args
-            .get("provider")
-            .and_then(Value::as_str)
-            .context("datafetch requires a string provider")?;
-        let target = named_args.get("target").and_then(Value::as_str);
-        let matcher = named_args.get("match").and_then(Value::as_str);
-        let params = named_args.get("params");
-        self.resolve(provider, target, matcher, params)
-    }
+        if args.len() == 1 && named_args.contains_key("target") {
+            bail!("script cannot combine a positional target with target =")
+        }
 
-    fn fetch_request(&self, request: Value) -> Result<Value> {
-        let object = request
-            .as_object()
-            .context("datafetch request must be an object")?;
-        let provider = object
-            .get("provider")
-            .and_then(Value::as_str)
-            .context("datafetch request requires a string provider")?;
-        let target = object.get("target").and_then(Value::as_str);
-        let matcher = object.get("match").and_then(Value::as_str);
-        let params = object.get("params");
-        self.resolve(provider, target, matcher, params)
-    }
-
-    fn resolve(
-        &self,
-        provider: &str,
-        target: Option<&str>,
-        matcher: Option<&str>,
-        params: Option<&Value>,
-    ) -> Result<Value> {
-        let request = DataRef {
-            provider: provider.to_string(),
-            target: target.map(str::to_string),
-            matcher: matcher.map(str::to_string),
-        };
-        request.validate()?;
-        let provider = self
-            .providers
-            .get(provider)
-            .with_context(|| format!("unknown data provider {:?}", request.provider))?;
-        let source = provider.fetch(target, params, &self.context)?;
-        request.project(source)
+        let target = args
+            .into_iter()
+            .next()
+            .or_else(|| named_args.get("target").cloned())
+            .context("script requires a target")?;
+        let target = target.as_str().context("script requires a string target")?;
+        if target.is_empty() {
+            bail!("script requires a non-empty target")
+        }
+        run_script(target, self.script_root, named_args.get("params"))
     }
 }
 
-impl MethodResolver for DataProviderRegistry<'_> {
+impl MethodResolver for ExpressionMethods<'_> {
     fn call_method(
         &mut self,
         name: &str,
@@ -180,8 +71,8 @@ impl MethodResolver for DataProviderRegistry<'_> {
         named_args: BTreeMap<String, Value>,
     ) -> Result<Value> {
         match name {
-            "datafetch" | "datafetch_value" => self.fetch(args, named_args),
-            "datafetch_text" => value_to_text(&self.fetch(args, named_args)?).map(Value::String),
+            "path" => self.path(args, named_args),
+            "script" => self.script(args, named_args),
             _ => bail!("unknown expression method {:?}", name),
         }
     }
@@ -195,12 +86,12 @@ fn run_script(target: &str, root: &Path, params: Option<&Value>) -> Result<Value
         .filter(|value| !value.is_null())
         .map(serde_json::to_vec)
         .transpose()
-        .context("could not serialize script provider params")?;
+        .context("could not serialize script params")?;
     if input
         .as_ref()
         .is_some_and(|value| value.len() > MAX_SCRIPT_STDIN)
     {
-        bail!("script provider params exceeded {} bytes", MAX_SCRIPT_STDIN);
+        bail!("script params exceeded {} bytes", MAX_SCRIPT_STDIN);
     }
     let output = run_bounded_command_with_stdin(
         process,
@@ -209,23 +100,19 @@ fn run_script(target: &str, root: &Path, params: Option<&Value>) -> Result<Value
         MAX_SCRIPT_STDOUT,
         MAX_SCRIPT_STDERR,
     )
-    .with_context(|| format!("could not run script provider {}", path.display()))?;
+    .with_context(|| format!("could not run script {}", path.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            bail!("script provider exited with status {}", output.status);
+            bail!("script exited with status {}", output.status);
         }
-        bail!("script provider failed: {}", stderr);
+        bail!("script failed: {}", stderr);
     }
     if output.stdout.is_empty() {
-        bail!("script provider produced no JSON output");
+        bail!("script produced no JSON output");
     }
-    serde_json::from_slice(&output.stdout).with_context(|| {
-        format!(
-            "script provider {} did not produce valid JSON",
-            path.display()
-        )
-    })
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("script {} did not produce valid JSON", path.display()))
 }
 
 fn resolve_script_path(root: &Path, target: &str) -> Result<PathBuf> {
@@ -236,22 +123,90 @@ fn resolve_script_path(root: &Path, target: &str) -> Result<PathBuf> {
             .any(|component| matches!(component, Component::ParentDir))
     {
         bail!(
-            "script provider path {:?} must stay below {}",
+            "script path {:?} must stay below {}",
             target,
             root.display()
         );
     }
     let canonical_root = fs::canonicalize(root)
-        .with_context(|| format!("could not resolve provider root {}", root.display()))?;
+        .with_context(|| format!("could not resolve script root {}", root.display()))?;
     let path = root.join(relative);
     let canonical_path = fs::canonicalize(&path)
-        .with_context(|| format!("could not read provider script {}", path.display()))?;
+        .with_context(|| format!("could not read script {}", path.display()))?;
     if !canonical_path.starts_with(&canonical_root) {
-        bail!(
-            "script provider path {:?} escapes {}",
-            target,
-            root.display()
-        );
+        bail!("script path {:?} escapes {}", target, root.display());
     }
     Ok(canonical_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expression::{EvalContext, Template, TreeReferences};
+    use std::env;
+    use std::fs;
+
+    fn evaluate<'a>(
+        source: &str,
+        config: &'a Value,
+        runtime: &'a Value,
+        script_root: &'a Path,
+    ) -> Result<Value> {
+        let references = TreeReferences { config, runtime };
+        let mut methods = ExpressionMethods::new(script_root);
+        let mut context = EvalContext {
+            references: &references,
+            methods: &mut methods,
+        };
+        Template::parse(source)?.evaluate_value(&mut context)
+    }
+
+    #[test]
+    fn path_projects_an_expression_value() {
+        let runtime = serde_json::json!({"view": {"current": {"items": [1, 2]}}});
+        assert_eq!(
+            evaluate(
+                r#"{{ path(runtime:view.current, "$.items") }}"#,
+                &Value::Null,
+                &runtime,
+                Path::new("."),
+            )
+            .unwrap(),
+            serde_json::json!([1, 2])
+        );
+    }
+
+    #[test]
+    fn script_receives_json_params() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-expression-script-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("params.sh"), "cat\n").unwrap();
+        assert_eq!(
+            evaluate(
+                r#"{{ script("params.sh", params = {query = "fire"}) }}"#,
+                &Value::Null,
+                &Value::Null,
+                &root,
+            )
+            .unwrap(),
+            serde_json::json!({"query": "fire"})
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn script_paths_cannot_escape_the_root() {
+        let error = evaluate(
+            r#"{{ script("../test.sh") }}"#,
+            &Value::Null,
+            &Value::Null,
+            Path::new("."),
+        )
+        .expect_err("script paths must remain below the root");
+        assert!(error.to_string().contains("must stay below"));
+    }
 }

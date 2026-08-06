@@ -5,7 +5,7 @@ mod render;
 mod runtime;
 mod session;
 
-use super::{DataProviderRegistry, RuntimeStore};
+use super::{ExpressionMethods, RuntimeStore};
 use crate::config::Config;
 use anyhow::Result;
 use serde_json::Value;
@@ -36,17 +36,12 @@ impl<'a> LauncherEngine<'a> {
             .config
             .plugin_root(&self.view_ref)
             .unwrap_or_else(|| Path::new("."));
-        let mut providers = DataProviderRegistry::new(
-            &self.config.config_value,
-            self.runtime.snapshot(),
-            self.runtime.revision(),
-            script_root,
-        );
+        let mut methods = ExpressionMethods::new(script_root);
         self.config.evaluate_engine_field(
             &self.view_ref,
             field,
             self.runtime.snapshot(),
-            &mut providers,
+            &mut methods,
         )
     }
 }
