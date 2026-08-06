@@ -1,5 +1,4 @@
 mod app;
-mod command;
 mod config;
 mod discovery;
 mod dmenu;
@@ -7,8 +6,6 @@ mod engine;
 mod expression;
 mod input;
 mod projection;
-mod pty;
-mod render;
 mod runtime_log;
 mod terminal;
 mod vt;
@@ -127,7 +124,7 @@ fn main() -> Result<()> {
         runtime_log::RuntimeLog::open().context("could not initialize the launcher runtime log")?;
     let mut terminal = terminal::Terminal::enter()
         .with_context(|| "could not initialize the launcher terminal")?;
-    let mut app = App::with_runtime_log_and_engines(&config, runtime_log, engines);
+    let mut app = App::with_runtime_log_and_engines(&config, runtime_log, engines)?;
     app.run(&mut terminal)
 }
 

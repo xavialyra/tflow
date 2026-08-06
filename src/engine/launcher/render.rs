@@ -1,9 +1,21 @@
+use super::LauncherDriver;
+use crate::config::Config;
 use crate::discovery::Item;
-use crate::engine::LauncherRenderState;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[derive(Clone)]
+pub(crate) struct LauncherRenderState {
+    pub(crate) view: String,
+    pub(crate) input: String,
+    pub(crate) items: Vec<Item>,
+    pub(crate) selected: usize,
+    pub(crate) searching: bool,
+    pub(crate) commands: Vec<(String, String)>,
+}
 
 pub(crate) fn render_launcher(
     terminal: &Terminal,
@@ -183,64 +195,29 @@ fn pad_right(text: &str, width: usize) -> String {
     format!("{}{}", text, " ".repeat(width.saturating_sub(used)))
 }
 
-pub(crate) fn render_capture(
-    terminal: &Terminal,
-    title: &str,
-    lines: &[String],
-    status: &str,
-) -> Result<()> {
-    let (width, height) = terminal.size();
-    let width = width as usize;
-    let height = height as usize;
-    let inner_height = height.saturating_sub(4).max(1);
-    let start = lines.len().saturating_sub(inner_height);
-
-    let mut stdout = io::stdout().lock();
-    stdout.write_all(b"\x1b[?25l")?;
-    write_capture_line(
-        &mut stdout,
-        1,
-        &format!(" TUI Launcher  [capture: {}]", title),
-        width,
-        true,
-    )?;
-    write_capture_line(&mut stdout, 2, &format!(" > {}", title), width, false)?;
-    for row in 0..inner_height {
-        let content = lines.get(start + row).map(String::as_str).unwrap_or("");
-        write_capture_line(&mut stdout, 3 + row, content, width, false)?;
+impl LauncherDriver {
+    pub(crate) fn visible_commands(&self, config: &Config) -> Vec<(String, String)> {
+        let Some(owner) = self.command_owner() else {
+            return Vec::new();
+        };
+        let mut commands = BTreeMap::new();
+        super::command::add_view_commands(config, &mut commands, owner);
+        let mut commands = commands.into_iter().collect::<Vec<_>>();
+        commands.sort_by(|left, right| super::command::compare_bindings(&left.0, &right.0));
+        commands
     }
-    write_capture_line(
-        &mut stdout,
-        height.saturating_sub(1).max(1),
-        &format!(" status: {}", status),
-        width,
-        false,
-    )?;
-    write_capture_line(
-        &mut stdout,
-        height.max(1),
-        " press any key to return | Esc",
-        width,
-        false,
-    )?;
-    stdout.flush().context("could not draw command output")
-}
 
-fn write_capture_line(
-    stdout: &mut impl Write,
-    row: usize,
-    text: &str,
-    width: usize,
-    heading: bool,
-) -> Result<()> {
-    write!(stdout, "\x1b[{};1H\x1b[K", row)?;
-    let text = clip(text, width);
-    if heading {
-        write!(stdout, "\x1b[1;36m{}\x1b[0m", text)?;
-    } else {
-        stdout.write_all(text.as_bytes())?;
+    pub(crate) fn render_state(&self, config: &Config) -> LauncherRenderState {
+        let frame = self.current();
+        LauncherRenderState {
+            view: frame.view.clone(),
+            input: frame.input.clone(),
+            items: frame.items.clone(),
+            selected: frame.selected,
+            searching: frame.refresh_deadline.is_some() || frame.discovery_pending,
+            commands: self.visible_commands(config),
+        }
     }
-    Ok(())
 }
 
 fn clip(text: &str, width: usize) -> String {

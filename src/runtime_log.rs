@@ -85,15 +85,6 @@ impl RuntimeLog {
         })
     }
 
-    #[cfg(test)]
-    pub fn disabled() -> Self {
-        Self {
-            file: None,
-            path: None,
-            sequence: 0,
-        }
-    }
-
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }

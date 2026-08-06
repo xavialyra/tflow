@@ -1,0 +1,52 @@
+mod command;
+mod discovery;
+mod input;
+mod render;
+mod runtime;
+mod session;
+
+use super::{DataProviderRegistry, RuntimeStore};
+use crate::config::Config;
+use anyhow::Result;
+use serde_json::Value;
+use std::path::Path;
+
+pub(crate) use command::{
+    CommandExecution, CommandInvocation, LauncherCommandEngine, PreparedCommand,
+};
+pub(crate) use session::LauncherDriver;
+
+pub(crate) struct LauncherEngine<'a> {
+    config: &'a Config,
+    view_ref: String,
+    runtime: &'a RuntimeStore,
+}
+
+impl<'a> LauncherEngine<'a> {
+    pub(crate) fn new(config: &'a Config, view_ref: &str, runtime: &'a RuntimeStore) -> Self {
+        Self {
+            config,
+            view_ref: view_ref.to_string(),
+            runtime,
+        }
+    }
+
+    pub(crate) fn evaluate_field(&self, field: &str) -> Result<Option<Value>> {
+        let script_root = self
+            .config
+            .plugin_root(&self.view_ref)
+            .unwrap_or_else(|| Path::new("."));
+        let mut providers = DataProviderRegistry::new(
+            &self.config.config_value,
+            self.runtime.snapshot(),
+            self.runtime.revision(),
+            script_root,
+        );
+        self.config.evaluate_engine_field(
+            &self.view_ref,
+            field,
+            self.runtime.snapshot(),
+            &mut providers,
+        )
+    }
+}

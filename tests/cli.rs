@@ -310,6 +310,75 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
 }
 
 #[test]
+fn capture_command_returns_to_launcher_and_restores_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        discover = '''printf '%s\n' '{"label":"Item","value":"value"}' '''
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        view = "core:capture"
+        run = '''printf 'capture-marker:%s\n' "$LAUNCHER_VALUE"'''
+
+        [plugins.core.views.capture]
+        type = "capture"
+        "#,
+    )
+    .expect("could not write capture integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write capture Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture Enter key");
+
+    let output = wait_for_text(&process.master, "capture-marker:value");
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write capture return key");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture return key");
+    let launcher = wait_for_text(&process.master, "[core:default]");
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not write launcher Ctrl-C key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Ctrl-C key");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    let mut output = output;
+    output.extend(launcher);
+    output.extend(remaining);
+    assert!(
+        String::from_utf8_lossy(&output).contains("capture-marker:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove capture integration config");
+}
+
+#[test]
 fn embedded_command_returns_to_launcher_and_restores_input() {
     let root = temporary_root();
     let config = root.join("config.toml");
