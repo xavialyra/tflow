@@ -116,11 +116,24 @@ apps:main
 apps:detail
 ```
 
-A view has a `type` which determines its renderer and input model:
+A view's `type` references a viewtype profile in the root configuration. A profile selects a core engine and passes engine-specific expressions through its configuration:
 
-- `launcher`: query input, discovery results, selection, and view commands;
-- `capture`: captured command output and return controls;
-- `embedded`: a managed PTY with input forwarded to the child.
+```toml
+[viewtypes.launcher.engine]
+type = "launcher"
+
+[viewtypes.launcher.engine.config]
+items = "{{ runtime:view.current.items }}"
+commands = "{{ runtime:view.current.command }}"
+
+[viewtypes.capture.engine]
+type = "capture"
+
+[viewtypes.embedded.engine]
+type = "embedded"
+```
+
+The built-in engines are `launcher`, `capture`, and `embedded`. Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `datafetch(...)` is a method call resolved by the caller's method registry. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
 
 `exit` is not a view. A command with `exit = true` returns an exit event after its script finishes.
 
@@ -152,10 +165,13 @@ run = { file = "scripts/open.sh" }
 
 Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
-The root config file contains the default view and global rules:
+The root config file contains the default view, viewtype profiles, and global rules:
 
 ```toml
 default_view = "core:default"
+
+[viewtypes.launcher.engine]
+type = "launcher"
 ```
 
 The `core` plugin can aggregate launcher views from several plugin packages:
@@ -168,7 +184,7 @@ sources = ["sys:default", "apps:default"]
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands. A source view keeps its own discovery configuration and remains the owner of the resulting item commands.
+A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands. A source view keeps its own discovery configuration and remains the owner of the resulting item commands. The viewtype profile controls which runtime expressions the engine evaluates; the source view still owns the underlying discovery and command data.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -186,6 +202,25 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 ```
 
 `Esc` returns to the parent view when the query is empty. A capture or embedded view is treated as a temporary child of the view that launched it. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command returns to the parent frame before executing it.
+
+## Expressions
+
+Expressions use `{{ ... }}` and are evaluated by the engine that consumes them:
+
+```toml
+items = "{{ runtime:view.current.items }}"
+commands = "{{ runtime:view.current.command }}"
+label = "query: {{ runtime:view.current.query }}"
+```
+
+A reference uses `namespace:path`, such as `config:commands.script` or `runtime:view.current.query`. A method call uses `name(...)` and can receive references as arguments:
+
+```toml
+items = '{{ datafetch(runtime:provider_request) }}'
+run = "{{ config:commands.script }} --query {{ runtime:view.current.query }}"
+```
+
+The engine resolves provider methods through its provider registry. The built-in providers are `config`, `runtime`, and `script`; an engine can register additional providers without changing the expression parser. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Provider methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle. The script provider receives `params` as JSON on stdin, with bounded input/output and timeout limits.
 
 ## View commands
 

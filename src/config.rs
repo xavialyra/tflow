@@ -1,5 +1,9 @@
+use crate::expression::{
+    EvalContext, MethodResolver, Template, TreeReferences, evaluate_json_value,
+};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -7,6 +11,10 @@ use std::{
 };
 
 pub type ViewRef = String;
+
+pub const ENGINE_LAUNCHER: &str = "launcher";
+pub const ENGINE_CAPTURE: &str = "capture";
+pub const ENGINE_EMBEDDED: &str = "embedded";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -16,7 +24,9 @@ pub struct Config {
     pub default_rule: String,
     pub rules: BTreeMap<String, Rule>,
     pub views: BTreeMap<ViewRef, View>,
+    pub viewtypes: BTreeMap<String, ViewTypeDefinition>,
     pub plugin_roots: BTreeMap<String, PathBuf>,
+    pub(crate) config_value: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,19 +42,23 @@ pub enum DisplayType {
     Text,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ViewType {
-    #[default]
-    Launcher,
-    Capture,
-    Embedded,
+#[derive(Debug, Clone, Deserialize)]
+pub struct ViewTypeDefinition {
+    pub engine: EngineDefinition,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EngineDefinition {
+    #[serde(rename = "type")]
+    pub engine_type: String,
+    #[serde(default)]
+    pub config: toml::Table,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct View {
-    #[serde(rename = "type", default)]
-    pub view_type: ViewType,
+    #[serde(rename = "type", default = "default_viewtype_name")]
+    pub view_type: String,
     #[serde(default)]
     pub display: DisplayType,
     #[serde(default)]
@@ -95,6 +109,8 @@ struct RawConfig {
     rules: BTreeMap<String, Rule>,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
+    #[serde(default)]
+    viewtypes: BTreeMap<String, ViewTypeDefinition>,
     #[serde(default)]
     providers: BTreeMap<String, LegacyProvider>,
 }
@@ -149,6 +165,14 @@ enum LegacyMode {
 
 impl Config {
     pub fn load(user_path: &Path) -> Result<Self> {
+        let engines = crate::engine::EngineRegistry::new();
+        Self::load_with_engines(user_path, &engines)
+    }
+
+    pub(crate) fn load_with_engines(
+        user_path: &Path,
+        engines: &crate::engine::EngineRegistry,
+    ) -> Result<Self> {
         let user_source = fs::read_to_string(user_path)
             .with_context(|| format!("could not read config {}", user_path.display()))?;
         let user_config: toml::Value = toml::from_str(&user_source)
@@ -163,16 +187,19 @@ impl Config {
         merge_values(&mut merged, user_config);
         remove_disabled_plugins(&mut merged, &disabled_plugins);
 
+        let config_value =
+            toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         let raw: RawConfig = merged
             .try_into()
             .context("merged configuration does not match the launcher schema")?;
         let mut config = Self::from_raw(raw, plugin_roots)?;
+        config.config_value = config_value;
         if !config.rules.contains_key(&config.default_rule) {
             config
                 .rules
                 .insert(config.default_rule.clone(), Rule { filter: true });
         }
-        config.validate()?;
+        config.validate_with_engines(engines)?;
         Ok(config)
     }
 
@@ -221,21 +248,30 @@ impl Config {
             default_rule: raw.default_rule,
             rules: raw.rules,
             views,
+            viewtypes: raw.viewtypes,
             plugin_roots,
+            config_value: Value::Object(serde_json::Map::new()),
         })
     }
 
+    #[cfg(test)]
     pub fn validate(&self) -> Result<()> {
-        let default_view = self
-            .views
-            .get(&self.default_view)
-            .with_context(|| format!("default view {:?} is not defined", self.default_view))?;
-        if default_view.view_type != ViewType::Launcher {
+        let engines = crate::engine::EngineRegistry::new();
+        self.validate_with_engines(&engines)
+    }
+
+    pub(crate) fn validate_with_engines(
+        &self,
+        engines: &crate::engine::EngineRegistry,
+    ) -> Result<()> {
+        let default_engine = self.engine(&self.default_view)?;
+        if default_engine != ENGINE_LAUNCHER {
             bail!(
-                "default view {:?} must be a launcher view",
+                "default view {:?} must use the launcher engine",
                 self.default_view
             );
         }
+        self.validate_viewtypes(engines)?;
         if !self.rules.contains_key(&self.default_rule) {
             bail!(
                 "default rule {:?} is not defined in [rules]",
@@ -257,16 +293,17 @@ impl Config {
             if !view.sources.is_empty() && !view.commands.is_empty() {
                 bail!("aggregate view {:?} cannot define commands", view_ref);
             }
-            if view.view_type != ViewType::Launcher
+            let engine = self.engine(view_ref)?;
+            if engine != ENGINE_LAUNCHER
                 && (!view.sources.is_empty()
                     || view.discover.is_some()
                     || view.default_discover.is_some()
                     || view.query_discover.is_some())
             {
                 bail!(
-                    "view {:?} of type {:?} cannot provide discovery",
+                    "view {:?} using engine {:?} cannot provide discovery",
                     view_ref,
-                    view.view_type
+                    engine
                 );
             }
             if let Some(command) = &view.discover {
@@ -292,9 +329,9 @@ impl Config {
                         view_ref, source_ref
                     )
                 })?;
-                if source.view_type != ViewType::Launcher {
+                if self.engine(source_ref)? != ENGINE_LAUNCHER {
                     bail!(
-                        "view {:?} source {:?} is not a launcher view",
+                        "view {:?} source {:?} does not use the launcher engine",
                         view_ref,
                         source_ref
                     );
@@ -366,8 +403,82 @@ impl Config {
         Ok(())
     }
 
+    fn validate_viewtypes(&self, engines: &crate::engine::EngineRegistry) -> Result<()> {
+        if self.viewtypes.is_empty() {
+            bail!("no viewtypes are configured");
+        }
+        for (name, viewtype) in &self.viewtypes {
+            validate_viewtype_name(name)?;
+            validate_engine(&viewtype.engine.engine_type, engines)
+                .with_context(|| format!("viewtype {:?}", name))?;
+            engines.validate_config(name, &viewtype.engine)?;
+        }
+        Ok(())
+    }
+
     pub fn view(&self, view_ref: &str) -> Option<&View> {
         self.views.get(view_ref)
+    }
+
+    pub fn viewtype(&self, name: &str) -> Option<&ViewTypeDefinition> {
+        self.viewtypes.get(name)
+    }
+
+    pub fn engine(&self, view_ref: &str) -> Result<&str> {
+        let view = self
+            .views
+            .get(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?;
+        let viewtype = self.viewtypes.get(&view.view_type).with_context(|| {
+            format!(
+                "view {:?} references missing viewtype {:?}",
+                view_ref, view.view_type
+            )
+        })?;
+        Ok(viewtype.engine.engine_type.as_str())
+    }
+
+    pub fn evaluate_engine_field(
+        &self,
+        view_ref: &str,
+        field: &str,
+        runtime: &Value,
+        methods: &mut dyn MethodResolver,
+    ) -> Result<Option<Value>> {
+        let viewtype_name = self
+            .view(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?
+            .view_type
+            .clone();
+        let Some(engine) = self
+            .viewtype(&viewtype_name)
+            .map(|viewtype| &viewtype.engine)
+        else {
+            return Ok(None);
+        };
+        let Some(raw) = engine.config.get(field) else {
+            return Ok(None);
+        };
+        let raw = toml_to_json(&toml::Value::Table(
+            [(field.to_string(), raw.clone())].into_iter().collect(),
+        ))?;
+        let references = TreeReferences {
+            config: &self.config_value,
+            runtime,
+        };
+        let mut context = EvalContext {
+            references: &references,
+            methods,
+        };
+        let raw_field = raw
+            .get(field)
+            .expect("engine field was inserted into the temporary table");
+        let value = if let Some(source) = raw_field.as_str() {
+            Template::parse(source)?.evaluate_value(&mut context)?
+        } else {
+            evaluate_json_value(raw_field, &mut context)?
+        };
+        Ok(Some(value))
     }
 
     pub fn dmenu_view(&self) -> Result<&View> {
@@ -375,8 +486,11 @@ impl Config {
             .views
             .get(&self.dmenu_view)
             .with_context(|| format!("dmenu view {:?} is not defined", self.dmenu_view))?;
-        if view.view_type != ViewType::Launcher {
-            bail!("dmenu view {:?} must be a launcher view", self.dmenu_view);
+        if self.engine(&self.dmenu_view)? != ENGINE_LAUNCHER {
+            bail!(
+                "dmenu view {:?} must use the launcher engine",
+                self.dmenu_view
+            );
         }
         Ok(view)
     }
@@ -386,9 +500,9 @@ impl Config {
             .views
             .get(&self.command_view)
             .with_context(|| format!("command view {:?} is not defined", self.command_view))?;
-        if view.view_type != ViewType::Launcher {
+        if self.engine(&self.command_view)? != ENGINE_LAUNCHER {
             bail!(
-                "command view {:?} must be a launcher view",
+                "command view {:?} must use the launcher engine",
                 self.command_view
             );
         }
@@ -486,7 +600,7 @@ impl Config {
             .iter()
             .filter(|(view_ref, view)| {
                 *view_ref != current_view_ref
-                    && view.view_type == ViewType::Launcher
+                    && self.engine(view_ref).ok() == Some(ENGINE_LAUNCHER)
                     && view.display_prefix.as_deref() == Some(prefix)
             })
             .map(|(view_ref, _)| (view_ref.clone(), query.to_string()));
@@ -522,7 +636,7 @@ fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View 
         );
     }
     View {
-        view_type: ViewType::Launcher,
+        view_type: ENGINE_LAUNCHER.to_string(),
         display: DisplayType::Text,
         sources: Vec::new(),
         display_prefix: provider.display_prefix,
@@ -538,7 +652,7 @@ fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View 
 
 fn default_aggregate_view(source_refs: Vec<ViewRef>) -> View {
     View {
-        view_type: ViewType::Launcher,
+        view_type: ENGINE_LAUNCHER.to_string(),
         display: DisplayType::Text,
         sources: source_refs,
         display_prefix: None,
@@ -801,6 +915,10 @@ fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
+fn toml_to_json(value: &toml::Value) -> Result<Value> {
+    serde_json::to_value(value).context("could not convert TOML to JSON")
+}
+
 fn validate_plugin_id(plugin_id: &str) -> Result<()> {
     if plugin_id.is_empty() || plugin_id.contains(':') || plugin_id.chars().any(char::is_whitespace)
     {
@@ -814,6 +932,25 @@ fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
         bail!("{} has an empty {} script", owner, kind);
     }
     Ok(())
+}
+
+fn validate_viewtype_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() || name.chars().any(char::is_whitespace) {
+        bail!("invalid viewtype name {:?}", name);
+    }
+    Ok(())
+}
+
+fn validate_engine(engine: &str, registry: &crate::engine::EngineRegistry) -> Result<()> {
+    if registry.contains(engine) {
+        Ok(())
+    } else {
+        bail!("unsupported viewtype engine {:?}", engine)
+    }
+}
+
+fn default_viewtype_name() -> String {
+    ENGINE_LAUNCHER.to_string()
 }
 
 fn default_plugin_api() -> u32 {
@@ -847,8 +984,43 @@ mod tests {
 
     fn config(source: &str) -> Config {
         let value: toml::Value = toml::from_str(source).unwrap();
-        let raw: RawConfig = value.try_into().unwrap();
+        let mut raw: RawConfig = value.try_into().unwrap();
+        if raw.viewtypes.is_empty() {
+            raw.viewtypes = test_viewtypes();
+        }
         Config::from_raw(raw, BTreeMap::new()).unwrap()
+    }
+
+    fn test_viewtypes() -> BTreeMap<String, ViewTypeDefinition> {
+        BTreeMap::from([
+            (
+                ENGINE_LAUNCHER.to_string(),
+                ViewTypeDefinition {
+                    engine: EngineDefinition {
+                        engine_type: ENGINE_LAUNCHER.to_string(),
+                        config: toml::Table::new(),
+                    },
+                },
+            ),
+            (
+                ENGINE_CAPTURE.to_string(),
+                ViewTypeDefinition {
+                    engine: EngineDefinition {
+                        engine_type: ENGINE_CAPTURE.to_string(),
+                        config: toml::Table::new(),
+                    },
+                },
+            ),
+            (
+                ENGINE_EMBEDDED.to_string(),
+                ViewTypeDefinition {
+                    engine: EngineDefinition {
+                        engine_type: ENGINE_EMBEDDED.to_string(),
+                        config: toml::Table::new(),
+                    },
+                },
+            ),
+        ])
     }
 
     #[test]
@@ -864,8 +1036,35 @@ mod tests {
             "#,
         );
         assert_eq!(config.default_view, "core:default");
-        assert_eq!(config.views["apps:main"].view_type, ViewType::Launcher);
+        assert_eq!(
+            config.views["apps:main"].view_type,
+            ENGINE_LAUNCHER.to_string()
+        );
         assert_eq!(config.views["core:default"].sources, vec!["apps:main"]);
+    }
+
+    #[test]
+    fn viewtype_profiles_supply_engines_and_expressions() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [rules.default]
+            filter = true
+            [viewtypes.rows.engine]
+            type = "launcher"
+            [viewtypes.rows.engine.config]
+            commands = "{{ config:commands }}"
+            [plugins.core.views.default]
+            type = "rows"
+            "#,
+        );
+        config.validate().unwrap();
+        assert_eq!(config.engine("core:default").unwrap(), ENGINE_LAUNCHER);
+        assert_eq!(config.view("core:default").unwrap().view_type, "rows");
+        assert_eq!(
+            config.viewtype("rows").unwrap().engine.engine_type,
+            ENGINE_LAUNCHER
+        );
     }
 
     #[test]
@@ -988,7 +1187,7 @@ mod tests {
             "#,
         );
         let view = &config.views["apps:default"];
-        assert_eq!(view.view_type, ViewType::Launcher);
+        assert_eq!(view.view_type, ENGINE_LAUNCHER.to_string());
         assert_eq!(
             view.commands["default"].view.as_deref(),
             Some("core:capture")
@@ -1029,6 +1228,12 @@ mod tests {
         let config_path = root.join("config.toml");
         let default_source = r#"
             default_view = "core:default"
+            [viewtypes.launcher.engine]
+            type = "launcher"
+            [viewtypes.capture.engine]
+            type = "capture"
+            [viewtypes.embedded.engine]
+            type = "embedded"
             [plugins.core.views.default]
             type = "launcher"
             sources = ["filetest:main"]
@@ -1043,6 +1248,44 @@ mod tests {
         assert_eq!(
             config.plugin_root("filetest:main"),
             Some(plugin_root.as_path())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loaded_config_exposes_the_merged_json_tree() {
+        let root = env::temp_dir().join(format!("tui-launcher-config-json-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [viewtypes.launcher.engine]
+            type = "launcher"
+            [plugins.core.views.default]
+            type = "launcher"
+
+            [aa.a]
+            bb = 1
+
+            [aa.b]
+            bb = 2
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let data_ref: crate::projection::DataRef = toml::from_str(
+            r#"
+            provider = "config"
+            match = "$.aa.*.bb"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            data_ref.project(config.config_value.clone()).unwrap(),
+            serde_json::json!([1, 2])
         );
         fs::remove_dir_all(root).unwrap();
     }

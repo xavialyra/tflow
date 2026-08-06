@@ -2,7 +2,7 @@ use crate::config::{Config, Rule, View};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -126,8 +126,18 @@ fn run_discovery_command(process: Command) -> Result<std::process::Output> {
     )
 }
 
-fn run_bounded_command(
+pub(crate) fn run_bounded_command(
+    process: Command,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> Result<std::process::Output> {
+    run_bounded_command_with_stdin(process, None, timeout, stdout_limit, stderr_limit)
+}
+
+pub(crate) fn run_bounded_command_with_stdin(
     mut process: Command,
+    stdin: Option<&[u8]>,
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
@@ -141,7 +151,11 @@ fn run_bounded_command(
         });
     }
     process
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = process
@@ -155,6 +169,15 @@ fn run_bounded_command(
         .stderr
         .take()
         .context("discovery command has no stderr pipe")?;
+    if let Some(input) = stdin {
+        let mut child_stdin = child
+            .stdin
+            .take()
+            .context("discovery command has no stdin pipe")?;
+        child_stdin
+            .write_all(input)
+            .context("could not write discovery command input")?;
+    }
     let stdout_exceeded = Arc::new(AtomicBool::new(false));
     let stderr_exceeded = Arc::new(AtomicBool::new(false));
     let stdout_thread = spawn_limited_reader(stdout_reader, stdout_limit, &stdout_exceeded);
@@ -367,7 +390,9 @@ pub fn sanitize_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, DisplayType, ViewType};
+    use crate::config::{
+        Command, DisplayType, ENGINE_LAUNCHER, EngineDefinition, ViewTypeDefinition,
+    };
     use std::collections::BTreeMap;
     use std::io::Cursor;
 
@@ -376,7 +401,7 @@ mod tests {
         views.insert(
             "core:default".to_string(),
             View {
-                view_type: ViewType::Launcher,
+                view_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 display_prefix: None,
@@ -392,7 +417,7 @@ mod tests {
         views.insert(
             "apps:main".to_string(),
             View {
-                view_type: ViewType::Launcher,
+                view_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: Vec::new(),
                 display_prefix: Some("app".to_string()),
@@ -422,7 +447,17 @@ mod tests {
             default_rule: "default".to_string(),
             rules: BTreeMap::from([("default".to_string(), crate::config::Rule { filter: true })]),
             views,
+            viewtypes: BTreeMap::from([(
+                ENGINE_LAUNCHER.to_string(),
+                ViewTypeDefinition {
+                    engine: EngineDefinition {
+                        engine_type: ENGINE_LAUNCHER.to_string(),
+                        config: toml::Table::new(),
+                    },
+                },
+            )]),
             plugin_roots: BTreeMap::new(),
+            config_value: Value::Object(serde_json::Map::new()),
         }
     }
 

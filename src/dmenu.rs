@@ -1,6 +1,7 @@
-use crate::app::{InputDecoder, Key};
 use crate::config::DisplayType;
 use crate::discovery::matches_query;
+use crate::engine::Key;
+use crate::input::InputDecoder;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};

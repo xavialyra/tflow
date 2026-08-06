@@ -37,6 +37,25 @@ struct RunResult {
     stdout: Vec<u8>,
 }
 
+const TEST_VIEWTYPES: &str = r#"
+[viewtypes.launcher.engine]
+type = "launcher"
+
+[viewtypes.launcher.engine.config]
+items = "{{ runtime:view.current.items }}"
+commands = "{{ runtime:view.current.command }}"
+
+[viewtypes.capture.engine]
+type = "capture"
+
+[viewtypes.embedded.engine]
+type = "embedded"
+"#;
+
+fn with_viewtypes(source: &str) -> String {
+    format!("{TEST_VIEWTYPES}\n{source}")
+}
+
 #[test]
 fn check_loads_the_project_configuration() {
     let output = Command::new(binary_path())
@@ -88,7 +107,7 @@ fn dmenu_cancel_returns_nonzero_without_stdout() {
 fn launcher_waits_for_discovery_before_running_enter_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    fs::write(
+    write_test_config(
         &config,
         r#"
         default_view = "core:default"
@@ -131,7 +150,7 @@ fn launcher_waits_for_discovery_before_running_enter_command() {
 fn ctrl_k_opens_the_command_launcher_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    fs::write(
+    write_test_config(
         &config,
         r#"
         default_view = "core:default"
@@ -198,7 +217,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
 fn discovery_errors_are_logged_and_do_not_block_exit() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    fs::write(
+    write_test_config(
         &config,
         r#"
         default_view = "core:default"
@@ -249,7 +268,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
         "{\"label\":\"preexisting log\",\"value\":\"1\",\"metadata\":{}}\n",
     )
     .expect("could not seed runtime log");
-    fs::write(
+    write_test_config(
         &config,
         r#"
         default_view = "core:default"
@@ -294,7 +313,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
 fn embedded_command_returns_to_launcher_and_restores_input() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    fs::write(
+    write_test_config(
         &config,
         r#"
         default_view = "core:default"
@@ -346,6 +365,10 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         "output: {output}"
     );
     fs::remove_dir_all(root).expect("could not remove embedded integration config");
+}
+
+fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {
+    fs::write(path, with_viewtypes(source))
 }
 
 fn run_dmenu(extra_args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {

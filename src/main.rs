@@ -1,8 +1,14 @@
 mod app;
+mod command;
 mod config;
 mod discovery;
 mod dmenu;
+mod engine;
+mod expression;
+mod input;
+mod projection;
 mod pty;
+mod render;
 mod runtime_log;
 mod terminal;
 mod vt;
@@ -109,7 +115,8 @@ fn main() -> Result<()> {
     }
 
     let config_path = args.config.unwrap_or_else(default_config_path);
-    let config = Config::load(&config_path)?;
+    let engines = engine::EngineRegistry::new();
+    let config = Config::load_with_engines(&config_path, &engines)?;
 
     if args.check {
         println!("configuration is valid: {}", config_path.display());
@@ -120,7 +127,7 @@ fn main() -> Result<()> {
         runtime_log::RuntimeLog::open().context("could not initialize the launcher runtime log")?;
     let mut terminal = terminal::Terminal::enter()
         .with_context(|| "could not initialize the launcher terminal")?;
-    let mut app = App::with_runtime_log(&config, runtime_log);
+    let mut app = App::with_runtime_log_and_engines(&config, runtime_log, engines);
     app.run(&mut terminal)
 }
 
