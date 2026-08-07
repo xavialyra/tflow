@@ -201,6 +201,88 @@ fn launcher_waits_for_items_before_running_enter_command() {
 }
 
 #[test]
+fn replacing_items_request_cancels_the_previous_script() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin_root = root.join("plugins/core");
+    let script_root = plugin_root.join("scripts");
+    fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "[views.placeholder]\ntype = \"launcher\"\n",
+    )
+    .expect("could not write cancellation plugin manifest");
+    let old_pid_path = root.join("old.pid");
+    fs::write(
+        script_root.join("items.sh"),
+        format!(
+            r#"query=$(cat | jq -r '.query // empty')
+if [ -z "$query" ]; then
+    printf '%s\n' "$$" > "{}"
+    sleep 10
+    printf '[{{"label":"old-result"}}]\n'
+else
+    printf '[{{"label":"new-result"}}]\n'
+fi
+"#,
+            old_pid_path.display()
+        ),
+    )
+    .expect("could not write cancellation items script");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+        "#,
+    )
+    .expect("could not write cancellation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let old_pid = wait_for_nonempty_file(&old_pid_path)
+        .trim()
+        .parse::<libc::pid_t>()
+        .expect("items script wrote an invalid PID");
+    process
+        .master
+        .write_all(b"new")
+        .expect("could not write replacement query");
+    process
+        .master
+        .flush()
+        .expect("could not flush replacement query");
+
+    let output = wait_for_text(&process.master, "new-result");
+    wait_for_process_exit(old_pid);
+    assert!(
+        !String::from_utf8_lossy(&output).contains("old-result"),
+        "cancelled request produced an old result: {:?}",
+        output
+    );
+    let log = fs::read_to_string(root.join("runtime.jsonl")).unwrap_or_default();
+    assert!(
+        !log.contains("cancelled"),
+        "cancelled request leaked into runtime log: {log}"
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close cancellation launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush cancellation launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove cancellation integration config");
+}
+
+#[test]
 fn ctrl_k_opens_the_command_launcher_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -699,6 +781,35 @@ fn wait_for_exit(process: &mut DmenuProcess) -> i32 {
         }
         assert!(result >= 0, "could not wait for test process");
         assert!(Instant::now() < deadline, "dmenu process did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_nonempty_file(path: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(contents) = fs::read_to_string(path)
+            && !contents.trim().is_empty()
+        {
+            return contents;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "file did not become available: {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_process_exit(pid: libc::pid_t) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let running = unsafe { libc::kill(pid, 0) == 0 };
+        if !running {
+            return;
+        }
+        assert!(Instant::now() < deadline, "process {pid} did not exit");
         thread::sleep(Duration::from_millis(10));
     }
 }
