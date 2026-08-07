@@ -1,6 +1,20 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use jsonpath_rfc9535::JsonPath;
 use serde_json::Value;
+use std::collections::BTreeMap;
+
+pub(super) fn evaluate(args: Vec<Value>, named_args: BTreeMap<String, Value>) -> Result<Value> {
+    if !named_args.is_empty() || args.len() != 2 {
+        bail!("path expects a value and a JSONPath expression")
+    }
+    let mut args = args.into_iter();
+    let source = args.next().expect("path source exists");
+    let expression = args.next().expect("path expression exists");
+    let expression = expression
+        .as_str()
+        .context("path requires a string JSONPath expression")?;
+    apply_path(source, expression)
+}
 
 pub(crate) fn apply_path(source: Value, expression: &str) -> Result<Value> {
     let path = JsonPath::parse(expression)

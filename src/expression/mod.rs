@@ -1,5 +1,6 @@
 mod methods;
 mod path;
+mod script;
 
 pub(crate) use methods::ExpressionMethods;
 #[cfg(test)]
