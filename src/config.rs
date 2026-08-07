@@ -1277,7 +1277,7 @@ mod tests {
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
-            crate::projection::apply_path(config.config_value.clone(), "$.aa.*.bb").unwrap(),
+            crate::expression::apply_path(config.config_value.clone(), "$.aa.*.bb").unwrap(),
             serde_json::json!([1, 2])
         );
         fs::remove_dir_all(root).unwrap();

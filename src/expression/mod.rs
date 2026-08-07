@@ -1,3 +1,10 @@
+mod methods;
+mod path;
+
+pub(crate) use methods::ExpressionMethods;
+#[cfg(test)]
+pub(crate) use path::apply_path;
+
 use anyhow::{Result, bail};
 use serde_json::{Map, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};

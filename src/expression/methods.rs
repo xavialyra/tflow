@@ -1,6 +1,6 @@
+use super::path::apply_path;
 use crate::command_runner::run_bounded_command_with_stdin;
 use crate::expression::MethodResolver;
-use crate::projection::apply_path;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;

@@ -5,8 +5,9 @@ mod render;
 mod runtime;
 mod session;
 
-use super::{ExpressionMethods, RuntimeStore};
+use super::RuntimeStore;
 use crate::config::Config;
+use crate::expression::ExpressionMethods;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;

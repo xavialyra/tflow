@@ -6,7 +6,6 @@ mod dmenu;
 mod engine;
 mod expression;
 mod input;
-mod projection;
 mod runtime_log;
 mod terminal;
 mod vt;

@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{Config, EngineDefinition};
 use crate::engine::{EngineDriver, EngineHost, SessionEffect};
-use crate::expression::{EvalContext, Template, TreeReferences};
+use crate::expression::{EvalContext, ExpressionMethods, Template, TreeReferences};
 use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
