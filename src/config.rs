@@ -21,18 +21,10 @@ pub struct Config {
     pub default_view: ViewRef,
     pub dmenu_view: ViewRef,
     pub command_view: ViewRef,
-    pub default_rule: String,
-    pub rules: BTreeMap<String, Rule>,
     pub views: BTreeMap<ViewRef, View>,
     pub viewtypes: BTreeMap<String, ViewTypeDefinition>,
     pub plugin_roots: BTreeMap<String, PathBuf>,
     pub(crate) config_value: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Rule {
-    #[serde(default = "default_true")]
-    pub filter: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -69,8 +61,6 @@ pub struct View {
     pub items: Option<String>,
     #[serde(default)]
     pub run_shell: Option<String>,
-    #[serde(default = "default_true")]
-    pub filter: bool,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
 }
@@ -97,10 +87,6 @@ struct RawConfig {
     dmenu_view: String,
     #[serde(default = "default_command_view_name")]
     command_view: String,
-    #[serde(default = "default_rule_name")]
-    default_rule: String,
-    #[serde(default)]
-    rules: BTreeMap<String, Rule>,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
@@ -158,11 +144,6 @@ impl Config {
             .context("merged configuration does not match the launcher schema")?;
         let mut config = Self::from_raw(raw, plugin_roots)?;
         config.config_value = config_value;
-        if !config.rules.contains_key(&config.default_rule) {
-            config
-                .rules
-                .insert(config.default_rule.clone(), Rule { filter: true });
-        }
         config.validate_with_engines(engines)?;
         Ok(config)
     }
@@ -182,8 +163,6 @@ impl Config {
             default_view: raw.default_view,
             dmenu_view: raw.dmenu_view,
             command_view: raw.command_view,
-            default_rule: raw.default_rule,
-            rules: raw.rules,
             views,
             viewtypes: raw.viewtypes,
             plugin_roots,
@@ -209,12 +188,6 @@ impl Config {
             );
         }
         self.validate_viewtypes(engines)?;
-        if !self.rules.contains_key(&self.default_rule) {
-            bail!(
-                "default rule {:?} is not defined in [rules]",
-                self.default_rule
-            );
-        }
 
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
@@ -467,11 +440,6 @@ impl Config {
             .map(|(plugin, _)| plugin)
             .unwrap_or(view_ref);
         self.plugin_roots.get(plugin).map(PathBuf::as_path)
-    }
-
-    pub fn resolve_rule<'a>(&'a self, _input: &str) -> (&'a str, &'a Rule, String) {
-        let rule_name = self.default_rule.as_str();
-        (rule_name, &self.rules[rule_name], _input.to_string())
     }
 
     pub fn source_views<'a>(&'a self, view_ref: &str) -> Result<Vec<(String, &'a View)>> {
@@ -869,14 +837,6 @@ fn default_command_view_name() -> String {
     "core:command".to_string()
 }
 
-fn default_rule_name() -> String {
-    "default".to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,8 +908,6 @@ mod tests {
         let config = config(
             r#"
             default_view = "core:default"
-            [rules.default]
-            filter = true
             [viewtypes.rows.engine]
             type = "launcher"
             [viewtypes.rows.engine.config]
@@ -972,8 +930,6 @@ mod tests {
         let config = config(
             r#"
             default_view = "core:default"
-            [rules.default]
-            filter = true
             [plugins.core.views.default]
             type = "launcher"
             sources = ["apps:main"]

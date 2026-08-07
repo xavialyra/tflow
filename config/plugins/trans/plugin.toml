@@ -1,5 +1,4 @@
 [views.default]
 type = "launcher"
 display_prefix = "tr"
-filter = false
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'

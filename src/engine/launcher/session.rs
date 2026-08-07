@@ -1,18 +1,15 @@
-use super::items::{
-    Item, ItemsEvent, ItemsRequest, ItemsResponse, items_result_error, items_worker,
-};
+use super::items::{Item, ItemsEvent, ItemsRequest, ItemsResponse, spawn_items_worker};
 use super::render;
 use crate::config::Config;
 use crate::engine::{
     EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, RuntimeHandle, SessionEffect,
+    TaskCompletion, TaskCoordinator, TaskMode,
 };
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
 use std::time::{Duration, Instant};
 
 const INPUT_POLL_MS: i32 = 80;
@@ -23,7 +20,6 @@ pub(crate) struct LauncherFrame {
     pub(crate) input: String,
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
-    pub(crate) active_rule: String,
     pub(crate) query: String,
     pub(crate) refresh_deadline: Option<Instant>,
     pub(crate) requested_input: String,
@@ -34,13 +30,12 @@ pub(crate) struct LauncherFrame {
 }
 
 impl LauncherFrame {
-    pub(crate) fn new(view: &str, default_rule: &str, input: &str) -> Self {
+    pub(crate) fn new(view: &str, input: &str) -> Self {
         Self {
             view: view.to_string(),
             input: input.to_string(),
             items: Vec::new(),
             selected: 0,
-            active_rule: default_rule.to_string(),
             query: String::new(),
             refresh_deadline: None,
             requested_input: String::new(),
@@ -54,10 +49,7 @@ impl LauncherFrame {
 
 pub(crate) struct LauncherDriver {
     frame: LauncherFrame,
-    items_tx: Sender<ItemsRequest>,
-    items_rx: Receiver<ItemsResponse>,
-    next_request_id: u64,
-    latest_request_id: u64,
+    items_task: TaskCoordinator<ItemsRequest, ItemsResponse, String>,
     requested_view: String,
     log_file: Option<PathBuf>,
     decoder: InputDecoder,
@@ -68,7 +60,6 @@ pub(crate) struct LauncherDriver {
 impl LauncherDriver {
     pub(crate) fn new(
         view: &str,
-        default_rule: &str,
         input: &str,
         config: Config,
         runtime: RuntimeHandle,
@@ -76,17 +67,12 @@ impl LauncherDriver {
         command_owner: Option<String>,
         parent_item: Option<Item>,
     ) -> Self {
-        let (items_tx, request_rx) = mpsc::channel();
-        let (response_tx, items_rx) = mpsc::channel();
-        thread::spawn(move || items_worker(config, runtime, request_rx, response_tx));
-        let mut frame = LauncherFrame::new(view, default_rule, input);
+        let items_task = spawn_items_worker(config, runtime);
+        let mut frame = LauncherFrame::new(view, input);
         frame.command_owner = command_owner;
         Self {
             frame,
-            items_tx,
-            items_rx,
-            next_request_id: 0,
-            latest_request_id: 0,
+            items_task,
             requested_view: String::new(),
             log_file,
             decoder: InputDecoder::default(),
@@ -175,15 +161,13 @@ impl LauncherDriver {
         let (_, query) = host
             .config
             .resolve_view_prefix(&current_view, &current_input);
-        let (_, _, request_query) = host.config.resolve_rule(&query);
-        self.publish_runtime(host.config, host.runtime, &request_query)?;
+        self.publish_runtime(host.config, host.runtime, &query)?;
         self.request_items(&current_view, &current_input)?;
         Ok(None)
     }
 
     fn refresh_command_view(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let input = self.frame.input.clone();
-        let default_rule = host.config.default_rule.clone();
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
         let current_view = self.frame.view.clone();
         self.publish_runtime(host.config, host.runtime, &input)?;
@@ -220,7 +204,6 @@ impl LauncherDriver {
             .frame
             .selected
             .min(self.frame.items.len().saturating_sub(1));
-        self.frame.active_rule = default_rule;
         self.frame.query = input.clone();
         self.frame.requested_input = input.clone();
         self.frame.results_input = input;
@@ -236,43 +219,42 @@ impl LauncherDriver {
         {
             return Ok(());
         }
-        self.next_request_id = self.next_request_id.wrapping_add(1);
-        self.latest_request_id = self.next_request_id;
         self.requested_view = view.to_string();
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
         self.frame.refresh_deadline = None;
-        self.items_tx
-            .send(ItemsRequest {
-                id: self.latest_request_id,
-                view: view.to_string(),
-                input: input.to_string(),
-            })
+        self.items_task
+            .submit_keyed(
+                ItemsRequest {
+                    view: view.to_string(),
+                    input: input.to_string(),
+                },
+                "launcher-items".to_string(),
+                TaskMode::Replace,
+            )
+            .map(|_| ())
             .context("could not queue items request")
     }
 
     fn collect_items(&mut self) -> Vec<ItemsEvent> {
         let mut events = Vec::new();
-        while let Ok(response) = self.items_rx.try_recv() {
-            if !self.response_matches(&response) {
-                let (errors, failure) = items_result_error(&response.result);
-                events.push(ItemsEvent {
-                    current: false,
-                    view: response.view,
-                    errors,
-                    failure,
-                    pending_command: None,
-                });
+        while let Ok(task_response) = self.items_task.try_recv() {
+            if !task_response.is_current() {
                 continue;
             }
-
+            let response = match task_response.into_completion() {
+                TaskCompletion::Completed(response) => response,
+                TaskCompletion::Cancelled => continue,
+            };
+            if response.view != self.frame.view || response.input != self.frame.input {
+                continue;
+            }
             let view = response.view;
             let pending_command;
             let (errors, failure) = match response.result {
                 Ok(result) => {
                     let errors = result.errors;
                     self.frame.items_pending = false;
-                    self.frame.active_rule = response.active_rule;
                     self.frame.query = response.query;
                     self.frame.items = result.items;
                     self.frame.results_input = response.input;
@@ -285,7 +267,6 @@ impl LauncherDriver {
                 }
                 Err(error) => {
                     self.frame.items_pending = false;
-                    self.frame.active_rule = response.active_rule;
                     self.frame.query = response.query;
                     self.frame.items.clear();
                     self.frame.results_input = response.input;
@@ -305,12 +286,6 @@ impl LauncherDriver {
         events
     }
 
-    fn response_matches(&self, response: &ItemsResponse) -> bool {
-        response.id == self.latest_request_id
-            && response.view == self.frame.view
-            && response.input == self.frame.input
-    }
-
     fn open_command_driver(&self, host: &EngineHost<'_>) -> Result<SessionEffect> {
         let command_view_ref = host.config.command_view.clone();
         host.config.command_view()?;
@@ -318,7 +293,6 @@ impl LauncherDriver {
         let command_owner = parent_item.as_ref().map(|item| item.source_view.clone());
         let driver = Self::new(
             &command_view_ref,
-            &host.config.default_rule,
             "",
             host.config.clone(),
             host.runtime.handle(),

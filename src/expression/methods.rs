@@ -1,4 +1,5 @@
 use super::{MethodResolver, path, script};
+use crate::cancellation::CancellationToken;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -6,11 +7,19 @@ use std::path::Path;
 
 pub struct ExpressionMethods<'a> {
     script_root: &'a Path,
+    cancellation: CancellationToken,
 }
 
 impl<'a> ExpressionMethods<'a> {
     pub fn new(script_root: &'a Path) -> Self {
-        Self { script_root }
+        Self::with_cancellation(script_root, CancellationToken::new())
+    }
+
+    pub fn with_cancellation(script_root: &'a Path, cancellation: CancellationToken) -> Self {
+        Self {
+            script_root,
+            cancellation,
+        }
     }
 }
 
@@ -23,7 +32,7 @@ impl MethodResolver for ExpressionMethods<'_> {
     ) -> Result<Value> {
         match name {
             "path" => path::evaluate(args, named_args),
-            "script" => script::evaluate(self.script_root, args, named_args),
+            "script" => script::evaluate(self.script_root, &self.cancellation, args, named_args),
             _ => anyhow::bail!("unknown expression method {:?}", name),
         }
     }

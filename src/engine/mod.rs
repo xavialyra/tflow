@@ -6,6 +6,7 @@ mod launcher;
 mod registry;
 mod runtime;
 mod session;
+mod task;
 
 #[cfg(test)]
 mod tests;
@@ -17,3 +18,4 @@ pub(crate) use launcher::{LauncherDriver, LauncherEngine};
 pub(crate) use registry::{EngineRegistry, validate_fields};
 pub(crate) use runtime::{RuntimeHandle, RuntimeStore};
 pub(crate) use session::AppSession;
+pub(crate) use task::{TaskCompletion, TaskCoordinator, TaskMode};

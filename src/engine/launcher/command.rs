@@ -106,7 +106,6 @@ pub(super) fn prepare_command(
         ("LAUNCHER_VIEW".to_string(), frame.view.clone()),
         ("LAUNCHER_VIEW_REF".to_string(), source_view.clone()),
         ("LAUNCHER_COMMAND".to_string(), invocation.id.clone()),
-        ("LAUNCHER_RULE".to_string(), frame.active_rule.clone()),
         ("LAUNCHER_QUERY".to_string(), frame.query.clone()),
     ];
     if let Some(root) = &plugin_root {
@@ -234,7 +233,6 @@ impl Engine for LauncherCommandEngine {
     ) -> Result<Box<dyn EngineDriver>> {
         Ok(Box::new(LauncherDriver::new(
             view_ref,
-            &config.default_rule,
             input,
             config.clone(),
             runtime,

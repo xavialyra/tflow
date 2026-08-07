@@ -10,8 +10,7 @@ display = "text"
 type = "launcher"
 display = "text"
 display_prefix = "log"
-filter = true
-items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
+items = '{{ script("scripts/items.sh", runtime:view.current) }}'
 
 [views.command]
 type = "launcher"

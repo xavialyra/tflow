@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationToken;
 use crate::command_runner::run_bounded_command_with_stdin;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -14,6 +15,7 @@ const MAX_SCRIPT_STDIN: usize = 64 * 1024;
 
 pub(super) fn evaluate(
     root: &Path,
+    cancellation: &CancellationToken,
     args: Vec<Value>,
     named_args: BTreeMap<String, Value>,
 ) -> Result<Value> {
@@ -43,10 +45,15 @@ pub(super) fn evaluate(
         bail!("script requires a non-empty target")
     }
     let input = args.next().or_else(|| named_args.get("input").cloned());
-    run_script(target, root, input.as_ref())
+    run_script(target, root, input.as_ref(), cancellation)
 }
 
-fn run_script(target: &str, root: &Path, input: Option<&Value>) -> Result<Value> {
+fn run_script(
+    target: &str,
+    root: &Path,
+    input: Option<&Value>,
+    cancellation: &CancellationToken,
+) -> Result<Value> {
     let path = resolve_script_path(root, target)?;
     let mut process = ProcessCommand::new("sh");
     process.arg(&path).current_dir(root);
@@ -67,6 +74,7 @@ fn run_script(target: &str, root: &Path, input: Option<&Value>) -> Result<Value>
         SCRIPT_TIMEOUT,
         MAX_SCRIPT_STDOUT,
         MAX_SCRIPT_STDERR,
+        cancellation,
     )
     .with_context(|| format!("could not run script {}", path.display()))?;
     if !output.status.success() {
@@ -110,8 +118,10 @@ fn resolve_script_path(root: &Path, target: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancellation::CancellationToken;
     use crate::expression::{EvalContext, ExpressionMethods, Template, TreeReferences};
     use std::env;
+    use std::time::Duration;
 
     fn evaluate_expression(source: &str, script_root: &Path) -> Result<Value> {
         let config = Value::Null;
@@ -140,6 +150,47 @@ mod tests {
         assert_eq!(
             evaluate_expression(r#"{{ script("input.sh", {query = "fire"}) }}"#, &root,).unwrap(),
             serde_json::json!({"query": "fire"})
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_terminates_a_running_script() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-expression-cancel-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("slow.sh"), "sleep 10\nprintf '%s\\n' '[]'\n").unwrap();
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker_root = root.clone();
+        let handle = std::thread::spawn(move || {
+            let config = Value::Null;
+            let runtime = Value::Null;
+            let references = TreeReferences {
+                config: &config,
+                runtime: &runtime,
+            };
+            let mut methods = ExpressionMethods::with_cancellation(&worker_root, worker_token);
+            let mut context = EvalContext {
+                references: &references,
+                methods: &mut methods,
+            };
+            Template::parse(r#"{{ script("slow.sh") }}"#)
+                .unwrap()
+                .evaluate_value(&mut context)
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        token.cancel();
+        let error = handle
+            .join()
+            .expect("script thread should not panic")
+            .expect_err("the script should be cancelled");
+        assert!(
+            format!("{error:#}").contains("cancelled"),
+            "unexpected cancellation error: {error:#}"
         );
         fs::remove_dir_all(root).unwrap();
     }

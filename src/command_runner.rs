@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationToken;
 use anyhow::{Context, Result, anyhow};
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
@@ -17,6 +18,7 @@ pub(crate) fn run_bounded_command_with_stdin(
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
+    cancellation: &CancellationToken,
 ) -> Result<std::process::Output> {
     unsafe {
         process.pre_exec(|| {
@@ -59,6 +61,10 @@ pub(crate) fn run_bounded_command_with_stdin(
     let deadline = Instant::now() + timeout;
 
     let process_result: Result<std::process::ExitStatus> = loop {
+        if cancellation.is_cancelled() {
+            terminate_child(&mut child);
+            break Err(anyhow!("bounded command cancelled"));
+        }
         if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
             terminate_child(&mut child);
             break Err(anyhow!("bounded command output exceeded configured limits"));
@@ -153,18 +159,58 @@ mod tests {
     fn command_timeout_terminates_the_process_group() {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 1"]);
-        let error =
-            run_bounded_command_with_stdin(command, None, Duration::from_millis(50), 1024, 1024)
-                .expect_err("the command should time out");
+        let error = run_bounded_command_with_stdin(
+            command,
+            None,
+            Duration::from_millis(50),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .expect_err("the command should time out");
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn cancellation_terminates_the_process_group() {
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let started = std::time::Instant::now();
+        let handle = std::thread::spawn(move || {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 10"]);
+            run_bounded_command_with_stdin(
+                command,
+                None,
+                Duration::from_secs(10),
+                1024,
+                1024,
+                &worker_token,
+            )
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        token.cancel();
+        let error = handle
+            .join()
+            .expect("bounded command thread should not panic")
+            .expect_err("the command should be cancelled");
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
     fn command_output_limit_returns_an_error() {
         let mut command = Command::new("sh");
         command.args(["-c", "printf 123456"]);
-        let error = run_bounded_command_with_stdin(command, None, Duration::from_secs(1), 3, 1024)
-            .expect_err("the command should exceed its output limit");
+        let error = run_bounded_command_with_stdin(
+            command,
+            None,
+            Duration::from_secs(1),
+            3,
+            1024,
+            &CancellationToken::new(),
+        )
+        .expect_err("the command should exceed its output limit");
         assert!(error.to_string().contains("output exceeded"));
     }
 }

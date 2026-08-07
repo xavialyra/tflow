@@ -1,12 +1,12 @@
-use crate::config::{Config, Rule, View};
-use crate::engine::RuntimeHandle;
+use crate::cancellation::CancellationToken;
+use crate::config::{Config, View};
+use crate::engine::{RuntimeHandle, TaskCoordinator};
 use crate::expression::ExpressionMethods;
-use crate::text::{matches_query, sanitize_text};
+use crate::text::sanitize_text;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
@@ -33,16 +33,13 @@ pub(crate) struct ItemsResult {
 }
 
 pub(crate) struct ItemsRequest {
-    pub(crate) id: u64,
     pub(crate) view: String,
     pub(crate) input: String,
 }
 
 pub(crate) struct ItemsResponse {
-    pub(crate) id: u64,
     pub(crate) view: String,
     pub(crate) input: String,
-    pub(crate) active_rule: String,
     pub(crate) query: String,
     pub(crate) result: std::result::Result<ItemsResult, String>,
 }
@@ -55,59 +52,38 @@ pub(crate) struct ItemsEvent {
     pub(crate) pending_command: Option<super::super::Key>,
 }
 
-pub(crate) fn items_result_error(
-    result: &std::result::Result<ItemsResult, String>,
-) -> (Vec<String>, Option<String>) {
-    match result {
-        Ok(result) => (result.errors.clone(), None),
-        Err(error) => (Vec::new(), Some(error.clone())),
-    }
-}
-
-pub(crate) fn items_worker(
+pub(crate) fn spawn_items_worker(
     config: Config,
     runtime: RuntimeHandle,
-    requests: Receiver<ItemsRequest>,
-    responses: Sender<ItemsResponse>,
-) {
-    while let Ok(mut request) = requests.recv() {
-        while let Ok(next_request) = requests.try_recv() {
-            request = next_request;
-        }
-
-        let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);
-        let (rule_name, rule, rule_query) = config.resolve_rule(&query);
-        let runtime_value = runtime.read();
-        let result = load_items(
-            &config,
-            &request.view,
-            rule,
-            &rule_query,
-            source_prefix.as_deref(),
-            &runtime_value,
-        )
-        .map_err(|error| error.to_string());
-        let response = ItemsResponse {
-            id: request.id,
-            view: request.view,
-            input: request.input,
-            active_rule: rule_name.to_string(),
-            query: rule_query,
-            result,
-        };
-        if responses.send(response).is_err() {
-            break;
-        }
-    }
+) -> TaskCoordinator<ItemsRequest, ItemsResponse, String> {
+    TaskCoordinator::spawn(
+        runtime,
+        move |request: ItemsRequest, runtime_value, cancellation| {
+            let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);
+            let result = load_items(
+                &config,
+                &request.view,
+                source_prefix.as_deref(),
+                &runtime_value,
+                &cancellation,
+            )
+            .map_err(|error| error.to_string());
+            ItemsResponse {
+                view: request.view,
+                input: request.input,
+                query,
+                result,
+            }
+        },
+    )
 }
 
 fn load_items(
     config: &Config,
     view_ref: &str,
-    rule: &Rule,
-    query: &str,
     source_prefix: Option<&str>,
     runtime: &Value,
+    cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let mut result = ItemsResult::default();
 
@@ -123,7 +99,7 @@ fn load_items(
         let root = config
             .plugin_root(&source_ref)
             .unwrap_or_else(|| Path::new("."));
-        let mut methods = ExpressionMethods::new(root);
+        let mut methods = ExpressionMethods::with_cancellation(root, cancellation.clone());
         let value = match config.evaluate_view_items(&source_ref, runtime, &mut methods) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
@@ -132,29 +108,13 @@ fn load_items(
                 continue;
             }
         };
-        append_items(
-            &mut result,
-            &source_ref,
-            view,
-            &display_prefix,
-            rule,
-            query,
-            value,
-        );
+        append_items(&mut result, &source_ref, &display_prefix, value);
     }
 
     Ok(result)
 }
 
-fn append_items(
-    result: &mut ItemsResult,
-    source_ref: &str,
-    view: &View,
-    display_prefix: &str,
-    rule: &Rule,
-    query: &str,
-    value: Value,
-) {
+fn append_items(result: &mut ItemsResult, source_ref: &str, display_prefix: &str, value: Value) {
     let Some(items) = value.as_array() else {
         result.errors.push(format!(
             "{}: items expression must return a JSON array",
@@ -162,6 +122,7 @@ fn append_items(
         ));
         return;
     };
+    let mut parsed_items = Vec::with_capacity(items.len());
     for (index, value) in items.iter().enumerate() {
         let parsed = match serde_json::from_value::<ItemValue>(value.clone()) {
             Ok(item) => item,
@@ -170,17 +131,18 @@ fn append_items(
                     "{}: invalid items JSON at index {}: {}",
                     source_ref, index, error
                 ));
-                continue;
+                return;
             }
         };
         let text = sanitize_text(&parsed.label);
         if text.is_empty() {
-            continue;
+            result.errors.push(format!(
+                "{}: items JSON at index {} has an empty label",
+                source_ref, index
+            ));
+            return;
         }
-        if rule.filter && view.filter && !matches_query(&text, query) {
-            continue;
-        }
-        result.items.push(Item {
+        parsed_items.push(Item {
             prefix: display_prefix.to_string(),
             text,
             value: parsed.value,
@@ -188,6 +150,7 @@ fn append_items(
             source_view: source_ref.to_string(),
         });
     }
+    result.items.extend(parsed_items);
 }
 
 fn display_prefix(source_ref: &str, view: &View) -> String {
@@ -220,7 +183,6 @@ mod tests {
                 display_prefix: None,
                 items: None,
                 run_shell: None,
-                filter: true,
                 commands: BTreeMap::new(),
             },
         );
@@ -233,7 +195,6 @@ mod tests {
                 display_prefix: Some("app".to_string()),
                 items: Some("{{ runtime:view.current.items }}".to_string()),
                 run_shell: None,
-                filter: true,
                 commands: BTreeMap::from([(
                     "open".to_string(),
                     Command {
@@ -251,8 +212,6 @@ mod tests {
             default_view: "core:default".to_string(),
             dmenu_view: "core:dmenu".to_string(),
             command_view: "core:command".to_string(),
-            default_rule: "default".to_string(),
-            rules: BTreeMap::from([("default".to_string(), Rule { filter: true })]),
             views,
             viewtypes: BTreeMap::from([(
                 ENGINE_LAUNCHER.to_string(),
@@ -284,14 +243,25 @@ mod tests {
         let result = load_items(
             &test_config(),
             "core:default",
-            &Rule { filter: true },
-            "",
             None,
             &serde_json::json!({
-                "view": {"current": {"items": [{"label": "Termius"}]}}
+                "view": {
+                    "current": {
+                        "items": [{"label": "Second"}, {"label": "First"}]
+                    }
+                }
             }),
+            &CancellationToken::new(),
         )
         .unwrap();
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Second", "First"]
+        );
         assert_eq!(result.items[0].source_view, "apps:main");
         assert_eq!(result.items[0].prefix, "app");
     }
@@ -304,16 +274,35 @@ mod tests {
         let result = load_items(
             &config,
             "core:default",
-            &Rule { filter: true },
-            "",
             None,
             &serde_json::json!({
                 "view": {"current": {"query": "not-an-array"}}
             }),
+            &CancellationToken::new(),
         )
         .unwrap();
         assert!(result.items.is_empty());
         assert!(result.errors[0].contains("must return a JSON array"));
+    }
+
+    #[test]
+    fn invalid_items_are_reported_without_partial_results() {
+        let result = load_items(
+            &test_config(),
+            "core:default",
+            None,
+            &serde_json::json!({
+                "view": {
+                    "current": {
+                        "items": [{"label": "Valid"}, {"value": "missing-label"}]
+                    }
+                }
+            }),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.items.is_empty());
+        assert!(result.errors[0].contains("index 1"));
     }
 
     #[test]
@@ -335,12 +324,11 @@ mod tests {
         let result = load_items(
             &config,
             "core:default",
-            &Rule { filter: true },
-            "fire",
             None,
             &serde_json::json!({
                 "view": {"current": {"query": "fire"}}
             }),
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(result.items[0].text, "fire");

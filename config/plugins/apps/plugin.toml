@@ -1,7 +1,6 @@
 [views.default]
 type = "launcher"
 display_prefix = "app"
-filter = false
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.default.commands.open]

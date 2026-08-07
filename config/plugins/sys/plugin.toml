@@ -1,7 +1,7 @@
 [views.default]
 type = "launcher"
 display_prefix = "sys"
-items = '{{ script("scripts/items.sh") }}'
+items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.default.commands.run]
 key = "enter"

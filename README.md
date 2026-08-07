@@ -164,7 +164,7 @@ run = { file = "scripts/open.sh" }
 
 Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
-The root config file contains the default view, viewtype profiles, and global rules:
+The root config file contains the default view and viewtype profiles:
 
 ```toml
 default_view = "core:default"
@@ -298,7 +298,7 @@ items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 items = '{{ script("scripts/items.sh", runtime:view.current.request) }}'
 ```
 
-The launcher runtime exposes the current request under `runtime:view.current.request`. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression.
+The launcher runtime exposes the current request under `runtime:view.current.request`. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the launcher does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
 
 A root launcher view evaluates the `items` expression of each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
 
@@ -317,7 +317,7 @@ The core plugin provides a normal log launcher without adding it to `core:defaul
 [views.messages]
 type = "launcher"
 display_prefix = "log"
-items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
+items = '{{ script("scripts/items.sh", runtime:view.current) }}'
 ```
 
 ## Command environment
@@ -332,7 +332,6 @@ Command scripts receive:
 - `LAUNCHER_VIEW`;
 - `LAUNCHER_VIEW_REF`;
 - `LAUNCHER_COMMAND`;
-- `LAUNCHER_RULE`;
 - `LAUNCHER_QUERY`;
 - `LAUNCHER_LOG_FILE`.
 

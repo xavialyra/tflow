@@ -331,7 +331,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
     .expect("could not write test plugin manifest");
     fs::write(
         plugin_root.join("scripts/items.sh"),
-        "log_file=$(cat | jq -r '. // empty')\nif [ -n \"$log_file\" ] && [ -f \"$log_file\" ]; then\n    jq -s '.' \"$log_file\"\nelse\n    printf '[]\\n'\nfi\n",
+        "input=$(cat)\nlog_file=$(printf '%s\\n' \"$input\" | jq -r '.log_file // empty')\nif [ -n \"$log_file\" ] && [ -f \"$log_file\" ]; then\n    jq -s '.' \"$log_file\"\nelse\n    printf '[]\\n'\nfi\n",
     )
     .expect("could not write test items script");
     write_test_config(
@@ -345,7 +345,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
         [plugins.core.views.messages]
         type = "launcher"
         display_prefix = "log"
-        items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
+        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
         "#,
     )
     .expect("could not write messages integration config");
