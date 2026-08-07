@@ -1,4 +1,4 @@
-use super::Item;
+use super::{Item, ItemsTaskScheduler};
 use crate::config::{Command, Config, ENGINE_LAUNCHER, EngineDefinition, normalize_key};
 use crate::engine::{
     Engine, EngineDriver, EngineHost, LauncherDriver, RuntimeHandle, SessionEffect, validate_fields,
@@ -225,17 +225,17 @@ impl Engine for LauncherCommandEngine {
 
     fn create_view(
         &self,
-        config: &Config,
+        _config: &Config,
         view_ref: &str,
         input: &str,
         log_file: Option<&Path>,
-        runtime: RuntimeHandle,
+        _runtime: RuntimeHandle,
+        items_scheduler: ItemsTaskScheduler,
     ) -> Result<Box<dyn EngineDriver>> {
         Ok(Box::new(LauncherDriver::new(
             view_ref,
             input,
-            config.clone(),
-            runtime,
+            items_scheduler,
             log_file.map(PathBuf::from),
             None,
             None,

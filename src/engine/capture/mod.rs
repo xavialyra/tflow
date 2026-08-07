@@ -2,7 +2,7 @@ mod command;
 mod render;
 mod session;
 
-use super::{CommandExecution, Engine, EngineDriver, validate_fields};
+use super::{CommandExecution, Engine, EngineDriver, ItemsTaskScheduler, validate_fields};
 use crate::config::{Config, ENGINE_CAPTURE, EngineDefinition};
 use crate::engine::RuntimeHandle;
 use anyhow::Result;
@@ -26,6 +26,7 @@ impl Engine for CaptureEngine {
         _input: &str,
         _log_file: Option<&Path>,
         _runtime: RuntimeHandle,
+        _items_scheduler: ItemsTaskScheduler,
     ) -> Result<Box<dyn EngineDriver>> {
         Err(command::unsupported_view())
     }

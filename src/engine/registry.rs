@@ -1,5 +1,5 @@
 use super::api::{Engine, EngineDriver};
-use super::launcher::CommandExecution;
+use super::launcher::{CommandExecution, ItemsTaskScheduler};
 use super::runtime::RuntimeHandle;
 use crate::config::{Config, EngineDefinition};
 use crate::expression::validate_json_value;
@@ -45,13 +45,14 @@ impl EngineRegistry {
         input: &str,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
+        items_scheduler: ItemsTaskScheduler,
     ) -> Result<Box<dyn EngineDriver>> {
         let engine_type = config.engine(view_ref)?;
         let engine = self
             .engines
             .get(engine_type)
             .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
-        engine.create_view(config, view_ref, input, log_file, runtime)
+        engine.create_view(config, view_ref, input, log_file, runtime, items_scheduler)
     }
 
     pub(crate) fn create_command(

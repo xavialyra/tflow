@@ -1,9 +1,8 @@
-use super::items::{Item, ItemsEvent, ItemsRequest, ItemsResponse, spawn_items_worker};
+use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, ItemsTaskScheduler};
 use super::render;
-use crate::config::Config;
 use crate::engine::{
-    EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, RuntimeHandle, SessionEffect,
-    TaskCompletion, TaskCoordinator, TaskMode,
+    EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, SessionEffect, TaskCompletion,
+    TaskMode,
 };
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
@@ -49,7 +48,8 @@ impl LauncherFrame {
 
 pub(crate) struct LauncherDriver {
     frame: LauncherFrame,
-    items_task: TaskCoordinator<ItemsRequest, ItemsResponse, String>,
+    items_scheduler: ItemsTaskScheduler,
+    items_task: Option<ItemsTaskHandle>,
     requested_view: String,
     log_file: Option<PathBuf>,
     decoder: InputDecoder,
@@ -61,18 +61,17 @@ impl LauncherDriver {
     pub(crate) fn new(
         view: &str,
         input: &str,
-        config: Config,
-        runtime: RuntimeHandle,
+        items_scheduler: ItemsTaskScheduler,
         log_file: Option<PathBuf>,
         command_owner: Option<String>,
         parent_item: Option<Item>,
     ) -> Self {
-        let items_task = spawn_items_worker(config, runtime);
         let mut frame = LauncherFrame::new(view, input);
         frame.command_owner = command_owner;
         Self {
             frame,
-            items_task,
+            items_scheduler,
+            items_task: None,
             requested_view: String::new(),
             log_file,
             decoder: InputDecoder::default(),
@@ -223,66 +222,85 @@ impl LauncherDriver {
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
         self.frame.refresh_deadline = None;
-        self.items_task
-            .submit_keyed(
-                ItemsRequest {
-                    view: view.to_string(),
-                    input: input.to_string(),
-                },
-                "launcher-items".to_string(),
-                TaskMode::Replace,
-            )
-            .map(|_| ())
-            .context("could not queue items request")
+        self.items_task = Some(
+            self.items_scheduler
+                .submit_keyed(
+                    ItemsRequest {
+                        view: view.to_string(),
+                        input: input.to_string(),
+                    },
+                    "launcher-items".to_string(),
+                    TaskMode::Replace,
+                )
+                .context("could not queue items request")?,
+        );
+        Ok(())
     }
 
     fn collect_items(&mut self) -> Vec<ItemsEvent> {
         let mut events = Vec::new();
-        while let Ok(task_response) = self.items_task.try_recv() {
-            if !task_response.is_current() {
-                continue;
+        let Some(mut task) = self.items_task.take() else {
+            return events;
+        };
+        let task_response = match task.try_recv() {
+            Ok(response) => response,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.items_task = Some(task);
+                return events;
             }
-            let response = match task_response.into_completion() {
-                TaskCompletion::Completed(response) => response,
-                TaskCompletion::Cancelled => continue,
-            };
-            if response.view != self.frame.view || response.input != self.frame.input {
-                continue;
-            }
-            let view = response.view;
-            let pending_command;
-            let (errors, failure) = match response.result {
-                Ok(result) => {
-                    let errors = result.errors;
-                    self.frame.items_pending = false;
-                    self.frame.query = response.query;
-                    self.frame.items = result.items;
-                    self.frame.results_input = response.input;
-                    self.frame.selected = self
-                        .frame
-                        .selected
-                        .min(self.frame.items.len().saturating_sub(1));
-                    pending_command = self.frame.pending_command.take();
-                    (errors, None)
-                }
-                Err(error) => {
-                    self.frame.items_pending = false;
-                    self.frame.query = response.query;
-                    self.frame.items.clear();
-                    self.frame.results_input = response.input;
-                    self.frame.selected = 0;
-                    pending_command = self.frame.pending_command.take();
-                    (Vec::new(), Some(error))
-                }
-            };
-            events.push(ItemsEvent {
-                current: true,
-                view,
-                errors,
-                failure,
-                pending_command,
-            });
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return events,
+        };
+        if !task_response.is_current() {
+            self.frame.items_pending = false;
+            self.schedule_refresh();
+            return events;
         }
+        let response = match task_response.into_completion() {
+            TaskCompletion::Completed(response) => response,
+            TaskCompletion::Cancelled => {
+                self.frame.items_pending = false;
+                self.schedule_refresh();
+                return events;
+            }
+        };
+        if response.view != self.frame.view || response.input != self.frame.input {
+            self.frame.items_pending = false;
+            self.schedule_refresh();
+            return events;
+        }
+        let view = response.view;
+        let pending_command;
+        let (errors, failure) = match response.result {
+            Ok(result) => {
+                let errors = result.errors;
+                self.frame.items_pending = false;
+                self.frame.query = response.query;
+                self.frame.items = result.items;
+                self.frame.results_input = response.input;
+                self.frame.selected = self
+                    .frame
+                    .selected
+                    .min(self.frame.items.len().saturating_sub(1));
+                pending_command = self.frame.pending_command.take();
+                (errors, None)
+            }
+            Err(error) => {
+                self.frame.items_pending = false;
+                self.frame.query = response.query;
+                self.frame.items.clear();
+                self.frame.results_input = response.input;
+                self.frame.selected = 0;
+                pending_command = self.frame.pending_command.take();
+                (Vec::new(), Some(error))
+            }
+        };
+        events.push(ItemsEvent {
+            current: true,
+            view,
+            errors,
+            failure,
+            pending_command,
+        });
         events
     }
 
@@ -294,8 +312,7 @@ impl LauncherDriver {
         let driver = Self::new(
             &command_view_ref,
             "",
-            host.config.clone(),
-            host.runtime.handle(),
+            self.items_scheduler.clone(),
             host.log_file().map(PathBuf::from),
             command_owner,
             parent_item,

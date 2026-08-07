@@ -2,7 +2,7 @@ mod command;
 mod pty;
 mod session;
 
-use super::{CommandExecution, Engine, EngineDriver, validate_fields};
+use super::{CommandExecution, Engine, EngineDriver, ItemsTaskScheduler, validate_fields};
 use crate::config::{Config, ENGINE_EMBEDDED, EngineDefinition};
 use crate::engine::RuntimeHandle;
 use anyhow::Result;
@@ -26,6 +26,7 @@ impl Engine for EmbeddedEngine {
         _input: &str,
         _log_file: Option<&Path>,
         _runtime: RuntimeHandle,
+        _items_scheduler: ItemsTaskScheduler,
     ) -> Result<Box<dyn EngineDriver>> {
         Err(anyhow::anyhow!("embedded engine views require a command"))
     }

@@ -1,6 +1,6 @@
 use crate::cancellation::CancellationToken;
 use crate::config::{Config, View};
-use crate::engine::{RuntimeHandle, TaskCoordinator};
+use crate::engine::{RuntimeHandle, TaskHandle, TaskScheduler};
 use crate::expression::ExpressionMethods;
 use crate::text::sanitize_text;
 use anyhow::Result;
@@ -26,7 +26,7 @@ pub(crate) struct Item {
     pub(crate) source_view: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ItemsResult {
     pub(crate) items: Vec<Item>,
     pub(crate) errors: Vec<String>,
@@ -37,6 +37,7 @@ pub(crate) struct ItemsRequest {
     pub(crate) input: String,
 }
 
+#[derive(Clone)]
 pub(crate) struct ItemsResponse {
     pub(crate) view: String,
     pub(crate) input: String,
@@ -52,11 +53,11 @@ pub(crate) struct ItemsEvent {
     pub(crate) pending_command: Option<super::super::Key>,
 }
 
-pub(crate) fn spawn_items_worker(
-    config: Config,
-    runtime: RuntimeHandle,
-) -> TaskCoordinator<ItemsRequest, ItemsResponse, String> {
-    TaskCoordinator::spawn(
+pub(crate) type ItemsTaskScheduler = TaskScheduler<ItemsRequest, ItemsResponse, String>;
+pub(crate) type ItemsTaskHandle = TaskHandle<ItemsRequest, ItemsResponse, String>;
+
+pub(crate) fn spawn_items_scheduler(config: Config, runtime: RuntimeHandle) -> ItemsTaskScheduler {
+    TaskScheduler::spawn(
         runtime,
         move |request: ItemsRequest, runtime_value, cancellation| {
             let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);

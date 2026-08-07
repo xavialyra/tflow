@@ -15,7 +15,7 @@ use std::path::Path;
 pub(crate) use command::{
     CommandExecution, CommandInvocation, LauncherCommandEngine, PreparedCommand,
 };
-pub(crate) use items::Item;
+pub(crate) use items::{Item, ItemsTaskScheduler, spawn_items_scheduler};
 pub(crate) use session::LauncherDriver;
 
 pub(crate) struct LauncherEngine<'a> {

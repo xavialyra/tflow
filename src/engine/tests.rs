@@ -45,6 +45,7 @@ fn registry_accepts_custom_engine_implementations() {
             _input: &str,
             _log_file: Option<&Path>,
             _runtime: RuntimeHandle,
+            _items_scheduler: ItemsTaskScheduler,
         ) -> Result<Box<dyn EngineDriver>> {
             Ok(Box::new(TestDriver))
         }

@@ -1,4 +1,5 @@
-use super::{EngineDriver, EngineHost, EngineRegistry, SessionEffect};
+use super::launcher::spawn_items_scheduler;
+use super::{EngineDriver, EngineHost, EngineRegistry, ItemsTaskScheduler, SessionEffect};
 use crate::config::Config;
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
@@ -13,6 +14,7 @@ pub(crate) struct AppSession<'a> {
     config: &'a Config,
     engines: EngineRegistry,
     views: Vec<ViewInstance>,
+    items_scheduler: ItemsTaskScheduler,
     runtime: super::RuntimeStore,
     runtime_log: RuntimeLog,
     active_error: Option<LogRecord>,
@@ -26,17 +28,20 @@ impl<'a> AppSession<'a> {
         engines: EngineRegistry,
     ) -> Result<Self> {
         let runtime = super::RuntimeStore::new();
+        let items_scheduler = spawn_items_scheduler(config.clone(), runtime.handle());
         let root = engines.create_view(
             config,
             &config.default_view,
             "",
             runtime_log.path(),
             runtime.handle(),
+            items_scheduler.clone(),
         )?;
         Ok(Self {
             config,
             engines,
             views: vec![ViewInstance { driver: root }],
+            items_scheduler,
             runtime,
             runtime_log,
             active_error: None,
@@ -121,6 +126,7 @@ impl<'a> AppSession<'a> {
                     &input,
                     self.runtime_log.path(),
                     self.runtime.handle(),
+                    self.items_scheduler.clone(),
                 )?;
                 if replace_current {
                     self.views.pop();

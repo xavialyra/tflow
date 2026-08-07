@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::host::EngineHost;
-use super::launcher::CommandExecution;
+use super::launcher::{CommandExecution, ItemsTaskScheduler};
 use super::runtime::RuntimeHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +69,7 @@ pub(crate) trait Engine {
         input: &str,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
+        items_scheduler: ItemsTaskScheduler,
     ) -> Result<Box<dyn EngineDriver>>;
 
     fn create_command(&self, execution: CommandExecution) -> Result<Box<dyn EngineDriver>>;
