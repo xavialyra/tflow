@@ -15,5 +15,5 @@ pub(crate) use host::EngineHost;
 pub(crate) use launcher::{CommandExecution, CommandInvocation, PreparedCommand};
 pub(crate) use launcher::{LauncherDriver, LauncherEngine};
 pub(crate) use registry::{EngineRegistry, validate_fields};
-pub(crate) use runtime::RuntimeStore;
+pub(crate) use runtime::{RuntimeHandle, RuntimeStore};
 pub(crate) use session::AppSession;

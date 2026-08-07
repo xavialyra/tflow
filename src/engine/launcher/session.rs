@@ -5,12 +5,12 @@ use super::render;
 use crate::config::Config;
 use crate::discovery::{Item, matches_query, sanitize_text};
 use crate::engine::{
-    EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, SessionEffect,
+    EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, RuntimeHandle, SessionEffect,
 };
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -71,13 +71,14 @@ impl LauncherDriver {
         default_rule: &str,
         input: &str,
         config: Config,
+        runtime: RuntimeHandle,
         log_file: Option<PathBuf>,
         command_owner: Option<String>,
         parent_item: Option<Item>,
     ) -> Self {
         let (discovery_tx, request_rx) = mpsc::channel();
         let (response_tx, discovery_rx) = mpsc::channel();
-        thread::spawn(move || discovery_worker(config, request_rx, response_tx));
+        thread::spawn(move || discovery_worker(config, runtime, request_rx, response_tx));
         let mut frame = LauncherFrame::new(view, default_rule, input);
         frame.command_owner = command_owner;
         Self {
@@ -100,6 +101,10 @@ impl LauncherDriver {
 
     pub(crate) fn current_mut(&mut self) -> &mut LauncherFrame {
         &mut self.frame
+    }
+
+    pub(crate) fn log_file(&self) -> Option<&Path> {
+        self.log_file.as_deref()
     }
 
     pub(crate) fn schedule_refresh(&mut self) {
@@ -167,6 +172,11 @@ impl LauncherDriver {
             }));
         }
 
+        let (_, query) = host
+            .config
+            .resolve_view_prefix(&current_view, &current_input);
+        let (_, _, request_query) = host.config.resolve_rule(&query);
+        self.publish_runtime(host.config, host.runtime, &request_query)?;
         self.request_discovery(&current_view, &current_input)?;
         Ok(None)
     }
@@ -176,7 +186,7 @@ impl LauncherDriver {
         let default_rule = host.config.default_rule.clone();
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
         let current_view = self.frame.view.clone();
-        self.publish_runtime(host.config, host.runtime)?;
+        self.publish_runtime(host.config, host.runtime, &input)?;
         let engine = LauncherEngine::new(host.config, &current_view, host.runtime);
         let projected = engine
             .evaluate_field("commands")?
@@ -312,6 +322,7 @@ impl LauncherDriver {
             &host.config.default_rule,
             "",
             host.config.clone(),
+            host.runtime.handle(),
             host.log_file().map(PathBuf::from),
             command_owner,
             parent_item,

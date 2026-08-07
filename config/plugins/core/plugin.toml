@@ -11,7 +11,7 @@ type = "launcher"
 display = "text"
 display_prefix = "log"
 filter = true
-discover = { file = "scripts/messages.sh" }
+items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
 
 [views.command]
 type = "launcher"

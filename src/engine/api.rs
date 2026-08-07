@@ -5,6 +5,7 @@ use std::path::Path;
 
 use super::host::EngineHost;
 use super::launcher::CommandExecution;
+use super::runtime::RuntimeHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Key {
@@ -67,6 +68,7 @@ pub(crate) trait Engine {
         view_ref: &str,
         input: &str,
         log_file: Option<&Path>,
+        runtime: RuntimeHandle,
     ) -> Result<Box<dyn EngineDriver>>;
 
     fn create_command(&self, execution: CommandExecution) -> Result<Box<dyn EngineDriver>>;

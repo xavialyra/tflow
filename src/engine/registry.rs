@@ -1,5 +1,6 @@
 use super::api::{Engine, EngineDriver};
 use super::launcher::CommandExecution;
+use super::runtime::RuntimeHandle;
 use crate::config::{Config, EngineDefinition};
 use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
@@ -43,13 +44,14 @@ impl EngineRegistry {
         view_ref: &str,
         input: &str,
         log_file: Option<&Path>,
+        runtime: RuntimeHandle,
     ) -> Result<Box<dyn EngineDriver>> {
         let engine_type = config.engine(view_ref)?;
         let engine = self
             .engines
             .get(engine_type)
             .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
-        engine.create_view(config, view_ref, input, log_file)
+        engine.create_view(config, view_ref, input, log_file, runtime)
     }
 
     pub(crate) fn create_command(

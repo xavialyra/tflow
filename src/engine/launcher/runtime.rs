@@ -8,6 +8,7 @@ impl LauncherDriver {
         &self,
         config: &Config,
         runtime: &mut RuntimeStore,
+        query: &str,
     ) -> Result<()> {
         let frame = self.current();
         let owner = self.command_owner().map(str::to_string);
@@ -31,6 +32,9 @@ impl LauncherDriver {
             .items
             .get(frame.selected)
             .map(super::command::runtime_item_value);
+        let log_file = self
+            .log_file()
+            .map(|path| path.to_string_lossy().to_string());
         runtime.set(
             "",
             serde_json::json!({
@@ -38,7 +42,12 @@ impl LauncherDriver {
                     "current": {
                         "ref": frame.view,
                         "input": frame.input,
-                        "query": frame.query,
+                        "query": query,
+                        "request": {
+                            "input": frame.input,
+                            "query": query,
+                        },
+                        "log_file": log_file,
                         "selected_index": frame.selected,
                         "selected_item": selected_item,
                         "items": items,

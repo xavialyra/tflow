@@ -17,21 +17,24 @@ pub(super) fn evaluate(
     args: Vec<Value>,
     named_args: BTreeMap<String, Value>,
 ) -> Result<Value> {
-    if args.len() > 1 {
-        bail!("script accepts at most one positional target")
+    if args.len() > 2 {
+        bail!("script accepts a target and optional JSON input")
     }
     if let Some(name) = named_args
         .keys()
-        .find(|name| *name != "target" && *name != "params")
+        .find(|name| *name != "target" && *name != "input")
     {
         bail!("script does not accept named argument {:?}", name)
     }
-    if args.len() == 1 && named_args.contains_key("target") {
+    if !args.is_empty() && named_args.contains_key("target") {
         bail!("script cannot combine a positional target with target =")
     }
+    if args.len() > 1 && named_args.contains_key("input") {
+        bail!("script cannot combine positional input with input =")
+    }
 
+    let mut args = args.into_iter();
     let target = args
-        .into_iter()
         .next()
         .or_else(|| named_args.get("target").cloned())
         .context("script requires a target")?;
@@ -39,23 +42,24 @@ pub(super) fn evaluate(
     if target.is_empty() {
         bail!("script requires a non-empty target")
     }
-    run_script(target, root, named_args.get("params"))
+    let input = args.next().or_else(|| named_args.get("input").cloned());
+    run_script(target, root, input.as_ref())
 }
 
-fn run_script(target: &str, root: &Path, params: Option<&Value>) -> Result<Value> {
+fn run_script(target: &str, root: &Path, input: Option<&Value>) -> Result<Value> {
     let path = resolve_script_path(root, target)?;
     let mut process = ProcessCommand::new("sh");
     process.arg(&path).current_dir(root);
-    let input = params
+    let input = input
         .filter(|value| !value.is_null())
         .map(serde_json::to_vec)
         .transpose()
-        .context("could not serialize script params")?;
+        .context("could not serialize script input")?;
     if input
         .as_ref()
         .is_some_and(|value| value.len() > MAX_SCRIPT_STDIN)
     {
-        bail!("script params exceeded {} bytes", MAX_SCRIPT_STDIN);
+        bail!("script input exceeded {} bytes", MAX_SCRIPT_STDIN);
     }
     let output = run_bounded_command_with_stdin(
         process,
@@ -134,11 +138,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("params.sh"), "cat\n").unwrap();
         assert_eq!(
-            evaluate_expression(
-                r#"{{ script("params.sh", params = {query = "fire"}) }}"#,
-                &root,
-            )
-            .unwrap(),
+            evaluate_expression(r#"{{ script("params.sh", {query = "fire"}) }}"#, &root,).unwrap(),
             serde_json::json!({"query": "fire"})
         );
         fs::remove_dir_all(root).unwrap();

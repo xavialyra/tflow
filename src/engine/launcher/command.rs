@@ -1,7 +1,7 @@
 use crate::config::{Command, Config, ENGINE_LAUNCHER, EngineDefinition, normalize_key};
 use crate::discovery::Item;
 use crate::engine::{
-    Engine, EngineDriver, EngineHost, LauncherDriver, SessionEffect, validate_fields,
+    Engine, EngineDriver, EngineHost, LauncherDriver, RuntimeHandle, SessionEffect, validate_fields,
 };
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
@@ -235,12 +235,14 @@ impl Engine for LauncherCommandEngine {
         view_ref: &str,
         input: &str,
         log_file: Option<&Path>,
+        runtime: RuntimeHandle,
     ) -> Result<Box<dyn EngineDriver>> {
         Ok(Box::new(LauncherDriver::new(
             view_ref,
             &config.default_rule,
             input,
             config.clone(),
+            runtime,
             log_file.map(PathBuf::from),
             None,
             None,

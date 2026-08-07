@@ -104,6 +104,57 @@ fn dmenu_cancel_returns_nonzero_without_stdout() {
 }
 
 #[test]
+fn launcher_loads_items_from_an_expression() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:catalog.items }}"
+
+        [catalog]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        exit = true
+        run = '''printf 'expression-marker:%s\\n' "$LAUNCHER_VALUE"'''
+        "#,
+    )
+    .expect("could not write expression items config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write launcher Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Enter key");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("expression-marker:value"),
+        "launcher output did not contain expression marker: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove expression items config");
+}
+
+#[test]
 fn launcher_waits_for_discovery_before_running_enter_command() {
     let root = temporary_root();
     let config = root.join("config.toml");

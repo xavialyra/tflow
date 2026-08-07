@@ -44,6 +44,7 @@ fn registry_accepts_custom_engine_implementations() {
             _view_ref: &str,
             _input: &str,
             _log_file: Option<&Path>,
+            _runtime: RuntimeHandle,
         ) -> Result<Box<dyn EngineDriver>> {
             Ok(Box::new(TestDriver))
         }
@@ -125,7 +126,7 @@ fn expression_script_passes_json_params() {
         methods: &mut methods,
     };
     assert_eq!(
-        Template::parse(r#"{{ script("params.sh", params = {query = "fire"}) }}"#,)
+        Template::parse(r#"{{ script("params.sh", {query = "fire"}) }}"#)
             .unwrap()
             .evaluate_value(&mut context)
             .unwrap(),

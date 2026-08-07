@@ -1,5 +1,6 @@
 use crate::command_runner::run_bounded_command;
 use crate::config::{Config, Rule, View};
+use crate::expression::ExpressionMethods;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,7 +36,7 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DISCOVERY_STDOUT: usize = 1024 * 1024;
 const MAX_DISCOVERY_STDERR: usize = 64 * 1024;
 
-pub fn discover(
+pub fn load_items(
     config: &Config,
     view_ref: &str,
     rule_name: &str,
@@ -43,12 +44,62 @@ pub fn discover(
     query: &str,
     source_prefix: Option<&str>,
     log_file: Option<&Path>,
+    runtime: &Value,
+) -> Result<DiscoveryResult> {
+    load_items_internal(
+        config,
+        view_ref,
+        rule_name,
+        rule,
+        query,
+        source_prefix,
+        log_file,
+        Some(runtime),
+    )
+}
+
+fn load_items_internal(
+    config: &Config,
+    view_ref: &str,
+    rule_name: &str,
+    rule: &Rule,
+    query: &str,
+    source_prefix: Option<&str>,
+    log_file: Option<&Path>,
+    runtime: Option<&Value>,
 ) -> Result<DiscoveryResult> {
     let mut result = DiscoveryResult::default();
 
     for (source_ref, view) in config.source_views(view_ref)? {
         let display_prefix = display_prefix(&source_ref, view);
         if source_prefix.is_some_and(|prefix| prefix != display_prefix) {
+            continue;
+        }
+
+        if let Some(runtime) = runtime
+            && view.items.is_some()
+        {
+            let root = config
+                .plugin_root(&source_ref)
+                .unwrap_or_else(|| Path::new("."));
+            let mut methods = ExpressionMethods::new(root);
+            let value = match config.evaluate_view_items(&source_ref, runtime, &mut methods) {
+                Ok(Some(value)) => value,
+                Ok(None) => continue,
+                Err(error) => {
+                    result.errors.push(format!("{}: {}", source_ref, error));
+                    continue;
+                }
+            };
+            parse_item_values(
+                &mut result,
+                &source_ref,
+                view,
+                &display_prefix,
+                rule,
+                query,
+                value,
+            );
             continue;
         }
 
@@ -117,6 +168,50 @@ fn run_discovery_command(process: Command) -> Result<std::process::Output> {
         MAX_DISCOVERY_STDOUT,
         MAX_DISCOVERY_STDERR,
     )
+}
+
+fn parse_item_values(
+    result: &mut DiscoveryResult,
+    source_ref: &str,
+    view: &View,
+    display_prefix: &str,
+    rule: &Rule,
+    query: &str,
+    value: Value,
+) {
+    let Some(items) = value.as_array() else {
+        result.errors.push(format!(
+            "{}: items expression must return a JSON array",
+            source_ref
+        ));
+        return;
+    };
+    for (index, value) in items.iter().enumerate() {
+        let parsed = match serde_json::from_value::<DiscoveryItem>(value.clone()) {
+            Ok(item) => item,
+            Err(error) => {
+                result.errors.push(format!(
+                    "{}: invalid items JSON at index {}: {}",
+                    source_ref, index, error
+                ));
+                continue;
+            }
+        };
+        let text = sanitize_text(&parsed.label);
+        if text.is_empty() {
+            continue;
+        }
+        if rule.filter && view.filter && !matches_query(&text, query) {
+            continue;
+        }
+        result.items.push(Item {
+            prefix: display_prefix.to_string(),
+            text,
+            value: parsed.value,
+            metadata: parsed.metadata,
+            source_view: source_ref.to_string(),
+        });
+    }
 }
 
 fn parse_items(
@@ -250,6 +345,8 @@ mod tests {
         Command, DisplayType, ENGINE_LAUNCHER, EngineDefinition, ViewTypeDefinition,
     };
     use std::collections::BTreeMap;
+    use std::env;
+    use std::fs;
 
     fn test_config() -> Config {
         let mut views = BTreeMap::new();
@@ -260,6 +357,7 @@ mod tests {
                 display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 display_prefix: None,
+                items: None,
                 discover: None,
                 default_discover: None,
                 query_discover: None,
@@ -276,6 +374,7 @@ mod tests {
                 display: DisplayType::Text,
                 sources: Vec::new(),
                 display_prefix: Some("app".to_string()),
+                items: None,
                 discover: Some("printf '%s\\n' '{\"label\":\"Termius\"}'".to_string()),
                 default_discover: None,
                 query_discover: None,
@@ -335,7 +434,7 @@ mod tests {
 
     #[test]
     fn discovered_items_keep_their_source_view() {
-        let result = discover(
+        let result = load_items(
             &test_config(),
             "core:default",
             "default",
@@ -343,10 +442,75 @@ mod tests {
             "",
             None,
             None,
+            &Value::Null,
         )
         .unwrap();
         assert_eq!(result.items[0].source_view, "apps:main");
         assert_eq!(result.items[0].prefix, "app");
+    }
+
+    #[test]
+    fn item_expressions_load_json_arrays() {
+        let mut config = test_config();
+        let source = config.views.get_mut("apps:main").unwrap();
+        source.discover = None;
+        source.items = Some("{{ runtime:view.current.items }}".to_string());
+        let runtime = serde_json::json!({
+            "view": {
+                "current": {
+                    "items": [{"label": "Termius", "value": "termius"}]
+                }
+            }
+        });
+        let result = load_items(
+            &config,
+            "core:default",
+            "default",
+            &crate::config::Rule { filter: true },
+            "",
+            None,
+            None,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(result.errors, Vec::<String>::new());
+        assert_eq!(result.items[0].text, "Termius");
+        assert_eq!(result.items[0].source_view, "apps:main");
+    }
+
+    #[test]
+    fn item_expressions_pass_runtime_input_to_scripts() {
+        let root =
+            env::temp_dir().join(format!("tui-launcher-items-script-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.sh"),
+            "input=$(cat)\nprintf '[{\\\"label\\\":%s}]\\n' \"$input\"\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        let source = config.views.get_mut("apps:main").unwrap();
+        source.discover = None;
+        source.items = Some("{{ script(\"items.sh\", runtime:view.current.query) }}".to_string());
+        config.plugin_roots.insert("apps".to_string(), root.clone());
+        let runtime = serde_json::json!({
+            "view": {"current": {"query": "fire"}}
+        });
+        let result = load_items(
+            &config,
+            "core:default",
+            "default",
+            &crate::config::Rule { filter: true },
+            "fire",
+            None,
+            None,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(result.items[0].text, "fire");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

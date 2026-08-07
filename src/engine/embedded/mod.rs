@@ -4,6 +4,7 @@ mod session;
 
 use super::{CommandExecution, Engine, EngineDriver, validate_fields};
 use crate::config::{Config, ENGINE_EMBEDDED, EngineDefinition};
+use crate::engine::RuntimeHandle;
 use anyhow::Result;
 use std::path::Path;
 
@@ -24,6 +25,7 @@ impl Engine for EmbeddedEngine {
         _view_ref: &str,
         _input: &str,
         _log_file: Option<&Path>,
+        _runtime: RuntimeHandle,
     ) -> Result<Box<dyn EngineDriver>> {
         Err(anyhow::anyhow!("embedded engine views require a command"))
     }

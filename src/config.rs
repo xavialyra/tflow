@@ -66,6 +66,8 @@ pub struct View {
     #[serde(default)]
     pub display_prefix: Option<String>,
     #[serde(default)]
+    pub items: Option<String>,
+    #[serde(default)]
     pub discover: Option<String>,
     #[serde(default)]
     pub default_discover: Option<String>,
@@ -293,18 +295,26 @@ impl Config {
             if !view.sources.is_empty() && !view.commands.is_empty() {
                 bail!("aggregate view {:?} cannot define commands", view_ref);
             }
+            if !view.sources.is_empty() && view.items.is_some() {
+                bail!("aggregate view {:?} cannot define items", view_ref);
+            }
             let engine = self.engine(view_ref)?;
             if engine != ENGINE_LAUNCHER
                 && (!view.sources.is_empty()
+                    || view.items.is_some()
                     || view.discover.is_some()
                     || view.default_discover.is_some()
                     || view.query_discover.is_some())
             {
                 bail!(
-                    "view {:?} using engine {:?} cannot provide discovery",
+                    "view {:?} using engine {:?} cannot provide launcher items",
                     view_ref,
                     engine
                 );
+            }
+            if let Some(items) = &view.items {
+                Template::parse(items)
+                    .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
             }
             if let Some(command) = &view.discover {
                 validate_script(command, "discover", view_ref)?;
@@ -481,6 +491,31 @@ impl Config {
         Ok(Some(value))
     }
 
+    pub fn evaluate_view_items(
+        &self,
+        view_ref: &str,
+        runtime: &Value,
+        methods: &mut dyn MethodResolver,
+    ) -> Result<Option<Value>> {
+        let Some(source) = self
+            .view(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?
+            .items
+            .as_deref()
+        else {
+            return Ok(None);
+        };
+        let references = TreeReferences {
+            config: &self.config_value,
+            runtime,
+        };
+        let mut context = EvalContext {
+            references: &references,
+            methods,
+        };
+        Ok(Some(Template::parse(source)?.evaluate_value(&mut context)?))
+    }
+
     pub fn dmenu_view(&self) -> Result<&View> {
         let view = self
             .views
@@ -640,6 +675,7 @@ fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View 
         display: DisplayType::Text,
         sources: Vec::new(),
         display_prefix: provider.display_prefix,
+        items: None,
         discover: provider.discover,
         default_discover: provider.default_discover,
         query_discover: provider.query_discover,
@@ -656,6 +692,7 @@ fn default_aggregate_view(source_refs: Vec<ViewRef>) -> View {
         display: DisplayType::Text,
         sources: source_refs,
         display_prefix: None,
+        items: None,
         discover: None,
         default_discover: None,
         query_discover: None,

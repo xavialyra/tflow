@@ -1,5 +1,6 @@
 use crate::config::Config;
-use crate::discovery::{DiscoveryResult, discover};
+use crate::discovery::{DiscoveryResult, load_items};
+use crate::engine::RuntimeHandle;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -38,6 +39,7 @@ pub(super) fn discovery_result_error(
 
 pub(super) fn discovery_worker(
     config: Config,
+    runtime: RuntimeHandle,
     requests: Receiver<DiscoveryRequest>,
     responses: Sender<DiscoveryResponse>,
 ) {
@@ -48,7 +50,8 @@ pub(super) fn discovery_worker(
 
         let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);
         let (rule_name, rule, rule_query) = config.resolve_rule(&query);
-        let result = discover(
+        let runtime = runtime.read();
+        let result = load_items(
             &config,
             &request.view,
             rule_name,
@@ -56,6 +59,7 @@ pub(super) fn discovery_worker(
             &rule_query,
             source_prefix.as_deref(),
             request.log_file.as_deref(),
+            &runtime,
         )
         .map_err(|error| error.to_string());
         let response = DiscoveryResponse {

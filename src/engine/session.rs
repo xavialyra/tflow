@@ -25,12 +25,19 @@ impl<'a> AppSession<'a> {
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
     ) -> Result<Self> {
-        let root = engines.create_view(config, &config.default_view, "", runtime_log.path())?;
+        let runtime = super::RuntimeStore::new();
+        let root = engines.create_view(
+            config,
+            &config.default_view,
+            "",
+            runtime_log.path(),
+            runtime.handle(),
+        )?;
         Ok(Self {
             config,
             engines,
             views: vec![ViewInstance { driver: root }],
-            runtime: super::RuntimeStore::new(),
+            runtime,
             runtime_log,
             active_error: None,
             active_error_deadline: None,
@@ -113,6 +120,7 @@ impl<'a> AppSession<'a> {
                     &view_ref,
                     &input,
                     self.runtime_log.path(),
+                    self.runtime.handle(),
                 )?;
                 if replace_current {
                     self.views.pop();

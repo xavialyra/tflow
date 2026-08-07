@@ -143,7 +143,7 @@ A plugin is packaged as a directory so its configuration and scripts stay togeth
 plugins/apps/
 ├── plugin.toml
 ├── scripts/
-│   ├── discover.sh
+│   ├── items.sh
 │   └── open.sh
 └── lib/
     └── common.sh
@@ -154,8 +154,7 @@ The plugin ID is derived from the package directory name. The optional `[plugin]
 ```toml
 [views.main]
 type = "launcher"
-discover_shell = "bash"
-discover = { file = "scripts/discover.sh" }
+items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.main.commands.open]
 key = "enter"
@@ -184,7 +183,7 @@ sources = ["sys:default", "apps:default"]
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands. A source view keeps its own discovery configuration and remains the owner of the resulting item commands. The viewtype profile controls which runtime expressions the engine evaluates; the source view still owns the underlying discovery and command data.
+A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands. The viewtype profile controls which runtime expressions the engine evaluates; the source view still owns the underlying item and command data.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -217,12 +216,12 @@ A reference uses `namespace:path`, such as `config:commands.script` or `runtime:
 
 ```toml
 items = '{{ path(runtime:view.current, "$.items") }}'
-values = '{{ script("scripts/query.sh", params = {query = runtime:view.current.query}) }}'
+values = '{{ script("scripts/query.sh", runtime:view.current.query) }}'
 selected = '{{ path(script("scripts/query.sh"), "$.items") }}'
 run = "{{ config:commands.script }} --query {{ runtime:view.current.query }}"
 ```
 
-The built-in expression methods are `path` and `script`. `path(value, jsonpath)` applies a JSONPath expression to any JSON value; no match returns `null`, one match keeps its value type, and multiple matches return an array. `script(target, params = ...)` runs a plugin-relative shell script and parses its output as JSON. Script parameters are written as JSON to stdin, with bounded input/output and timeout limits. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle.
+The built-in expression methods are `path` and `script`. `path(value, jsonpath)` applies a JSONPath expression to any JSON value; no match returns `null`, one match keeps its value type, and multiple matches return an array. `script(target, input)` runs a plugin-relative shell script, writes the optional JSON input to stdin, and parses the output as JSON. The script owns the input shape; the expression only chooses which JSON value to pass. Script input/output are bounded and execution has a timeout. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle.
 
 ## View commands
 
@@ -277,25 +276,31 @@ The footer is assembled from the current view commands and, when an item is sele
 
 Only `Enter` and `Alt+<character>` are available for plugin commands. Plain characters remain search input. `Esc`, `Ctrl-C`, `Ctrl-D`, arrows, and input editing controls are reserved by the launcher or the active child view.
 
-## Discovery
+## Launcher items
 
-A launcher view with `discover`, `default_discover`, or `query_discover` writes one JSON object per line. Each item must contain a `label` and may contain a stable `value` plus arbitrary `metadata`. Discovery fields can contain inline shell text or a plugin-relative file reference such as `discover = { file = "scripts/discover.sh" }`:
+A concrete launcher view can define an `items` expression. The expression returns one JSON array, and every item must contain a `label` plus an optional `value` and `metadata`:
 
-```json
-{"label":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}
+```toml
+[views.main]
+type = "launcher"
+items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 ```
 
-View discovery scripts receive:
+```json
+[
+  {"label":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}
+]
+```
 
-- `LAUNCHER_PLUGIN`;
-- `LAUNCHER_PLUGIN_DIR` when the view belongs to a file-backed plugin;
-- `LAUNCHER_VIEW`;
-- `LAUNCHER_VIEW_REF`;
-- `LAUNCHER_RULE`;
-- `LAUNCHER_QUERY`;
-- `LAUNCHER_LOG_FILE`, the append-only runtime log path.
+`script(target, input)` receives the optional input as JSON on stdin. The expression chooses the input value; the script owns its input shape. For a structured request:
 
-A root launcher view runs discovery for each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
+```toml
+items = '{{ script("scripts/items.sh", runtime:view.current.request) }}'
+```
+
+The launcher runtime exposes the current request under `runtime:view.current.request`. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression.
+
+A root launcher view evaluates the `items` expression of each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
 
 ```text
 app terminal
@@ -304,9 +309,7 @@ ssh prod
 
 When a view with an explicit `display_prefix` is not a source of the current view, the same prefix enters that launcher view through the normal view stack. For example, a standalone view with `display_prefix = "log"` is entered with `log timeout`; `timeout` becomes its query. Source selection stays in the current frame, while view routing pushes a new frame.
 
-If `display_prefix` is omitted, the view name is used for source display and selection. `default_discover` is used for an unqualified source query and `query_discover` is used after a matching source prefix. A standalone prefixed view should provide `discover`, because its prefix is removed before its first discovery request.
-
-`discover_shell` selects the discovery interpreter and defaults to `sh`. Set it to `bash` when the script uses Bash syntax.
+If `display_prefix` is omitted, the view name is used for source display and selection. The engine adds each source view and display prefix to the returned item after evaluating the expression. Source commands remain owned by the source view.
 
 The core plugin provides a normal log launcher without adding it to `core:default`:
 
@@ -314,15 +317,10 @@ The core plugin provides a normal log launcher without adding it to `core:defaul
 [views.messages]
 type = "launcher"
 display_prefix = "log"
-discover = { file = "scripts/messages.sh" }
+items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
 ```
 
-The script can read the runtime log directly:
-
-```sh
-cat "$LAUNCHER_LOG_FILE"
-```
-
+The legacy `discover`, `default_discover`, and `query_discover` fields remain accepted as a compatibility fallback. They use the older JSONL and environment-variable protocol and can be migrated to `items` expressions.
 ## Command environment
 
 Command scripts receive:
@@ -358,7 +356,7 @@ The launcher footer occupies one fixed row. It keeps the current view on the lef
 
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command launcher view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 
-Discovery is debounced globally by 120ms and executed by a background worker. Older results are discarded when a newer view/query request exists. Each discovery command receives a null stdin, has a 10-second timeout, and is limited to 1 MiB of stdout and 64 KiB of stderr. Timed-out or oversized commands report an error for that source. If `Enter` is pressed while discovery is pending, it waits for the matching result before executing the view command.
+Launcher item expressions are debounced globally by 120ms and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
 
 ## Legacy configuration
 

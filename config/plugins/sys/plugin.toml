@@ -1,7 +1,7 @@
 [views.default]
 type = "launcher"
 display_prefix = "sys"
-discover = { file = "scripts/discover.sh" }
+items = '{{ script("scripts/items.sh") }}'
 
 [views.default.commands.run]
 key = "enter"
