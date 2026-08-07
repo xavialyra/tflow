@@ -68,14 +68,6 @@ pub struct View {
     #[serde(default)]
     pub items: Option<String>,
     #[serde(default)]
-    pub discover: Option<String>,
-    #[serde(default)]
-    pub default_discover: Option<String>,
-    #[serde(default)]
-    pub query_discover: Option<String>,
-    #[serde(default)]
-    pub discover_shell: Option<String>,
-    #[serde(default)]
     pub run_shell: Option<String>,
     #[serde(default = "default_true")]
     pub filter: bool,
@@ -113,8 +105,6 @@ struct RawConfig {
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
     viewtypes: BTreeMap<String, ViewTypeDefinition>,
-    #[serde(default)]
-    providers: BTreeMap<String, LegacyProvider>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -135,34 +125,6 @@ impl Default for PluginHeader {
             api: default_plugin_api(),
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyProvider {
-    pub discover: Option<String>,
-    pub default_discover: Option<String>,
-    pub query_discover: Option<String>,
-    pub run: Option<String>,
-    #[serde(default)]
-    pub display_prefix: Option<String>,
-    #[serde(default)]
-    pub discover_shell: Option<String>,
-    #[serde(default)]
-    pub run_shell: Option<String>,
-    #[serde(default = "default_true")]
-    pub filter: bool,
-    #[serde(default)]
-    pub mode: LegacyMode,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum LegacyMode {
-    #[default]
-    Oneshot,
-    Capture,
-    Embedded,
-    Takeover,
 }
 
 impl Config {
@@ -212,33 +174,6 @@ impl Config {
                 let view_ref = qualify_view_ref(&plugin_name, &view_name)?;
                 if views.insert(view_ref.clone(), view).is_some() {
                     bail!("duplicate view {:?}", view_ref);
-                }
-            }
-        }
-
-        let mut legacy_refs = Vec::new();
-        for (provider_name, provider) in raw.providers {
-            let view_ref = qualify_view_ref(&provider_name, "default")?;
-            let include_in_default = provider.discover.is_some()
-                || provider.default_discover.is_some()
-                || provider.query_discover.is_some();
-            let view = legacy_provider_view(provider_name.as_str(), provider);
-            if views.insert(view_ref.clone(), view).is_some() {
-                bail!("legacy provider conflicts with view {:?}", view_ref);
-            }
-            if include_in_default {
-                legacy_refs.push(view_ref);
-            }
-        }
-
-        if !views.contains_key(&raw.default_view) && raw.default_view == "default" {
-            let default_view = default_aggregate_view(legacy_refs.clone());
-            views.insert("core:default".to_string(), default_view);
-        }
-        if let Some(default_view) = views.get_mut(&raw.default_view) {
-            for legacy_ref in legacy_refs {
-                if !default_view.sources.contains(&legacy_ref) {
-                    default_view.sources.push(legacy_ref);
                 }
             }
         }
@@ -299,13 +234,7 @@ impl Config {
                 bail!("aggregate view {:?} cannot define items", view_ref);
             }
             let engine = self.engine(view_ref)?;
-            if engine != ENGINE_LAUNCHER
-                && (!view.sources.is_empty()
-                    || view.items.is_some()
-                    || view.discover.is_some()
-                    || view.default_discover.is_some()
-                    || view.query_discover.is_some())
-            {
+            if engine != ENGINE_LAUNCHER && (!view.sources.is_empty() || view.items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide launcher items",
                     view_ref,
@@ -315,18 +244,6 @@ impl Config {
             if let Some(items) = &view.items {
                 Template::parse(items)
                     .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
-            }
-            if let Some(command) = &view.discover {
-                validate_script(command, "discover", view_ref)?;
-            }
-            if let Some(command) = &view.default_discover {
-                validate_script(command, "default_discover", view_ref)?;
-            }
-            if let Some(command) = &view.query_discover {
-                validate_script(command, "query_discover", view_ref)?;
-            }
-            if let Some(shell) = &view.discover_shell {
-                validate_script(shell, "discover_shell", view_ref)?;
             }
             if let Some(shell) = &view.run_shell {
                 validate_script(shell, "run_shell", view_ref)?;
@@ -649,60 +566,6 @@ fn split_prefix(input: &str) -> Option<(&str, &str)> {
     (!prefix.is_empty()).then_some((prefix, query.trim_start()))
 }
 
-fn legacy_provider_view(_provider_name: &str, provider: LegacyProvider) -> View {
-    let mut commands = BTreeMap::new();
-    if let Some(run) = provider.run {
-        let (view, exit) = match provider.mode {
-            LegacyMode::Oneshot => (None, false),
-            LegacyMode::Capture => (Some("core:capture".to_string()), false),
-            LegacyMode::Embedded => (Some("core:embedded".to_string()), false),
-            LegacyMode::Takeover => (None, true),
-        };
-        commands.insert(
-            "default".to_string(),
-            Command {
-                key: "enter".to_string(),
-                label: "Run".to_string(),
-                run: Some(run),
-                shell: provider.run_shell,
-                view,
-                exit,
-            },
-        );
-    }
-    View {
-        view_type: ENGINE_LAUNCHER.to_string(),
-        display: DisplayType::Text,
-        sources: Vec::new(),
-        display_prefix: provider.display_prefix,
-        items: None,
-        discover: provider.discover,
-        default_discover: provider.default_discover,
-        query_discover: provider.query_discover,
-        discover_shell: provider.discover_shell,
-        run_shell: None,
-        filter: provider.filter,
-        commands,
-    }
-}
-
-fn default_aggregate_view(source_refs: Vec<ViewRef>) -> View {
-    View {
-        view_type: ENGINE_LAUNCHER.to_string(),
-        display: DisplayType::Text,
-        sources: source_refs,
-        display_prefix: None,
-        items: None,
-        discover: None,
-        default_discover: None,
-        query_discover: None,
-        discover_shell: None,
-        run_shell: None,
-        filter: true,
-        commands: BTreeMap::new(),
-    }
-}
-
 fn qualify_view_ref(plugin: &str, view: &str) -> Result<ViewRef> {
     if plugin.trim().is_empty()
         || view.trim().is_empty()
@@ -869,7 +732,7 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
 }
 
 fn expand_script_refs(value: &mut toml::Value, root: &Path, owner: &str) -> Result<()> {
-    const SCRIPT_KEYS: [&str; 4] = ["discover", "default_discover", "query_discover", "run"];
+    const SCRIPT_KEYS: [&str; 1] = ["run"];
     match value {
         toml::Value::Table(table) => {
             let keys = table.keys().cloned().collect::<Vec<_>>();
@@ -1157,7 +1020,6 @@ mod tests {
             [plugins.core.views.messages]
             type = "launcher"
             display_prefix = "log"
-            discover = "cat log.jsonl"
             "#,
         );
         assert_eq!(
@@ -1210,33 +1072,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_provider_becomes_namespaced_launcher_view() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [plugins.core.views.default]
-            type = "launcher"
-            [providers.apps]
-            display_prefix = "app"
-            discover = "printf '{}\\n'"
-            run = "echo run"
-            mode = "capture"
-            "#,
-        );
-        let view = &config.views["apps:default"];
-        assert_eq!(view.view_type, ENGINE_LAUNCHER.to_string());
-        assert_eq!(
-            view.commands["default"].view.as_deref(),
-            Some("core:capture")
-        );
-        assert!(
-            config.views["core:default"]
-                .sources
-                .contains(&"apps:default".to_string())
-        );
-    }
-
-    #[test]
     fn file_backed_plugin_scripts_are_loaded_and_rooted() {
         let root = env::temp_dir().join(format!("tui-launcher-plugin-test-{}", std::process::id()));
         let plugin_root = root.join("plugins/filetest");
@@ -1247,7 +1082,7 @@ mod tests {
             r#"
             [views.main]
             type = "launcher"
-            discover = { file = "scripts/discover.sh" }
+            items = '{{ script("scripts/items.sh") }}'
 
             [views.main.commands.run]
             key = "enter"
@@ -1257,8 +1092,8 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            plugin_root.join("scripts/discover.sh"),
-            "printf '%s\\n' '{\"label\":\"from file\"}'\\n",
+            plugin_root.join("scripts/items.sh"),
+            "printf '%s\\n' '[{\"label\":\"from file\"}]'\\n",
         )
         .unwrap();
         fs::write(plugin_root.join("scripts/run.sh"), "printf 'run\\n'\\n").unwrap();
@@ -1279,8 +1114,12 @@ mod tests {
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
-            config.views["filetest:main"].discover.as_deref(),
-            Some("printf '%s\\n' '{\"label\":\"from file\"}'\\n")
+            config.views["filetest:main"].items.as_deref(),
+            Some("{{ script(\"scripts/items.sh\") }}")
+        );
+        assert_eq!(
+            config.views["filetest:main"].commands["run"].run.as_deref(),
+            Some("printf 'run\\n'\\n")
         );
         assert_eq!(
             config.plugin_root("filetest:main"),
@@ -1329,14 +1168,14 @@ mod tests {
             type = "launcher"
             [plugins.base.views.main]
             type = "launcher"
-            discover = "base-discover"
+            items = "{{ runtime:view.current.items }}"
             "#,
         )
         .unwrap();
         let overlay: toml::Value = toml::from_str(
             r#"
             [plugins.base.views.main]
-            query_discover = "user-query"
+            items = "{{ config:items }}"
             "#,
         )
         .unwrap();
@@ -1344,12 +1183,8 @@ mod tests {
         let raw: RawConfig = base.try_into().unwrap();
         let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
         assert_eq!(
-            config.views["base:main"].discover.as_deref(),
-            Some("base-discover")
-        );
-        assert_eq!(
-            config.views["base:main"].query_discover.as_deref(),
-            Some("user-query")
+            config.views["base:main"].items.as_deref(),
+            Some("{{ config:items }}")
         );
     }
 }

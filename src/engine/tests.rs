@@ -109,11 +109,11 @@ fn expression_path_projects_a_runtime_value() {
 }
 
 #[test]
-fn expression_script_passes_json_params() {
+fn expression_script_passes_json_input() {
     let root = env::temp_dir().join(format!("tui-launcher-engine-script-{}", std::process::id()));
     fs::remove_dir_all(&root).ok();
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("params.sh"), "cat\n").unwrap();
+    fs::write(root.join("input.sh"), "cat\n").unwrap();
     let config = Value::Null;
     let runtime = Value::Null;
     let references = TreeReferences {
@@ -126,7 +126,7 @@ fn expression_script_passes_json_params() {
         methods: &mut methods,
     };
     assert_eq!(
-        Template::parse(r#"{{ script("params.sh", {query = "fire"}) }}"#)
+        Template::parse(r#"{{ script("input.sh", {query = "fire"}) }}"#)
             .unwrap()
             .evaluate_value(&mut context)
             .unwrap(),

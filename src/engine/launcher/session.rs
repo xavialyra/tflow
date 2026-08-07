@@ -1,14 +1,14 @@
-use super::discovery::{
-    DiscoveryEvent, DiscoveryRequest, DiscoveryResponse, discovery_result_error, discovery_worker,
+use super::items::{
+    Item, ItemsEvent, ItemsRequest, ItemsResponse, items_result_error, items_worker,
 };
 use super::render;
 use crate::config::Config;
-use crate::discovery::{Item, matches_query, sanitize_text};
 use crate::engine::{
     EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, RuntimeHandle, SessionEffect,
 };
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
+use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -28,7 +28,7 @@ pub(crate) struct LauncherFrame {
     pub(crate) refresh_deadline: Option<Instant>,
     pub(crate) requested_input: String,
     pub(crate) results_input: String,
-    pub(crate) discovery_pending: bool,
+    pub(crate) items_pending: bool,
     pub(crate) pending_command: Option<Key>,
     pub(crate) command_owner: Option<String>,
 }
@@ -45,7 +45,7 @@ impl LauncherFrame {
             refresh_deadline: None,
             requested_input: String::new(),
             results_input: String::new(),
-            discovery_pending: false,
+            items_pending: false,
             pending_command: None,
             command_owner: None,
         }
@@ -54,8 +54,8 @@ impl LauncherFrame {
 
 pub(crate) struct LauncherDriver {
     frame: LauncherFrame,
-    discovery_tx: Sender<DiscoveryRequest>,
-    discovery_rx: Receiver<DiscoveryResponse>,
+    items_tx: Sender<ItemsRequest>,
+    items_rx: Receiver<ItemsResponse>,
     next_request_id: u64,
     latest_request_id: u64,
     requested_view: String,
@@ -76,15 +76,15 @@ impl LauncherDriver {
         command_owner: Option<String>,
         parent_item: Option<Item>,
     ) -> Self {
-        let (discovery_tx, request_rx) = mpsc::channel();
-        let (response_tx, discovery_rx) = mpsc::channel();
-        thread::spawn(move || discovery_worker(config, runtime, request_rx, response_tx));
+        let (items_tx, request_rx) = mpsc::channel();
+        let (response_tx, items_rx) = mpsc::channel();
+        thread::spawn(move || items_worker(config, runtime, request_rx, response_tx));
         let mut frame = LauncherFrame::new(view, default_rule, input);
         frame.command_owner = command_owner;
         Self {
             frame,
-            discovery_tx,
-            discovery_rx,
+            items_tx,
+            items_rx,
             next_request_id: 0,
             latest_request_id: 0,
             requested_view: String::new(),
@@ -119,7 +119,7 @@ impl LauncherDriver {
     }
 
     pub(crate) fn results_current(&self) -> bool {
-        !self.frame.discovery_pending
+        !self.frame.items_pending
             && self.frame.refresh_deadline.is_none()
             && self.frame.results_input == self.frame.input
     }
@@ -163,7 +163,7 @@ impl LauncherDriver {
         {
             self.frame.input.clear();
             self.frame.refresh_deadline = None;
-            self.frame.discovery_pending = false;
+            self.frame.items_pending = false;
             self.frame.pending_command = None;
             return Ok(Some(SessionEffect::OpenView {
                 view_ref: target_view,
@@ -177,7 +177,7 @@ impl LauncherDriver {
             .resolve_view_prefix(&current_view, &current_input);
         let (_, _, request_query) = host.config.resolve_rule(&query);
         self.publish_runtime(host.config, host.runtime, &request_query)?;
-        self.request_discovery(&current_view, &current_input)?;
+        self.request_items(&current_view, &current_input)?;
         Ok(None)
     }
 
@@ -224,13 +224,13 @@ impl LauncherDriver {
         self.frame.query = input.clone();
         self.frame.requested_input = input.clone();
         self.frame.results_input = input;
-        self.frame.discovery_pending = false;
+        self.frame.items_pending = false;
         self.frame.refresh_deadline = None;
         Ok(())
     }
 
-    fn request_discovery(&mut self, view: &str, input: &str) -> Result<()> {
-        if self.frame.discovery_pending
+    fn request_items(&mut self, view: &str, input: &str) -> Result<()> {
+        if self.frame.items_pending
             && self.requested_view == view
             && self.frame.requested_input == input
         {
@@ -240,24 +240,23 @@ impl LauncherDriver {
         self.latest_request_id = self.next_request_id;
         self.requested_view = view.to_string();
         self.frame.requested_input = input.to_string();
-        self.frame.discovery_pending = true;
+        self.frame.items_pending = true;
         self.frame.refresh_deadline = None;
-        self.discovery_tx
-            .send(DiscoveryRequest {
+        self.items_tx
+            .send(ItemsRequest {
                 id: self.latest_request_id,
                 view: view.to_string(),
                 input: input.to_string(),
-                log_file: self.log_file.clone(),
             })
-            .context("could not queue discovery request")
+            .context("could not queue items request")
     }
 
-    fn collect_discoveries(&mut self) -> Vec<DiscoveryEvent> {
+    fn collect_items(&mut self) -> Vec<ItemsEvent> {
         let mut events = Vec::new();
-        while let Ok(response) = self.discovery_rx.try_recv() {
+        while let Ok(response) = self.items_rx.try_recv() {
             if !self.response_matches(&response) {
-                let (errors, failure) = discovery_result_error(&response.result);
-                events.push(DiscoveryEvent {
+                let (errors, failure) = items_result_error(&response.result);
+                events.push(ItemsEvent {
                     current: false,
                     view: response.view,
                     errors,
@@ -272,7 +271,7 @@ impl LauncherDriver {
             let (errors, failure) = match response.result {
                 Ok(result) => {
                     let errors = result.errors;
-                    self.frame.discovery_pending = false;
+                    self.frame.items_pending = false;
                     self.frame.active_rule = response.active_rule;
                     self.frame.query = response.query;
                     self.frame.items = result.items;
@@ -285,7 +284,7 @@ impl LauncherDriver {
                     (errors, None)
                 }
                 Err(error) => {
-                    self.frame.discovery_pending = false;
+                    self.frame.items_pending = false;
                     self.frame.active_rule = response.active_rule;
                     self.frame.query = response.query;
                     self.frame.items.clear();
@@ -295,7 +294,7 @@ impl LauncherDriver {
                     (Vec::new(), Some(error))
                 }
             };
-            events.push(DiscoveryEvent {
+            events.push(ItemsEvent {
                 current: true,
                 view,
                 errors,
@@ -306,7 +305,7 @@ impl LauncherDriver {
         events
     }
 
-    fn response_matches(&self, response: &DiscoveryResponse) -> bool {
+    fn response_matches(&self, response: &ItemsResponse) -> bool {
         response.id == self.latest_request_id
             && response.view == self.frame.view
             && response.input == self.frame.input
@@ -390,7 +389,7 @@ impl LauncherDriver {
     }
 
     fn handle_events(&mut self, host: &mut EngineHost<'_>) -> Result<Option<SessionEffect>> {
-        for event in self.collect_discoveries() {
+        for event in self.collect_items() {
             if !event.current {
                 for error in event.errors {
                     host.runtime_log.record(

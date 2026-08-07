@@ -1,8 +1,8 @@
 use super::render;
-use crate::discovery::sanitize_text;
 use crate::engine::{Key, PreparedCommand};
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
+use crate::text::sanitize_text;
 use anyhow::{Context, Result};
 use std::process::Stdio;
 

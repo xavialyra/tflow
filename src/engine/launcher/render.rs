@@ -1,6 +1,5 @@
-use super::LauncherDriver;
+use super::{Item, LauncherDriver};
 use crate::config::Config;
-use crate::discovery::Item;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -214,7 +213,7 @@ impl LauncherDriver {
             input: frame.input.clone(),
             items: frame.items.clone(),
             selected: frame.selected,
-            searching: frame.refresh_deadline.is_some() || frame.discovery_pending,
+            searching: frame.refresh_deadline.is_some() || frame.items_pending,
             commands: self.visible_commands(config),
         }
     }

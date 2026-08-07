@@ -11,15 +11,6 @@ use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-pub(crate) fn run_bounded_command(
-    process: Command,
-    timeout: Duration,
-    stdout_limit: usize,
-    stderr_limit: usize,
-) -> Result<std::process::Output> {
-    run_bounded_command_with_stdin(process, None, timeout, stdout_limit, stderr_limit)
-}
-
 pub(crate) fn run_bounded_command_with_stdin(
     mut process: Command,
     stdin: Option<&[u8]>,
@@ -162,8 +153,9 @@ mod tests {
     fn command_timeout_terminates_the_process_group() {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 1"]);
-        let error = run_bounded_command(command, Duration::from_millis(50), 1024, 1024)
-            .expect_err("the command should time out");
+        let error =
+            run_bounded_command_with_stdin(command, None, Duration::from_millis(50), 1024, 1024)
+                .expect_err("the command should time out");
         assert!(error.to_string().contains("timed out"));
     }
 
@@ -171,7 +163,7 @@ mod tests {
     fn command_output_limit_returns_an_error() {
         let mut command = Command::new("sh");
         command.args(["-c", "printf 123456"]);
-        let error = run_bounded_command(command, Duration::from_secs(1), 3, 1024)
+        let error = run_bounded_command_with_stdin(command, None, Duration::from_secs(1), 3, 1024)
             .expect_err("the command should exceed its output limit");
         assert!(error.to_string().contains("output exceeded"));
     }

@@ -1,4 +1,4 @@
-use crate::discovery::sanitize_text;
+use crate::text::sanitize_text;
 use serde_json::json;
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -170,7 +170,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn records_discovery_items_as_jsonl() {
+    fn records_log_items_as_jsonl() {
         let root = env::temp_dir().join(format!("tui-launcher-log-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
@@ -187,12 +187,7 @@ mod tests {
             sequence: 0,
         };
 
-        let record = log.record(
-            LogLevel::Error,
-            Some("apps:default"),
-            None,
-            "discovery failed",
-        );
+        let record = log.record(LogLevel::Error, Some("apps:default"), None, "items failed");
         let contents = fs::read_to_string(path).unwrap();
         let item: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
         assert_eq!(item["label"], record.label);

@@ -129,16 +129,16 @@ mod tests {
     }
 
     #[test]
-    fn script_receives_json_params() {
+    fn script_receives_json_input() {
         let root = env::temp_dir().join(format!(
             "tui-launcher-expression-script-{}",
             std::process::id()
         ));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("params.sh"), "cat\n").unwrap();
+        fs::write(root.join("input.sh"), "cat\n").unwrap();
         assert_eq!(
-            evaluate_expression(r#"{{ script("params.sh", {query = "fire"}) }}"#, &root,).unwrap(),
+            evaluate_expression(r#"{{ script("input.sh", {query = "fire"}) }}"#, &root,).unwrap(),
             serde_json::json!({"query": "fire"})
         );
         fs::remove_dir_all(root).unwrap();

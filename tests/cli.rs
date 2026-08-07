@@ -50,6 +50,9 @@ type = "capture"
 
 [viewtypes.embedded.engine]
 type = "embedded"
+
+[test_items]
+items = [{label = "Item", value = "value"}]
 "#;
 
 fn with_viewtypes(source: &str) -> String {
@@ -155,7 +158,7 @@ fn launcher_loads_items_from_an_expression() {
 }
 
 #[test]
-fn launcher_waits_for_discovery_before_running_enter_command() {
+fn launcher_waits_for_items_before_running_enter_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -165,7 +168,7 @@ fn launcher_waits_for_discovery_before_running_enter_command() {
 
         [plugins.core.views.default]
         type = "launcher"
-        discover = '''printf '%s\n' '{"label":"Item","value":"value"}' '''
+        items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -208,7 +211,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
 
         [plugins.core.views.default]
         type = "launcher"
-        discover = '''printf '%s\n' '{"label":"Item","value":"value"}' '''
+        items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -265,7 +268,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
 }
 
 #[test]
-fn discovery_errors_are_logged_and_do_not_block_exit() {
+fn items_errors_are_logged_and_do_not_block_exit() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -275,7 +278,7 @@ fn discovery_errors_are_logged_and_do_not_block_exit() {
 
         [plugins.core.views.default]
         type = "launcher"
-        discover = '''printf '%s\n' 'not-json' '''
+        items = "{{ config:test_items }}"
         "#,
     )
     .expect("could not write error logging config");
@@ -294,7 +297,7 @@ fn discovery_errors_are_logged_and_do_not_block_exit() {
         record["metadata"]["message"]
             .as_str()
             .unwrap()
-            .contains("invalid discovery JSON")
+            .contains("items expression must return a JSON array")
     );
 
     process
@@ -319,6 +322,18 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
         "{\"label\":\"preexisting log\",\"value\":\"1\",\"metadata\":{}}\n",
     )
     .expect("could not seed runtime log");
+    let plugin_root = root.join("plugins/core");
+    fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "[views.placeholder]\ntype = \"launcher\"\n",
+    )
+    .expect("could not write test plugin manifest");
+    fs::write(
+        plugin_root.join("scripts/items.sh"),
+        "log_file=$(cat | jq -r '. // empty')\nif [ -n \"$log_file\" ] && [ -f \"$log_file\" ]; then\n    jq -s '.' \"$log_file\"\nelse\n    printf '[]\\n'\nfi\n",
+    )
+    .expect("could not write test items script");
     write_test_config(
         &config,
         r#"
@@ -330,7 +345,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
         [plugins.core.views.messages]
         type = "launcher"
         display_prefix = "log"
-        discover = '''cat "$LAUNCHER_LOG_FILE"'''
+        items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
         "#,
     )
     .expect("could not write messages integration config");
@@ -371,7 +386,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default]
         type = "launcher"
-        discover = '''printf '%s\n' '{"label":"Item","value":"value"}' '''
+        items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -440,7 +455,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default]
         type = "launcher"
-        discover = '''printf '%s\n' '{"label":"Item","value":"value"}' '''
+        items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
         key = "enter"

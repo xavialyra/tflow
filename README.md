@@ -1,6 +1,6 @@
 # tui-launcher
 
-`tui-launcher` is a small dmenu-style TUI workflow launcher. It runs ordinary discovery and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
+`tui-launcher` is a small dmenu-style TUI workflow launcher. It evaluates runtime-driven launcher items and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
 
 The launcher separates three concepts:
 
@@ -8,7 +8,7 @@ The launcher separates three concepts:
 - a concrete view reference, such as `apps:main` or `apps:detail`;
 - a view type, such as `launcher`, `capture`, or `embedded`.
 
-Several concrete views can use the same view type. For example, `default` and `app` can both be launcher views while keeping separate discovery data and commands.
+Several concrete views can use the same view type. For example, `default` and `app` can both be launcher views while keeping separate item expressions and commands.
 
 ## Run
 
@@ -79,7 +79,7 @@ printf 'one\0two\0three\0' |
 find . -name '*.rs' | tui-launcher --dmenu
 ```
 
-The dmenu UI reads keyboard input and draws through `/dev/tty`. It loads the configured dedicated dmenu view (default: `core:dmenu`) for display settings, but does not run that view's discovery, sources, or commands. Standard input is consumed as a newline-delimited snapshot before the selector opens; `--dmenu0` uses NUL-delimited records and NUL-terminated output. On acceptance, standard output contains the complete selected input line followed by a newline. `Esc`, `Ctrl-C`, and `Ctrl-D` cancel with a non-zero exit status. If the query does not match an entry, the query text itself is returned. Rofi metadata after a NUL separator is parsed into generic candidate metadata; the current text renderer ignores it.
+The dmenu UI reads keyboard input and draws through `/dev/tty`. It loads the configured dedicated dmenu view (default: `core:dmenu`) for display settings, but does not run that view's items, sources, or commands. Standard input is consumed as a newline-delimited snapshot before the selector opens; `--dmenu0` uses NUL-delimited records and NUL-terminated output. On acceptance, standard output contains the complete selected input line followed by a newline. `Esc`, `Ctrl-C`, and `Ctrl-D` cancel with a non-zero exit status. If the query does not match an entry, the query text itself is returned. Rofi metadata after a NUL separator is parsed into generic candidate metadata; the current text renderer ignores it.
 
 The available dmenu options are:
 
@@ -94,7 +94,7 @@ The available dmenu options are:
 - `--nth-delimiter CHARACTER` sets the single ASCII field delimiter and defaults to Tab; use `--nth-delimiter=whitespace` to treat runs of whitespace as one field delimiter;
 - setting any field format to `0` leaves that part unchanged.
 
-Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Set `dmenu_view = "core:dmenu"` in the root config to choose the dedicated display view; no dmenu view-selection CLI flag is provided yet. Dmenu mode can use `--config`, but cannot be combined with `--check`. The dedicated view is a launcher view with no discovery or commands:
+Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Set `dmenu_view = "core:dmenu"` in the root config to choose the dedicated display view; no dmenu view-selection CLI flag is provided yet. Dmenu mode can use `--config`, but cannot be combined with `--check`. The dedicated view is a launcher view with no items or commands:
 
 ```toml
 # config/config.toml
@@ -225,7 +225,7 @@ The built-in expression methods are `path` and `script`. `path(value, jsonpath)`
 
 ## View commands
 
-Commands belong to a concrete view. `Enter` is not a special provider action; it is an ordinary command binding:
+Commands belong to a concrete view. `Enter` is not a special data-source action; it is an ordinary command binding:
 
 ```toml
 [views.main.commands.open]
@@ -320,7 +320,6 @@ display_prefix = "log"
 items = '{{ script("scripts/items.sh", runtime:view.current.log_file) }}'
 ```
 
-The legacy `discover`, `default_discover`, and `query_discover` fields remain accepted as a compatibility fallback. They use the older JSONL and environment-variable protocol and can be migrated to `items` expressions.
 ## Command environment
 
 Command scripts receive:
@@ -336,8 +335,6 @@ Command scripts receive:
 - `LAUNCHER_RULE`;
 - `LAUNCHER_QUERY`;
 - `LAUNCHER_LOG_FILE`.
-
-`LAUNCHER_PROVIDER` remains available as an alias for the source plugin name for compatibility with older scripts.
 
 Command `shell` selects the command interpreter. When omitted, the source view's `run_shell` is used, then `sh`. File-backed plugin commands run with the plugin directory as their working directory, so relative paths and `LAUNCHER_PLUGIN_DIR` are stable.
 
@@ -357,18 +354,3 @@ The launcher footer occupies one fixed row. It keeps the current view on the lef
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command launcher view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 
 Launcher item expressions are debounced globally by 120ms and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
-
-## Legacy configuration
-
-The loader still accepts the old `[providers.<name>]` format inside the configuration file. Each provider is converted to `<name>:default`, and providers with discovery scripts are added to `core:default` when that aggregate view exists. The old `run` field becomes an `Enter` command.
-
-Legacy modes are mapped as follows:
-
-```text
-oneshot  -> command without a target view
-capture  -> view = "core:capture"
-embedded -> view = "core:embedded"
-takeover -> exit = true
-```
-
-New configuration should use the `config.toml` plus `plugins/<id>/plugin.toml` layout and namespaced plugin views directly.

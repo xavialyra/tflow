@@ -1,6 +1,6 @@
 mod command;
-mod discovery;
 mod input;
+mod items;
 mod render;
 mod runtime;
 mod session;
@@ -15,6 +15,7 @@ use std::path::Path;
 pub(crate) use command::{
     CommandExecution, CommandInvocation, LauncherCommandEngine, PreparedCommand,
 };
+pub(crate) use items::Item;
 pub(crate) use session::LauncherDriver;
 
 pub(crate) struct LauncherEngine<'a> {

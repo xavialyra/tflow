@@ -1,5 +1,5 @@
+use super::Item;
 use crate::config::{Command, Config, ENGINE_LAUNCHER, EngineDefinition, normalize_key};
-use crate::discovery::Item;
 use crate::engine::{
     Engine, EngineDriver, EngineHost, LauncherDriver, RuntimeHandle, SessionEffect, validate_fields,
 };
@@ -108,11 +108,6 @@ pub(super) fn prepare_command(
         ("LAUNCHER_COMMAND".to_string(), invocation.id.clone()),
         ("LAUNCHER_RULE".to_string(), frame.active_rule.clone()),
         ("LAUNCHER_QUERY".to_string(), frame.query.clone()),
-        // Keep the old name available to existing scripts.
-        (
-            "LAUNCHER_PROVIDER".to_string(),
-            plugin_name(&invocation.source_view).to_string(),
-        ),
     ];
     if let Some(root) = &plugin_root {
         environment.push((

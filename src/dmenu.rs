@@ -1,8 +1,8 @@
 use crate::config::DisplayType;
-use crate::discovery::matches_query;
 use crate::engine::Key;
 use crate::input::InputDecoder;
 use crate::terminal::Terminal;
+use crate::text::matches_query;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::fmt::Write as FmtWrite;
