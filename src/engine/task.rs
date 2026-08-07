@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::TryRecvError;
@@ -77,7 +77,6 @@ struct ActiveTask<R> {
 struct SharedTask<R> {
     result: Mutex<Option<TaskCompletion<R>>>,
     ready: Condvar,
-    subscribers: AtomicUsize,
     cancellation: CancellationToken,
 }
 
@@ -128,7 +127,6 @@ where
         if let Some(existing) = active.get(&key) {
             match mode {
                 TaskMode::Join => {
-                    existing.task.subscribers.fetch_add(1, Ordering::Relaxed);
                     return Ok(TaskHandle::new(
                         Arc::clone(&self.inner),
                         Arc::clone(&existing.task),
@@ -178,7 +176,6 @@ where
         let task = Arc::new(SharedTask {
             result: Mutex::new(None),
             ready: Condvar::new(),
-            subscribers: AtomicUsize::new(1),
             cancellation: cancellation.clone(),
         });
         let worker = Arc::clone(&self.inner.task);
@@ -316,31 +313,13 @@ where
     }
 }
 
-impl<T, R, K> Clone for TaskHandle<T, R, K>
-where
-    K: Eq + Hash + Clone,
-{
-    fn clone(&self) -> Self {
-        self.task.subscribers.fetch_add(1, Ordering::Relaxed);
-        Self {
-            scheduler: Arc::clone(&self.scheduler),
-            task: Arc::clone(&self.task),
-            key: self.key.clone(),
-            id: self.id,
-            seen: false,
-        }
-    }
-}
-
 impl<T, R, K> Drop for TaskHandle<T, R, K>
 where
     K: Eq + Hash + Clone,
 {
     fn drop(&mut self) {
-        if self.task.subscribers.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.task.cancellation.cancel();
-            self.scheduler.remove_if_current(self.key.as_ref(), self.id);
-        }
+        self.task.cancellation.cancel();
+        self.scheduler.remove_if_current(self.key.as_ref(), self.id);
     }
 }
 
