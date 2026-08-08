@@ -1,4 +1,4 @@
-use crate::config::{Config, EngineDefinition};
+use crate::config::{Config, View};
 use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
@@ -71,7 +71,7 @@ pub(crate) struct ViewContext<'a> {
 pub(crate) trait Engine {
     fn engine_type(&self) -> &'static str;
 
-    fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()>;
+    fn validate_config(&self, name: &str, view: &View) -> Result<()>;
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
 }

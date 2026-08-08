@@ -55,13 +55,26 @@ pub(super) struct LauncherKeymap {
 }
 
 impl LauncherKeymap {
+    #[cfg(test)]
     pub(super) fn validate_value(value: Option<&Value>) -> Result<()> {
+        Self::validate_values(None, value)
+    }
+
+    pub(super) fn validate_values(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
+        let dynamic = Self::validate_shape(defaults)? | Self::validate_shape(view)?;
+        if !dynamic {
+            Self::from_values(defaults.cloned(), view.cloned())?;
+        }
+        Ok(())
+    }
+
+    fn validate_shape(value: Option<&Value>) -> Result<bool> {
         let Some(value) = value else {
-            return Ok(());
+            return Ok(false);
         };
         if let Some(source) = value.as_str() {
             if Template::parse(source)?.is_complete_expression() {
-                return Ok(());
+                return Ok(true);
             }
             bail!("launcher bindings must be an object or complete expression");
         }
@@ -88,17 +101,28 @@ impl LauncherKeymap {
                 }
             }
         }
-        if !dynamic {
-            Self::from_value(Some(value.clone()))?;
-        }
-        Ok(())
+        Ok(dynamic)
     }
 
+    #[cfg(test)]
     pub(super) fn from_value(value: Option<Value>) -> Result<Self> {
-        let mut bindings = default_bindings();
-        let Some(value) = value else {
-            return Ok(Self { bindings });
+        Self::from_values(None, value)
+    }
+
+    pub(super) fn from_values(defaults: Option<Value>, view: Option<Value>) -> Result<Self> {
+        let mut keymap = Self {
+            bindings: default_bindings(),
         };
+        if let Some(defaults) = defaults {
+            keymap.apply(defaults)?;
+        }
+        if let Some(view) = view {
+            keymap.apply(view)?;
+        }
+        Ok(keymap)
+    }
+
+    fn apply(&mut self, value: Value) -> Result<()> {
         let overrides = value
             .as_object()
             .context("launcher bindings must evaluate to an object")?;
@@ -108,7 +132,7 @@ impl LauncherKeymap {
                 .with_context(|| format!("unsupported launcher binding action {:?}", name))?;
             actions.insert(action);
         }
-        bindings.retain(|_, action| !actions.contains(action));
+        self.bindings.retain(|_, action| !actions.contains(action));
 
         for (name, values) in overrides {
             let action =
@@ -122,7 +146,7 @@ impl LauncherKeymap {
                 })?;
                 let key = Key::parse_binding(source)
                     .with_context(|| format!("launcher binding action {:?}", name))?;
-                if let Some(existing) = bindings.insert(key, action) {
+                if let Some(existing) = self.bindings.insert(key, action) {
                     bail!(
                         "launcher key {:?} is assigned to both {:?} and {:?}",
                         source,
@@ -132,7 +156,7 @@ impl LauncherKeymap {
                 }
             }
         }
-        Ok(Self { bindings })
+        Ok(())
     }
 
     pub(super) fn action(&self, key: Key) -> Option<LauncherAction> {
@@ -174,6 +198,21 @@ mod tests {
         );
         assert_eq!(keymap.action(Key::Ctrl('k')), None);
         assert_eq!(keymap.action(Key::Ctrl('c')), Some(LauncherAction::Exit));
+    }
+
+    #[test]
+    fn view_overrides_are_applied_after_root_defaults() {
+        let keymap = LauncherKeymap::from_values(
+            Some(json!({"open_commands": ["ctrl+p"]})),
+            Some(json!({"open_commands": ["ctrl+o"]})),
+        )
+        .unwrap();
+        assert_eq!(
+            keymap.action(Key::Ctrl('o')),
+            Some(LauncherAction::OpenCommands)
+        );
+        assert_eq!(keymap.action(Key::Ctrl('p')), None);
+        assert_eq!(keymap.action(Key::Ctrl('k')), None);
     }
 
     #[test]

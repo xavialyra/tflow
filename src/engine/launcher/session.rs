@@ -1,7 +1,7 @@
 use super::input::LauncherInputAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::LauncherKeymap;
-use super::{ViewEvaluator, render};
+use super::render;
 use crate::config::Config;
 use crate::engine::{
     EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
@@ -184,15 +184,13 @@ impl LauncherView {
     fn refresh_command_view(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let input = self.frame.input.clone();
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
-        let current_view = self.frame.view.clone();
         self.publish_runtime(host.config, host.runtime, &input)?;
-        let evaluator = ViewEvaluator::new(host.config, &current_view, host.runtime);
-        let projected = evaluator
-            .evaluate_field("commands")?
-            .context("launcher viewtype has no commands field")?;
-        let commands = projected
-            .as_array()
-            .context("runtime command projection must return an array")?;
+        let commands = host
+            .runtime
+            .snapshot()
+            .pointer("/view/current/command")
+            .and_then(serde_json::Value::as_array)
+            .context("runtime command list must be an array")?;
         let mut items = commands
             .iter()
             .filter_map(|command| {

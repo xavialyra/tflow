@@ -37,34 +37,13 @@ struct RunResult {
     stdout: Vec<u8>,
 }
 
-const TEST_VIEWTYPES: &str = r#"
-[viewtypes.launcher.engine]
-type = "launcher"
-
-[viewtypes.launcher.engine.config]
-items = "{{ runtime:view.current.items }}"
-commands = "{{ runtime:view.current.command }}"
-
-[viewtypes.capture.engine]
-type = "capture"
-
-[viewtypes.capture.engine.config]
-output = "{{ runtime:view.current.input }}"
-title = "Capture"
-
-[viewtypes.embedded.engine]
-type = "embedded"
-
-[viewtypes.embedded.engine.config]
-command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
-title = "Embedded"
-
+const TEST_CONFIG: &str = r#"
 [test_items]
 items = [{label = "Item", value = "value"}]
 "#;
 
-fn with_viewtypes(source: &str) -> String {
-    format!("{TEST_VIEWTYPES}\n{source}")
+fn with_test_config(source: &str) -> String {
+    format!("{TEST_CONFIG}\n{source}")
 }
 
 #[test]
@@ -409,15 +388,12 @@ fn launcher_bindings_can_override_a_default_shortcut() {
         r#"
         default_view = "core:default"
 
-        [viewtypes.custom-launcher.engine]
-        type = "launcher"
-
-        [viewtypes.custom-launcher.engine.config.bindings]
-        open_commands = ["ctrl+p"]
-
         [plugins.core.views.default]
-        type = "custom-launcher"
+        type = "launcher"
         items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.bindings]
+        open_commands = ["ctrl+p"]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -485,6 +461,8 @@ fn command_launcher_navigation_keeps_the_parent_item_context() {
 
         [plugins.core.views.capture]
         type = "capture"
+        output = "{{ runtime:view.current.input }}"
+        title = "Capture"
         "#,
     )
     .expect("could not write command navigation integration config");
@@ -664,6 +642,8 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.capture]
         type = "capture"
+        output = "{{ runtime:view.current.input }}"
+        title = "Capture"
         "#,
     )
     .expect("could not write capture integration config");
@@ -733,6 +713,8 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.embedded]
         type = "embedded"
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        title = "Embedded"
         "#,
     )
     .expect("could not write embedded integration config");
@@ -779,17 +761,12 @@ fn failed_view_creation_returns_to_the_current_view() {
         r#"
         default_view = "core:default"
 
-        [viewtypes.broken.engine]
-        type = "embedded"
-
-        [viewtypes.broken.engine.config]
-        command = "{{ runtime:missing }}"
-
         [plugins.core.views.default]
         type = "launcher"
 
         [plugins.core.views.broken]
-        type = "broken"
+        type = "embedded"
+        command = "{{ runtime:missing }}"
         "#,
     )
     .expect("could not write failed navigation integration config");
@@ -838,6 +815,8 @@ fn qualified_view_path_navigates_to_any_engine() {
 
         [plugins.core.views.embedded]
         type = "embedded"
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        title = "Embedded"
         "#,
     )
     .expect("could not write qualified route integration config");
@@ -875,7 +854,7 @@ fn qualified_view_path_navigates_to_any_engine() {
 }
 
 fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {
-    fs::write(path, with_viewtypes(source))
+    fs::write(path, with_test_config(source))
 }
 
 fn run_dmenu(extra_args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {

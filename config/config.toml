@@ -2,14 +2,7 @@ default_view = "core:default"
 dmenu_view = "core:dmenu"
 command_view = "core:command"
 
-[viewtypes.launcher.engine]
-type = "launcher"
-
-[viewtypes.launcher.engine.config]
-items = "{{ runtime:view.current.items }}"
-commands = "{{ runtime:view.current.command }}"
-
-[viewtypes.launcher.engine.config.bindings]
+[defaults.launcher.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 open_commands = ["ctrl+k"]
 back = ["escape"]
@@ -19,17 +12,3 @@ delete_backward = ["backspace"]
 clear_input = ["ctrl+u"]
 delete_word = ["ctrl+w"]
 activate = ["enter"]
-
-[viewtypes.capture.engine]
-type = "capture"
-
-[viewtypes.capture.engine.config]
-output = '{{ script("scripts/run.sh", runtime:view.current.input) }}'
-title = "{{ runtime:view.current.ref }}"
-
-[viewtypes.embedded.engine]
-type = "embedded"
-
-[viewtypes.embedded.engine.config]
-command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
-title = "{{ runtime:view.current.ref }}"

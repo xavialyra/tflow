@@ -171,9 +171,7 @@ fn display_prefix(source_ref: &str, view: &View) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        Command, DisplayType, ENGINE_LAUNCHER, EngineDefinition, ViewTypeDefinition,
-    };
+    use crate::config::{Command, Defaults, DisplayType, ENGINE_LAUNCHER};
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -183,19 +181,20 @@ mod tests {
         views.insert(
             "core:default".to_string(),
             View {
-                view_type: ENGINE_LAUNCHER.to_string(),
+                engine_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 display_prefix: None,
                 items: None,
                 run_shell: None,
                 commands: BTreeMap::new(),
+                engine_config: toml::Table::new(),
             },
         );
         views.insert(
             "apps:main".to_string(),
             View {
-                view_type: ENGINE_LAUNCHER.to_string(),
+                engine_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: Vec::new(),
                 display_prefix: Some("app".to_string()),
@@ -213,6 +212,7 @@ mod tests {
                         exit: false,
                     },
                 )]),
+                engine_config: toml::Table::new(),
             },
         );
         Config {
@@ -220,15 +220,7 @@ mod tests {
             dmenu_view: "core:dmenu".to_string(),
             command_view: "core:command".to_string(),
             views,
-            viewtypes: BTreeMap::from([(
-                ENGINE_LAUNCHER.to_string(),
-                ViewTypeDefinition {
-                    engine: EngineDefinition {
-                        engine_type: ENGINE_LAUNCHER.to_string(),
-                        config: toml::Table::new(),
-                    },
-                },
-            )]),
+            defaults: Defaults::default(),
             plugin_roots: BTreeMap::new(),
             config_value: Value::Object(serde_json::Map::new()),
         }

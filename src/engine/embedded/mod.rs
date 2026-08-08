@@ -7,7 +7,7 @@ use super::{
     Engine, EngineHost, PreparedProcess, ViewContext, ViewEffect, ViewInstance, evaluate_field,
     evaluate_optional_string, require_field, validate_fields,
 };
-use crate::config::{ENGINE_EMBEDDED, EngineDefinition};
+use crate::config::{ENGINE_EMBEDDED, View};
 use crate::expression::Template;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
@@ -19,39 +19,35 @@ impl Engine for EmbeddedEngine {
         ENGINE_EMBEDDED
     }
 
-    fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["command", "title"])?;
-        require_field(name, definition, "command")?;
-        if let Some(title) = definition.config.get("title")
+    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+        validate_fields(name, view, &["command", "title"])?;
+        require_field(name, view, "command")?;
+        if let Some(title) = view.engine_field("title")
             && !title.is_str()
         {
-            anyhow::bail!(
-                "viewtype {:?} embedded title must be a string expression",
-                name
-            );
+            anyhow::bail!("view {:?} embedded title must be a string expression", name);
         }
-        let command = definition
-            .config
-            .get("command")
+        let command = view
+            .engine_field("command")
             .expect("required embedded command was checked");
         if let Some(source) = command.as_str() {
             if Template::parse(source)?.is_complete_expression() {
                 return Ok(());
             }
             anyhow::bail!(
-                "viewtype {:?} embedded command must be an argv array or complete expression",
+                "view {:?} embedded command must be an argv array or complete expression",
                 name
             );
         }
         let arguments = command.as_array().ok_or_else(|| {
             anyhow::anyhow!(
-                "viewtype {:?} embedded command must be an argv array or expression",
+                "view {:?} embedded command must be an argv array or expression",
                 name
             )
         })?;
         if arguments.is_empty() || arguments.iter().any(|argument| !argument.is_str()) {
             anyhow::bail!(
-                "viewtype {:?} embedded command must be a non-empty array of strings",
+                "view {:?} embedded command must be a non-empty array of strings",
                 name
             );
         }

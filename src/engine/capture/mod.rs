@@ -6,7 +6,7 @@ use super::{
     Engine, EngineHost, ViewContext, ViewEffect, ViewInstance, evaluate_field,
     evaluate_optional_string, require_field, validate_fields,
 };
-use crate::config::{ENGINE_CAPTURE, EngineDefinition};
+use crate::config::{ENGINE_CAPTURE, View};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 
@@ -17,15 +17,15 @@ impl Engine for CaptureEngine {
         ENGINE_CAPTURE
     }
 
-    fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["output", "title"])?;
-        require_field(name, definition, "output")?;
+    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+        validate_fields(name, view, &["output", "title"])?;
+        require_field(name, view, "output")?;
         for field in ["output", "title"] {
-            if let Some(value) = definition.config.get(field)
+            if let Some(value) = view.engine_field(field)
                 && !value.is_str()
             {
                 anyhow::bail!(
-                    "viewtype {:?} capture field {:?} must be a string expression",
+                    "view {:?} capture field {:?} must be a string expression",
                     name,
                     field
                 );

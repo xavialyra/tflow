@@ -14,3 +14,5 @@ input = "{{ runtime:view.current.selected_item.text }}"
 
 [views.output]
 type = "capture"
+output = '{{ script("scripts/run.sh", runtime:view.current.input) }}'
+title = "{{ runtime:view.current.ref }}"

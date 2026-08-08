@@ -13,7 +13,7 @@ pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Valu
     let mut methods = ExpressionMethods::new(script_root);
     context
         .config
-        .evaluate_engine_field(&context.location.view_ref, name, &runtime, &mut methods)
+        .evaluate_view_field(&context.location.view_ref, name, &runtime, &mut methods)
 }
 
 pub(crate) fn optional_string(context: &ViewContext<'_>, name: &str) -> Result<Option<String>> {

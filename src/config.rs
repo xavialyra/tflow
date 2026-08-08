@@ -23,7 +23,7 @@ pub struct Config {
     pub dmenu_view: ViewRef,
     pub command_view: ViewRef,
     pub views: BTreeMap<ViewRef, View>,
-    pub viewtypes: BTreeMap<String, ViewTypeDefinition>,
+    pub(crate) defaults: Defaults,
     pub plugin_roots: BTreeMap<String, PathBuf>,
     pub(crate) config_value: Value,
 }
@@ -35,23 +35,22 @@ pub enum DisplayType {
     Text,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ViewTypeDefinition {
-    pub engine: EngineDefinition,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct Defaults {
+    #[serde(default)]
+    pub(crate) launcher: LauncherDefaults,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct EngineDefinition {
-    #[serde(rename = "type")]
-    pub engine_type: String,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct LauncherDefaults {
     #[serde(default)]
-    pub config: toml::Table,
+    pub(crate) bindings: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct View {
-    #[serde(rename = "type", default = "default_viewtype_name")]
-    pub view_type: String,
+    #[serde(rename = "type", default = "default_engine_type")]
+    pub engine_type: String,
     #[serde(default)]
     pub display: DisplayType,
     #[serde(default)]
@@ -64,6 +63,14 @@ pub struct View {
     pub run_shell: Option<String>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
+    #[serde(flatten)]
+    pub(crate) engine_config: toml::Table,
+}
+
+impl View {
+    pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {
+        self.engine_config.get(field)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,7 +100,9 @@ struct RawConfig {
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
-    viewtypes: BTreeMap<String, ViewTypeDefinition>,
+    defaults: Defaults,
+    #[serde(default)]
+    viewtypes: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +161,9 @@ impl Config {
     }
 
     fn from_raw(raw: RawConfig, plugin_roots: BTreeMap<String, PathBuf>) -> Result<Self> {
+        if raw.viewtypes.is_some() {
+            bail!("viewtypes are no longer supported; configure the engine directly on each view");
+        }
         let mut views = BTreeMap::new();
         for (plugin_name, plugin) in raw.plugins {
             for (view_name, view) in plugin.views {
@@ -167,7 +179,7 @@ impl Config {
             dmenu_view: raw.dmenu_view,
             command_view: raw.command_view,
             views,
-            viewtypes: raw.viewtypes,
+            defaults: raw.defaults,
             plugin_roots,
             config_value: Value::Object(serde_json::Map::new()),
         })
@@ -184,7 +196,16 @@ impl Config {
         engines: &crate::engine::EngineRegistry,
     ) -> Result<()> {
         self.engine(&self.default_view)?;
-        self.validate_viewtypes(engines)?;
+
+        let default_launcher_bindings = self
+            .defaults
+            .launcher
+            .bindings
+            .as_ref()
+            .map(toml_to_json)
+            .transpose()?;
+        crate::engine::validate_launcher_bindings(default_launcher_bindings.as_ref(), None)
+            .context("default launcher bindings")?;
 
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
@@ -204,6 +225,18 @@ impl Config {
                 bail!("aggregate view {:?} cannot define items", view_ref);
             }
             let engine = self.engine(view_ref)?;
+            engines.validate_config(view_ref, view)?;
+            if engine == ENGINE_LAUNCHER {
+                let view_bindings = view
+                    .engine_field("bindings")
+                    .map(toml_to_json)
+                    .transpose()?;
+                crate::engine::validate_launcher_bindings(
+                    default_launcher_bindings.as_ref(),
+                    view_bindings.as_ref(),
+                )
+                .with_context(|| format!("view {:?} launcher bindings", view_ref))?;
+            }
             if engine != ENGINE_LAUNCHER && (!view.sources.is_empty() || view.items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide launcher items",
@@ -322,25 +355,8 @@ impl Config {
         Ok(())
     }
 
-    fn validate_viewtypes(&self, engines: &crate::engine::EngineRegistry) -> Result<()> {
-        if self.viewtypes.is_empty() {
-            bail!("no viewtypes are configured");
-        }
-        for (name, viewtype) in &self.viewtypes {
-            validate_viewtype_name(name)?;
-            validate_engine(&viewtype.engine.engine_type, engines)
-                .with_context(|| format!("viewtype {:?}", name))?;
-            engines.validate_config(name, &viewtype.engine)?;
-        }
-        Ok(())
-    }
-
     pub fn view(&self, view_ref: &str) -> Option<&View> {
         self.views.get(view_ref)
-    }
-
-    pub fn viewtype(&self, name: &str) -> Option<&ViewTypeDefinition> {
-        self.viewtypes.get(name)
     }
 
     pub fn engine(&self, view_ref: &str) -> Result<&str> {
@@ -348,39 +364,43 @@ impl Config {
             .views
             .get(view_ref)
             .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        let viewtype = self.viewtypes.get(&view.view_type).with_context(|| {
-            format!(
-                "view {:?} references missing viewtype {:?}",
-                view_ref, view.view_type
-            )
-        })?;
-        Ok(viewtype.engine.engine_type.as_str())
+        Ok(view.engine_type.as_str())
     }
 
-    pub fn evaluate_engine_field(
+    pub fn evaluate_view_field(
         &self,
         view_ref: &str,
         field: &str,
         runtime: &Value,
         methods: &mut dyn MethodResolver,
     ) -> Result<Option<Value>> {
-        let viewtype_name = self
+        let view = self
             .view(view_ref)
-            .with_context(|| format!("view {:?} is not configured", view_ref))?
-            .view_type
-            .clone();
-        let Some(engine) = self
-            .viewtype(&viewtype_name)
-            .map(|viewtype| &viewtype.engine)
-        else {
+            .with_context(|| format!("view {:?} is not configured", view_ref))?;
+        let Some(raw) = view.engine_field(field) else {
             return Ok(None);
         };
-        let Some(raw) = engine.config.get(field) else {
+        self.evaluate_config_value(raw, runtime, methods).map(Some)
+    }
+
+    pub fn evaluate_default_launcher_bindings(
+        &self,
+        runtime: &Value,
+        methods: &mut dyn MethodResolver,
+    ) -> Result<Option<Value>> {
+        let Some(raw) = &self.defaults.launcher.bindings else {
             return Ok(None);
         };
-        let raw = toml_to_json(&toml::Value::Table(
-            [(field.to_string(), raw.clone())].into_iter().collect(),
-        ))?;
+        self.evaluate_config_value(raw, runtime, methods).map(Some)
+    }
+
+    fn evaluate_config_value(
+        &self,
+        raw: &toml::Value,
+        runtime: &Value,
+        methods: &mut dyn MethodResolver,
+    ) -> Result<Value> {
+        let raw = toml_to_json(raw)?;
         let references = TreeReferences {
             config: &self.config_value,
             runtime,
@@ -389,15 +409,11 @@ impl Config {
             references: &references,
             methods,
         };
-        let raw_field = raw
-            .get(field)
-            .expect("engine field was inserted into the temporary table");
-        let value = if let Some(source) = raw_field.as_str() {
-            Template::parse(source)?.evaluate_value(&mut context)?
+        if let Some(source) = raw.as_str() {
+            Template::parse(source)?.evaluate_value(&mut context)
         } else {
-            evaluate_json_value(raw_field, &mut context)?
-        };
-        Ok(Some(value))
+            evaluate_json_value(&raw, &mut context)
+        }
     }
 
     pub(crate) fn evaluate_command_input(
@@ -832,22 +848,7 @@ fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_viewtype_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() || name.chars().any(char::is_whitespace) {
-        bail!("invalid viewtype name {:?}", name);
-    }
-    Ok(())
-}
-
-fn validate_engine(engine: &str, registry: &crate::engine::EngineRegistry) -> Result<()> {
-    if registry.contains(engine) {
-        Ok(())
-    } else {
-        bail!("unsupported viewtype engine {:?}", engine)
-    }
-}
-
-fn default_viewtype_name() -> String {
+fn default_engine_type() -> String {
     ENGINE_LAUNCHER.to_string()
 }
 
@@ -874,53 +875,8 @@ mod tests {
 
     fn config(source: &str) -> Config {
         let value: toml::Value = toml::from_str(source).unwrap();
-        let mut raw: RawConfig = value.try_into().unwrap();
-        if raw.viewtypes.is_empty() {
-            raw.viewtypes = test_viewtypes();
-        }
+        let raw: RawConfig = value.try_into().unwrap();
         Config::from_raw(raw, BTreeMap::new()).unwrap()
-    }
-
-    fn test_viewtypes() -> BTreeMap<String, ViewTypeDefinition> {
-        BTreeMap::from([
-            (
-                ENGINE_LAUNCHER.to_string(),
-                ViewTypeDefinition {
-                    engine: EngineDefinition {
-                        engine_type: ENGINE_LAUNCHER.to_string(),
-                        config: toml::Table::new(),
-                    },
-                },
-            ),
-            (
-                ENGINE_CAPTURE.to_string(),
-                ViewTypeDefinition {
-                    engine: EngineDefinition {
-                        engine_type: ENGINE_CAPTURE.to_string(),
-                        config: [(
-                            "output".to_string(),
-                            toml::Value::String("{{ runtime:view.current.input }}".to_string()),
-                        )]
-                        .into_iter()
-                        .collect(),
-                    },
-                },
-            ),
-            (
-                ENGINE_EMBEDDED.to_string(),
-                ViewTypeDefinition {
-                    engine: EngineDefinition {
-                        engine_type: ENGINE_EMBEDDED.to_string(),
-                        config: [(
-                            "command".to_string(),
-                            toml::Value::Array(vec![toml::Value::String("sh".to_string())]),
-                        )]
-                        .into_iter()
-                        .collect(),
-                    },
-                },
-            ),
-        ])
     }
 
     #[test]
@@ -937,32 +893,60 @@ mod tests {
         );
         assert_eq!(config.default_view, "core:default");
         assert_eq!(
-            config.views["apps:main"].view_type,
+            config.views["apps:main"].engine_type,
             ENGINE_LAUNCHER.to_string()
         );
         assert_eq!(config.views["core:default"].sources, vec!["apps:main"]);
     }
 
     #[test]
-    fn viewtype_profiles_supply_engines_and_expressions() {
+    fn view_type_selects_the_engine_directly() {
         let config = config(
             r#"
             default_view = "core:default"
-            [viewtypes.rows.engine]
-            type = "launcher"
-            [viewtypes.rows.engine.config]
-            commands = "{{ config:commands }}"
             [plugins.core.views.default]
-            type = "rows"
+            type = "launcher"
             "#,
         );
         config.validate().unwrap();
         assert_eq!(config.engine("core:default").unwrap(), ENGINE_LAUNCHER);
-        assert_eq!(config.view("core:default").unwrap().view_type, "rows");
         assert_eq!(
-            config.viewtype("rows").unwrap().engine.engine_type,
+            config.view("core:default").unwrap().engine_type,
             ENGINE_LAUNCHER
         );
+    }
+
+    #[test]
+    fn legacy_viewtypes_are_rejected() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [viewtypes.launcher.engine]
+            type = "launcher"
+            [plugins.core.views.default]
+            type = "launcher"
+            "#,
+        )
+        .unwrap();
+        let raw: RawConfig = value.try_into().unwrap();
+        let error = Config::from_raw(raw, BTreeMap::new())
+            .expect_err("legacy viewtypes should be rejected");
+        assert!(error.to_string().contains("no longer supported"));
+    }
+
+    #[test]
+    fn engine_rejects_unknown_view_fields() {
+        let config = config(
+            r#"
+            [plugins.core.views.default]
+            type = "capture"
+            output = "ok"
+            titel = "typo"
+            "#,
+        );
+        let error = config
+            .validate()
+            .expect_err("unknown engine fields should be rejected");
+        assert!(error.to_string().contains("unsupported field \"titel\""));
     }
 
     #[test]
@@ -1001,6 +985,7 @@ mod tests {
             view = "shell:default"
             [plugins.shell.views.default]
             type = "embedded"
+            command = ["sh"]
             "#,
         );
         let error = config
@@ -1056,6 +1041,7 @@ mod tests {
             type = "launcher"
             [plugins.shell.views.default]
             type = "embedded"
+            command = ["sh"]
             "#,
         );
         assert_eq!(
@@ -1133,16 +1119,6 @@ mod tests {
         let config_path = root.join("config.toml");
         let default_source = r#"
             default_view = "core:default"
-            [viewtypes.launcher.engine]
-            type = "launcher"
-            [viewtypes.capture.engine]
-            type = "capture"
-            [viewtypes.capture.engine.config]
-            output = "{{ runtime:view.current.input }}"
-            [viewtypes.embedded.engine]
-            type = "embedded"
-            [viewtypes.embedded.engine.config]
-            command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
             [plugins.core.views.default]
             type = "launcher"
             sources = ["filetest:main"]
@@ -1174,8 +1150,6 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-            [viewtypes.launcher.engine]
-            type = "launcher"
             [plugins.core.views.default]
             type = "launcher"
 

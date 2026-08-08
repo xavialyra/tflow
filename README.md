@@ -2,13 +2,12 @@
 
 `tui-launcher` is a small dmenu-style TUI workflow launcher. It evaluates runtime-driven launcher items and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
 
-The launcher separates three concepts:
+The launcher has two configuration concepts:
 
 - a plugin namespace, such as `apps` or `ssh`;
-- a concrete view reference, such as `apps:main` or `apps:detail`;
-- a view type, such as `launcher`, `capture`, or `embedded`.
+- a concrete view, such as `apps:main` or `apps:detail`.
 
-Several concrete views can use the same view type. For example, `default` and `app` can both be launcher views while keeping separate item expressions and commands.
+Each view selects one built-in engine with `type = "launcher"`, `type = "capture"`, or `type = "embedded"` and owns that engine's configuration.
 
 ## Run
 
@@ -116,34 +115,27 @@ apps:main
 apps:detail
 ```
 
-A view's `type` references a viewtype profile in the root configuration. A profile selects a core engine and passes engine-specific expressions through its configuration:
+A view's `type` directly selects its engine, and engine-specific fields live on that view:
 
 ```toml
-[viewtypes.launcher.engine]
+[views.search]
 type = "launcher"
+items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
-[viewtypes.launcher.engine.config]
-items = "{{ runtime:view.current.items }}"
-commands = "{{ runtime:view.current.command }}"
-
-[viewtypes.capture.engine]
+[views.result]
 type = "capture"
-
-[viewtypes.capture.engine.config]
 output = "{{ runtime:view.current.input }}"
 title = "Result"
 
-[viewtypes.embedded.engine]
+[views.shell]
 type = "embedded"
-
-[viewtypes.embedded.engine.config]
 command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
 title = "Shell"
 ```
 
 The built-in engines are `launcher`, `capture`, and `embedded`. Every configured path is a view: launcher renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation always supplies a view path and an input string; the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
 
-Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
+Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not configurable View fields.
 
 `exit` is not a view. A local command with `exit = true` returns an exit event after its script finishes.
 
@@ -174,13 +166,13 @@ run = { file = "scripts/open.sh" }
 
 Set `[plugin].api = 2` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
-The root config file contains the default view and viewtype profiles:
+The root config file selects the default views and can define shared launcher binding defaults:
 
 ```toml
 default_view = "core:default"
 
-[viewtypes.launcher.engine]
-type = "launcher"
+[defaults.launcher.bindings]
+open_commands = ["ctrl+k"]
 ```
 
 The `core` plugin can aggregate launcher views from several plugin packages:
@@ -193,7 +185,7 @@ sources = ["sys:default", "apps:default"]
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands. The viewtype profile controls which runtime expressions the engine evaluates; the source view still owns the underlying item and command data.
+A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -256,19 +248,15 @@ view = "inspect:default"
 input = "{{ runtime:view.current.selected_item.value }}"
 ```
 
-The target owns its behavior. A capture profile evaluates `output` relative to the target plugin and requires a string result. An embedded profile evaluates `command` to a non-empty argv array, so it can host arbitrary PTY views:
+The target owns its behavior. A capture view evaluates `output` relative to its plugin and requires a string result. An embedded view evaluates `command` to a non-empty argv array, so it can host arbitrary PTY processes:
 
 ```toml
-[viewtypes.shell.engine]
+[views.shell]
 type = "embedded"
-
-[viewtypes.shell.engine.config]
 command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
 
-[viewtypes.btop.engine]
+[views.btop]
 type = "embedded"
-
-[viewtypes.btop.engine.config]
 command = ["btop"]
 title = "System monitor"
 ```
@@ -287,7 +275,7 @@ exec ssh "$LAUNCHER_VALUE"
 
 The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
 
-View commands use the same named-key, Ctrl, and Alt binding syntax as launcher actions. Plain characters remain search input. Launcher actions take priority when a physical key is assigned to both; override or disable that launcher action in the ViewType keymap before assigning the key to a View command.
+View commands use the same named-key, Ctrl, and Alt binding syntax as launcher actions. Plain characters remain search input. Launcher actions take priority when a physical key is assigned to both; override or disable that launcher action in the View's `bindings` before assigning the key to a View command.
 
 ## Launcher items
 
@@ -354,13 +342,20 @@ An embedded View starts its argv in the target plugin directory and receives `LA
 
 ## Keys
 
-Launcher shortcuts are semantic engine bindings. A ViewType can override only the actions it needs; omitted actions retain their defaults, while an empty array disables an action:
+Launcher shortcuts are semantic engine bindings. Root defaults apply to every launcher View:
 
 ```toml
-[viewtypes.launcher.engine.config.bindings]
+[defaults.launcher.bindings]
 open_commands = ["ctrl+p"]
 clear_input = ["ctrl+u"]
 exit = ["ctrl+c", "ctrl+d"]
+```
+
+A View can override only the actions it needs; omitted actions inherit the root or built-in defaults, while an empty array disables an action:
+
+```toml
+[views.main.bindings]
+open_commands = ["ctrl+k"]
 delete_word = []
 ```
 

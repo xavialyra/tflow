@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::EngineDefinition;
+use crate::config::View;
 use crate::engine::{EngineHost, ViewContext, ViewEffect, ViewInstance};
 use crate::expression::{EvalContext, ExpressionMethods, Template, TreeReferences};
 use crate::terminal::Terminal;
@@ -34,7 +34,7 @@ fn registry_accepts_custom_engine_implementations() {
             "test"
         }
 
-        fn validate_config(&self, _name: &str, _definition: &EngineDefinition) -> Result<()> {
+        fn validate_config(&self, _name: &str, _view: &View) -> Result<()> {
             Ok(())
         }
 
@@ -50,35 +50,22 @@ fn registry_accepts_custom_engine_implementations() {
 
 #[test]
 fn registry_rejects_static_engine_field_shape_errors() {
+    fn view(source: &str) -> View {
+        toml::from_str(source).unwrap()
+    }
+
     let registry = EngineRegistry::new();
-    let embedded = EngineDefinition {
-        engine_type: crate::config::ENGINE_EMBEDDED.to_string(),
-        config: [("command".to_string(), toml::Value::String("sh".to_string()))]
-            .into_iter()
-            .collect(),
-    };
+    let embedded = view("type = 'embedded'\ncommand = 'sh'");
     assert!(registry.validate_config("bad-embedded", &embedded).is_err());
-    let mixed_embedded = EngineDefinition {
-        engine_type: crate::config::ENGINE_EMBEDDED.to_string(),
-        config: [(
-            "command".to_string(),
-            toml::Value::String("sh {{ runtime:view.current.input }}".to_string()),
-        )]
-        .into_iter()
-        .collect(),
-    };
+
+    let mixed_embedded = view("type = 'embedded'\ncommand = 'sh {{ runtime:view.current.input }}'");
     assert!(
         registry
             .validate_config("mixed-embedded", &mixed_embedded)
             .is_err()
     );
 
-    let capture = EngineDefinition {
-        engine_type: crate::config::ENGINE_CAPTURE.to_string(),
-        config: [("output".to_string(), toml::Value::Integer(1))]
-            .into_iter()
-            .collect(),
-    };
+    let capture = view("type = 'capture'\noutput = 1");
     assert!(registry.validate_config("bad-capture", &capture).is_err());
 }
 

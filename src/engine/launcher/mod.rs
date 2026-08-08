@@ -7,12 +7,12 @@ mod runtime;
 mod session;
 
 use self::keymap::LauncherKeymap;
-use super::{Engine, RuntimeStore, ViewContext, ViewInstance, evaluate_field, validate_fields};
-use crate::config::{Config, ENGINE_LAUNCHER, EngineDefinition};
+use super::{Engine, ViewContext, ViewInstance, validate_fields};
+use crate::config::{ENGINE_LAUNCHER, View};
 use crate::expression::ExpressionMethods;
 use anyhow::Result;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) use command::CommandInvocation;
@@ -26,19 +26,29 @@ impl Engine for LauncherEngine {
         ENGINE_LAUNCHER
     }
 
-    fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["items", "commands", "bindings"])?;
-        let bindings = definition
-            .config
-            .get("bindings")
-            .map(serde_json::to_value)
-            .transpose()?;
-        LauncherKeymap::validate_value(bindings.as_ref())?;
+    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+        validate_fields(name, view, &["bindings"])?;
         Ok(())
     }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
-        let keymap = LauncherKeymap::from_value(evaluate_field(&context, "bindings")?)?;
+        let script_root = context
+            .config
+            .plugin_root(&context.location.view_ref)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let runtime = context.runtime.read();
+        let mut methods = ExpressionMethods::new(script_root);
+        let default_bindings = context
+            .config
+            .evaluate_default_launcher_bindings(&runtime, &mut methods)?;
+        let view_bindings = context.config.evaluate_view_field(
+            &context.location.view_ref,
+            "bindings",
+            &runtime,
+            &mut methods,
+        )?;
+        drop(runtime);
+        let keymap = LauncherKeymap::from_values(default_bindings, view_bindings)?;
         let command_owner = context
             .location
             .context
@@ -70,32 +80,6 @@ impl Engine for LauncherEngine {
     }
 }
 
-pub(crate) struct ViewEvaluator<'a> {
-    config: &'a Config,
-    view_ref: &'a str,
-    runtime: &'a RuntimeStore,
-}
-
-impl<'a> ViewEvaluator<'a> {
-    pub(crate) fn new(config: &'a Config, view_ref: &'a str, runtime: &'a RuntimeStore) -> Self {
-        Self {
-            config,
-            view_ref,
-            runtime,
-        }
-    }
-
-    pub(crate) fn evaluate_field(&self, field: &str) -> Result<Option<Value>> {
-        let script_root = self
-            .config
-            .plugin_root(self.view_ref)
-            .unwrap_or_else(|| Path::new("."));
-        let mut methods = ExpressionMethods::new(script_root);
-        self.config.evaluate_engine_field(
-            self.view_ref,
-            field,
-            self.runtime.snapshot(),
-            &mut methods,
-        )
-    }
+pub(crate) fn validate_bindings(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
+    LauncherKeymap::validate_values(defaults, view)
 }

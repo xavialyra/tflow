@@ -14,3 +14,5 @@ input = "exec sh"
 
 [views.default]
 type = "embedded"
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+title = "{{ runtime:view.current.ref }}"
