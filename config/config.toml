@@ -2,7 +2,7 @@ default_view = "core:default"
 dmenu_view = "core:dmenu"
 command_view = "core:command"
 
-[defaults.launcher.bindings]
+[defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 open_commands = ["ctrl+k"]
 back = ["escape"]

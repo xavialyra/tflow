@@ -3,7 +3,7 @@ use super::{
     ViewLocation,
 };
 use crate::chrome::ShellInput;
-use crate::config::{Config, ENGINE_LAUNCHER};
+use crate::config::{Config, ENGINE_PICKER};
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
@@ -142,7 +142,7 @@ impl<'a> AppSession<'a> {
         let current_view = entry.location.view_ref.clone();
         let route_child = entry.location.shell_input.is_some();
         if current_view == self.config.command_view
-            || self.config.engine(&current_view)? != ENGINE_LAUNCHER
+            || self.config.engine(&current_view)? != ENGINE_PICKER
         {
             self.input.params = self.input.raw.clone();
             return Ok(None);

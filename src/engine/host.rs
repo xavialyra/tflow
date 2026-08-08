@@ -1,6 +1,6 @@
 use crate::chrome::ShellInput;
 use crate::config::Config;
-use crate::engine::launcher::CommandInvocation;
+use crate::engine::picker::CommandInvocation;
 use crate::engine::runtime::RuntimeStore;
 use crate::runtime_log::{LogLevel, LogRecord, RuntimeLog};
 use std::path::Path;

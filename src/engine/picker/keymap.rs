@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum LauncherAction {
+pub(super) enum PickerAction {
     Exit,
     OpenCommands,
     Back,
@@ -17,7 +17,7 @@ pub(super) enum LauncherAction {
     Activate,
 }
 
-impl LauncherAction {
+impl PickerAction {
     const ALL: [Self; 9] = [
         Self::Exit,
         Self::OpenCommands,
@@ -50,11 +50,11 @@ impl LauncherAction {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LauncherKeymap {
-    bindings: HashMap<Key, LauncherAction>,
+pub(super) struct PickerKeymap {
+    bindings: HashMap<Key, PickerAction>,
 }
 
-impl LauncherKeymap {
+impl PickerKeymap {
     #[cfg(test)]
     pub(super) fn validate_value(value: Option<&Value>) -> Result<()> {
         Self::validate_values(None, value)
@@ -76,28 +76,28 @@ impl LauncherKeymap {
             if Template::parse(source)?.is_complete_expression() {
                 return Ok(true);
             }
-            bail!("launcher bindings must be an object or complete expression");
+            bail!("picker bindings must be an object or complete expression");
         }
         let bindings = value
             .as_object()
-            .context("launcher bindings must be an object")?;
+            .context("picker bindings must be an object")?;
         let mut dynamic = false;
         for (name, values) in bindings {
-            LauncherAction::parse(name)
-                .with_context(|| format!("unsupported launcher binding action {:?}", name))?;
+            PickerAction::parse(name)
+                .with_context(|| format!("unsupported picker binding action {:?}", name))?;
             let values = values
                 .as_array()
-                .with_context(|| format!("launcher binding {:?} must be an array", name))?;
+                .with_context(|| format!("picker binding {:?} must be an array", name))?;
             for value in values {
                 let source = value.as_str().with_context(|| {
-                    format!("launcher binding {:?} entries must be strings", name)
+                    format!("picker binding {:?} entries must be strings", name)
                 })?;
                 if source.contains("{{") {
                     Template::parse(source)?;
                     dynamic = true;
                 } else {
                     Key::parse_binding(source)
-                        .with_context(|| format!("launcher binding action {:?}", name))?;
+                        .with_context(|| format!("picker binding action {:?}", name))?;
                 }
             }
         }
@@ -125,30 +125,30 @@ impl LauncherKeymap {
     fn apply(&mut self, value: Value) -> Result<()> {
         let overrides = value
             .as_object()
-            .context("launcher bindings must evaluate to an object")?;
+            .context("picker bindings must evaluate to an object")?;
         let mut actions = HashSet::new();
         for name in overrides.keys() {
-            let action = LauncherAction::parse(name)
-                .with_context(|| format!("unsupported launcher binding action {:?}", name))?;
+            let action = PickerAction::parse(name)
+                .with_context(|| format!("unsupported picker binding action {:?}", name))?;
             actions.insert(action);
         }
         self.bindings.retain(|_, action| !actions.contains(action));
 
         for (name, values) in overrides {
             let action =
-                LauncherAction::parse(name).expect("launcher binding action was validated above");
+                PickerAction::parse(name).expect("picker binding action was validated above");
             let values = values
                 .as_array()
-                .with_context(|| format!("launcher binding {:?} must be an array", name))?;
+                .with_context(|| format!("picker binding {:?} must be an array", name))?;
             for value in values {
                 let source = value.as_str().with_context(|| {
-                    format!("launcher binding {:?} entries must be strings", name)
+                    format!("picker binding {:?} entries must be strings", name)
                 })?;
                 let key = Key::parse_binding(source)
-                    .with_context(|| format!("launcher binding action {:?}", name))?;
+                    .with_context(|| format!("picker binding action {:?}", name))?;
                 if let Some(existing) = self.bindings.insert(key, action) {
                     bail!(
-                        "launcher key {:?} is assigned to both {:?} and {:?}",
+                        "picker key {:?} is assigned to both {:?} and {:?}",
                         source,
                         existing.name(),
                         action.name()
@@ -159,23 +159,23 @@ impl LauncherKeymap {
         Ok(())
     }
 
-    pub(super) fn action(&self, key: Key) -> Option<LauncherAction> {
+    pub(super) fn action(&self, key: Key) -> Option<PickerAction> {
         self.bindings.get(&key).copied()
     }
 }
 
-fn default_bindings() -> HashMap<Key, LauncherAction> {
+fn default_bindings() -> HashMap<Key, PickerAction> {
     [
-        (Key::Ctrl('c'), LauncherAction::Exit),
-        (Key::Ctrl('d'), LauncherAction::Exit),
-        (Key::Ctrl('k'), LauncherAction::OpenCommands),
-        (Key::Escape, LauncherAction::Back),
-        (Key::Up, LauncherAction::SelectPrevious),
-        (Key::Down, LauncherAction::SelectNext),
-        (Key::Backspace, LauncherAction::DeleteBackward),
-        (Key::Ctrl('u'), LauncherAction::ClearInput),
-        (Key::Ctrl('w'), LauncherAction::DeleteWord),
-        (Key::Enter, LauncherAction::Activate),
+        (Key::Ctrl('c'), PickerAction::Exit),
+        (Key::Ctrl('d'), PickerAction::Exit),
+        (Key::Ctrl('k'), PickerAction::OpenCommands),
+        (Key::Escape, PickerAction::Back),
+        (Key::Up, PickerAction::SelectPrevious),
+        (Key::Down, PickerAction::SelectNext),
+        (Key::Backspace, PickerAction::DeleteBackward),
+        (Key::Ctrl('u'), PickerAction::ClearInput),
+        (Key::Ctrl('w'), PickerAction::DeleteWord),
+        (Key::Enter, PickerAction::Activate),
     ]
     .into_iter()
     .collect()
@@ -188,28 +188,28 @@ mod tests {
 
     #[test]
     fn partial_overrides_replace_one_action_and_keep_other_defaults() {
-        let keymap = LauncherKeymap::from_value(Some(json!({
+        let keymap = PickerKeymap::from_value(Some(json!({
             "open_commands": ["ctrl+p"]
         })))
         .unwrap();
         assert_eq!(
             keymap.action(Key::Ctrl('p')),
-            Some(LauncherAction::OpenCommands)
+            Some(PickerAction::OpenCommands)
         );
         assert_eq!(keymap.action(Key::Ctrl('k')), None);
-        assert_eq!(keymap.action(Key::Ctrl('c')), Some(LauncherAction::Exit));
+        assert_eq!(keymap.action(Key::Ctrl('c')), Some(PickerAction::Exit));
     }
 
     #[test]
     fn view_overrides_are_applied_after_root_defaults() {
-        let keymap = LauncherKeymap::from_values(
+        let keymap = PickerKeymap::from_values(
             Some(json!({"open_commands": ["ctrl+p"]})),
             Some(json!({"open_commands": ["ctrl+o"]})),
         )
         .unwrap();
         assert_eq!(
             keymap.action(Key::Ctrl('o')),
-            Some(LauncherAction::OpenCommands)
+            Some(PickerAction::OpenCommands)
         );
         assert_eq!(keymap.action(Key::Ctrl('p')), None);
         assert_eq!(keymap.action(Key::Ctrl('k')), None);
@@ -217,14 +217,14 @@ mod tests {
 
     #[test]
     fn empty_override_disables_an_action() {
-        let keymap = LauncherKeymap::from_value(Some(json!({"exit": []}))).unwrap();
+        let keymap = PickerKeymap::from_value(Some(json!({"exit": []}))).unwrap();
         assert_eq!(keymap.action(Key::Ctrl('c')), None);
         assert_eq!(keymap.action(Key::Ctrl('d')), None);
     }
 
     #[test]
     fn conflicting_bindings_are_rejected() {
-        let error = LauncherKeymap::from_value(Some(json!({
+        let error = PickerKeymap::from_value(Some(json!({
             "exit": ["ctrl+k"]
         })))
         .expect_err("default command binding should conflict");
@@ -233,19 +233,19 @@ mod tests {
 
     #[test]
     fn ctrl_aliases_use_the_terminal_key_identity() {
-        let keymap = LauncherKeymap::from_value(Some(json!({
+        let keymap = PickerKeymap::from_value(Some(json!({
             "activate": [],
             "exit": ["ctrl+j"]
         })))
         .unwrap();
-        assert_eq!(keymap.action(Key::Enter), Some(LauncherAction::Exit));
+        assert_eq!(keymap.action(Key::Enter), Some(PickerAction::Exit));
         assert_eq!(keymap.action(Key::Ctrl('j')), None);
     }
 
     #[test]
     fn validation_accepts_binding_expressions() {
-        LauncherKeymap::validate_value(Some(&json!("{{ config:keymaps.launcher }}"))).unwrap();
-        LauncherKeymap::validate_value(Some(&json!({
+        PickerKeymap::validate_value(Some(&json!("{{ config:keymaps.picker }}"))).unwrap();
+        PickerKeymap::validate_value(Some(&json!({
             "exit": ["{{ config:keymaps.exit }}"]
         })))
         .unwrap();

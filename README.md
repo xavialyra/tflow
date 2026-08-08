@@ -1,13 +1,13 @@
 # tui-launcher
 
-`tui-launcher` is a small dmenu-style TUI workflow launcher. It evaluates runtime-driven launcher items and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
+`tui-launcher` is a small dmenu-style TUI workflow launcher. It evaluates runtime-driven picker items and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
 
 The launcher has two configuration concepts:
 
 - a plugin namespace, such as `apps` or `ssh`;
 - a concrete view, such as `apps:main` or `apps:detail`.
 
-Each view selects one built-in engine with `type = "launcher"`, `type = "capture"`, or `type = "embedded"` and owns that engine's configuration.
+Each view selects one built-in engine with `type = "picker"`, `type = "capture"`, or `type = "embedded"` and owns that engine's configuration.
 
 ## Run
 
@@ -52,7 +52,7 @@ mise exec -- cargo run -- --check
 
 ## dmenu mode
 
-`-d` / `--dmenu` reads plain-text candidates from standard input and writes the selected original line to standard output. It uses the launcher's full-screen layout by default, so it can be composed with ordinary CLI commands without mixing terminal control sequences into the result stream:
+`-d` / `--dmenu` reads plain-text candidates from standard input and writes the selected original line to standard output. It uses the picker's full-screen layout by default, so it can be composed with ordinary CLI commands without mixing terminal control sequences into the result stream:
 
 ```bash
 printf '%s\n' 'Option 1' 'Option 2' 'Option 3' \
@@ -83,7 +83,7 @@ The dmenu UI reads keyboard input and draws through `/dev/tty`. It loads the con
 The available dmenu options are:
 
 - `--prompt TEXT` changes the query prompt;
-- `--lines N` limits the visible result rows; without it, the result area fills the available launcher view;
+- `--lines N` limits the visible result rows; without it, the result area fills the available picker view;
 - `--initial TEXT` sets the initial query;
 - `--dmenu0` reads and writes NUL-delimited records;
 - `--index` prints the selected zero-based input index instead of its text;
@@ -93,7 +93,7 @@ The available dmenu options are:
 - `--nth-delimiter CHARACTER` sets the single ASCII field delimiter and defaults to Tab; use `--nth-delimiter=whitespace` to treat runs of whitespace as one field delimiter;
 - setting any field format to `0` leaves that part unchanged.
 
-Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Set `dmenu_view = "core:dmenu"` in the root config to choose the dedicated display view; no dmenu view-selection CLI flag is provided yet. Dmenu mode can use `--config`, but cannot be combined with `--check`. The dedicated view is a launcher view with no items or commands:
+Field ranges use the Fuzzel-style `{N..M}` and `{N..}` forms. A symlink whose basename is `dmenu` also starts the program in dmenu mode. Set `dmenu_view = "core:dmenu"` in the root config to choose the dedicated display view; no dmenu view-selection CLI flag is provided yet. Dmenu mode can use `--config`, but cannot be combined with `--check`. The dedicated view is a picker view with no items or commands:
 
 ```toml
 # config/config.toml
@@ -101,7 +101,7 @@ dmenu_view = "core:dmenu"
 
 # plugins/core/plugin.toml
 [views.dmenu]
-type = "launcher"
+type = "picker"
 display = "text"
 ```
 
@@ -115,13 +115,13 @@ apps:default
 apps:detail
 ```
 
-A view may also define a short `alias` for launcher input. Canonical references contain `:` and are always exact; tokens without `:` are resolved only as aliases.
+A view may also define a short `alias` for picker input. Canonical references contain `:` and are always exact; tokens without `:` are resolved only as aliases.
 
 A view's `type` directly selects its engine, and engine-specific fields live on that view:
 
 ```toml
 [views.search]
-type = "launcher"
+type = "picker"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.result]
@@ -135,7 +135,7 @@ command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
 title = "Shell"
 ```
 
-The built-in engines are `launcher`, `capture`, and `embedded`. Every configured path is a view: launcher renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation always supplies a view path and an input string; the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
+The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation always supplies a view path and an input string; the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
 
 Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not configurable View fields.
 
@@ -161,7 +161,7 @@ api = 1
 name = "applications"
 
 [views.default]
-type = "launcher"
+type = "picker"
 alias = "app"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
@@ -171,28 +171,28 @@ label = "Open"
 run = { file = "scripts/open.sh" }
 ```
 
-Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate names and aliases are accepted; a duplicate alias becomes an error only when it is used, at which point the launcher displays the canonical conflicting views and stays on the current view. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
+Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate names and aliases are accepted; a duplicate alias becomes an error only when it is used, at which point the picker displays the canonical conflicting views and stays on the current view. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
 
-The root config file selects the default views and can define shared launcher binding defaults:
+The root config file selects the default views and can define shared picker binding defaults:
 
 ```toml
 default_view = "core:default"
 
-[defaults.launcher.bindings]
+[defaults.picker.bindings]
 open_commands = ["ctrl+k"]
 ```
 
-The `core` plugin can aggregate launcher views from several plugin packages:
+The `core` plugin can aggregate picker views from several plugin packages:
 
 ```toml
 [views.default]
-type = "launcher"
+type = "picker"
 sources = ["sys:default", "apps:default"]
 ```
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those launcher views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands.
+A view with `sources` displays the results of those picker views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -209,7 +209,7 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-A canonical reference or unique alias enters a configured view through the normal view stack. For example, `apps:default terminal` and `app terminal` target the same view when `apps:default` owns `alias = "app"`. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
+A canonical reference or unique alias enters a configured view through the normal view stack. For example, `apps:default terminal` and `app terminal` target the same view when `apps:default` owns `alias = "app"`. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
 
 ## Expressions
 
@@ -282,15 +282,15 @@ exec ssh "$LAUNCHER_VALUE"
 
 The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
 
-View commands use the same named-key, Ctrl, and Alt binding syntax as launcher actions. Plain characters remain search input. Launcher actions take priority when a physical key is assigned to both; override or disable that launcher action in the View's `bindings` before assigning the key to a View command.
+View commands use the same named-key, Ctrl, and Alt binding syntax as picker actions. Plain characters remain search input. Picker actions take priority when a physical key is assigned to both; override or disable that picker action in the View's `bindings` before assigning the key to a View command.
 
-## Launcher items
+## Picker items
 
-A concrete launcher view can define an `items` expression. The expression returns one JSON array, and every item must contain a `label` plus an optional `value` and `metadata`:
+A concrete picker view can define an `items` expression. The expression returns one JSON array, and every item must contain a `label` plus an optional `value` and `metadata`:
 
 ```toml
 [views.main]
-type = "launcher"
+type = "picker"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 ```
 
@@ -306,9 +306,9 @@ items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 items = '{{ script("scripts/items.sh", runtime:view.current.request) }}'
 ```
 
-The launcher runtime exposes the current request under `runtime:view.current.request`. `runtime:view.current.input` and `query` contain the current view's parameters; `raw_input` retains the complete input-bar value including a route selector. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the launcher does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
+The picker runtime exposes the current request under `runtime:view.current.request`. `runtime:view.current.input` and `query` contain the current view's parameters; `raw_input` retains the complete input-bar value including a route selector. The source script can accept a string, object, or any other JSON value without a picker-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
 
-A root launcher view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
+A root picker view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
 
 ```text
 app          Terminal
@@ -339,10 +339,10 @@ An embedded View starts its argv in the target plugin directory and receives `LA
 
 ## Keys
 
-Launcher shortcuts are semantic engine bindings. Root defaults apply to every launcher View:
+Picker shortcuts are semantic engine bindings. Root defaults apply to every picker View:
 
 ```toml
-[defaults.launcher.bindings]
+[defaults.picker.bindings]
 open_commands = ["ctrl+p"]
 clear_input = ["ctrl+u"]
 exit = ["ctrl+c", "ctrl+d"]
@@ -356,7 +356,7 @@ open_commands = ["ctrl+k"]
 delete_word = []
 ```
 
-Available actions are `exit`, `open_commands`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. One physical key cannot be assigned to multiple launcher actions.
+Available actions are `exit`, `open_commands`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. One physical key cannot be assigned to multiple picker actions.
 
 The default bindings are:
 
@@ -368,10 +368,10 @@ The default bindings are:
 - `Ctrl-C` / `Ctrl-D`: quit;
 - `Ctrl-U`: clear the query;
 - `Ctrl-W`: delete the previous word;
-- `Ctrl-K`: open the command launcher view for the selected item's source view.
+- `Ctrl-K`: open the command picker view for the selected item's source view.
 
 Header and footer chrome are composed centrally from the active route, the current engine, and global errors. The footer uses `plugin:view (alias) | engine status | engine commands`; the alias is omitted when absent. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
-When additional view commands do not fit, `Ctrl-K commands` navigates to the command launcher view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
+When additional view commands do not fit, `Ctrl-K commands` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 
-Launcher item expressions are debounced globally by 120ms and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
+Picker item expressions are debounced globally by 120ms and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.

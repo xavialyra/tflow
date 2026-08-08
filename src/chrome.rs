@@ -176,13 +176,13 @@ mod tests {
             &route(),
             "terminal",
             EngineChrome {
-                title: Some("launcher".to_string()),
+                title: Some("picker".to_string()),
                 status: Some("12 results".to_string()),
                 commands: vec![("enter".to_string(), "Open".to_string())],
             },
             None,
         );
-        assert_eq!(frame.header, " TUI Launcher  [launcher]");
+        assert_eq!(frame.header, " TUI Launcher  [picker]");
         assert_eq!(frame.input, "terminal");
         assert_eq!(frame.input_line(), " > terminal");
         assert!(frame.footer.starts_with("apps:default (app) | 12 results"));

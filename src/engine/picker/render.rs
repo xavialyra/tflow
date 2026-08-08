@@ -1,4 +1,4 @@
-use super::{Item, LauncherView};
+use super::{Item, PickerView};
 use crate::config::Config;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
@@ -7,15 +7,15 @@ use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
-pub(crate) struct LauncherRenderState {
+pub(crate) struct PickerRenderState {
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
 }
 
-pub(crate) fn render_launcher(
+pub(crate) fn render_picker(
     terminal: &Terminal,
-    state: &LauncherRenderState,
+    state: &PickerRenderState,
     chrome: &crate::chrome::ChromeFrame,
 ) -> Result<()> {
     let (width, height) = terminal.size();
@@ -84,7 +84,7 @@ pub(crate) fn render_launcher(
             stdout.write_all(b"\r\n")?;
         }
     }
-    stdout.flush().context("could not draw launcher")
+    stdout.flush().context("could not draw picker")
 }
 
 fn prefix_column_width(items: &[Item], width: usize) -> usize {
@@ -113,7 +113,7 @@ fn pad_right(text: &str, width: usize) -> String {
     format!("{}{}", text, " ".repeat(width.saturating_sub(used)))
 }
 
-impl LauncherView {
+impl PickerView {
     pub(crate) fn visible_commands(&self, config: &Config) -> Vec<(String, String)> {
         let Some(owner) = self.command_owner() else {
             return Vec::new();
@@ -125,9 +125,9 @@ impl LauncherView {
         commands
     }
 
-    pub(crate) fn render_state(&self) -> LauncherRenderState {
+    pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
-        LauncherRenderState {
+        PickerRenderState {
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,

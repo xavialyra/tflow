@@ -3,7 +3,7 @@ api = 1
 name = "applications"
 
 [views.default]
-type = "launcher"
+type = "picker"
 alias = "app"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 

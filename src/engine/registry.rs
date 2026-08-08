@@ -15,7 +15,7 @@ impl EngineRegistry {
         let mut registry = Self {
             engines: BTreeMap::new(),
         };
-        registry.register(Box::new(super::launcher::LauncherEngine));
+        registry.register(Box::new(super::picker::PickerEngine));
         registry.register(Box::new(super::capture::CaptureEngine));
         registry.register(Box::new(super::embedded::EmbeddedEngine));
         registry

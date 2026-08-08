@@ -1,6 +1,6 @@
-use super::input::LauncherInputAction;
+use super::input::PickerInputAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
-use super::keymap::LauncherKeymap;
+use super::keymap::PickerKeymap;
 use super::render;
 use crate::config::Config;
 use crate::engine::{
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 const INPUT_POLL_MS: i32 = 80;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
-pub(crate) struct LauncherFrame {
+pub(crate) struct PickerFrame {
     pub(crate) view: String,
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
@@ -31,7 +31,7 @@ pub(crate) struct LauncherFrame {
     pub(crate) command_owner: Option<String>,
 }
 
-impl LauncherFrame {
+impl PickerFrame {
     pub(crate) fn new(view: &str) -> Self {
         Self {
             view: view.to_string(),
@@ -48,8 +48,8 @@ impl LauncherFrame {
     }
 }
 
-pub(crate) struct LauncherView {
-    frame: LauncherFrame,
+pub(crate) struct PickerView {
+    frame: PickerFrame,
     tasks: TaskScheduler,
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
@@ -59,19 +59,19 @@ pub(crate) struct LauncherView {
     started: bool,
     route_child: bool,
     parent_item: Option<Item>,
-    pub(super) keymap: LauncherKeymap,
+    pub(super) keymap: PickerKeymap,
 }
 
-impl LauncherView {
+impl PickerView {
     pub(super) fn new(
         view: &str,
         tasks: TaskScheduler,
         config: Arc<Config>,
         route_child: bool,
-        keymap: LauncherKeymap,
+        keymap: PickerKeymap,
     ) -> Self {
         Self {
-            frame: LauncherFrame::new(view),
+            frame: PickerFrame::new(view),
             tasks,
             config,
             items_task: None,
@@ -97,11 +97,11 @@ impl LauncherView {
         self
     }
 
-    pub(crate) fn current(&self) -> &LauncherFrame {
+    pub(crate) fn current(&self) -> &PickerFrame {
         &self.frame
     }
 
-    pub(crate) fn current_mut(&mut self) -> &mut LauncherFrame {
+    pub(crate) fn current_mut(&mut self) -> &mut PickerFrame {
         &mut self.frame
     }
 
@@ -462,7 +462,7 @@ impl LauncherView {
     }
 }
 
-impl ViewInstance for LauncherView {
+impl ViewInstance for PickerView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let query = self.frame.query.clone();
         self.publish_runtime(host.config, host.runtime, &host.input.raw, &query)
@@ -531,15 +531,15 @@ impl ViewInstance for LauncherView {
                 &mut host.input.raw,
                 nested_input,
             ) {
-                LauncherInputAction::Continue => {}
-                LauncherInputAction::Refresh => refresh = true,
-                LauncherInputAction::ClearError => host.clear_error(),
-                LauncherInputAction::Activate(key) => {
+                PickerInputAction::Continue => {}
+                PickerInputAction::Refresh => refresh = true,
+                PickerInputAction::ClearError => host.clear_error(),
+                PickerInputAction::Activate(key) => {
                     return self.handle_command_key(host, terminal, key);
                 }
-                LauncherInputAction::OpenCommandView => return self.open_command_view(host),
-                LauncherInputAction::Back => return Ok(ViewEffect::Back),
-                LauncherInputAction::Exit => return Ok(ViewEffect::Exit),
+                PickerInputAction::OpenCommandView => return self.open_command_view(host),
+                PickerInputAction::Back => return Ok(ViewEffect::Back),
+                PickerInputAction::Exit => return Ok(ViewEffect::Exit),
             }
         }
         if refresh {
@@ -554,7 +554,7 @@ impl ViewInstance for LauncherView {
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         let searching = self.frame.refresh_deadline.is_some() || self.frame.items_pending;
         crate::chrome::EngineChrome {
-            title: Some("launcher".to_string()),
+            title: Some("picker".to_string()),
             status: Some(if searching {
                 "searching...".to_string()
             } else {
@@ -571,7 +571,7 @@ impl ViewInstance for LauncherView {
         chrome: &crate::chrome::ChromeFrame,
     ) -> Result<()> {
         let state = self.render_state();
-        render::render_launcher(terminal, &state, chrome)
+        render::render_picker(terminal, &state, chrome)
     }
 }
 

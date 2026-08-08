@@ -3,7 +3,7 @@ api = 1
 name = "system"
 
 [views.default]
-type = "launcher"
+type = "picker"
 alias = "sys"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 

@@ -3,6 +3,6 @@ api = 1
 name = "translation"
 
 [views.default]
-type = "launcher"
+type = "picker"
 alias = "tr"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'

@@ -18,7 +18,7 @@ fn loads_items_from_an_expression() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:catalog.items }}"
 
         [catalog]
@@ -69,14 +69,14 @@ fn waits_for_items_before_running_enter_command() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         exit = true
-        run = '''printf 'launcher-marker:%s\n' "$LAUNCHER_VALUE"'''
+        run = '''printf 'picker-marker:%s\n' "$LAUNCHER_VALUE"'''
         "#,
     )
     .expect("could not write launcher integration config");
@@ -95,7 +95,7 @@ fn waits_for_items_before_running_enter_command() {
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     assert!(
-        String::from_utf8_lossy(&output).contains("launcher-marker:value"),
+        String::from_utf8_lossy(&output).contains("picker-marker:value"),
         "launcher output did not contain command marker: {:?}",
         output
     );
@@ -112,7 +112,7 @@ fn view_commands_accept_unreserved_control_bindings() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -154,7 +154,7 @@ fn replacing_items_request_cancels_the_previous_script() {
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"picker\"\n",
     )
     .expect("could not write cancellation plugin manifest");
     let old_pid_path = root.join("old.pid");
@@ -180,7 +180,7 @@ fi
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = '{{ script("scripts/items.sh", runtime:view.current) }}'
         "#,
     )
@@ -228,7 +228,7 @@ fi
 }
 
 #[test]
-fn ctrl_k_opens_the_command_launcher_view() {
+fn ctrl_k_opens_the_command_picker_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -237,7 +237,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -257,7 +257,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
         run = ":"
 
         [plugins.core.views.command]
-        type = "launcher"
+        type = "picker"
         "#,
     )
     .expect("could not write command view integration config");
@@ -295,7 +295,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
 }
 
 #[test]
-fn launcher_bindings_can_override_a_default_shortcut() {
+fn picker_bindings_can_override_a_default_shortcut() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -304,7 +304,7 @@ fn launcher_bindings_can_override_a_default_shortcut() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.bindings]
@@ -316,10 +316,10 @@ fn launcher_bindings_can_override_a_default_shortcut() {
         run = ":"
 
         [plugins.core.views.command]
-        type = "launcher"
+        type = "picker"
         "#,
     )
-    .expect("could not write custom launcher binding config");
+    .expect("could not write custom picker binding config");
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -353,7 +353,7 @@ fn launcher_bindings_can_override_a_default_shortcut() {
 }
 
 #[test]
-fn command_launcher_navigation_keeps_the_parent_item_context() {
+fn command_picker_navigation_keeps_the_parent_item_context() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -362,7 +362,7 @@ fn command_launcher_navigation_keeps_the_parent_item_context() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.inspect]
@@ -372,7 +372,7 @@ fn command_launcher_navigation_keeps_the_parent_item_context() {
         input = "parent-value:{{ runtime:view.current.selected_item.value }}"
 
         [plugins.core.views.command]
-        type = "launcher"
+        type = "picker"
 
         [plugins.core.views.capture]
         type = "capture"
@@ -388,13 +388,13 @@ fn command_launcher_navigation_keeps_the_parent_item_context() {
     process
         .master
         .write_all(b"\x0b")
-        .expect("could not open command launcher");
+        .expect("could not open command picker");
     process.master.flush().expect("could not flush Ctrl-K");
     let _ = wait_for_text(&process.master, "Inspect");
     process
         .master
         .write_all(b"\r")
-        .expect("could not navigate from command launcher");
+        .expect("could not navigate from command picker");
     process
         .master
         .flush()
@@ -438,7 +438,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items }}"
         "#,
     )
@@ -484,16 +484,16 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         sources = ["apps:default", "sys:default"]
 
         [plugins.apps.views.default]
-        type = "launcher"
+        type = "picker"
         alias = "app"
         items = "{{ config:test_items.items }}"
 
         [plugins.sys.views.default]
-        type = "launcher"
+        type = "picker"
         alias = "sys"
         items = "{{ config:test_items.items }}"
         "#,
@@ -564,16 +564,16 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         sources = ["apps:default", "sys:default"]
 
         [plugins.apps.views.default]
-        type = "launcher"
+        type = "picker"
         alias = "app"
         items = "{{ config:test_items.items }}"
 
         [plugins.sys.views.default]
-        type = "launcher"
+        type = "picker"
         alias = "sys"
         items = "{{ config:test_items.items }}"
         "#,
@@ -666,7 +666,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
 }
 
 #[test]
-fn view_alias_routes_to_the_configured_messages_launcher() {
+fn view_alias_routes_to_the_configured_messages_picker() {
     let root = temporary_root();
     let config = root.join("config.toml");
     fs::write(
@@ -678,7 +678,7 @@ fn view_alias_routes_to_the_configured_messages_launcher() {
     fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"picker\"\n",
     )
     .expect("could not write test plugin manifest");
     fs::write(
@@ -692,10 +692,10 @@ fn view_alias_routes_to_the_configured_messages_launcher() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
 
         [plugins.core.views.messages]
-        type = "launcher"
+        type = "picker"
         alias = "log"
         items = '{{ script("scripts/items.sh", runtime:view.current) }}'
         "#,
@@ -717,11 +717,11 @@ fn view_alias_routes_to_the_configured_messages_launcher() {
     process
         .master
         .write_all(b"\x03")
-        .expect("could not close messages launcher");
+        .expect("could not close messages picker");
     process
         .master
         .flush()
-        .expect("could not flush messages launcher close");
+        .expect("could not flush messages picker close");
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove messages integration config");
@@ -740,7 +740,7 @@ fn duplicate_view_alias_reports_an_error_when_invoked() {
 name = "template"
 
 [views.default]
-type = "launcher"
+type = "picker"
 alias = "temp"
 "#,
         )
@@ -752,7 +752,7 @@ alias = "temp"
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         "#,
     )
     .expect("could not write conflicting-alias config");
@@ -803,7 +803,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -873,7 +873,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -935,7 +935,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
 
         [plugins.core.views.broken]
         type = "embedded"
@@ -984,7 +984,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         default_view = "core:default"
 
         [plugins.core.views.default]
-        type = "launcher"
+        type = "picker"
 
         [plugins.core.views.embedded]
         type = "embedded"

@@ -133,13 +133,13 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Defaults, DisplayType, ENGINE_LAUNCHER, PluginMetadata, View};
+    use crate::config::{Defaults, DisplayType, ENGINE_PICKER, PluginMetadata, View};
     use serde_json::Value;
     use std::collections::BTreeMap;
 
     fn view(alias: Option<&str>) -> View {
         View {
-            engine_type: ENGINE_LAUNCHER.to_string(),
+            engine_type: ENGINE_PICKER.to_string(),
             display: DisplayType::Text,
             sources: Vec::new(),
             alias: alias.map(str::to_string),

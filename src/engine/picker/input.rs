@@ -1,8 +1,8 @@
-use super::LauncherView;
-use super::keymap::LauncherAction;
+use super::PickerView;
+use super::keymap::PickerAction;
 use crate::input::Key;
 
-pub(super) enum LauncherInputAction {
+pub(super) enum PickerInputAction {
     Continue,
     Refresh,
     ClearError,
@@ -12,7 +12,7 @@ pub(super) enum LauncherInputAction {
     Exit,
 }
 
-impl LauncherView {
+impl PickerView {
     pub(super) fn handle_input(
         &mut self,
         key: Key,
@@ -20,77 +20,77 @@ impl LauncherView {
         command_available: bool,
         input: &mut String,
         nested: bool,
-    ) -> LauncherInputAction {
+    ) -> PickerInputAction {
         if let Some(action) = self.keymap.action(key) {
-            return self.apply_launcher_action(action, command_view, input, nested);
+            return self.apply_picker_action(action, command_view, input, nested);
         }
         if command_available && self.current().command_owner.is_none() {
-            return LauncherInputAction::Activate(key);
+            return PickerInputAction::Activate(key);
         }
         match key {
             Key::Char(character) if !character.is_control() => {
                 input.push(character);
-                LauncherInputAction::Refresh
+                PickerInputAction::Refresh
             }
-            _ => LauncherInputAction::Continue,
+            _ => PickerInputAction::Continue,
         }
     }
 
-    fn apply_launcher_action(
+    fn apply_picker_action(
         &mut self,
-        action: LauncherAction,
+        action: PickerAction,
         command_view: &str,
         input: &mut String,
         nested: bool,
-    ) -> LauncherInputAction {
+    ) -> PickerInputAction {
         match action {
-            LauncherAction::Exit => LauncherInputAction::Exit,
-            LauncherAction::OpenCommands => {
+            PickerAction::Exit => PickerInputAction::Exit,
+            PickerAction::OpenCommands => {
                 if self.current().view != command_view {
-                    LauncherInputAction::OpenCommandView
+                    PickerInputAction::OpenCommandView
                 } else {
-                    LauncherInputAction::Continue
+                    PickerInputAction::Continue
                 }
             }
-            LauncherAction::Back => {
+            PickerAction::Back => {
                 if nested {
-                    LauncherInputAction::Back
+                    PickerInputAction::Back
                 } else if !input.is_empty() {
                     input.clear();
-                    LauncherInputAction::Refresh
+                    PickerInputAction::Refresh
                 } else {
-                    LauncherInputAction::Back
+                    PickerInputAction::Back
                 }
             }
-            LauncherAction::SelectPrevious => {
+            PickerAction::SelectPrevious => {
                 if !self.current().items.is_empty() {
                     self.current_mut().selected = self.current().selected.saturating_sub(1);
                 }
-                LauncherInputAction::ClearError
+                PickerInputAction::ClearError
             }
-            LauncherAction::SelectNext => {
+            PickerAction::SelectNext => {
                 if !self.current().items.is_empty() {
                     let last = self.current().items.len() - 1;
                     self.current_mut().selected = (self.current().selected + 1).min(last);
                 }
-                LauncherInputAction::ClearError
+                PickerInputAction::ClearError
             }
-            LauncherAction::DeleteBackward => {
+            PickerAction::DeleteBackward => {
                 if input.pop().is_some() {
-                    LauncherInputAction::Refresh
+                    PickerInputAction::Refresh
                 } else {
-                    LauncherInputAction::Continue
+                    PickerInputAction::Continue
                 }
             }
-            LauncherAction::ClearInput => {
+            PickerAction::ClearInput => {
                 if input.is_empty() {
-                    LauncherInputAction::Continue
+                    PickerInputAction::Continue
                 } else {
                     input.clear();
-                    LauncherInputAction::Refresh
+                    PickerInputAction::Refresh
                 }
             }
-            LauncherAction::DeleteWord => {
+            PickerAction::DeleteWord => {
                 let previous_length = input.len();
                 while input.chars().last().is_some_and(char::is_whitespace) {
                     input.pop();
@@ -99,12 +99,12 @@ impl LauncherView {
                     input.pop();
                 }
                 if input.len() != previous_length {
-                    LauncherInputAction::Refresh
+                    PickerInputAction::Refresh
                 } else {
-                    LauncherInputAction::Continue
+                    PickerInputAction::Continue
                 }
             }
-            LauncherAction::Activate => LauncherInputAction::Activate(Key::Enter),
+            PickerAction::Activate => PickerInputAction::Activate(Key::Enter),
         }
     }
 }

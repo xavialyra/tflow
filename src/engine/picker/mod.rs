@@ -6,9 +6,9 @@ mod render;
 mod runtime;
 mod session;
 
-use self::keymap::LauncherKeymap;
+use self::keymap::PickerKeymap;
 use super::{Engine, ViewContext, ViewInstance, validate_fields};
-use crate::config::{ENGINE_LAUNCHER, View};
+use crate::config::{ENGINE_PICKER, View};
 use crate::expression::ExpressionMethods;
 use anyhow::Result;
 use serde_json::Value;
@@ -17,13 +17,13 @@ use std::sync::Arc;
 
 pub(crate) use command::CommandInvocation;
 pub(crate) use items::Item;
-pub(crate) use session::LauncherView;
+pub(crate) use session::PickerView;
 
-pub(crate) struct LauncherEngine;
+pub(crate) struct PickerEngine;
 
-impl Engine for LauncherEngine {
+impl Engine for PickerEngine {
     fn engine_type(&self) -> &'static str {
-        ENGINE_LAUNCHER
+        ENGINE_PICKER
     }
 
     fn validate_config(&self, name: &str, view: &View) -> Result<()> {
@@ -40,7 +40,7 @@ impl Engine for LauncherEngine {
         let mut methods = ExpressionMethods::new(script_root);
         let default_bindings = context
             .config
-            .evaluate_default_launcher_bindings(&runtime, &mut methods)?;
+            .evaluate_default_picker_bindings(&runtime, &mut methods)?;
         let view_bindings = context.config.evaluate_view_field(
             &context.location.view_ref,
             "bindings",
@@ -48,7 +48,7 @@ impl Engine for LauncherEngine {
             &mut methods,
         )?;
         drop(runtime);
-        let keymap = LauncherKeymap::from_values(default_bindings, view_bindings)?;
+        let keymap = PickerKeymap::from_values(default_bindings, view_bindings)?;
         let command_owner = context
             .location
             .context
@@ -64,7 +64,7 @@ impl Engine for LauncherEngine {
             .map(serde_json::from_value)
             .transpose()?;
         Ok(Box::new(
-            LauncherView::new(
+            PickerView::new(
                 &context.location.view_ref,
                 context.tasks.clone(),
                 Arc::new(context.config.clone()),
@@ -81,5 +81,5 @@ impl Engine for LauncherEngine {
 }
 
 pub(crate) fn validate_bindings(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
-    LauncherKeymap::validate_values(defaults, view)
+    PickerKeymap::validate_values(defaults, view)
 }

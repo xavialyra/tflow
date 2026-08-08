@@ -33,7 +33,7 @@ pub(crate) enum CommandAction {
 
 fn prepare_command(
     config: &Config,
-    driver: &super::LauncherView,
+    driver: &super::PickerView,
     invocation: &CommandInvocation,
     item: Option<&Item>,
     log_file: Option<&Path>,
@@ -181,7 +181,7 @@ pub(super) fn runtime_item_value(item: &Item) -> Value {
     })
 }
 
-impl super::LauncherView {
+impl super::PickerView {
     pub(crate) fn resolve_command(&self, config: &Config, key: Key) -> Option<CommandInvocation> {
         let frame = self.current();
         if frame.command_owner.is_some() {

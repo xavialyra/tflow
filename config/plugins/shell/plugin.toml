@@ -3,7 +3,7 @@ api = 1
 name = "shell"
 
 [views.menu]
-type = "launcher"
+type = "picker"
 alias = "shell"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 

@@ -13,7 +13,7 @@ use std::{
 
 pub type ViewRef = String;
 
-pub const ENGINE_LAUNCHER: &str = "launcher";
+pub const ENGINE_PICKER: &str = "picker";
 pub const ENGINE_CAPTURE: &str = "capture";
 pub const ENGINE_EMBEDDED: &str = "embedded";
 
@@ -44,11 +44,11 @@ pub enum DisplayType {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct Defaults {
     #[serde(default)]
-    pub(crate) launcher: LauncherDefaults,
+    pub(crate) picker: PickerDefaults,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(crate) struct LauncherDefaults {
+pub(crate) struct PickerDefaults {
     #[serde(default)]
     pub(crate) bindings: Option<toml::Value>,
 }
@@ -154,7 +154,7 @@ impl Config {
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         let raw: RawConfig = merged
             .try_into()
-            .context("merged configuration does not match the launcher schema")?;
+            .context("merged configuration does not match the picker schema")?;
         let mut config = Self::from_raw(raw, plugin_roots)?;
         config.config_value = config_value;
         config.validate_with_engines(engines)?;
@@ -204,15 +204,15 @@ impl Config {
     ) -> Result<()> {
         self.engine(&self.default_view)?;
 
-        let default_launcher_bindings = self
+        let default_picker_bindings = self
             .defaults
-            .launcher
+            .picker
             .bindings
             .as_ref()
             .map(toml_to_json)
             .transpose()?;
-        crate::engine::validate_launcher_bindings(default_launcher_bindings.as_ref(), None)
-            .context("default launcher bindings")?;
+        crate::engine::validate_picker_bindings(default_picker_bindings.as_ref(), None)
+            .context("default picker bindings")?;
 
         for (package_id, plugin) in &self.plugins {
             if plugin.name.trim().is_empty() {
@@ -237,20 +237,20 @@ impl Config {
             }
             let engine = self.engine(view_ref)?;
             engines.validate_config(view_ref, view)?;
-            if engine == ENGINE_LAUNCHER {
+            if engine == ENGINE_PICKER {
                 let view_bindings = view
                     .engine_field("bindings")
                     .map(toml_to_json)
                     .transpose()?;
-                crate::engine::validate_launcher_bindings(
-                    default_launcher_bindings.as_ref(),
+                crate::engine::validate_picker_bindings(
+                    default_picker_bindings.as_ref(),
                     view_bindings.as_ref(),
                 )
-                .with_context(|| format!("view {:?} launcher bindings", view_ref))?;
+                .with_context(|| format!("view {:?} picker bindings", view_ref))?;
             }
-            if engine != ENGINE_LAUNCHER && (!view.sources.is_empty() || view.items.is_some()) {
+            if engine != ENGINE_PICKER && (!view.sources.is_empty() || view.items.is_some()) {
                 bail!(
-                    "view {:?} using engine {:?} cannot provide launcher items",
+                    "view {:?} using engine {:?} cannot provide picker items",
                     view_ref,
                     engine
                 );
@@ -270,9 +270,9 @@ impl Config {
                         view_ref, source_ref
                     )
                 })?;
-                if self.engine(source_ref)? != ENGINE_LAUNCHER {
+                if self.engine(source_ref)? != ENGINE_PICKER {
                     bail!(
-                        "view {:?} source {:?} does not use the launcher engine",
+                        "view {:?} source {:?} does not use the picker engine",
                         view_ref,
                         source_ref
                     );
@@ -394,12 +394,12 @@ impl Config {
         self.evaluate_config_value(raw, runtime, methods).map(Some)
     }
 
-    pub fn evaluate_default_launcher_bindings(
+    pub fn evaluate_default_picker_bindings(
         &self,
         runtime: &Value,
         methods: &mut dyn MethodResolver,
     ) -> Result<Option<Value>> {
-        let Some(raw) = &self.defaults.launcher.bindings else {
+        let Some(raw) = &self.defaults.picker.bindings else {
             return Ok(None);
         };
         self.evaluate_config_value(raw, runtime, methods).map(Some)
@@ -476,9 +476,9 @@ impl Config {
             .views
             .get(&self.dmenu_view)
             .with_context(|| format!("dmenu view {:?} is not defined", self.dmenu_view))?;
-        if self.engine(&self.dmenu_view)? != ENGINE_LAUNCHER {
+        if self.engine(&self.dmenu_view)? != ENGINE_PICKER {
             bail!(
-                "dmenu view {:?} must use the launcher engine",
+                "dmenu view {:?} must use the picker engine",
                 self.dmenu_view
             );
         }
@@ -490,9 +490,9 @@ impl Config {
             .views
             .get(&self.command_view)
             .with_context(|| format!("command view {:?} is not defined", self.command_view))?;
-        if self.engine(&self.command_view)? != ENGINE_LAUNCHER {
+        if self.engine(&self.command_view)? != ENGINE_PICKER {
             bail!(
-                "command view {:?} must use the launcher engine",
+                "command view {:?} must use the picker engine",
                 self.command_view
             );
         }
@@ -793,7 +793,7 @@ fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
 }
 
 fn default_engine_type() -> String {
-    ENGINE_LAUNCHER.to_string()
+    ENGINE_PICKER.to_string()
 }
 
 fn default_plugin_api() -> u32 {
@@ -829,16 +829,16 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             sources = ["apps:main"]
             [plugins.apps.views.main]
-            type = "launcher"
+            type = "picker"
             "#,
         );
         assert_eq!(config.default_view, "core:default");
         assert_eq!(
             config.views["apps:main"].engine_type,
-            ENGINE_LAUNCHER.to_string()
+            ENGINE_PICKER.to_string()
         );
         assert_eq!(config.views["core:default"].sources, vec!["apps:main"]);
     }
@@ -849,14 +849,14 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             "#,
         );
         config.validate().unwrap();
-        assert_eq!(config.engine("core:default").unwrap(), ENGINE_LAUNCHER);
+        assert_eq!(config.engine("core:default").unwrap(), ENGINE_PICKER);
         assert_eq!(
             config.view("core:default").unwrap().engine_type,
-            ENGINE_LAUNCHER
+            ENGINE_PICKER
         );
     }
 
@@ -864,10 +864,10 @@ mod tests {
     fn legacy_viewtypes_are_rejected() {
         let value: toml::Value = toml::from_str(
             r#"
-            [viewtypes.launcher.engine]
-            type = "launcher"
+            [viewtypes.picker.engine]
+            type = "picker"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             "#,
         )
         .unwrap();
@@ -899,14 +899,14 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             sources = ["apps:main"]
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
             run = ":"
             [plugins.apps.views.main]
-            type = "launcher"
+            type = "picker"
             "#,
         );
         let error = config
@@ -921,7 +921,7 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
@@ -943,18 +943,18 @@ mod tests {
         let config = config(
             r#"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
 
             [plugins.package-a]
             name = "template"
             [plugins.package-a.views.default]
-            type = "launcher"
+            type = "picker"
             alias = "temp"
 
             [plugins.package-b]
             name = "template"
             [plugins.package-b.views.default]
-            type = "launcher"
+            type = "picker"
             alias = "temp"
             "#,
         );
@@ -978,7 +978,7 @@ mod tests {
             let config = config(&format!(
                 r#"
                 [plugins.core.views.default]
-                type = "launcher"
+                type = "picker"
                 alias = {alias:?}
                 "#
             ));
@@ -1030,7 +1030,7 @@ mod tests {
             name = "file test"
 
             [views.main]
-            type = "launcher"
+            type = "picker"
             alias = "file"
             items = '{{ script("scripts/items.sh") }}'
 
@@ -1051,7 +1051,7 @@ mod tests {
         let default_source = r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             sources = ["filetest:main"]
             "#;
         fs::write(&config_path, default_source).unwrap();
@@ -1082,7 +1082,7 @@ mod tests {
             &config_path,
             r#"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
 
             [aa.a]
             bb = 1
@@ -1107,9 +1107,9 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
-            type = "launcher"
+            type = "picker"
             [plugins.base.views.main]
-            type = "launcher"
+            type = "picker"
             items = "{{ runtime:view.current.items }}"
             "#,
         )

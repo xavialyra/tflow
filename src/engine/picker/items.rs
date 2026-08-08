@@ -64,7 +64,7 @@ pub(crate) fn submit_items_task(
     let config = Arc::clone(config);
     tasks.submit_keyed(
         request,
-        "launcher-items".to_string(),
+        "picker-items".to_string(),
         move |request, runtime_value, cancellation| {
             let result = load_items(&config, &request.view, &runtime_value, &cancellation)
                 .map_err(|error| error.to_string());
@@ -152,7 +152,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, Defaults, DisplayType, ENGINE_LAUNCHER, PluginMetadata, View};
+    use crate::config::{Command, Defaults, DisplayType, ENGINE_PICKER, PluginMetadata, View};
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -162,7 +162,7 @@ mod tests {
         views.insert(
             "core:default".to_string(),
             View {
-                engine_type: ENGINE_LAUNCHER.to_string(),
+                engine_type: ENGINE_PICKER.to_string(),
                 display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 alias: None,
@@ -175,7 +175,7 @@ mod tests {
         views.insert(
             "apps:main".to_string(),
             View {
-                engine_type: ENGINE_LAUNCHER.to_string(),
+                engine_type: ENGINE_PICKER.to_string(),
                 display: DisplayType::Text,
                 sources: Vec::new(),
                 alias: Some("app".to_string()),

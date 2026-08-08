@@ -1,9 +1,9 @@
-use super::LauncherView;
+use super::PickerView;
 use crate::config::Config;
 use crate::engine::RuntimeStore;
 use anyhow::Result;
 
-impl LauncherView {
+impl PickerView {
     pub(crate) fn publish_runtime(
         &self,
         config: &Config,
