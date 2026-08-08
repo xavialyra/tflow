@@ -335,8 +335,8 @@ impl DmenuApp {
             .unwrap_or(available_rows);
         let mut lines = Vec::with_capacity(height);
 
-        lines.push(" TUI Launcher  [dmenu]".to_string());
         lines.push(query_line(&self.prompt, &self.query, width));
+        lines.push(crate::chrome::divider_line(width.saturating_sub(1), ""));
 
         let start = if self.selected >= list_height && list_height > 0 {
             self.selected + 1 - list_height
@@ -383,7 +383,7 @@ impl DmenuApp {
                 output.push_str("\x1b[7m");
                 output.push_str(&clipped);
                 output.push_str("\x1b[0m");
-            } else if row == 0 {
+            } else if row == 1 {
                 output.push_str("\x1b[1;36m");
                 output.push_str(&clipped);
                 output.push_str("\x1b[0m");
@@ -400,7 +400,7 @@ impl DmenuApp {
             let cursor_width =
                 UnicodeWidthStr::width(query_line(&self.prompt, &self.query, width).as_str());
             let cursor_column = cursor_width.min(width.saturating_sub(1)).max(1) + 1;
-            write!(output, "\x1b[2;{}H\x1b[?25h", cursor_column)?;
+            write!(output, "\x1b[1;{}H\x1b[?25h", cursor_column)?;
         }
         terminal
             .write_output(output.as_bytes())

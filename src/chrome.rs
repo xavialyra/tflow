@@ -39,7 +39,7 @@ impl ShellInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChromeFrame {
-    pub(crate) header: String,
+    pub(crate) divider: String,
     pub(crate) input: String,
     pub(crate) footer: String,
 }
@@ -57,41 +57,56 @@ impl ChromeFrame {
         error: Option<&str>,
     ) -> Self {
         let width = width.saturating_sub(1);
-        let header = engine
-            .title
-            .as_deref()
-            .map(|title| format!(" TUI Launcher  [{}]", title))
-            .unwrap_or_else(|| " TUI Launcher".to_string());
         let footer = if let Some(error) = error {
             clip(error, width)
         } else {
             footer_line(
                 width,
-                &route.label(),
+                engine.title.as_deref(),
                 engine.status.as_deref().unwrap_or(""),
                 &engine.commands,
             )
         };
         Self {
-            header: clip(&header, width),
+            divider: divider_line(width, &route.label()),
             input: input.to_string(),
             footer,
         }
     }
 }
 
-fn footer_line(width: usize, route: &str, status: &str, commands: &[(String, String)]) -> String {
+pub(crate) fn divider_line(width: usize, label: &str) -> String {
     if width == 0 {
         return String::new();
     }
+    if label.is_empty() {
+        return "─".repeat(width);
+    }
+
+    let label = clip(label, width);
+    let label_width = UnicodeWidthStr::width(label.as_str());
+    if label_width >= width {
+        return label;
+    }
+    format!("{} {}", label, "─".repeat(width - label_width - 1))
+}
+
+fn footer_line(
+    width: usize,
+    title: Option<&str>,
+    status: &str,
+    commands: &[(String, String)],
+) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let left = footer_label(title, status);
     let right = command_text(commands);
-    let left = if status.is_empty() {
-        route.to_string()
-    } else {
-        format!("{} | {}", route, status)
-    };
     if right.is_empty() {
         return clip(&left, width);
+    }
+    if left.is_empty() {
+        return right_aligned(width, &right);
     }
 
     let separator = " | ";
@@ -102,6 +117,9 @@ fn footer_line(width: usize, route: &str, status: &str, commands: &[(String, Str
     if full_width <= width {
         let padding = width - full_width;
         return format!("{}{}{}{}", left, " ".repeat(padding), separator, right);
+    }
+    if separator_width >= width {
+        return clip(&right, width);
     }
 
     let right_budget = (width * 3 / 5).max(1);
@@ -117,6 +135,23 @@ fn footer_line(width: usize, route: &str, status: &str, commands: &[(String, Str
         + UnicodeWidthStr::width(right.as_str());
     let padding = width.saturating_sub(used);
     format!("{}{}{}{}", left, " ".repeat(padding), separator, right)
+}
+
+fn footer_label(title: Option<&str>, status: &str) -> String {
+    let mut parts = Vec::new();
+    if let Some(title) = title.filter(|title| !title.is_empty()) {
+        parts.push(title.to_string());
+    }
+    if !status.is_empty() {
+        parts.push(status.to_string());
+    }
+    parts.join(" | ")
+}
+
+fn right_aligned(width: usize, text: &str) -> String {
+    let text = clip(text, width);
+    let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
+    format!("{}{}", " ".repeat(padding), text)
 }
 
 fn command_text(commands: &[(String, String)]) -> String {
@@ -176,17 +211,25 @@ mod tests {
             &route(),
             "terminal",
             EngineChrome {
-                title: Some("picker".to_string()),
+                title: None,
                 status: Some("12 results".to_string()),
                 commands: vec![("enter".to_string(), "Open".to_string())],
             },
             None,
         );
-        assert_eq!(frame.header, " TUI Launcher  [picker]");
+        assert!(frame.divider.starts_with("apps:default (app) "));
+        assert!(frame.divider.contains('─'));
+        assert_eq!(UnicodeWidthStr::width(frame.divider.as_str()), 79);
         assert_eq!(frame.input, "terminal");
         assert_eq!(frame.input_line(), " > terminal");
-        assert!(frame.footer.starts_with("apps:default (app) | 12 results"));
+        assert!(frame.footer.starts_with("12 results"));
         assert!(frame.footer.ends_with(" | Enter Open"));
+        assert_eq!(UnicodeWidthStr::width(frame.footer.as_str()), 79);
+    }
+
+    #[test]
+    fn divider_fills_width_without_a_label() {
+        assert_eq!(divider_line(5, ""), "─────");
     }
 
     #[test]

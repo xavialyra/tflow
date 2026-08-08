@@ -554,7 +554,7 @@ impl ViewInstance for PickerView {
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         let searching = self.frame.refresh_deadline.is_some() || self.frame.items_pending;
         crate::chrome::EngineChrome {
-            title: Some("picker".to_string()),
+            title: None,
             status: Some(if searching {
                 "searching...".to_string()
             } else {

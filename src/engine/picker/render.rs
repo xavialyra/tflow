@@ -26,8 +26,8 @@ pub(crate) fn render_picker(
     let prefix_width = prefix_column_width(&state.items, width);
     let content_width = width.saturating_sub(prefix_width + 4);
 
-    lines.push(chrome.header.clone());
     lines.push(chrome.input_line());
+    lines.push(chrome.divider.clone());
 
     let start = if state.selected >= list_height && list_height > 0 {
         state.selected + 1 - list_height
@@ -74,7 +74,7 @@ pub(crate) fn render_picker(
         let clipped = clip(line, width);
         if selected_row == Some(row) && clipped.starts_with("> ") {
             write!(stdout, "\x1b[7m{}\x1b[0m", clipped)?;
-        } else if row == 0 {
+        } else if row == 1 {
             write!(stdout, "\x1b[1;36m{}\x1b[0m", clipped)?;
         } else {
             stdout.write_all(clipped.as_bytes())?;

@@ -16,8 +16,8 @@ pub(super) fn render_capture(
 
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[?25l")?;
-    write_capture_line(&mut stdout, 1, &chrome.header, width, true)?;
-    write_capture_line(&mut stdout, 2, &chrome.input_line(), width, false)?;
+    write_capture_line(&mut stdout, 1, &chrome.input_line(), width, false)?;
+    write_capture_line(&mut stdout, 2, &chrome.divider, width, true)?;
     for row in 0..inner_height {
         let content = lines.get(start + row).map(String::as_str).unwrap_or("");
         write_capture_line(&mut stdout, 3 + row, content, width, false)?;

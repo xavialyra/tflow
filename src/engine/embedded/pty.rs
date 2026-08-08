@@ -312,8 +312,8 @@ fn render_embedded(
     let mut stdout = io::stdout().lock();
 
     stdout.write_all(b"\x1b[?25l")?;
-    write_line(&mut stdout, 1, &chrome.header, outer_columns, true)?;
-    write_line(&mut stdout, 2, &chrome.input_line(), outer_columns, false)?;
+    write_line(&mut stdout, 1, &chrome.input_line(), outer_columns, false)?;
+    write_line(&mut stdout, 2, &chrome.divider, outer_columns, true)?;
     for row in 0..inner_rows {
         write_line(
             &mut stdout,
