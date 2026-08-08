@@ -1,4 +1,3 @@
-use super::render;
 use crate::input::{InputDecoder, Key};
 use crate::terminal::Terminal;
 use crate::text::sanitize_text;
@@ -21,16 +20,23 @@ impl CaptureSession {
         }
     }
 
-    pub(crate) fn wait_for_return(&mut self, terminal: &Terminal) -> Result<()> {
-        loop {
-            render::render_capture(terminal, &self.title, &self.lines, &self.status)?;
-            let bytes = terminal.read_input(80)?;
-            let mut keys = self.decoder.feed(&bytes);
-            keys.extend(self.decoder.flush_due());
-            if keys.iter().any(is_return_key) {
-                return Ok(());
-            }
-        }
+    pub(crate) fn return_requested(&mut self, terminal: &Terminal) -> Result<bool> {
+        let bytes = terminal.read_input(80)?;
+        let mut keys = self.decoder.feed(&bytes);
+        keys.extend(self.decoder.flush_due());
+        Ok(keys.iter().any(is_return_key))
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub(crate) fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub(crate) fn status(&self) -> &str {
+        &self.status
     }
 }
 

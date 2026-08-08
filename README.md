@@ -107,13 +107,15 @@ display = "text"
 
 ## Views and plugins
 
-A plugin is a namespace containing one or more views. View references use the fully qualified `plugin:view` form:
+A plugin contains one or more views. The plugin directory name is its unique ID, so every view has a canonical `plugin:view` reference:
 
 ```text
 core:default
-apps:main
+apps:default
 apps:detail
 ```
+
+A view may also define a short `alias` for launcher input. Canonical references contain `:` and are always exact; tokens without `:` are resolved only as aliases.
 
 A view's `type` directly selects its engine, and engine-specific fields live on that view:
 
@@ -151,20 +153,25 @@ plugins/apps/
     └── common.sh
 ```
 
-The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `1` when it is omitted. Its view definitions are relative to that directory namespace:
+Every manifest defines its metadata in `[plugin]`. `name` is descriptive metadata and may be shared by multiple installed plugins. `api` defaults to `1` when omitted. Routing aliases belong to individual views:
 
 ```toml
-[views.main]
+[plugin]
+api = 1
+name = "applications"
+
+[views.default]
 type = "launcher"
+alias = "app"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
-[views.main.commands.open]
+[views.default.commands.open]
 key = "enter"
 label = "Open"
 run = { file = "scripts/open.sh" }
 ```
 
-Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
+Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate names and aliases are accepted; a duplicate alias becomes an error only when it is used, at which point the launcher displays the canonical conflicting views and stays on the current view. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
 
 The root config file selects the default views and can define shared launcher binding defaults:
 
@@ -202,7 +209,7 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-A qualified path followed by optional input enters any configured view directly, while a unique `display_prefix` remains a shorter route. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
+A canonical reference or unique alias enters a configured view through the normal view stack. For example, `apps:default terminal` and `app terminal` target the same view when `apps:default` owns `alias = "app"`. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
 
 ## Expressions
 
@@ -301,25 +308,15 @@ items = '{{ script("scripts/items.sh", runtime:view.current.request) }}'
 
 The launcher runtime exposes the current request under `runtime:view.current.request`. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the launcher does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
 
-A root launcher view evaluates the `items` expression of each view in `sources`. `display_prefix` is shown in the result list and acts as a source selector when followed by a space:
+A root launcher view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
 
 ```text
-app terminal
-ssh prod
+app          Terminal
+sys          System monitor
+apps:detail  Package details
 ```
 
-When a view with an explicit `display_prefix` is not a source of the current view, the same prefix enters that launcher view through the normal view stack. For example, a standalone view with `display_prefix = "log"` is entered with `log timeout`; `timeout` becomes its query. Source selection stays in the current frame, while view routing pushes a new frame.
-
-If `display_prefix` is omitted, the view name is used for source display and selection. The engine adds each source view and display prefix to the returned item after evaluating the expression. Source commands remain owned by the source view.
-
-The core plugin provides a normal log launcher without adding it to `core:default`:
-
-```toml
-[views.messages]
-type = "launcher"
-display_prefix = "log"
-items = '{{ script("scripts/items.sh", runtime:view.current) }}'
-```
+Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Source commands remain owned by the source view.
 
 ## Command environment
 
@@ -328,7 +325,7 @@ Command scripts receive:
 - `LAUNCHER_ITEM`;
 - `LAUNCHER_VALUE`;
 - `LAUNCHER_METADATA`;
-- `LAUNCHER_PLUGIN`;
+- `LAUNCHER_PLUGIN` (the plugin directory ID);
 - `LAUNCHER_PLUGIN_DIR` when the command belongs to a file-backed plugin;
 - `LAUNCHER_VIEW`;
 - `LAUNCHER_VIEW_REF`;
@@ -373,7 +370,7 @@ The default bindings are:
 - `Ctrl-W`: delete the previous word;
 - `Ctrl-K`: open the command launcher view for the selected item's source view.
 
-The launcher footer occupies one fixed row. It keeps the current view on the left and view commands on the right. A current error temporarily replaces the left side and includes its occurrence time; the latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+Header and footer chrome are composed centrally from the active route, the current engine, and global errors. The footer uses `plugin:view (alias) | engine status | engine commands`; the alias is omitted when absent. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command launcher view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 

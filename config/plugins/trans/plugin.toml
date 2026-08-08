@@ -1,7 +1,8 @@
 [plugin]
 api = 1
+name = "translation"
 
 [views.default]
 type = "launcher"
-display_prefix = "tr"
+alias = "tr"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'

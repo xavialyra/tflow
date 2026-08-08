@@ -77,7 +77,7 @@ impl Engine for EmbeddedEngine {
             .location
             .view_ref
             .split_once(':')
-            .map(|(plugin, _)| plugin)
+            .map(|(package, _)| package)
             .unwrap_or(&context.location.view_ref)
             .to_string();
         let plugin_root = context
@@ -106,20 +106,21 @@ impl Engine for EmbeddedEngine {
         }
         Ok(Box::new(EmbeddedView {
             view_ref: context.location.view_ref.clone(),
-            session: Some(EmbeddedSession::new(
-                PreparedProcess {
-                    argv: command,
-                    environment,
-                    current_dir: plugin_root,
-                },
-                &title,
-            )),
+            title: title.clone(),
+            chrome: None,
+            session: Some(EmbeddedSession::new(PreparedProcess {
+                argv: command,
+                environment,
+                current_dir: plugin_root,
+            })),
         }))
     }
 }
 
 struct EmbeddedView {
     view_ref: String,
+    title: String,
+    chrome: Option<crate::chrome::ChromeFrame>,
     session: Option<EmbeddedSession>,
 }
 
@@ -129,7 +130,11 @@ impl ViewInstance for EmbeddedView {
             .session
             .take()
             .context("embedded view was already completed")?;
-        let outcome = session.run(terminal)?;
+        let chrome = self
+            .chrome
+            .as_ref()
+            .context("embedded view was not rendered before it started")?;
+        let outcome = session.run(terminal, chrome)?;
         let message = embedded_status_message(outcome);
         let success = matches!(outcome, EmbeddedOutcome::ReturnedToLauncher)
             || matches!(outcome, EmbeddedOutcome::Exited(0));
@@ -137,8 +142,33 @@ impl ViewInstance for EmbeddedView {
         Ok(ViewEffect::Back)
     }
 
-    fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
-        Ok(())
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+        crate::chrome::EngineChrome {
+            title: Some(format!("embedded: {}", self.title)),
+            status: Some("keys pass through".to_string()),
+            commands: vec![
+                ("Esc".to_string(), "Return".to_string()),
+                ("Ctrl-C".to_string(), "Interrupt".to_string()),
+            ],
+        }
+    }
+
+    fn render(
+        &mut self,
+        _host: &EngineHost<'_>,
+        terminal: &Terminal,
+        chrome: &crate::chrome::ChromeFrame,
+    ) -> Result<()> {
+        self.chrome = Some(chrome.clone());
+        terminal.write_output(
+            format!(
+                "\x1b[2J\x1b[H\x1b[1;36m{}\x1b[0m\x1b[K\x1b[{};1H{}\x1b[K",
+                chrome.header,
+                terminal.size().1,
+                chrome.footer
+            )
+            .as_bytes(),
+        )
     }
 }
 

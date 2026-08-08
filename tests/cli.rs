@@ -239,7 +239,7 @@ fn replacing_items_request_cancels_the_previous_script() {
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[views.placeholder]\ntype = \"launcher\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
     )
     .expect("could not write cancellation plugin manifest");
     let old_pid_path = root.join("old.pid");
@@ -355,7 +355,7 @@ fn ctrl_k_opens_the_command_launcher_view() {
         .write_all(b"\x0b")
         .expect("could not write Ctrl-K key");
     process.master.flush().expect("could not flush Ctrl-K key");
-    let output = wait_for_text(&process.master, "[core:command]");
+    let output = wait_for_text(&process.master, "core:command");
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("Enter Run"), "output: {output}");
     assert!(output.contains("Alt-A Apps"), "output: {output}");
@@ -417,7 +417,7 @@ fn launcher_bindings_can_override_a_default_shortcut() {
         .master
         .flush()
         .expect("could not flush configured shortcut");
-    let output = wait_for_text(&process.master, "[core:command]");
+    let output = wait_for_text(&process.master, "core:command");
     assert!(
         String::from_utf8_lossy(&output).contains("Enter Run"),
         "output: {:?}",
@@ -499,7 +499,7 @@ fn command_launcher_navigation_keeps_the_parent_item_context() {
         .master
         .flush()
         .expect("could not flush capture return");
-    let _ = wait_for_text(&process.master, "[core:default]");
+    let _ = wait_for_text(&process.master, "core:default");
     process
         .master
         .write_all(b"\x03")
@@ -560,7 +560,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 }
 
 #[test]
-fn log_prefix_routes_to_the_configured_messages_launcher() {
+fn view_alias_routes_to_the_configured_messages_launcher() {
     let root = temporary_root();
     let config = root.join("config.toml");
     fs::write(
@@ -572,7 +572,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
     fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[views.placeholder]\ntype = \"launcher\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
     )
     .expect("could not write test plugin manifest");
     fs::write(
@@ -590,7 +590,7 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
 
         [plugins.core.views.messages]
         type = "launcher"
-        display_prefix = "log"
+        alias = "log"
         items = '{{ script("scripts/items.sh", runtime:view.current) }}'
         "#,
     )
@@ -601,9 +601,9 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
     process
         .master
         .write_all(b"log ")
-        .expect("could not write log prefix");
-    process.master.flush().expect("could not flush log prefix");
-    let _ = wait_for_text(&process.master, "[core:messages]");
+        .expect("could not write view alias");
+    process.master.flush().expect("could not flush view alias");
+    let _ = wait_for_text(&process.master, "core:messages (log)");
     let output = wait_for_text(&process.master, "preexisting log");
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("preexisting log"), "output: {output}");
@@ -619,6 +619,72 @@ fn log_prefix_routes_to_the_configured_messages_launcher() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove messages integration config");
+}
+
+#[test]
+fn duplicate_view_alias_reports_an_error_when_invoked() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    for package in ["package-a", "package-b"] {
+        let plugin_root = root.join("plugins").join(package);
+        fs::create_dir_all(&plugin_root).expect("could not create conflicting plugin");
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            r#"[plugin]
+name = "template"
+
+[views.default]
+type = "launcher"
+alias = "temp"
+"#,
+        )
+        .expect("could not write conflicting plugin manifest");
+    }
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        "#,
+    )
+    .expect("could not write conflicting-alias config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"temp")
+        .expect("could not write conflicting view alias");
+    process
+        .master
+        .flush()
+        .expect("could not flush conflicting view alias");
+    let output = wait_for_text(&process.master, "ambiguous");
+    assert!(
+        String::from_utf8_lossy(&output).contains("view alias \"temp\" is ambiguous"),
+        "output: {:?}",
+        output
+    );
+    let runtime_log = fs::read_to_string(root.join("runtime.jsonl"))
+        .expect("could not read conflicting-alias runtime log");
+    assert!(
+        runtime_log.contains("package-a:default, package-b:default"),
+        "runtime log: {runtime_log}"
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close conflicting-alias launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush conflicting-alias launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove conflicting-alias config");
 }
 
 #[test]
@@ -642,6 +708,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.capture]
         type = "capture"
+        alias = "cap"
         output = "{{ runtime:view.current.input }}"
         title = "Capture"
         "#,
@@ -668,7 +735,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         .master
         .flush()
         .expect("could not flush capture return key");
-    let launcher = wait_for_text(&process.master, "[core:default]");
+    let launcher = wait_for_text(&process.master, "core:default");
 
     process
         .master
@@ -684,11 +751,9 @@ fn capture_command_returns_to_launcher_and_restores_input() {
     let mut output = output;
     output.extend(launcher);
     output.extend(remaining);
-    assert!(
-        String::from_utf8_lossy(&output).contains("capture-marker:value"),
-        "output: {:?}",
-        output
-    );
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("capture-marker:value"), "output: {output}");
+    assert!(output.contains("core:capture (cap)"), "output: {output}");
     fs::remove_dir_all(root).expect("could not remove capture integration config");
 }
 
@@ -713,6 +778,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.embedded]
         type = "embedded"
+        alias = "emb"
         command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
         title = "Embedded"
         "#,
@@ -745,6 +811,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("embedded-marker:value"), "output: {output}");
+    assert!(output.contains("core:embedded (emb)"), "output: {output}");
     assert!(
         !output.contains("finished successfully"),
         "output: {output}"

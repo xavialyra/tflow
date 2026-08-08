@@ -8,29 +8,26 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
 pub(crate) struct LauncherRenderState {
-    pub(crate) view: String,
     pub(crate) input: String,
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
-    pub(crate) commands: Vec<(String, String)>,
 }
 
 pub(crate) fn render_launcher(
     terminal: &Terminal,
     state: &LauncherRenderState,
-    footer_left: &str,
+    chrome: &crate::chrome::ChromeFrame,
 ) -> Result<()> {
     let (width, height) = terminal.size();
     let width = width as usize;
     let height = height as usize;
-    let footer = footer_line(width, footer_left, &state.commands);
     let list_height = height.saturating_sub(3);
     let mut lines = Vec::with_capacity(height);
     let prefix_width = prefix_column_width(&state.items, width);
     let content_width = width.saturating_sub(prefix_width + 4);
 
-    lines.push(format!(" TUI Launcher  [{}]", state.view));
+    lines.push(chrome.header.clone());
     lines.push(format!(" > {}", state.input));
 
     let start = if state.selected >= list_height && list_height > 0 {
@@ -69,7 +66,7 @@ pub(crate) fn render_launcher(
     while lines.len() < 2 + list_height {
         lines.push(String::new());
     }
-    lines.push(footer);
+    lines.push(chrome.footer.clone());
 
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[H")?;
@@ -89,83 +86,6 @@ pub(crate) fn render_launcher(
         }
     }
     stdout.flush().context("could not draw launcher")
-}
-
-pub(crate) fn footer_line(width: usize, left: &str, commands: &[(String, String)]) -> String {
-    // Leave the terminal's last column unused so a full row cannot trigger autowrap.
-    let width = width.saturating_sub(1);
-    let left_width = UnicodeWidthStr::width(left);
-    let right_budget = if left_width + 2 < width {
-        width - left_width - 2
-    } else {
-        (width * 3 / 5).max(1).min(width.saturating_sub(1))
-    };
-    let right = command_footer_text(commands, right_budget);
-    footer_row(left, &right, width)
-}
-
-fn display_binding(key: &str) -> String {
-    if key == "enter" {
-        return "Enter".to_string();
-    }
-    key.strip_prefix("alt+")
-        .map(|character| format!("Alt-{}", character.to_ascii_uppercase()))
-        .unwrap_or_else(|| key.to_string())
-}
-
-fn command_footer_text(commands: &[(String, String)], width: usize) -> String {
-    if commands.is_empty() || width == 0 {
-        return String::new();
-    }
-    let formatted = commands
-        .iter()
-        .map(|(key, label)| format!("{} {}", display_binding(key), label))
-        .collect::<Vec<_>>();
-    let full = formatted.join(" | ");
-    if UnicodeWidthStr::width(full.as_str()) <= width {
-        return full;
-    }
-
-    let more = "Ctrl-K commands";
-    let more_width = UnicodeWidthStr::width(more);
-    let mut visible = Vec::new();
-    let mut used = 0;
-    for command in formatted {
-        let command_width = UnicodeWidthStr::width(command.as_str());
-        let separator = if visible.is_empty() { 0 } else { 3 };
-        let required = used + separator + command_width + 3 + more_width;
-        if required > width {
-            break;
-        }
-        used += separator + command_width;
-        visible.push(command);
-    }
-    visible.push(more.to_string());
-    clip(visible.join(" | ").as_str(), width)
-}
-
-fn footer_row(left: &str, right: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if right.is_empty() {
-        return clip(left, width);
-    }
-
-    let gap = 2;
-    if UnicodeWidthStr::width(left) + gap + UnicodeWidthStr::width(right) <= width {
-        let padding = width - UnicodeWidthStr::width(left) - gap - UnicodeWidthStr::width(right);
-        return format!("{}{}{}", left, " ".repeat(padding + gap), right);
-    }
-
-    let right_budget = (width * 3 / 5).max(1).min(width.saturating_sub(1));
-    let right = clip(right, right_budget);
-    let left_budget = width.saturating_sub(UnicodeWidthStr::width(right.as_str()) + 1);
-    let left = clip(left, left_budget);
-    let padding = width.saturating_sub(
-        UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()),
-    );
-    format!("{}{}{}", left, " ".repeat(padding), right)
 }
 
 fn prefix_column_width(items: &[Item], width: usize) -> usize {
@@ -206,15 +126,13 @@ impl LauncherView {
         commands
     }
 
-    pub(crate) fn render_state(&self, config: &Config) -> LauncherRenderState {
+    pub(crate) fn render_state(&self) -> LauncherRenderState {
         let frame = self.current();
         LauncherRenderState {
-            view: frame.view.clone(),
             input: frame.input.clone(),
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,
-            commands: self.visible_commands(config),
         }
     }
 }

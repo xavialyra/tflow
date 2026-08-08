@@ -8,6 +8,7 @@ use crate::engine::{
     ViewLocation,
 };
 use crate::input::{InputDecoder, Key};
+use crate::router::{RouteResolution, Router};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
@@ -54,6 +55,7 @@ pub(crate) struct LauncherView {
     frame: LauncherFrame,
     tasks: TaskScheduler,
     config: Arc<Config>,
+    router: Arc<Router>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
     log_file: Option<PathBuf>,
@@ -69,12 +71,14 @@ impl LauncherView {
         input: &str,
         tasks: TaskScheduler,
         config: Arc<Config>,
+        router: Arc<Router>,
         keymap: LauncherKeymap,
     ) -> Self {
         Self {
             frame: LauncherFrame::new(view, input),
             tasks,
             config,
+            router,
             items_task: None,
             requested_view: String::new(),
             log_file: None,
@@ -159,25 +163,39 @@ impl LauncherView {
 
         let current_view = self.frame.view.clone();
         let current_input = self.frame.input.clone();
-        if let Some((target_view, query)) = host
-            .config
-            .resolve_view_route(&current_view, &current_input)
-        {
-            self.frame.input.clear();
-            self.frame.refresh_deadline = None;
-            self.frame.items_pending = false;
-            self.frame.pending_command = None;
-            return Ok(Some(ViewEffect::Navigate {
-                location: ViewLocation::new(target_view, query),
-                mode: NavigationMode::Push,
-            }));
+        match self.router.resolve(&current_view, &current_input) {
+            RouteResolution::Navigate { target, query } => {
+                self.frame.input.clear();
+                self.frame.refresh_deadline = None;
+                self.frame.items_pending = false;
+                self.frame.pending_command = None;
+                return Ok(Some(ViewEffect::Navigate {
+                    location: ViewLocation::new(target, query),
+                    mode: NavigationMode::Push,
+                }));
+            }
+            RouteResolution::Ambiguous { alias, targets } => {
+                self.items_task.take();
+                self.frame.refresh_deadline = None;
+                self.frame.items_pending = false;
+                self.frame.pending_command = None;
+                let message = format!(
+                    "view alias {:?} is ambiguous: {}",
+                    alias,
+                    targets.join(", ")
+                );
+                host.record_error_message(Some(&current_view), None, &message);
+                return Ok(None);
+            }
+            RouteResolution::Current { query } => {
+                self.publish_runtime(host.config, host.runtime, &query)?;
+                self.request_items(&current_view, &current_input, &query);
+            }
+            RouteResolution::NotMatched => {
+                self.publish_runtime(host.config, host.runtime, &current_input)?;
+                self.request_items(&current_view, &current_input, &current_input);
+            }
         }
-
-        let (_, query) = host
-            .config
-            .resolve_view_prefix(&current_view, &current_input);
-        self.publish_runtime(host.config, host.runtime, &query)?;
-        self.request_items(&current_view, &current_input);
         Ok(None)
     }
 
@@ -225,7 +243,7 @@ impl LauncherView {
         Ok(())
     }
 
-    fn request_items(&mut self, view: &str, input: &str) {
+    fn request_items(&mut self, view: &str, input: &str, query: &str) {
         if self.frame.items_pending
             && self.requested_view == view
             && self.frame.requested_input == input
@@ -242,6 +260,7 @@ impl LauncherView {
             ItemsRequest {
                 view: view.to_string(),
                 input: input.to_string(),
+                query: query.to_string(),
             },
         ));
     }
@@ -524,14 +543,27 @@ impl ViewInstance for LauncherView {
         Ok(ViewEffect::Continue)
     }
 
-    fn render(&self, host: &EngineHost<'_>, terminal: &Terminal) -> Result<()> {
-        let state = self.render_state(host.config);
-        let left = host
-            .active_error
-            .as_ref()
-            .map(|error| error.label.as_str())
-            .unwrap_or(state.view.as_str());
-        render::render_launcher(terminal, &state, left)
+    fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+        let searching = self.frame.refresh_deadline.is_some() || self.frame.items_pending;
+        crate::chrome::EngineChrome {
+            title: Some("launcher".to_string()),
+            status: Some(if searching {
+                "searching...".to_string()
+            } else {
+                format!("{} results", self.frame.items.len())
+            }),
+            commands: self.visible_commands(host.config),
+        }
+    }
+
+    fn render(
+        &mut self,
+        _host: &EngineHost<'_>,
+        terminal: &Terminal,
+        chrome: &crate::chrome::ChromeFrame,
+    ) -> Result<()> {
+        let state = self.render_state();
+        render::render_launcher(terminal, &state, chrome)
     }
 }
 

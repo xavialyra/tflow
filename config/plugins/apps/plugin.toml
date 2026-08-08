@@ -1,9 +1,10 @@
 [plugin]
 api = 1
+name = "applications"
 
 [views.default]
 type = "launcher"
-display_prefix = "app"
+alias = "app"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.default.commands.open]

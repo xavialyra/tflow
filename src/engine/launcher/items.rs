@@ -1,5 +1,5 @@
 use crate::cancellation::CancellationToken;
-use crate::config::{Config, View};
+use crate::config::Config;
 use crate::engine::{TaskHandle, TaskScheduler};
 use crate::expression::ExpressionMethods;
 use crate::text::sanitize_text;
@@ -36,6 +36,7 @@ pub(crate) struct ItemsResult {
 pub(crate) struct ItemsRequest {
     pub(crate) view: String,
     pub(crate) input: String,
+    pub(crate) query: String,
 }
 
 pub(crate) struct ItemsResponse {
@@ -65,19 +66,12 @@ pub(crate) fn submit_items_task(
         request,
         "launcher-items".to_string(),
         move |request, runtime_value, cancellation| {
-            let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);
-            let result = load_items(
-                &config,
-                &request.view,
-                source_prefix.as_deref(),
-                &runtime_value,
-                &cancellation,
-            )
-            .map_err(|error| error.to_string());
+            let result = load_items(&config, &request.view, &runtime_value, &cancellation)
+                .map_err(|error| error.to_string());
             ItemsResponse {
                 view: request.view,
                 input: request.input,
-                query,
+                query: request.query,
                 result,
             }
         },
@@ -87,17 +81,13 @@ pub(crate) fn submit_items_task(
 fn load_items(
     config: &Config,
     view_ref: &str,
-    source_prefix: Option<&str>,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let mut result = ItemsResult::default();
 
     for (source_ref, view) in config.source_views(view_ref)? {
-        let display_prefix = display_prefix(&source_ref, view);
-        if source_prefix.is_some_and(|prefix| prefix != display_prefix) {
-            continue;
-        }
+        let prefix = view.alias.clone().unwrap_or_else(|| source_ref.clone());
         if view.items.is_none() {
             continue;
         }
@@ -114,13 +104,13 @@ fn load_items(
                 continue;
             }
         };
-        append_items(&mut result, &source_ref, &display_prefix, value);
+        append_items(&mut result, &source_ref, &prefix, value);
     }
 
     Ok(result)
 }
 
-fn append_items(result: &mut ItemsResult, source_ref: &str, display_prefix: &str, value: Value) {
+fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value: Value) {
     let Some(items) = value.as_array() else {
         result.errors.push(format!(
             "{}: items expression must return a JSON array",
@@ -149,7 +139,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, display_prefix: &str
             return;
         }
         parsed_items.push(Item {
-            prefix: display_prefix.to_string(),
+            prefix: prefix.to_string(),
             text,
             value: parsed.value,
             metadata: parsed.metadata,
@@ -159,19 +149,10 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, display_prefix: &str
     result.items.extend(parsed_items);
 }
 
-fn display_prefix(source_ref: &str, view: &View) -> String {
-    view.display_prefix.clone().unwrap_or_else(|| {
-        source_ref
-            .split_once(':')
-            .map(|(_, view_name)| view_name.to_string())
-            .unwrap_or_else(|| source_ref.to_string())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, Defaults, DisplayType, ENGINE_LAUNCHER};
+    use crate::config::{Command, Defaults, DisplayType, ENGINE_LAUNCHER, PluginMetadata, View};
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -184,7 +165,7 @@ mod tests {
                 engine_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
-                display_prefix: None,
+                alias: None,
                 items: None,
                 run_shell: None,
                 commands: BTreeMap::new(),
@@ -197,7 +178,7 @@ mod tests {
                 engine_type: ENGINE_LAUNCHER.to_string(),
                 display: DisplayType::Text,
                 sources: Vec::new(),
-                display_prefix: Some("app".to_string()),
+                alias: Some("app".to_string()),
                 items: Some("{{ runtime:view.current.items }}".to_string()),
                 run_shell: None,
                 commands: BTreeMap::from([(
@@ -220,6 +201,20 @@ mod tests {
             dmenu_view: "core:dmenu".to_string(),
             command_view: "core:command".to_string(),
             views,
+            plugins: BTreeMap::from([
+                (
+                    "core".to_string(),
+                    PluginMetadata {
+                        name: "core".to_string(),
+                    },
+                ),
+                (
+                    "apps".to_string(),
+                    PluginMetadata {
+                        name: "applications".to_string(),
+                    },
+                ),
+            ]),
             defaults: Defaults::default(),
             plugin_roots: BTreeMap::new(),
             config_value: Value::Object(serde_json::Map::new()),
@@ -242,7 +237,6 @@ mod tests {
         let result = load_items(
             &test_config(),
             "core:default",
-            None,
             &serde_json::json!({
                 "view": {
                     "current": {
@@ -273,7 +267,6 @@ mod tests {
         let result = load_items(
             &config,
             "core:default",
-            None,
             &serde_json::json!({
                 "view": {"current": {"query": "not-an-array"}}
             }),
@@ -289,7 +282,6 @@ mod tests {
         let result = load_items(
             &test_config(),
             "core:default",
-            None,
             &serde_json::json!({
                 "view": {
                     "current": {
@@ -323,7 +315,6 @@ mod tests {
         let result = load_items(
             &config,
             "core:default",
-            None,
             &serde_json::json!({
                 "view": {"current": {"query": "fire"}}
             }),

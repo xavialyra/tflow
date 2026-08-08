@@ -1,11 +1,13 @@
 mod app;
 mod cancellation;
+mod chrome;
 mod command_runner;
 mod config;
 mod dmenu;
 mod engine;
 mod expression;
 mod input;
+mod router;
 mod runtime_log;
 mod terminal;
 mod text;

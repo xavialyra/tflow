@@ -3,6 +3,7 @@ use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::host::EngineHost;
 use super::runtime::RuntimeHandle;
@@ -57,7 +58,16 @@ pub(crate) trait ViewInstance {
 
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
 
-    fn render(&self, host: &EngineHost<'_>, terminal: &Terminal) -> Result<()>;
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+        crate::chrome::EngineChrome::default()
+    }
+
+    fn render(
+        &mut self,
+        host: &EngineHost<'_>,
+        terminal: &Terminal,
+        chrome: &crate::chrome::ChromeFrame,
+    ) -> Result<()>;
 }
 
 pub(crate) struct ViewContext<'a> {
@@ -66,6 +76,7 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,
     pub(crate) tasks: TaskScheduler,
+    pub(crate) router: Arc<crate::router::Router>,
 }
 
 pub(crate) trait Engine {

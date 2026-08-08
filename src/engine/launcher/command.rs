@@ -75,7 +75,7 @@ fn prepare_command(
         ("LAUNCHER_METADATA".to_string(), metadata),
         (
             "LAUNCHER_PLUGIN".to_string(),
-            plugin_name(&source_view).to_string(),
+            package_id(&source_view).to_string(),
         ),
         ("LAUNCHER_VIEW".to_string(), frame.view.clone()),
         ("LAUNCHER_VIEW_REF".to_string(), source_view.clone()),
@@ -106,10 +106,10 @@ fn prepare_command(
     })
 }
 
-fn plugin_name(view_ref: &str) -> &str {
+fn package_id(view_ref: &str) -> &str {
     view_ref
         .split_once(':')
-        .map(|(plugin, _)| plugin)
+        .map(|(package, _)| package)
         .unwrap_or(view_ref)
 }
 

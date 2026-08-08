@@ -69,6 +69,7 @@ impl Engine for LauncherEngine {
                 &context.location.input,
                 context.tasks.clone(),
                 Arc::new(context.config.clone()),
+                context.router,
                 keymap,
             )
             .with_context(

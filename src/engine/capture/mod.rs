@@ -60,7 +60,7 @@ impl Engine for CaptureEngine {
             session: CaptureSession::new(&title, &output, &status),
             status,
             success,
-            completed: false,
+            reported: false,
         }))
     }
 }
@@ -70,21 +70,36 @@ struct CaptureView {
     session: CaptureSession,
     status: String,
     success: bool,
-    completed: bool,
+    reported: bool,
 }
 
 impl ViewInstance for CaptureView {
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
-        if self.completed {
-            anyhow::bail!("capture view was already completed");
+        if !self.reported {
+            self.reported = true;
+            host.record_view_status(&self.view_ref, &self.status, self.success);
         }
-        self.completed = true;
-        host.record_view_status(&self.view_ref, &self.status, self.success);
-        self.session.wait_for_return(terminal)?;
-        Ok(ViewEffect::Back)
+        if self.session.return_requested(terminal)? {
+            Ok(ViewEffect::Back)
+        } else {
+            Ok(ViewEffect::Continue)
+        }
     }
 
-    fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
-        Ok(())
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+        crate::chrome::EngineChrome {
+            title: Some(format!("capture: {}", self.session.title())),
+            status: Some(self.session.status().to_string()),
+            commands: vec![("any key".to_string(), "Back".to_string())],
+        }
+    }
+
+    fn render(
+        &mut self,
+        _host: &EngineHost<'_>,
+        terminal: &Terminal,
+        chrome: &crate::chrome::ChromeFrame,
+    ) -> Result<()> {
+        render::render_capture(terminal, self.session.lines(), chrome)
     }
 }

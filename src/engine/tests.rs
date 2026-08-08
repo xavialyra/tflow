@@ -24,7 +24,12 @@ fn registry_accepts_custom_engine_implementations() {
             Ok(ViewEffect::Continue)
         }
 
-        fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
+        fn render(
+            &mut self,
+            _host: &EngineHost<'_>,
+            _terminal: &Terminal,
+            _chrome: &crate::chrome::ChromeFrame,
+        ) -> Result<()> {
             Ok(())
         }
     }

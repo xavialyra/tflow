@@ -7,6 +7,7 @@ use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Instant;
 
 struct ViewEntry {
@@ -21,6 +22,7 @@ pub(crate) struct AppSession<'a> {
     tasks: TaskScheduler,
     runtime: super::RuntimeStore,
     runtime_log: RuntimeLog,
+    router: Arc<crate::router::Router>,
     active_error: Option<LogRecord>,
     active_error_deadline: Option<Instant>,
 }
@@ -33,6 +35,7 @@ impl<'a> AppSession<'a> {
     ) -> Result<Self> {
         let mut runtime = super::RuntimeStore::new();
         let tasks = TaskScheduler::new(runtime.handle());
+        let router = Arc::new(crate::router::Router::new(config));
         let location = ViewLocation::new(&config.default_view, "");
         publish_location(&mut runtime, &location);
         let root = engines.create_view(
@@ -41,6 +44,7 @@ impl<'a> AppSession<'a> {
             runtime_log.path(),
             runtime.handle(),
             tasks.clone(),
+            Arc::clone(&router),
         )?;
         Ok(Self {
             config,
@@ -52,6 +56,7 @@ impl<'a> AppSession<'a> {
             tasks,
             runtime,
             runtime_log,
+            router,
             active_error: None,
             active_error_deadline: None,
         })
@@ -84,6 +89,15 @@ impl<'a> AppSession<'a> {
     }
 
     fn render(&mut self, terminal: &Terminal) -> Result<()> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let route = self.router.display(&entry.location.view_ref);
+        let error = self
+            .active_error
+            .as_ref()
+            .map(|record| record.label.clone());
         let host = EngineHost {
             config: self.config,
             runtime: &mut self.runtime,
@@ -91,11 +105,14 @@ impl<'a> AppSession<'a> {
             active_error: &mut self.active_error,
             active_error_deadline: &mut self.active_error_deadline,
         };
-        self.views
-            .last()
-            .context("session has no active view")?
-            .instance
-            .render(&host, terminal)
+        let engine_chrome = entry.instance.chrome(&host);
+        let chrome = crate::chrome::ChromeFrame::compose(
+            terminal.size().0 as usize,
+            &route,
+            engine_chrome,
+            error.as_deref(),
+        );
+        entry.instance.render(&host, terminal, &chrome)
     }
 
     fn apply(&mut self, effect: ViewEffect) -> Result<bool> {
@@ -119,6 +136,7 @@ impl<'a> AppSession<'a> {
                     self.runtime_log.path(),
                     self.runtime.handle(),
                     self.tasks.clone(),
+                    Arc::clone(&self.router),
                 );
                 let view = match view {
                     Ok(view) => view,

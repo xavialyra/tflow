@@ -24,7 +24,7 @@ pub fn run(
     environment: &[(String, String)],
     working_dir: Option<&Path>,
     terminal: &Terminal,
-    title: &str,
+    chrome: &crate::chrome::ChromeFrame,
 ) -> Result<EmbeddedOutcome> {
     if command.is_empty() {
         bail!("embedded action has an empty command");
@@ -77,7 +77,7 @@ pub fn run(
     }
 
     set_nonblocking(master)?;
-    let outcome = relay(master, pid, terminal, (columns, rows), title);
+    let outcome = relay(master, pid, terminal, (columns, rows), chrome);
     if outcome.is_err() {
         terminate_child(pid);
     }
@@ -117,11 +117,11 @@ fn relay(
     pid: libc::pid_t,
     terminal: &Terminal,
     mut last_size: (u16, u16),
-    title: &str,
+    chrome: &crate::chrome::ChromeFrame,
 ) -> Result<EmbeddedOutcome> {
     let mut input = InputRelay::default();
     let mut screen = VirtualTerminal::new(last_size.0, last_size.1);
-    render_embedded(terminal, title, &screen)?;
+    render_embedded(terminal, chrome, &screen)?;
 
     loop {
         if input.escape_expired() {
@@ -129,7 +129,7 @@ fn relay(
             return Ok(EmbeddedOutcome::ReturnedToLauncher);
         }
         if let Some(status) = wait_status(pid, true)? {
-            drain_output(master, &mut screen, terminal, title)?;
+            drain_output(master, &mut screen, terminal, chrome)?;
             return Ok(decode_status(status));
         }
 
@@ -139,7 +139,7 @@ fn relay(
             screen.resize(current_size.0, current_size.1);
             resize_pty(master, pid, current_size)?;
             last_size = current_size;
-            render_embedded(terminal, title, &screen)?;
+            render_embedded(terminal, chrome, &screen)?;
         }
 
         let mut descriptors = [
@@ -172,7 +172,7 @@ fn relay(
         }
 
         if descriptors[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-            && drain_output(master, &mut screen, terminal, title)?
+            && drain_output(master, &mut screen, terminal, chrome)?
             && let Some(status) = wait_status(pid, true)?
         {
             return Ok(decode_status(status));
@@ -266,7 +266,7 @@ fn drain_output(
     master: RawFd,
     screen: &mut VirtualTerminal,
     terminal: &Terminal,
-    title: &str,
+    chrome: &crate::chrome::ChromeFrame,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 8192];
     let mut reached_eof = false;
@@ -290,67 +290,49 @@ fn drain_output(
             break;
         }
         screen.feed(&buffer[..count as usize]);
-        render_embedded(terminal, title, screen)?;
+        render_embedded(terminal, chrome, screen)?;
     }
     Ok(reached_eof)
 }
 
 fn content_size(outer_columns: u16, outer_rows: u16) -> (u16, u16) {
-    (outer_columns.max(1), outer_rows.saturating_sub(4).max(1))
+    (outer_columns.max(1), outer_rows.saturating_sub(2).max(1))
 }
 
-fn render_embedded(terminal: &Terminal, title: &str, screen: &VirtualTerminal) -> Result<()> {
+fn render_embedded(
+    terminal: &Terminal,
+    chrome: &crate::chrome::ChromeFrame,
+    screen: &VirtualTerminal,
+) -> Result<()> {
     let (outer_columns, outer_rows) = terminal.size();
     let outer_columns = outer_columns as usize;
     let outer_rows = outer_rows as usize;
     let inner_width = outer_columns.max(1);
-    let inner_rows = outer_rows.saturating_sub(4).max(1);
+    let inner_rows = outer_rows.saturating_sub(2).max(1);
     let mut stdout = io::stdout().lock();
 
     stdout.write_all(b"\x1b[?25l")?;
-    write_line(
-        &mut stdout,
-        1,
-        &format!(" TUI Launcher  [embedded: {}]", title),
-        outer_columns,
-        true,
-    )?;
-    write_line(
-        &mut stdout,
-        2,
-        &format!(" > {}", title),
-        outer_columns,
-        false,
-    )?;
+    write_line(&mut stdout, 1, &chrome.header, outer_columns, true)?;
     for row in 0..inner_rows {
         write_line(
             &mut stdout,
-            3 + row,
+            2 + row,
             &screen.row_text(row),
             outer_columns,
             false,
         )?;
     }
-    let status_row = outer_rows.saturating_sub(1).max(1);
-    let hint_row = outer_rows.max(1);
     write_line(
         &mut stdout,
-        status_row,
-        &format!(" embedded: {}", title),
-        outer_columns,
-        false,
-    )?;
-    write_line(
-        &mut stdout,
-        hint_row,
-        " Esc return | Ctrl-C interrupt child | keys pass through",
+        outer_rows.max(1),
+        &chrome.footer,
         outer_columns,
         false,
     )?;
 
     let (cursor_x, cursor_y, visible) = screen.cursor();
     if visible {
-        let row = (3 + cursor_y.min(inner_rows.saturating_sub(1))).min(outer_rows.max(1));
+        let row = (2 + cursor_y.min(inner_rows.saturating_sub(1))).min(outer_rows.max(1));
         let column = cursor_x.min(inner_width.saturating_sub(1)) + 1;
         write!(stdout, "\x1b[{};{}H\x1b[?25h", row, column)?;
     } else {

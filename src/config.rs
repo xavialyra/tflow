@@ -23,9 +23,15 @@ pub struct Config {
     pub dmenu_view: ViewRef,
     pub command_view: ViewRef,
     pub views: BTreeMap<ViewRef, View>,
+    pub plugins: BTreeMap<String, PluginMetadata>,
     pub(crate) defaults: Defaults,
     pub plugin_roots: BTreeMap<String, PathBuf>,
     pub(crate) config_value: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginMetadata {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -56,7 +62,7 @@ pub struct View {
     #[serde(default)]
     pub sources: Vec<ViewRef>,
     #[serde(default)]
-    pub display_prefix: Option<String>,
+    pub alias: Option<String>,
     #[serde(default)]
     pub items: Option<String>,
     #[serde(default)]
@@ -108,6 +114,8 @@ struct RawConfig {
 #[derive(Debug, Clone, Deserialize)]
 struct Plugin {
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     views: BTreeMap<String, View>,
 }
 
@@ -115,14 +123,7 @@ struct Plugin {
 struct PluginHeader {
     #[serde(default = "default_plugin_api")]
     api: u32,
-}
-
-impl Default for PluginHeader {
-    fn default() -> Self {
-        Self {
-            api: default_plugin_api(),
-        }
-    }
+    name: String,
 }
 
 impl Config {
@@ -165,13 +166,18 @@ impl Config {
             bail!("viewtypes are no longer supported; configure the engine directly on each view");
         }
         let mut views = BTreeMap::new();
-        for (plugin_name, plugin) in raw.plugins {
+        let mut plugins = BTreeMap::new();
+        for (package_id, plugin) in raw.plugins {
+            let metadata = PluginMetadata {
+                name: plugin.name.unwrap_or_else(|| package_id.clone()),
+            };
             for (view_name, view) in plugin.views {
-                let view_ref = qualify_view_ref(&plugin_name, &view_name)?;
+                let view_ref = qualify_view_ref(&package_id, &view_name)?;
                 if views.insert(view_ref.clone(), view).is_some() {
                     bail!("duplicate view {:?}", view_ref);
                 }
             }
+            plugins.insert(package_id, metadata);
         }
 
         Ok(Self {
@@ -179,6 +185,7 @@ impl Config {
             dmenu_view: raw.dmenu_view,
             command_view: raw.command_view,
             views,
+            plugins,
             defaults: raw.defaults,
             plugin_roots,
             config_value: Value::Object(serde_json::Map::new()),
@@ -207,16 +214,20 @@ impl Config {
         crate::engine::validate_launcher_bindings(default_launcher_bindings.as_ref(), None)
             .context("default launcher bindings")?;
 
+        for (package_id, plugin) in &self.plugins {
+            if plugin.name.trim().is_empty() {
+                bail!("plugin package {:?} has an empty name", package_id);
+            }
+        }
+
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
-            if let Some(prefix) = &view.display_prefix
-                && (prefix.trim().is_empty() || prefix.chars().any(char::is_whitespace))
+            if let Some(alias) = &view.alias
+                && (alias.trim().is_empty()
+                    || alias.contains(':')
+                    || alias.chars().any(char::is_whitespace))
             {
-                bail!(
-                    "view {:?} has an invalid display prefix {:?}",
-                    view_ref,
-                    prefix
-                );
+                bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
             }
             if !view.sources.is_empty() && !view.commands.is_empty() {
                 bail!("aggregate view {:?} cannot define commands", view_ref);
@@ -489,10 +500,7 @@ impl Config {
     }
 
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
-        let plugin = view_ref
-            .split_once(':')
-            .map(|(plugin, _)| plugin)
-            .unwrap_or(view_ref);
+        let plugin = package_id(view_ref);
         self.plugin_roots.get(plugin).map(PathBuf::as_path)
     }
 
@@ -519,78 +527,13 @@ impl Config {
             })
             .collect()
     }
-
-    pub fn resolve_view_prefix(&self, view_ref: &str, input: &str) -> (Option<String>, String) {
-        let Some((prefix, query)) = split_prefix(input) else {
-            return (None, input.to_string());
-        };
-
-        let matches = self
-            .source_views(view_ref)
-            .ok()
-            .into_iter()
-            .flatten()
-            .find_map(|(source_ref, view)| {
-                let display_prefix = view.display_prefix.as_deref().unwrap_or_else(|| {
-                    source_ref
-                        .split_once(':')
-                        .map(|(_, view_name)| view_name)
-                        .unwrap_or(source_ref.as_str())
-                });
-                (display_prefix == prefix).then(|| prefix.to_string())
-            });
-        if matches.is_some() {
-            (matches, query.to_string())
-        } else {
-            (None, input.to_string())
-        }
-    }
-
-    pub fn resolve_view_route(
-        &self,
-        current_view_ref: &str,
-        input: &str,
-    ) -> Option<(ViewRef, String)> {
-        let (target, query) = split_prefix(input)
-            .map(|(target, query)| (target, query.to_string()))
-            .unwrap_or((input, String::new()));
-        if target.contains(':') && target != current_view_ref && self.views.contains_key(target) {
-            return Some((target.to_string(), query));
-        }
-
-        let (prefix, query) = split_prefix(input)?;
-        let source_owns_prefix =
-            self.source_views(current_view_ref)
-                .ok()?
-                .into_iter()
-                .any(|(source_ref, view)| {
-                    let display_prefix = view.display_prefix.as_deref().unwrap_or_else(|| {
-                        source_ref
-                            .split_once(':')
-                            .map(|(_, view_name)| view_name)
-                            .unwrap_or(source_ref.as_str())
-                    });
-                    display_prefix == prefix
-                });
-        if source_owns_prefix {
-            return None;
-        }
-
-        let mut routes = self
-            .views
-            .iter()
-            .filter(|(view_ref, view)| {
-                *view_ref != current_view_ref && view.display_prefix.as_deref() == Some(prefix)
-            })
-            .map(|(view_ref, _)| (view_ref.clone(), query.to_string()));
-        let route = routes.next();
-        route.filter(|_| routes.next().is_none())
-    }
 }
 
-fn split_prefix(input: &str) -> Option<(&str, &str)> {
-    let (prefix, query) = input.split_once(' ')?;
-    (!prefix.is_empty()).then_some((prefix, query.trim_start()))
+fn package_id(view_ref: &str) -> &str {
+    view_ref
+        .split_once(':')
+        .map(|(package, _)| package)
+        .unwrap_or(view_ref)
 }
 
 fn qualify_view_ref(plugin: &str, view: &str) -> Result<ViewRef> {
@@ -712,13 +655,13 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
         .with_context(|| format!("could not read plugin manifest {}", manifest.display()))?;
     let mut value: toml::Value = toml::from_str(&source)
         .with_context(|| format!("could not parse plugin manifest {}", manifest.display()))?;
-    let header: PluginHeader = if let Some(header_value) = value.get("plugin").cloned() {
-        header_value
-            .try_into()
-            .with_context(|| format!("invalid [plugin] in {}", manifest.display()))?
-    } else {
-        PluginHeader::default()
-    };
+    let header_value = value
+        .get("plugin")
+        .cloned()
+        .with_context(|| format!("plugin manifest {} is missing [plugin]", manifest.display()))?;
+    let header: PluginHeader = header_value
+        .try_into()
+        .with_context(|| format!("invalid [plugin] in {}", manifest.display()))?;
     if header.api != 1 {
         bail!(
             "plugin {:?} uses unsupported API version {}",
@@ -737,6 +680,7 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
     expand_script_refs(&mut views, root, plugin_id)?;
 
     let mut plugin_table = toml::map::Map::new();
+    plugin_table.insert("name".to_string(), toml::Value::String(header.name));
     plugin_table.insert("views".to_string(), views);
     let mut plugins_table = toml::map::Map::new();
     plugins_table.insert(plugin_id.to_string(), toml::Value::Table(plugin_table));
@@ -836,7 +780,7 @@ fn toml_to_json(value: &toml::Value) -> Result<Value> {
 fn validate_plugin_id(plugin_id: &str) -> Result<()> {
     if plugin_id.is_empty() || plugin_id.contains(':') || plugin_id.chars().any(char::is_whitespace)
     {
-        bail!("plugin directory {:?} is not a valid plugin ID", plugin_id);
+        bail!("plugin directory {:?} is not a valid package ID", plugin_id);
     }
     Ok(())
 }
@@ -995,75 +939,54 @@ mod tests {
     }
 
     #[test]
-    fn view_prefix_returns_the_display_prefix_and_query() {
+    fn duplicate_plugin_names_and_view_aliases_are_allowed() {
         let config = config(
             r#"
-            default_view = "core:default"
             [plugins.core.views.default]
             type = "launcher"
-            sources = ["apps:main"]
-            [plugins.apps.views.main]
+
+            [plugins.package-a]
+            name = "template"
+            [plugins.package-a.views.default]
             type = "launcher"
-            display_prefix = "app"
+            alias = "temp"
+
+            [plugins.package-b]
+            name = "template"
+            [plugins.package-b.views.default]
+            type = "launcher"
+            alias = "temp"
             "#,
         );
+
+        config.validate().unwrap();
+        assert_eq!(config.plugins["package-a"].name, "template");
+        assert_eq!(config.plugins["package-b"].name, "template");
         assert_eq!(
-            config.resolve_view_prefix("core:default", "app term"),
-            (Some("app".to_string()), "term".to_string())
+            config.views["package-a:default"].alias.as_deref(),
+            Some("temp")
+        );
+        assert_eq!(
+            config.views["package-b:default"].alias.as_deref(),
+            Some("temp")
         );
     }
 
     #[test]
-    fn display_prefix_routes_to_a_view_outside_the_current_sources() {
-        let messages = config(
-            r#"
-            default_view = "core:default"
-            [plugins.core.views.default]
-            type = "launcher"
-            [plugins.core.views.messages]
-            type = "launcher"
-            display_prefix = "log"
-            "#,
-        );
-        assert_eq!(
-            messages.resolve_view_route("core:default", "log timeout"),
-            Some(("core:messages".to_string(), "timeout".to_string()))
-        );
-        assert_eq!(
-            messages.resolve_view_route("core:messages", "log timeout"),
-            None
-        );
-
-        let embedded = config(
-            r#"
-            default_view = "core:default"
-            [plugins.core.views.default]
-            type = "launcher"
-            [plugins.shell.views.default]
-            type = "embedded"
-            command = ["sh"]
-            "#,
-        );
-        assert_eq!(
-            embedded.resolve_view_route("core:default", "shell:default ls -la"),
-            Some(("shell:default".to_string(), "ls -la".to_string()))
-        );
-
-        let aggregate = config(
-            r#"
-            default_view = "core:default"
-            [plugins.core.views.default]
-            type = "launcher"
-            sources = ["apps:main"]
-            [plugins.apps.views.main]
-            type = "launcher"
-            display_prefix = "app"
-            "#,
-        );
-        assert_eq!(
-            aggregate.resolve_view_route("core:default", "app term"),
-            None
-        );
+    fn view_alias_cannot_contain_route_syntax_or_whitespace() {
+        for alias in ["", "bad:alias", "bad alias"] {
+            let config = config(&format!(
+                r#"
+                [plugins.core.views.default]
+                type = "launcher"
+                alias = {alias:?}
+                "#
+            ));
+            assert!(
+                config.validate().is_err(),
+                "alias {alias:?} should be invalid"
+            );
+        }
     }
 
     #[test]
@@ -1077,9 +1000,13 @@ mod tests {
 
     #[test]
     fn plugin_api_defaults_to_one() {
-        let header: PluginHeader = toml::from_str("").unwrap();
+        let header: PluginHeader = toml::from_str(
+            r#"
+            name = "template"
+            "#,
+        )
+        .unwrap();
         assert_eq!(header.api, 1);
-        assert_eq!(PluginHeader::default().api, 1);
     }
 
     #[test]
@@ -1099,8 +1026,12 @@ mod tests {
         fs::write(
             plugin_root.join("plugin.toml"),
             r#"
+            [plugin]
+            name = "file test"
+
             [views.main]
             type = "launcher"
+            alias = "file"
             items = '{{ script("scripts/items.sh") }}'
 
             [views.main.commands.run]

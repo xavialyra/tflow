@@ -1,9 +1,10 @@
 [plugin]
 api = 1
+name = "system"
 
 [views.default]
 type = "launcher"
-display_prefix = "sys"
+alias = "sys"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
 [views.default.commands.run]
