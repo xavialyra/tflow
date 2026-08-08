@@ -1,3 +1,4 @@
+use crate::chrome::ShellInput;
 use crate::config::Config;
 use crate::engine::launcher::CommandInvocation;
 use crate::engine::runtime::RuntimeStore;
@@ -9,6 +10,7 @@ pub(crate) const ERROR_DISPLAY_DURATION: Duration = Duration::from_secs(5);
 
 pub(crate) struct EngineHost<'a> {
     pub(crate) config: &'a Config,
+    pub(crate) input: &'a mut ShellInput,
     pub(crate) runtime: &'a mut RuntimeStore,
     pub(crate) runtime_log: &'a mut RuntimeLog,
     pub(crate) active_error: &'a mut Option<LogRecord>,

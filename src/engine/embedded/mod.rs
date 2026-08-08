@@ -162,8 +162,9 @@ impl ViewInstance for EmbeddedView {
         self.chrome = Some(chrome.clone());
         terminal.write_output(
             format!(
-                "\x1b[2J\x1b[H\x1b[1;36m{}\x1b[0m\x1b[K\x1b[{};1H{}\x1b[K",
+                "\x1b[2J\x1b[H\x1b[1;36m{}\x1b[0m\x1b[K\x1b[2;1H{}\x1b[K\x1b[{};1H{}\x1b[K",
                 chrome.header,
+                chrome.input_line(),
                 terminal.size().1,
                 chrome.footer
             )

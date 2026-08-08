@@ -8,7 +8,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
 pub(crate) struct LauncherRenderState {
-    pub(crate) input: String,
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
@@ -28,7 +27,7 @@ pub(crate) fn render_launcher(
     let content_width = width.saturating_sub(prefix_width + 4);
 
     lines.push(chrome.header.clone());
-    lines.push(format!(" > {}", state.input));
+    lines.push(chrome.input_line());
 
     let start = if state.selected >= list_height && list_height > 0 {
         state.selected + 1 - list_height
@@ -129,7 +128,6 @@ impl LauncherView {
     pub(crate) fn render_state(&self) -> LauncherRenderState {
         let frame = self.current();
         LauncherRenderState {
-            input: frame.input.clone(),
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,

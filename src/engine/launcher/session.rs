@@ -8,7 +8,6 @@ use crate::engine::{
     ViewLocation,
 };
 use crate::input::{InputDecoder, Key};
-use crate::router::{RouteResolution, Router};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
@@ -21,7 +20,6 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 pub(crate) struct LauncherFrame {
     pub(crate) view: String,
-    pub(crate) input: String,
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) query: String,
@@ -34,10 +32,9 @@ pub(crate) struct LauncherFrame {
 }
 
 impl LauncherFrame {
-    pub(crate) fn new(view: &str, input: &str) -> Self {
+    pub(crate) fn new(view: &str) -> Self {
         Self {
             view: view.to_string(),
-            input: input.to_string(),
             items: Vec::new(),
             selected: 0,
             query: String::new(),
@@ -55,12 +52,12 @@ pub(crate) struct LauncherView {
     frame: LauncherFrame,
     tasks: TaskScheduler,
     config: Arc<Config>,
-    router: Arc<Router>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
     log_file: Option<PathBuf>,
     decoder: InputDecoder,
     started: bool,
+    route_child: bool,
     parent_item: Option<Item>,
     pub(super) keymap: LauncherKeymap,
 }
@@ -68,22 +65,21 @@ pub(crate) struct LauncherView {
 impl LauncherView {
     pub(super) fn new(
         view: &str,
-        input: &str,
         tasks: TaskScheduler,
         config: Arc<Config>,
-        router: Arc<Router>,
+        route_child: bool,
         keymap: LauncherKeymap,
     ) -> Self {
         Self {
-            frame: LauncherFrame::new(view, input),
+            frame: LauncherFrame::new(view),
             tasks,
             config,
-            router,
             items_task: None,
             requested_view: String::new(),
             log_file: None,
             decoder: InputDecoder::default(),
             started: false,
+            route_child,
             parent_item: None,
             keymap,
         }
@@ -124,10 +120,10 @@ impl LauncherView {
             .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
-    pub(crate) fn results_current(&self) -> bool {
+    pub(crate) fn results_current(&self, input: &str) -> bool {
         !self.frame.items_pending
             && self.frame.refresh_deadline.is_none()
-            && self.frame.results_input == self.frame.input
+            && self.frame.results_input == input
     }
 
     pub(crate) fn command_view_active(&self) -> bool {
@@ -162,47 +158,17 @@ impl LauncherView {
         }
 
         let current_view = self.frame.view.clone();
-        let current_input = self.frame.input.clone();
-        match self.router.resolve(&current_view, &current_input) {
-            RouteResolution::Navigate { target, query } => {
-                self.frame.input.clear();
-                self.frame.refresh_deadline = None;
-                self.frame.items_pending = false;
-                self.frame.pending_command = None;
-                return Ok(Some(ViewEffect::Navigate {
-                    location: ViewLocation::new(target, query),
-                    mode: NavigationMode::Push,
-                }));
-            }
-            RouteResolution::Ambiguous { alias, targets } => {
-                self.items_task.take();
-                self.frame.refresh_deadline = None;
-                self.frame.items_pending = false;
-                self.frame.pending_command = None;
-                let message = format!(
-                    "view alias {:?} is ambiguous: {}",
-                    alias,
-                    targets.join(", ")
-                );
-                host.record_error_message(Some(&current_view), None, &message);
-                return Ok(None);
-            }
-            RouteResolution::Current { query } => {
-                self.publish_runtime(host.config, host.runtime, &query)?;
-                self.request_items(&current_view, &current_input, &query);
-            }
-            RouteResolution::NotMatched => {
-                self.publish_runtime(host.config, host.runtime, &current_input)?;
-                self.request_items(&current_view, &current_input, &current_input);
-            }
-        }
+        let current_input = host.input.raw.clone();
+        let query = host.input.params.clone();
+        self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
+        self.request_items(&current_view, &current_input, &query);
         Ok(None)
     }
 
     fn refresh_command_view(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
-        let input = self.frame.input.clone();
+        let input = host.input.raw.clone();
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
-        self.publish_runtime(host.config, host.runtime, &input)?;
+        self.publish_runtime(host.config, host.runtime, &input, &input)?;
         let commands = host
             .runtime
             .snapshot()
@@ -265,7 +231,7 @@ impl LauncherView {
         ));
     }
 
-    fn collect_items(&mut self) -> Vec<ItemsEvent> {
+    fn collect_items(&mut self, input: &str) -> Vec<ItemsEvent> {
         let mut events = Vec::new();
         let Some(mut task) = self.items_task.take() else {
             return events;
@@ -302,7 +268,7 @@ impl LauncherView {
                 return events;
             }
         };
-        if response.view != self.frame.view || response.input != self.frame.input {
+        if response.view != self.frame.view || response.input != input {
             self.frame.items_pending = false;
             self.schedule_refresh();
             return events;
@@ -367,7 +333,15 @@ impl LauncherView {
         if self.command_view_active() && !matches!(key, Key::Enter) {
             return Ok(ViewEffect::Continue);
         }
-        if !self.results_current() {
+        if host.input.rejected {
+            return Ok(ViewEffect::Continue);
+        }
+        let current_input = host.input.raw.clone();
+        if !self.results_current(&current_input) {
+            if host.input.changed {
+                self.queue_pending_command(key);
+                return Ok(ViewEffect::Continue);
+            }
             if self.command_view_active() {
                 self.request_current(host)?;
             } else {
@@ -378,7 +352,7 @@ impl LauncherView {
         }
 
         let query = self.frame.query.clone();
-        self.publish_runtime(host.config, host.runtime, &query)?;
+        self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
         let Some(action) = self.prepare_command_action(
             host.config,
             host.runtime.snapshot(),
@@ -448,7 +422,8 @@ impl LauncherView {
         host: &mut EngineHost<'_>,
         terminal: &mut Terminal,
     ) -> Result<Option<ViewEffect>> {
-        for event in self.collect_items() {
+        let input = host.input.raw.clone();
+        for event in self.collect_items(&input) {
             if !event.current {
                 for error in event.errors {
                     host.runtime_log.record(
@@ -490,7 +465,31 @@ impl LauncherView {
 impl ViewInstance for LauncherView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let query = self.frame.query.clone();
-        self.publish_runtime(host.config, host.runtime, &query)
+        self.publish_runtime(host.config, host.runtime, &host.input.raw, &query)
+    }
+
+    fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+        let input = host.input.raw.clone();
+        self.items_task.take();
+        self.frame.refresh_deadline = None;
+        self.frame.items_pending = false;
+        self.frame.pending_command = None;
+        self.frame.requested_input = input.clone();
+        self.frame.results_input = input;
+        Ok(())
+    }
+
+    fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        self.schedule_refresh();
+        Ok(())
+    }
+
+    fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        self.items_task.take();
+        self.frame.refresh_deadline = None;
+        self.frame.items_pending = false;
+        self.frame.pending_command = None;
+        Ok(())
     }
 
     fn deactivate(&mut self) -> Result<()> {
@@ -524,7 +523,14 @@ impl ViewInstance for LauncherView {
         let mut refresh = false;
         for key in keys {
             let command_available = self.resolve_command(host.config, key).is_some();
-            match self.handle_input(key, &host.config.command_view, command_available) {
+            let nested_input = self.route_child || self.command_view_active();
+            match self.handle_input(
+                key,
+                &host.config.command_view,
+                command_available,
+                &mut host.input.raw,
+                nested_input,
+            ) {
                 LauncherInputAction::Continue => {}
                 LauncherInputAction::Refresh => refresh = true,
                 LauncherInputAction::ClearError => host.clear_error(),
@@ -537,6 +543,8 @@ impl ViewInstance for LauncherView {
             }
         }
         if refresh {
+            host.input.changed = true;
+            host.input.rejected = false;
             host.clear_error();
             self.schedule_refresh();
         }

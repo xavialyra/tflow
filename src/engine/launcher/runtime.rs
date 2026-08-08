@@ -8,6 +8,7 @@ impl LauncherView {
         &self,
         config: &Config,
         runtime: &mut RuntimeStore,
+        raw_input: &str,
         query: &str,
     ) -> Result<()> {
         let frame = self.current();
@@ -46,10 +47,12 @@ impl LauncherView {
                 "view": {
                     "current": {
                         "ref": frame.view,
-                        "input": frame.input,
+                        "input": query,
+                        "raw_input": raw_input,
                         "query": query,
                         "request": {
-                            "input": frame.input,
+                            "input": query,
+                            "raw_input": raw_input,
                             "query": query,
                         },
                         "log_file": log_file,

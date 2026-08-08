@@ -5,7 +5,6 @@ use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 pub(crate) struct EngineRegistry {
     engines: BTreeMap<&'static str, Box<dyn Engine>>,
@@ -51,7 +50,6 @@ impl EngineRegistry {
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
         tasks: super::TaskScheduler,
-        router: Arc<crate::router::Router>,
     ) -> Result<Box<dyn ViewInstance>> {
         let engine_type = config.engine(&location.view_ref)?;
         let engine = self
@@ -64,7 +62,6 @@ impl EngineRegistry {
             log_file,
             runtime,
             tasks,
-            router,
         })
     }
 }

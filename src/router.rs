@@ -71,7 +71,9 @@ impl Router {
     }
 
     pub(crate) fn resolve(&self, current_view_ref: &str, input: &str) -> RouteResolution {
-        let (selector, query) = split_selector(input);
+        let Some((selector, query)) = split_selector(input) else {
+            return RouteResolution::NotMatched;
+        };
         if selector.is_empty() {
             return RouteResolution::NotMatched;
         }
@@ -114,11 +116,11 @@ impl Router {
     }
 }
 
-fn split_selector(input: &str) -> (&str, &str) {
+fn split_selector(input: &str) -> Option<(&str, &str)> {
     input
         .split_once(char::is_whitespace)
         .map(|(selector, query)| (selector, query.trim_start()))
-        .unwrap_or((input, ""))
+        .or_else(|| input.contains(':').then_some((input, "")))
 }
 
 fn valid_view_ref(view_ref: &str) -> bool {
@@ -190,8 +192,12 @@ mod tests {
         );
         assert_eq!(
             router.resolve("core:default", "temp"),
+            RouteResolution::NotMatched
+        );
+        assert_eq!(
+            router.resolve("core:default", "package-a:view2"),
             RouteResolution::Navigate {
-                target: "package-a:default".to_string(),
+                target: "package-a:view2".to_string(),
                 query: String::new(),
             }
         );

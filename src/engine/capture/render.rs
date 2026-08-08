@@ -11,15 +11,16 @@ pub(super) fn render_capture(
     let (width, height) = terminal.size();
     let width = width as usize;
     let height = height as usize;
-    let inner_height = height.saturating_sub(2);
+    let inner_height = height.saturating_sub(3);
     let start = lines.len().saturating_sub(inner_height);
 
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[?25l")?;
     write_capture_line(&mut stdout, 1, &chrome.header, width, true)?;
+    write_capture_line(&mut stdout, 2, &chrome.input_line(), width, false)?;
     for row in 0..inner_height {
         let content = lines.get(start + row).map(String::as_str).unwrap_or("");
-        write_capture_line(&mut stdout, 2 + row, content, width, false)?;
+        write_capture_line(&mut stdout, 3 + row, content, width, false)?;
     }
     write_capture_line(&mut stdout, height.max(1), &chrome.footer, width, false)?;
     stdout.flush().context("could not draw command output")

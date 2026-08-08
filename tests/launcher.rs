@@ -475,6 +475,197 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 }
 
 #[test]
+fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        sources = ["apps:default", "sys:default"]
+
+        [plugins.apps.views.default]
+        type = "launcher"
+        alias = "app"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.sys.views.default]
+        type = "launcher"
+        alias = "sys"
+        items = "{{ config:test_items.items }}"
+        "#,
+    )
+    .expect("could not write route input config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"app ")
+        .expect("could not write app route");
+    process.master.flush().expect("could not flush app route");
+    let output = wait_for_text(&process.master, "apps:default");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > app "),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"aa")
+        .expect("could not write app query");
+    process.master.flush().expect("could not flush app query");
+    let output = wait_for_text(&process.master, " > app aa");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > app aa"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x1b")
+        .expect("could not write route escape");
+    process
+        .master
+        .flush()
+        .expect("could not flush route escape");
+    let output = wait_for_text(&process.master, "core:default");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > app "),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close route input launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush route input launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove route input config");
+}
+
+#[test]
+fn deleting_route_input_returns_to_parent_before_switching_aliases() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        sources = ["apps:default", "sys:default"]
+
+        [plugins.apps.views.default]
+        type = "launcher"
+        alias = "app"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.sys.views.default]
+        type = "launcher"
+        alias = "sys"
+        items = "{{ config:test_items.items }}"
+        "#,
+    )
+    .expect("could not write route editing config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"app aa")
+        .expect("could not write app route query");
+    process
+        .master
+        .flush()
+        .expect("could not flush app route query");
+    let _ = wait_for_text(&process.master, "apps:default");
+
+    process
+        .master
+        .write_all(b"\x7f\x7f")
+        .expect("could not delete route parameters");
+    process
+        .master
+        .flush()
+        .expect("could not flush route parameter deletion");
+    let output = wait_for_text(&process.master, " > app ");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > app "),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x7f")
+        .expect("could not delete route separator");
+    process
+        .master
+        .flush()
+        .expect("could not flush route separator deletion");
+    let output = wait_for_text(&process.master, "core:default");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > app"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x7f\x7f\x7f")
+        .expect("could not delete route selector");
+    process
+        .master
+        .flush()
+        .expect("could not flush route selector deletion");
+    let output = wait_for_text(&process.master, " > ");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > "),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"sys ")
+        .expect("could not write replacement route");
+    process
+        .master
+        .flush()
+        .expect("could not flush replacement route");
+    let output = wait_for_text(&process.master, "sys:default");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" > sys "),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close route editing launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush route editing launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove route editing config");
+}
+
+#[test]
 fn view_alias_routes_to_the_configured_messages_launcher() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -570,7 +761,7 @@ alias = "temp"
     wait_for_ready(&process.master);
     process
         .master
-        .write_all(b"temp")
+        .write_all(b"temp ")
         .expect("could not write conflicting view alias");
     process
         .master
@@ -765,7 +956,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         .expect("could not flush broken route");
     let output = wait_for_text(&process.master, "ERROR");
     assert!(
-        String::from_utf8_lossy(&output).contains("core:default"),
+        String::from_utf8_lossy(&output).contains(" > core:broken"),
         "output: {:?}",
         output
     );
@@ -815,6 +1006,8 @@ fn qualified_view_path_navigates_to_any_engine() {
         .expect("could not flush qualified embedded route");
 
     let mut output = wait_for_text(&process.master, "route-marker");
+    let launcher = wait_for_text(&process.master, "core:default");
+    output.extend(launcher);
     process
         .master
         .write_all(b"\x03")

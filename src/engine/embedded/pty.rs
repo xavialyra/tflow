@@ -296,7 +296,7 @@ fn drain_output(
 }
 
 fn content_size(outer_columns: u16, outer_rows: u16) -> (u16, u16) {
-    (outer_columns.max(1), outer_rows.saturating_sub(2).max(1))
+    (outer_columns.max(1), outer_rows.saturating_sub(3).max(1))
 }
 
 fn render_embedded(
@@ -308,15 +308,16 @@ fn render_embedded(
     let outer_columns = outer_columns as usize;
     let outer_rows = outer_rows as usize;
     let inner_width = outer_columns.max(1);
-    let inner_rows = outer_rows.saturating_sub(2).max(1);
+    let inner_rows = outer_rows.saturating_sub(3).max(1);
     let mut stdout = io::stdout().lock();
 
     stdout.write_all(b"\x1b[?25l")?;
     write_line(&mut stdout, 1, &chrome.header, outer_columns, true)?;
+    write_line(&mut stdout, 2, &chrome.input_line(), outer_columns, false)?;
     for row in 0..inner_rows {
         write_line(
             &mut stdout,
-            2 + row,
+            3 + row,
             &screen.row_text(row),
             outer_columns,
             false,
@@ -332,7 +333,7 @@ fn render_embedded(
 
     let (cursor_x, cursor_y, visible) = screen.cursor();
     if visible {
-        let row = (2 + cursor_y.min(inner_rows.saturating_sub(1))).min(outer_rows.max(1));
+        let row = (3 + cursor_y.min(inner_rows.saturating_sub(1))).min(outer_rows.max(1));
         let column = cursor_x.min(inner_width.saturating_sub(1)) + 1;
         write!(stdout, "\x1b[{};{}H\x1b[?25h", row, column)?;
     } else {

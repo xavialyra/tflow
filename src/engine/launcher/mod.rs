@@ -66,10 +66,9 @@ impl Engine for LauncherEngine {
         Ok(Box::new(
             LauncherView::new(
                 &context.location.view_ref,
-                &context.location.input,
                 context.tasks.clone(),
                 Arc::new(context.config.clone()),
-                context.router,
+                context.location.shell_input.is_some(),
                 keymap,
             )
             .with_context(

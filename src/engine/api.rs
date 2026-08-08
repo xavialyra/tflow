@@ -1,18 +1,17 @@
+use super::host::EngineHost;
+use super::runtime::RuntimeHandle;
+use super::task::TaskScheduler;
 use crate::config::{Config, View};
 use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
-use std::sync::Arc;
-
-use super::host::EngineHost;
-use super::runtime::RuntimeHandle;
-use super::task::TaskScheduler;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewLocation {
     pub(crate) view_ref: String,
     pub(crate) input: String,
+    pub(crate) shell_input: Option<String>,
     pub(crate) context: Value,
 }
 
@@ -21,8 +20,14 @@ impl ViewLocation {
         Self {
             view_ref: view_ref.into(),
             input: input.into(),
+            shell_input: None,
             context: Value::Null,
         }
+    }
+
+    pub(crate) fn with_shell_input(mut self, input: impl Into<String>) -> Self {
+        self.shell_input = Some(input.into());
+        self
     }
 
     pub(crate) fn with_context(mut self, context: Value) -> Self {
@@ -44,6 +49,7 @@ pub(crate) enum ViewEffect {
         mode: NavigationMode,
     },
     Back,
+    BackWithInput(String),
     Exit,
 }
 
@@ -53,6 +59,18 @@ pub(crate) trait ViewInstance {
     }
 
     fn deactivate(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn restore_input(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        Ok(())
+    }
+
+    fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        Ok(())
+    }
+
+    fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -76,7 +94,6 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,
     pub(crate) tasks: TaskScheduler,
-    pub(crate) router: Arc<crate::router::Router>,
 }
 
 pub(crate) trait Engine {

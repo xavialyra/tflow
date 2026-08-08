@@ -306,7 +306,7 @@ items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 items = '{{ script("scripts/items.sh", runtime:view.current.request) }}'
 ```
 
-The launcher runtime exposes the current request under `runtime:view.current.request`. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the launcher does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
+The launcher runtime exposes the current request under `runtime:view.current.request`. `runtime:view.current.input` and `query` contain the current view's parameters; `raw_input` retains the complete input-bar value including a route selector. The source script can accept a string, object, or any other JSON value without a launcher-defined parameter schema. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the launcher does not sort or filter valid items. Query handling belongs to the expression or script. Later expression methods can provide reusable filtering and sorting when needed.
 
 A root launcher view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
 
@@ -316,7 +316,7 @@ sys          System monitor
 apps:detail  Package details
 ```
 
-Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Source commands remain owned by the source view.
+Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. An alias is recognized as a route only after a whitespace separator, so typing `app` alone remains ordinary query text; a canonical `plugin:view` reference may still be entered by itself. The input bar belongs to the session chrome: its route selector and query are kept across view changes, while the target engine receives only the query. `Esc` returns from a child view and restores the parent input snapshot; deleting the route selector with Backspace cancels that route and keeps the edited input in the parent view. Source commands remain owned by the source view.
 
 ## Command environment
 

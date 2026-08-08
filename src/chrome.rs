@@ -8,16 +8,51 @@ pub(crate) struct EngineChrome {
     pub(crate) commands: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ShellInput {
+    pub(crate) raw: String,
+    pub(crate) params: String,
+    pub(crate) changed: bool,
+    pub(crate) rejected: bool,
+}
+
+impl ShellInput {
+    pub(crate) fn new(raw: impl Into<String>) -> Self {
+        let raw = raw.into();
+        Self {
+            params: raw.clone(),
+            raw,
+            changed: false,
+            rejected: false,
+        }
+    }
+
+    pub(crate) fn with_params(raw: impl Into<String>, params: impl Into<String>) -> Self {
+        Self {
+            raw: raw.into(),
+            params: params.into(),
+            changed: false,
+            rejected: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChromeFrame {
     pub(crate) header: String,
+    pub(crate) input: String,
     pub(crate) footer: String,
 }
 
 impl ChromeFrame {
+    pub(crate) fn input_line(&self) -> String {
+        format!(" > {}", self.input)
+    }
+
     pub(crate) fn compose(
         width: usize,
         route: &RouteDisplay,
+        input: &str,
         engine: EngineChrome,
         error: Option<&str>,
     ) -> Self {
@@ -39,6 +74,7 @@ impl ChromeFrame {
         };
         Self {
             header: clip(&header, width),
+            input: input.to_string(),
             footer,
         }
     }
@@ -138,6 +174,7 @@ mod tests {
         let frame = ChromeFrame::compose(
             80,
             &route(),
+            "terminal",
             EngineChrome {
                 title: Some("launcher".to_string()),
                 status: Some("12 results".to_string()),
@@ -146,6 +183,8 @@ mod tests {
             None,
         );
         assert_eq!(frame.header, " TUI Launcher  [launcher]");
+        assert_eq!(frame.input, "terminal");
+        assert_eq!(frame.input_line(), " > terminal");
         assert!(frame.footer.starts_with("apps:default (app) | 12 results"));
         assert!(frame.footer.ends_with(" | Enter Open"));
     }
@@ -155,6 +194,7 @@ mod tests {
         let frame = ChromeFrame::compose(
             80,
             &route(),
+            "",
             EngineChrome::default(),
             Some("view alias is ambiguous"),
         );

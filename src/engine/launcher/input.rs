@@ -18,16 +18,18 @@ impl LauncherView {
         key: Key,
         command_view: &str,
         command_available: bool,
+        input: &mut String,
+        nested: bool,
     ) -> LauncherInputAction {
         if let Some(action) = self.keymap.action(key) {
-            return self.apply_launcher_action(action, command_view);
+            return self.apply_launcher_action(action, command_view, input, nested);
         }
         if command_available && self.current().command_owner.is_none() {
             return LauncherInputAction::Activate(key);
         }
         match key {
             Key::Char(character) if !character.is_control() => {
-                self.current_mut().input.push(character);
+                input.push(character);
                 LauncherInputAction::Refresh
             }
             _ => LauncherInputAction::Continue,
@@ -38,6 +40,8 @@ impl LauncherView {
         &mut self,
         action: LauncherAction,
         command_view: &str,
+        input: &mut String,
+        nested: bool,
     ) -> LauncherInputAction {
         match action {
             LauncherAction::Exit => LauncherInputAction::Exit,
@@ -49,8 +53,10 @@ impl LauncherView {
                 }
             }
             LauncherAction::Back => {
-                if !self.current().input.is_empty() {
-                    self.current_mut().input.clear();
+                if nested {
+                    LauncherInputAction::Back
+                } else if !input.is_empty() {
+                    input.clear();
                     LauncherInputAction::Refresh
                 } else {
                     LauncherInputAction::Back
@@ -70,22 +76,21 @@ impl LauncherView {
                 LauncherInputAction::ClearError
             }
             LauncherAction::DeleteBackward => {
-                if self.current_mut().input.pop().is_some() {
+                if input.pop().is_some() {
                     LauncherInputAction::Refresh
                 } else {
                     LauncherInputAction::Continue
                 }
             }
             LauncherAction::ClearInput => {
-                if self.current().input.is_empty() {
+                if input.is_empty() {
                     LauncherInputAction::Continue
                 } else {
-                    self.current_mut().input.clear();
+                    input.clear();
                     LauncherInputAction::Refresh
                 }
             }
             LauncherAction::DeleteWord => {
-                let input = &mut self.current_mut().input;
                 let previous_length = input.len();
                 while input.chars().last().is_some_and(char::is_whitespace) {
                     input.pop();
