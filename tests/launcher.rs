@@ -1,0 +1,836 @@
+mod support;
+
+use std::fs;
+use std::io::Write;
+
+use support::{
+    spawn_launcher, temporary_root, wait_for_launcher_exit, wait_for_nonempty_file,
+    wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
+};
+
+#[test]
+fn loads_items_from_an_expression() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:catalog.items }}"
+
+        [catalog]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        exit = true
+        run = '''printf 'expression-marker:%s\\n' "$LAUNCHER_VALUE"'''
+        "#,
+    )
+    .expect("could not write expression items config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write launcher Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Enter key");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("expression-marker:value"),
+        "launcher output did not contain expression marker: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove expression items config");
+}
+
+#[test]
+fn waits_for_items_before_running_enter_command() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        exit = true
+        run = '''printf 'launcher-marker:%s\n' "$LAUNCHER_VALUE"'''
+        "#,
+    )
+    .expect("could not write launcher integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write launcher Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Enter key");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("launcher-marker:value"),
+        "launcher output did not contain command marker: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove launcher integration config");
+}
+
+#[test]
+fn view_commands_accept_unreserved_control_bindings() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "ctrl+r"
+        label = "Run"
+        exit = true
+        run = '''printf 'ctrl-command:%s\n' "$LAUNCHER_VALUE"'''
+        "#,
+    )
+    .expect("could not write control command config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x12")
+        .expect("could not write Ctrl-R command key");
+    process
+        .master
+        .flush()
+        .expect("could not flush Ctrl-R command key");
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("ctrl-command:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove control command config");
+}
+
+#[test]
+fn replacing_items_request_cancels_the_previous_script() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin_root = root.join("plugins/core");
+    let script_root = plugin_root.join("scripts");
+    fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
+    )
+    .expect("could not write cancellation plugin manifest");
+    let old_pid_path = root.join("old.pid");
+    fs::write(
+        script_root.join("items.sh"),
+        format!(
+            r#"query=$(cat | jq -r '.query // empty')
+if [ -z "$query" ]; then
+    printf '%s\n' "$$" > "{}"
+    sleep 10
+    printf '[{{"label":"old-result"}}]\n'
+else
+    printf '[{{"label":"new-result"}}]\n'
+fi
+"#,
+            old_pid_path.display()
+        ),
+    )
+    .expect("could not write cancellation items script");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+        "#,
+    )
+    .expect("could not write cancellation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let old_pid = wait_for_nonempty_file(&old_pid_path)
+        .trim()
+        .parse::<libc::pid_t>()
+        .expect("items script wrote an invalid PID");
+    process
+        .master
+        .write_all(b"new")
+        .expect("could not write replacement query");
+    process
+        .master
+        .flush()
+        .expect("could not flush replacement query");
+
+    let output = wait_for_text(&process.master, "new-result");
+    wait_for_process_exit(old_pid);
+    assert!(
+        !String::from_utf8_lossy(&output).contains("old-result"),
+        "cancelled request produced an old result: {:?}",
+        output
+    );
+    let log = fs::read_to_string(root.join("runtime.jsonl")).unwrap_or_default();
+    assert!(
+        !log.contains("cancelled"),
+        "cancelled request leaked into runtime log: {log}"
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close cancellation launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush cancellation launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove cancellation integration config");
+}
+
+#[test]
+fn ctrl_k_opens_the_command_launcher_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        run = ":"
+
+        [plugins.core.views.default.commands.apps]
+        key = "alt+a"
+        label = "Apps"
+        exit = true
+        run = '''printf 'command-marker:%s\n' "$LAUNCHER_VALUE"'''
+
+        [plugins.core.views.default.commands.shell]
+        key = "alt+s"
+        label = "Shell"
+        run = ":"
+
+        [plugins.core.views.command]
+        type = "launcher"
+        "#,
+    )
+    .expect("could not write command view integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x0b")
+        .expect("could not write Ctrl-K key");
+    process.master.flush().expect("could not flush Ctrl-K key");
+    let output = wait_for_text(&process.master, "core:command");
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("Enter Run"), "output: {output}");
+    assert!(output.contains("Alt-A Apps"), "output: {output}");
+    assert!(output.contains("Alt-S Shell"), "output: {output}");
+
+    process
+        .master
+        .write_all(b"\x1b[B\r")
+        .expect("could not execute the selected command");
+    process
+        .master
+        .flush()
+        .expect("could not flush selected command");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    let remaining = String::from_utf8_lossy(&remaining);
+    assert!(
+        remaining.contains("command-marker:value"),
+        "output: {remaining}"
+    );
+    fs::remove_dir_all(root).expect("could not remove command view config");
+}
+
+#[test]
+fn launcher_bindings_can_override_a_default_shortcut() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.bindings]
+        open_commands = ["ctrl+p"]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        run = ":"
+
+        [plugins.core.views.command]
+        type = "launcher"
+        "#,
+    )
+    .expect("could not write custom launcher binding config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x10")
+        .expect("could not write configured Ctrl-P shortcut");
+    process
+        .master
+        .flush()
+        .expect("could not flush configured shortcut");
+    let output = wait_for_text(&process.master, "core:command");
+    assert!(
+        String::from_utf8_lossy(&output).contains("Enter Run"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove custom binding config");
+}
+
+#[test]
+fn command_launcher_navigation_keeps_the_parent_item_context() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.inspect]
+        key = "enter"
+        label = "Inspect"
+        view = "core:capture"
+        input = "parent-value:{{ runtime:view.current.selected_item.value }}"
+
+        [plugins.core.views.command]
+        type = "launcher"
+
+        [plugins.core.views.capture]
+        type = "capture"
+        output = "{{ runtime:view.current.input }}"
+        title = "Capture"
+        "#,
+    )
+    .expect("could not write command navigation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x0b")
+        .expect("could not open command launcher");
+    process.master.flush().expect("could not flush Ctrl-K");
+    let _ = wait_for_text(&process.master, "Inspect");
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not navigate from command launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush command navigation");
+    let output = wait_for_text(&process.master, "parent-value:value");
+    assert!(
+        String::from_utf8_lossy(&output).contains("parent-value:value"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not return from capture view");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture return");
+    let _ = wait_for_text(&process.master, "core:default");
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove command navigation config");
+}
+
+#[test]
+fn items_errors_are_logged_and_do_not_block_exit() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items }}"
+        "#,
+    )
+    .expect("could not write error logging config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let output = wait_for_text(&process.master, "ERROR");
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("core:default"), "output: {output}");
+    assert!(output.contains(":"), "output: {output}");
+
+    let log = fs::read_to_string(root.join("runtime.jsonl")).expect("could not read runtime log");
+    let record: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(record["metadata"]["level"], "error");
+    assert!(
+        record["metadata"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("items expression must return a JSON array")
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close error launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush error launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove error logging config");
+}
+
+#[test]
+fn view_alias_routes_to_the_configured_messages_launcher() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    fs::write(
+        root.join("runtime.jsonl"),
+        "{\"label\":\"preexisting log\",\"value\":\"1\",\"metadata\":{}}\n",
+    )
+    .expect("could not seed runtime log");
+    let plugin_root = root.join("plugins/core");
+    fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"launcher\"\n",
+    )
+    .expect("could not write test plugin manifest");
+    fs::write(
+        plugin_root.join("scripts/items.sh"),
+        "input=$(cat)\nlog_file=$(printf '%s\\n' \"$input\" | jq -r '.log_file // empty')\nif [ -n \"$log_file\" ] && [ -f \"$log_file\" ]; then\n    jq -s '.' \"$log_file\"\nelse\n    printf '[]\\n'\nfi\n",
+    )
+    .expect("could not write test items script");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+
+        [plugins.core.views.messages]
+        type = "launcher"
+        alias = "log"
+        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+        "#,
+    )
+    .expect("could not write messages integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"log ")
+        .expect("could not write view alias");
+    process.master.flush().expect("could not flush view alias");
+    let _ = wait_for_text(&process.master, "core:messages (log)");
+    let output = wait_for_text(&process.master, "preexisting log");
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("preexisting log"), "output: {output}");
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close messages launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush messages launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove messages integration config");
+}
+
+#[test]
+fn duplicate_view_alias_reports_an_error_when_invoked() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    for package in ["package-a", "package-b"] {
+        let plugin_root = root.join("plugins").join(package);
+        fs::create_dir_all(&plugin_root).expect("could not create conflicting plugin");
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            r#"[plugin]
+name = "template"
+
+[views.default]
+type = "launcher"
+alias = "temp"
+"#,
+        )
+        .expect("could not write conflicting plugin manifest");
+    }
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        "#,
+    )
+    .expect("could not write conflicting-alias config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"temp")
+        .expect("could not write conflicting view alias");
+    process
+        .master
+        .flush()
+        .expect("could not flush conflicting view alias");
+    let output = wait_for_text(&process.master, "ambiguous");
+    assert!(
+        String::from_utf8_lossy(&output).contains("view alias \"temp\" is ambiguous"),
+        "output: {:?}",
+        output
+    );
+    let runtime_log = fs::read_to_string(root.join("runtime.jsonl"))
+        .expect("could not read conflicting-alias runtime log");
+    assert!(
+        runtime_log.contains("package-a:default, package-b:default"),
+        "runtime log: {runtime_log}"
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close conflicting-alias launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush conflicting-alias launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove conflicting-alias config");
+}
+
+#[test]
+fn capture_command_returns_to_launcher_and_restores_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        view = "core:capture"
+        input = "capture-marker:{{ runtime:view.current.selected_item.value }}"
+
+        [plugins.core.views.capture]
+        type = "capture"
+        alias = "cap"
+        output = "{{ runtime:view.current.input }}"
+        title = "Capture"
+        "#,
+    )
+    .expect("could not write capture integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write capture Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture Enter key");
+
+    let output = wait_for_text(&process.master, "capture-marker:value");
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write capture return key");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture return key");
+    let launcher = wait_for_text(&process.master, "core:default");
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not write launcher Ctrl-C key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Ctrl-C key");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    let mut output = output;
+    output.extend(launcher);
+    output.extend(remaining);
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("capture-marker:value"), "output: {output}");
+    assert!(output.contains("core:capture (cap)"), "output: {output}");
+    fs::remove_dir_all(root).expect("could not remove capture integration config");
+}
+
+#[test]
+fn embedded_command_returns_to_launcher_and_restores_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        view = "core:embedded"
+        input = '''printf 'embedded-marker:%s\n' '{{ runtime:view.current.selected_item.value }}'; exit 0'''
+
+        [plugins.core.views.embedded]
+        type = "embedded"
+        alias = "emb"
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        title = "Embedded"
+        "#,
+    )
+    .expect("could not write embedded integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write embedded Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush embedded Enter key");
+
+    let mut output = wait_for_text(&process.master, "embedded-marker:value");
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not write launcher Ctrl-C key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Ctrl-C key");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+    output.extend(remaining);
+
+    assert_eq!(status, 0);
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("embedded-marker:value"), "output: {output}");
+    assert!(output.contains("core:embedded (emb)"), "output: {output}");
+    assert!(
+        !output.contains("finished successfully"),
+        "output: {output}"
+    );
+    fs::remove_dir_all(root).expect("could not remove embedded integration config");
+}
+
+#[test]
+fn failed_view_creation_returns_to_the_current_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+
+        [plugins.core.views.broken]
+        type = "embedded"
+        command = "{{ runtime:missing }}"
+        "#,
+    )
+    .expect("could not write failed navigation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"core:broken")
+        .expect("could not write broken view route");
+    process
+        .master
+        .flush()
+        .expect("could not flush broken route");
+    let output = wait_for_text(&process.master, "ERROR");
+    assert!(
+        String::from_utf8_lossy(&output).contains("core:default"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher after failed navigation");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove failed navigation config");
+}
+
+#[test]
+fn qualified_view_path_navigates_to_any_engine() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+
+        [plugins.core.views.embedded]
+        type = "embedded"
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        title = "Embedded"
+        "#,
+    )
+    .expect("could not write qualified route integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"core:embedded printf route-marker")
+        .expect("could not write qualified embedded route");
+    process
+        .master
+        .flush()
+        .expect("could not flush qualified embedded route");
+
+    let mut output = wait_for_text(&process.master, "route-marker");
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher after embedded route");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+    output.extend(remaining);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("route-marker"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove qualified route config");
+}

@@ -97,3 +97,77 @@ pub(crate) fn require_field(name: &str, view: &View, field: &str) -> Result<()> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{EngineHost, ViewContext, ViewEffect, ViewInstance};
+    use crate::terminal::Terminal;
+    use anyhow::Result;
+
+    #[test]
+    fn accepts_custom_engine_implementations() {
+        struct TestEngine;
+
+        struct TestView;
+
+        impl ViewInstance for TestView {
+            fn step(
+                &mut self,
+                _host: &mut EngineHost<'_>,
+                _terminal: &mut Terminal,
+            ) -> Result<ViewEffect> {
+                Ok(ViewEffect::Continue)
+            }
+
+            fn render(
+                &mut self,
+                _host: &EngineHost<'_>,
+                _terminal: &Terminal,
+                _chrome: &crate::chrome::ChromeFrame,
+            ) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        impl Engine for TestEngine {
+            fn engine_type(&self) -> &'static str {
+                "test"
+            }
+
+            fn validate_config(&self, _name: &str, _view: &View) -> Result<()> {
+                Ok(())
+            }
+
+            fn create_view(&self, _context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+                Ok(Box::new(TestView))
+            }
+        }
+
+        let mut registry = EngineRegistry::new();
+        registry.register(Box::new(TestEngine));
+        assert!(registry.contains("test"));
+    }
+
+    #[test]
+    fn rejects_static_engine_field_shape_errors() {
+        fn view(source: &str) -> View {
+            toml::from_str(source).unwrap()
+        }
+
+        let registry = EngineRegistry::new();
+        let embedded = view("type = 'embedded'\ncommand = 'sh'");
+        assert!(registry.validate_config("bad-embedded", &embedded).is_err());
+
+        let mixed_embedded =
+            view("type = 'embedded'\ncommand = 'sh {{ runtime:view.current.input }}'");
+        assert!(
+            registry
+                .validate_config("mixed-embedded", &mixed_embedded)
+                .is_err()
+        );
+
+        let capture = view("type = 'capture'\noutput = 1");
+        assert!(registry.validate_config("bad-capture", &capture).is_err());
+    }
+}

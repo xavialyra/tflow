@@ -130,3 +130,35 @@ fn decode_json_pointer_token(token: &str) -> Result<String> {
     }
     Ok(decoded)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracks_revisions_and_json_pointer_updates() {
+        let mut store = RuntimeStore::new();
+        assert_eq!(store.revision(), 0);
+        assert_eq!(
+            store.replace(serde_json::json!({"view": {"current": {}}})),
+            1
+        );
+        assert_eq!(
+            store
+                .set("/view/current/items", serde_json::json!([1, 2]))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store.snapshot(),
+            &serde_json::json!({"view": {"current": {"items": [1, 2]}}})
+        );
+        assert_eq!(
+            store
+                .set("/view/current/items/0", serde_json::json!(3))
+                .unwrap(),
+            3
+        );
+        assert_eq!(store.snapshot()["view"]["current"]["items"][0], 3);
+    }
+}

@@ -10,9 +10,6 @@ mod runtime;
 mod session;
 mod task;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use api::{Engine, NavigationMode, ViewContext, ViewEffect, ViewInstance, ViewLocation};
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;
