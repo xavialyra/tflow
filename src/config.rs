@@ -719,7 +719,7 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
     } else {
         PluginHeader::default()
     };
-    if header.api != 2 {
+    if header.api != 1 {
         bail!(
             "plugin {:?} uses unsupported API version {}",
             plugin_id,
@@ -853,7 +853,7 @@ fn default_engine_type() -> String {
 }
 
 fn default_plugin_api() -> u32 {
-    2
+    1
 }
 
 fn default_view_name() -> String {
@@ -1076,10 +1076,10 @@ mod tests {
     }
 
     #[test]
-    fn plugin_api_defaults_to_two() {
+    fn plugin_api_defaults_to_one() {
         let header: PluginHeader = toml::from_str("").unwrap();
-        assert_eq!(header.api, 2);
-        assert_eq!(PluginHeader::default().api, 2);
+        assert_eq!(header.api, 1);
+        assert_eq!(PluginHeader::default().api, 1);
     }
 
     #[test]

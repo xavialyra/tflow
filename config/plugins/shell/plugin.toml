@@ -1,5 +1,5 @@
 [plugin]
-api = 2
+api = 1
 
 [views.menu]
 type = "launcher"

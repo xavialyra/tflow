@@ -151,7 +151,7 @@ plugins/apps/
     └── common.sh
 ```
 
-The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `2` when it is omitted. Its view definitions are relative to that directory namespace:
+The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `1` when it is omitted. Its view definitions are relative to that directory namespace:
 
 ```toml
 [views.main]
@@ -164,7 +164,7 @@ label = "Open"
 run = { file = "scripts/open.sh" }
 ```
 
-Set `[plugin].api = 2` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
+Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
 The root config file selects the default views and can define shared launcher binding defaults:
 
