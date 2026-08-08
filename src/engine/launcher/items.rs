@@ -4,7 +4,7 @@ use crate::engine::{RuntimeHandle, TaskHandle, TaskScheduler};
 use crate::expression::ExpressionMethods;
 use crate::text::sanitize_text;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ struct ItemValue {
     metadata: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct Item {
     pub(crate) prefix: String,
     pub(crate) text: String,
@@ -50,7 +50,7 @@ pub(crate) struct ItemsEvent {
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
     pub(crate) failure: Option<String>,
-    pub(crate) pending_command: Option<super::super::Key>,
+    pub(crate) pending_command: Option<crate::input::Key>,
 }
 
 pub(crate) type ItemsTaskScheduler = TaskScheduler<ItemsRequest, ItemsResponse, String>;
@@ -204,6 +204,7 @@ mod tests {
                         run: None,
                         shell: None,
                         view: None,
+                        input: None,
                         exit: false,
                     },
                 )]),

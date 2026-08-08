@@ -96,6 +96,10 @@ impl Template {
         Ok(Self { parts })
     }
 
+    pub fn is_complete_expression(&self) -> bool {
+        matches!(self.parts.as_slice(), [TemplatePart::Expr(_)])
+    }
+
     pub fn evaluate_value(&self, context: &mut EvalContext<'_>) -> Result<Value> {
         if let [TemplatePart::Expr(expression)] = self.parts.as_slice() {
             return evaluate_expression(expression, context, &mut BTreeSet::new());

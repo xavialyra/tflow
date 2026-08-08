@@ -1,10 +1,16 @@
-[views.default]
+[plugin]
+api = 2
+
+[views.menu]
 type = "launcher"
 display_prefix = "shell"
 items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 
-[views.default.commands.open]
+[views.menu.commands.open]
 key = "enter"
 label = "Open shell"
-view = "core:embedded"
-run = { file = "scripts/open.sh" }
+view = "shell:default"
+input = "exec sh"
+
+[views.default]
+type = "embedded"

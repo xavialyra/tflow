@@ -76,6 +76,8 @@ pub struct Command {
     #[serde(default)]
     pub view: Option<ViewRef>,
     #[serde(default)]
+    pub input: Option<String>,
+    #[serde(default)]
     pub exit: bool,
 }
 
@@ -180,13 +182,7 @@ impl Config {
         &self,
         engines: &crate::engine::EngineRegistry,
     ) -> Result<()> {
-        let default_engine = self.engine(&self.default_view)?;
-        if default_engine != ENGINE_LAUNCHER {
-            bail!(
-                "default view {:?} must use the launcher engine",
-                self.default_view
-            );
-        }
+        self.engine(&self.default_view)?;
         self.validate_viewtypes(engines)?;
 
         for (view_ref, view) in &self.views {
@@ -283,16 +279,38 @@ impl Config {
                         command_id
                     );
                 }
-                if command.exit && command.run.is_none() {
+                if command.run.is_some() && command.view.is_some() {
                     bail!(
-                        "view {:?} command {:?} exits without a run script",
+                        "view {:?} command {:?} cannot combine run and view",
                         view_ref,
                         command_id
                     );
                 }
-                if command.exit && command.view.is_some() {
+                if command.input.is_some() && command.view.is_none() {
                     bail!(
-                        "view {:?} command {:?} cannot exit and target another view",
+                        "view {:?} command {:?} has input without a target view",
+                        view_ref,
+                        command_id
+                    );
+                }
+                if let Some(input) = &command.input {
+                    Template::parse(input).with_context(|| {
+                        format!(
+                            "view {:?} command {:?} has invalid input expression",
+                            view_ref, command_id
+                        )
+                    })?;
+                }
+                if command.shell.is_some() && command.run.is_none() {
+                    bail!(
+                        "view {:?} command {:?} selects a shell without a run script",
+                        view_ref,
+                        command_id
+                    );
+                }
+                if command.exit && command.run.is_none() {
+                    bail!(
+                        "view {:?} command {:?} exits without a run script",
                         view_ref,
                         command_id
                     );
@@ -379,6 +397,25 @@ impl Config {
             evaluate_json_value(raw_field, &mut context)?
         };
         Ok(Some(value))
+    }
+
+    pub(crate) fn evaluate_command_input(
+        &self,
+        view_ref: &str,
+        source: &str,
+        runtime: &Value,
+    ) -> Result<String> {
+        let root = self.plugin_root(view_ref).unwrap_or_else(|| Path::new("."));
+        let mut methods = crate::expression::ExpressionMethods::new(root);
+        let references = TreeReferences {
+            config: &self.config_value,
+            runtime,
+        };
+        let mut context = EvalContext {
+            references: &references,
+            methods: &mut methods,
+        };
+        Template::parse(source)?.evaluate_text(&mut context)
     }
 
     pub fn evaluate_view_items(
@@ -497,6 +534,13 @@ impl Config {
         current_view_ref: &str,
         input: &str,
     ) -> Option<(ViewRef, String)> {
+        let (target, query) = split_prefix(input)
+            .map(|(target, query)| (target, query.to_string()))
+            .unwrap_or((input, String::new()));
+        if target.contains(':') && target != current_view_ref && self.views.contains_key(target) {
+            return Some((target.to_string(), query));
+        }
+
         let (prefix, query) = split_prefix(input)?;
         let source_owns_prefix =
             self.source_views(current_view_ref)
@@ -519,9 +563,7 @@ impl Config {
             .views
             .iter()
             .filter(|(view_ref, view)| {
-                *view_ref != current_view_ref
-                    && self.engine(view_ref).ok() == Some(ENGINE_LAUNCHER)
-                    && view.display_prefix.as_deref() == Some(prefix)
+                *view_ref != current_view_ref && view.display_prefix.as_deref() == Some(prefix)
             })
             .map(|(view_ref, _)| (view_ref.clone(), query.to_string()));
         let route = routes.next();
@@ -673,7 +715,7 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
     } else {
         PluginHeader::default()
     };
-    if header.api != 1 {
+    if header.api != 2 {
         bail!(
             "plugin {:?} uses unsupported API version {}",
             plugin_id,
@@ -822,7 +864,7 @@ fn default_viewtype_name() -> String {
 }
 
 fn default_plugin_api() -> u32 {
-    1
+    2
 }
 
 fn default_view_name() -> String {
@@ -867,7 +909,12 @@ mod tests {
                 ViewTypeDefinition {
                     engine: EngineDefinition {
                         engine_type: ENGINE_CAPTURE.to_string(),
-                        config: toml::Table::new(),
+                        config: [(
+                            "output".to_string(),
+                            toml::Value::String("{{ runtime:view.current.input }}".to_string()),
+                        )]
+                        .into_iter()
+                        .collect(),
                     },
                 },
             ),
@@ -876,7 +923,12 @@ mod tests {
                 ViewTypeDefinition {
                     engine: EngineDefinition {
                         engine_type: ENGINE_EMBEDDED.to_string(),
-                        config: toml::Table::new(),
+                        config: [(
+                            "command".to_string(),
+                            toml::Value::Array(vec![toml::Value::String("sh".to_string())]),
+                        )]
+                        .into_iter()
+                        .collect(),
                     },
                 },
             ),
@@ -948,6 +1000,28 @@ mod tests {
     }
 
     #[test]
+    fn commands_cannot_combine_local_execution_and_navigation() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            type = "launcher"
+            [plugins.core.views.default.commands.open]
+            key = "enter"
+            label = "Open"
+            run = ":"
+            view = "shell:default"
+            [plugins.shell.views.default]
+            type = "embedded"
+            "#,
+        );
+        let error = config
+            .validate()
+            .expect_err("run and view should be mutually exclusive");
+        assert!(error.to_string().contains("cannot combine run and view"));
+    }
+
+    #[test]
     fn view_prefix_returns_the_display_prefix_and_query() {
         let config = config(
             r#"
@@ -967,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn display_prefix_routes_to_a_launcher_view_outside_the_current_sources() {
+    fn display_prefix_routes_to_a_view_outside_the_current_sources() {
         let messages = config(
             r#"
             default_view = "core:default"
@@ -985,6 +1059,20 @@ mod tests {
         assert_eq!(
             messages.resolve_view_route("core:messages", "log timeout"),
             None
+        );
+
+        let embedded = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            type = "launcher"
+            [plugins.shell.views.default]
+            type = "embedded"
+            "#,
+        );
+        assert_eq!(
+            embedded.resolve_view_route("core:default", "shell:default ls -la"),
+            Some(("shell:default".to_string(), "ls -la".to_string()))
         );
 
         let aggregate = config(
@@ -1013,10 +1101,10 @@ mod tests {
     }
 
     #[test]
-    fn plugin_api_defaults_to_one() {
+    fn plugin_api_defaults_to_two() {
         let header: PluginHeader = toml::from_str("").unwrap();
-        assert_eq!(header.api, 1);
-        assert_eq!(PluginHeader::default().api, 1);
+        assert_eq!(header.api, 2);
+        assert_eq!(PluginHeader::default().api, 2);
     }
 
     #[test]
@@ -1060,8 +1148,12 @@ mod tests {
             type = "launcher"
             [viewtypes.capture.engine]
             type = "capture"
+            [viewtypes.capture.engine.config]
+            output = "{{ runtime:view.current.input }}"
             [viewtypes.embedded.engine]
             type = "embedded"
+            [viewtypes.embedded.engine.config]
+            command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
             [plugins.core.views.default]
             type = "launcher"
             sources = ["filetest:main"]

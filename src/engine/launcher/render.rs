@@ -1,4 +1,4 @@
-use super::{Item, LauncherDriver};
+use super::{Item, LauncherView};
 use crate::config::Config;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
@@ -194,7 +194,7 @@ fn pad_right(text: &str, width: usize) -> String {
     format!("{}{}", text, " ".repeat(width.saturating_sub(used)))
 }
 
-impl LauncherDriver {
+impl LauncherView {
     pub(crate) fn visible_commands(&self, config: &Config) -> Vec<(String, String)> {
         let Some(owner) = self.command_owner() else {
             return Vec::new();

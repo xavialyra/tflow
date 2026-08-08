@@ -1,14 +1,12 @@
-use super::{Item, ItemsTaskScheduler};
-use crate::config::{Command, Config, ENGINE_LAUNCHER, EngineDefinition, normalize_key};
-use crate::engine::{
-    Engine, EngineDriver, EngineHost, LauncherDriver, RuntimeHandle, SessionEffect, validate_fields,
-};
+use super::Item;
+use crate::config::{Command, Config, normalize_key};
+use crate::engine::{EngineHost, PreparedProcess};
+use crate::input::Key;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::path::Path;
 
 #[derive(Clone)]
 pub(crate) struct CommandInvocation {
@@ -17,53 +15,29 @@ pub(crate) struct CommandInvocation {
     pub(crate) command: Command,
 }
 
-pub(crate) struct PreparedCommand {
-    pub(crate) argv: Vec<String>,
-    pub(crate) environment: Vec<(String, String)>,
-    pub(crate) current_dir: Option<PathBuf>,
-}
-
-impl PreparedCommand {
-    pub(crate) fn process(&self) -> ProcessCommand {
-        let mut process = ProcessCommand::new(&self.argv[0]);
-        process.args(&self.argv[1..]);
-        if let Some(current_dir) = &self.current_dir {
-            process.current_dir(current_dir);
-        }
-        for (key, value) in &self.environment {
-            process.env(key, value);
-        }
-        process
-    }
-}
-
-pub(crate) struct CommandExecution {
-    pub(crate) invocation: CommandInvocation,
-    pub(crate) prepared: PreparedCommand,
-    pub(crate) engine_type: String,
-    pub(crate) exit: bool,
-    pub(crate) title: String,
-    pub(crate) next_view: Option<String>,
-}
-
 pub(crate) enum CommandAction {
     Report {
         invocation: CommandInvocation,
         message: String,
     },
-    OpenView {
+    Navigate {
         target: String,
+        input: String,
     },
-    Execute(CommandExecution),
+    Execute {
+        invocation: CommandInvocation,
+        prepared: PreparedProcess,
+        exit: bool,
+    },
 }
 
-pub(super) fn prepare_command(
+fn prepare_command(
     config: &Config,
-    driver: &LauncherDriver,
+    driver: &super::LauncherView,
     invocation: &CommandInvocation,
     item: Option<&Item>,
     log_file: Option<&Path>,
-) -> Result<PreparedCommand> {
+) -> Result<PreparedProcess> {
     let view = config
         .view(&invocation.source_view)
         .with_context(|| format!("view {:?} disappeared", invocation.source_view))?;
@@ -120,7 +94,7 @@ pub(super) fn prepare_command(
             path.to_string_lossy().to_string(),
         ));
     }
-    Ok(PreparedCommand {
+    Ok(PreparedProcess {
         argv: vec![
             shell.to_string(),
             "-c".to_string(),
@@ -154,10 +128,10 @@ pub(super) fn find_command(
     })
 }
 
-pub(super) fn command_key(key: super::super::Key) -> Option<String> {
+fn command_key(key: Key) -> Option<String> {
     match key {
-        super::super::Key::Enter => Some("enter".to_string()),
-        super::super::Key::Alt(character) if character.is_ascii_graphic() => {
+        Key::Enter => Some("enter".to_string()),
+        Key::Alt(character) if character.is_ascii_graphic() => {
             Some(format!("alt+{}", character.to_ascii_lowercase()))
         }
         _ => None,
@@ -198,6 +172,7 @@ pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
         "run": command.run,
         "shell": command.shell,
         "view": command.view,
+        "input": command.input,
         "exit": command.exit,
     }))
 }
@@ -212,90 +187,8 @@ pub(super) fn runtime_item_value(item: &Item) -> Value {
     })
 }
 
-pub(crate) struct LauncherCommandEngine;
-
-impl Engine for LauncherCommandEngine {
-    fn engine_type(&self) -> &'static str {
-        ENGINE_LAUNCHER
-    }
-
-    fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["items", "commands"])
-    }
-
-    fn create_view(
-        &self,
-        _config: &Config,
-        view_ref: &str,
-        input: &str,
-        log_file: Option<&Path>,
-        _runtime: RuntimeHandle,
-        items_scheduler: ItemsTaskScheduler,
-    ) -> Result<Box<dyn EngineDriver>> {
-        Ok(Box::new(LauncherDriver::new(
-            view_ref,
-            input,
-            items_scheduler,
-            log_file.map(PathBuf::from),
-            None,
-            None,
-        )))
-    }
-
-    fn create_command(&self, execution: CommandExecution) -> Result<Box<dyn EngineDriver>> {
-        Ok(Box::new(LauncherCommandDriver {
-            execution: Some(execution),
-        }))
-    }
-}
-
-struct LauncherCommandDriver {
-    execution: Option<CommandExecution>,
-}
-
-impl EngineDriver for LauncherCommandDriver {
-    fn step(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
-    ) -> Result<SessionEffect> {
-        let execution = self
-            .execution
-            .take()
-            .context("launcher command driver was already completed")?;
-        let CommandExecution {
-            invocation,
-            prepared,
-            exit,
-            next_view,
-            ..
-        } = execution;
-        if exit {
-            execute_exit(host, prepared, terminal, &invocation)?;
-            return Ok(SessionEffect::Exit);
-        }
-        execute_oneshot(host, prepared, terminal, &invocation)?;
-        match next_view {
-            Some(view_ref) => Ok(SessionEffect::OpenView {
-                view_ref,
-                input: String::new(),
-                replace_current: true,
-            }),
-            None => Ok(SessionEffect::Back),
-        }
-    }
-
-    fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl LauncherDriver {
-    pub(crate) fn resolve_command(
-        &self,
-        config: &Config,
-        key: crate::engine::Key,
-    ) -> Option<CommandInvocation> {
+impl super::LauncherView {
+    pub(crate) fn resolve_command(&self, config: &Config, key: Key) -> Option<CommandInvocation> {
         let frame = self.current();
         if frame.command_owner.is_some() {
             let binding = frame
@@ -311,7 +204,8 @@ impl LauncherDriver {
     pub(crate) fn prepare_command_action(
         &self,
         config: &Config,
-        key: crate::engine::Key,
+        runtime: &Value,
+        key: Key,
         log_file: Option<&Path>,
     ) -> Result<Option<CommandAction>> {
         let Some(invocation) = self.resolve_command(config, key) else {
@@ -324,83 +218,43 @@ impl LauncherDriver {
             self.current().items.get(self.current().selected).cloned()
         };
         let command = invocation.command.clone();
-        let title = format!(
-            "{} / {}",
-            item.as_ref()
-                .map(|item| item.text.as_str())
-                .unwrap_or(&invocation.id),
-            invocation.id
-        );
-        let current_view = self.current().view.clone();
+
+        if let Some(target) = command.view {
+            let input = config.evaluate_command_input(
+                &invocation.source_view,
+                command.input.as_deref().unwrap_or(""),
+                runtime,
+            )?;
+            return Ok(Some(CommandAction::Navigate { target, input }));
+        }
 
         let Some(_script) = command.run.as_ref() else {
-            return Ok(Some(match command.view {
-                Some(target) => CommandAction::OpenView { target },
-                None => CommandAction::Report {
-                    message: format!("{} has no command", invocation.id),
-                    invocation,
-                },
+            return Ok(Some(CommandAction::Report {
+                message: format!("{} has no action", invocation.id),
+                invocation,
             }));
         };
-
         let prepared = prepare_command(config, self, &invocation, item.as_ref(), log_file)?;
-        let engine_type = if command.exit {
-            crate::config::ENGINE_LAUNCHER.to_string()
-        } else {
-            command
-                .view
-                .as_deref()
-                .map(|target| config.engine(target))
-                .transpose()?
-                .unwrap_or(crate::config::ENGINE_LAUNCHER)
-                .to_string()
-        };
-        let next_view = (!command.exit && engine_type == crate::config::ENGINE_LAUNCHER)
-            .then_some(command.view)
-            .flatten()
-            .filter(|target| target != &current_view);
-        Ok(Some(execution(
+        Ok(Some(CommandAction::Execute {
             invocation,
             prepared,
-            engine_type,
-            command.exit,
-            title,
-            next_view,
-        )))
+            exit: command.exit,
+        }))
     }
 }
 
-fn execute_oneshot(
+pub(super) fn execute_local(
     host: &mut EngineHost<'_>,
-    prepared: PreparedCommand,
+    prepared: PreparedProcess,
     terminal: &mut Terminal,
     invocation: &CommandInvocation,
-) -> Result<()> {
-    let result = (|| {
-        terminal.leave()?;
-        let result = prepared.process().status();
-        terminal.reenter()?;
-        Ok::<_, anyhow::Error>(result)
-    })();
-    let result = result?;
-    match result {
-        Ok(status) => {
-            let message = status_message(&status);
-            host.record_command_status(invocation, &message, status.success());
-        }
-        Err(error) => host.record_error(invocation, &error.to_string()),
-    }
-    Ok(())
-}
-
-fn execute_exit(
-    host: &mut EngineHost<'_>,
-    prepared: PreparedCommand,
-    terminal: &mut Terminal,
-    invocation: &CommandInvocation,
+    exit: bool,
 ) -> Result<()> {
     terminal.leave()?;
-    let status = prepared.process().status();
+    let status = prepared.command().status();
+    if !exit {
+        terminal.reenter()?;
+    }
     match status {
         Ok(status) => {
             let message = status_message(&status);
@@ -417,22 +271,4 @@ fn status_message(status: &std::process::ExitStatus) -> String {
         Some(code) => format!("finished with exit code {}", code),
         None => "terminated by signal".to_string(),
     }
-}
-
-pub(super) fn execution(
-    invocation: CommandInvocation,
-    prepared: PreparedCommand,
-    engine_type: String,
-    exit: bool,
-    title: String,
-    next_view: Option<String>,
-) -> CommandAction {
-    CommandAction::Execute(CommandExecution {
-        invocation,
-        prepared,
-        engine_type,
-        exit,
-        title,
-        next_view,
-    })
 }

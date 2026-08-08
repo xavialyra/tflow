@@ -1,3 +1,6 @@
+[plugin]
+api = 2
+
 [views.default]
 type = "launcher"
 display_prefix = "app"

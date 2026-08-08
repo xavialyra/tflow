@@ -1,10 +1,8 @@
 use super::render;
-use crate::engine::{Key, PreparedCommand};
-use crate::input::InputDecoder;
+use crate::input::{InputDecoder, Key};
 use crate::terminal::Terminal;
 use crate::text::sanitize_text;
-use anyhow::{Context, Result};
-use std::process::Stdio;
+use anyhow::Result;
 
 pub(crate) struct CaptureSession {
     title: String,
@@ -13,60 +11,14 @@ pub(crate) struct CaptureSession {
     decoder: InputDecoder,
 }
 
-pub(crate) struct CaptureOutcome {
-    pub(crate) status: String,
-    pub(crate) success: bool,
-}
-
 impl CaptureSession {
-    pub(crate) fn new(title: &str) -> Self {
+    pub(crate) fn new(title: &str, output: &str, status: &str) -> Self {
         Self {
             title: title.to_string(),
-            lines: Vec::new(),
-            status: String::new(),
+            lines: capture_lines(output),
+            status: status.to_string(),
             decoder: InputDecoder::default(),
         }
-    }
-
-    pub(crate) fn execute(
-        &mut self,
-        prepared: PreparedCommand,
-        terminal: &mut Terminal,
-        command_id: &str,
-    ) -> Result<CaptureOutcome> {
-        let process_result = (|| {
-            terminal.leave()?;
-            let result = prepared
-                .process()
-                .stdin(Stdio::null())
-                .output()
-                .with_context(|| format!("could not run command {}", command_id));
-            terminal.reenter()?;
-            Ok::<_, anyhow::Error>(result)
-        })()?;
-
-        let (text, status, success) = match process_result {
-            Ok(output) => {
-                let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.is_empty() {
-                    if !text.is_empty() && !text.ends_with('\n') {
-                        text.push('\n');
-                    }
-                    text.push_str(&stderr);
-                }
-                (
-                    sanitize_text(&text),
-                    status_message(&output.status),
-                    output.status.success(),
-                )
-            }
-            Err(error) => (error.to_string(), "failed".to_string(), false),
-        };
-
-        self.lines = capture_lines(&text);
-        self.status = status.clone();
-        Ok(CaptureOutcome { status, success })
     }
 
     pub(crate) fn wait_for_return(&mut self, terminal: &Terminal) -> Result<()> {
@@ -95,14 +47,6 @@ fn is_return_key(key: &Key) -> bool {
         key,
         Key::CtrlC | Key::Escape | Key::Enter | Key::Char(_) | Key::Alt(_)
     )
-}
-
-fn status_message(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(0) => "finished successfully".to_string(),
-        Some(code) => format!("finished with exit code {}", code),
-        None => "terminated by signal".to_string(),
-    }
 }
 
 #[cfg(test)]

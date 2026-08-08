@@ -1,15 +1,15 @@
 use super::pty::{self, EmbeddedOutcome};
-use crate::engine::PreparedCommand;
+use crate::engine::PreparedProcess;
 use crate::terminal::Terminal;
 use anyhow::Result;
 
 pub(crate) struct EmbeddedSession {
-    prepared: PreparedCommand,
+    prepared: PreparedProcess,
     title: String,
 }
 
 impl EmbeddedSession {
-    pub(crate) fn new(prepared: PreparedCommand, title: &str) -> Self {
+    pub(crate) fn new(prepared: PreparedProcess, title: &str) -> Self {
         Self {
             prepared,
             title: title.to_string(),

@@ -1,12 +1,14 @@
-mod command;
 mod render;
 mod session;
 
-use super::{CommandExecution, Engine, EngineDriver, ItemsTaskScheduler, validate_fields};
-use crate::config::{Config, ENGINE_CAPTURE, EngineDefinition};
-use crate::engine::RuntimeHandle;
-use anyhow::Result;
-use std::path::Path;
+use self::session::CaptureSession;
+use super::{
+    Engine, EngineHost, ViewContext, ViewEffect, ViewInstance, evaluate_field,
+    evaluate_optional_string, require_field, validate_fields,
+};
+use crate::config::{ENGINE_CAPTURE, EngineDefinition};
+use crate::terminal::Terminal;
+use anyhow::{Context, Result};
 
 pub(crate) struct CaptureEngine;
 
@@ -16,22 +18,73 @@ impl Engine for CaptureEngine {
     }
 
     fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["output", "title"])
+        validate_fields(name, definition, &["output", "title"])?;
+        require_field(name, definition, "output")?;
+        for field in ["output", "title"] {
+            if let Some(value) = definition.config.get(field)
+                && !value.is_str()
+            {
+                anyhow::bail!(
+                    "viewtype {:?} capture field {:?} must be a string expression",
+                    name,
+                    field
+                );
+            }
+        }
+        Ok(())
     }
 
-    fn create_view(
-        &self,
-        _config: &Config,
-        _view_ref: &str,
-        _input: &str,
-        _log_file: Option<&Path>,
-        _runtime: RuntimeHandle,
-        _items_scheduler: ItemsTaskScheduler,
-    ) -> Result<Box<dyn EngineDriver>> {
-        Err(command::unsupported_view())
+    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+        let default_title = context.location.view_ref.clone();
+        let evaluated = (|| {
+            let title = evaluate_optional_string(&context, "title")?
+                .unwrap_or_else(|| default_title.clone());
+            let output = evaluate_field(&context, "output")?
+                .context("capture engine requires an output field")?;
+            let output = output
+                .as_str()
+                .context("capture output must evaluate to a string")?;
+            Ok::<_, anyhow::Error>((title, output.to_string()))
+        })();
+        let (title, output, status, success) = match evaluated {
+            Ok((title, output)) => (title, output, "finished successfully".to_string(), true),
+            Err(error) => (
+                default_title,
+                error.to_string(),
+                "failed".to_string(),
+                false,
+            ),
+        };
+        Ok(Box::new(CaptureView {
+            view_ref: context.location.view_ref.clone(),
+            session: CaptureSession::new(&title, &output, &status),
+            status,
+            success,
+            completed: false,
+        }))
+    }
+}
+
+struct CaptureView {
+    view_ref: String,
+    session: CaptureSession,
+    status: String,
+    success: bool,
+    completed: bool,
+}
+
+impl ViewInstance for CaptureView {
+    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+        if self.completed {
+            anyhow::bail!("capture view was already completed");
+        }
+        self.completed = true;
+        host.record_view_status(&self.view_ref, &self.status, self.success);
+        self.session.wait_for_return(terminal)?;
+        Ok(ViewEffect::Back)
     }
 
-    fn create_command(&self, execution: CommandExecution) -> Result<Box<dyn EngineDriver>> {
-        Ok(Box::new(command::CaptureCommandDriver::new(execution)))
+    fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
+        Ok(())
     }
 }

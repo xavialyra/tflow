@@ -1,9 +1,9 @@
-use super::LauncherDriver;
+use super::LauncherView;
 use crate::config::Config;
 use crate::engine::RuntimeStore;
 use anyhow::Result;
 
-impl LauncherDriver {
+impl LauncherView {
     pub(crate) fn publish_runtime(
         &self,
         config: &Config,
@@ -28,10 +28,15 @@ impl LauncherDriver {
             .iter()
             .map(super::command::runtime_item_value)
             .collect::<Vec<_>>();
-        let selected_item = frame
-            .items
-            .get(frame.selected)
-            .map(super::command::runtime_item_value);
+        let selected_item = if frame.command_owner.is_some() {
+            self.command_parent_item()
+                .map(super::command::runtime_item_value)
+        } else {
+            frame
+                .items
+                .get(frame.selected)
+                .map(super::command::runtime_item_value)
+        };
         let log_file = self
             .log_file()
             .map(|path| path.to_string_lossy().to_string());

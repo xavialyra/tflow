@@ -1,5 +1,4 @@
-use super::api::{Engine, EngineDriver};
-use super::launcher::{CommandExecution, ItemsTaskScheduler};
+use super::api::{Engine, ViewContext, ViewInstance, ViewLocation};
 use super::runtime::RuntimeHandle;
 use crate::config::{Config, EngineDefinition};
 use crate::expression::validate_json_value;
@@ -16,7 +15,7 @@ impl EngineRegistry {
         let mut registry = Self {
             engines: BTreeMap::new(),
         };
-        registry.register(Box::new(super::launcher::LauncherCommandEngine));
+        registry.register(Box::new(super::launcher::LauncherEngine));
         registry.register(Box::new(super::capture::CaptureEngine));
         registry.register(Box::new(super::embedded::EmbeddedEngine));
         registry
@@ -41,34 +40,21 @@ impl EngineRegistry {
     pub(crate) fn create_view(
         &self,
         config: &Config,
-        view_ref: &str,
-        input: &str,
+        location: &ViewLocation,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
-        items_scheduler: ItemsTaskScheduler,
-    ) -> Result<Box<dyn EngineDriver>> {
-        let engine_type = config.engine(view_ref)?;
+    ) -> Result<Box<dyn ViewInstance>> {
+        let engine_type = config.engine(&location.view_ref)?;
         let engine = self
             .engines
             .get(engine_type)
             .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
-        engine.create_view(config, view_ref, input, log_file, runtime, items_scheduler)
-    }
-
-    pub(crate) fn create_command(
-        &self,
-        execution: CommandExecution,
-    ) -> Result<Box<dyn EngineDriver>> {
-        let engine = self
-            .engines
-            .get(execution.engine_type.as_str())
-            .with_context(|| {
-                format!(
-                    "unsupported command target engine {:?}",
-                    execution.engine_type
-                )
-            })?;
-        engine.create_command(execution)
+        engine.create_view(ViewContext {
+            config,
+            location,
+            log_file,
+            runtime,
+        })
     }
 }
 
@@ -89,6 +75,18 @@ pub(crate) fn validate_fields(
         let value = serde_json::to_value(value).context("engine config is not valid JSON")?;
         validate_json_value(&value)
             .with_context(|| format!("viewtype {:?} engine field {:?}", name, field))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn require_field(name: &str, definition: &EngineDefinition, field: &str) -> Result<()> {
+    if !definition.config.contains_key(field) {
+        bail!(
+            "viewtype {:?} engine {:?} requires config field {:?}",
+            name,
+            definition.engine_type,
+            field
+        );
     }
     Ok(())
 }

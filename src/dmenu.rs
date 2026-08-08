@@ -1,6 +1,5 @@
 use crate::config::DisplayType;
-use crate::engine::Key;
-use crate::input::InputDecoder;
+use crate::input::{InputDecoder, Key};
 use crate::terminal::Terminal;
 use crate::text::matches_query;
 use anyhow::{Context, Result, bail};

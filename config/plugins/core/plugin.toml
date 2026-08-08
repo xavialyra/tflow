@@ -1,6 +1,9 @@
+[plugin]
+api = 2
+
 [views.default]
 type = "launcher"
-sources = ["sys:default", "shell:default", "trans:default", "apps:default"]
+sources = ["sys:default", "shell:menu", "trans:default", "apps:default"]
 
 [views.dmenu]
 type = "launcher"
@@ -15,9 +18,3 @@ items = '{{ script("scripts/items.sh", runtime:view.current) }}'
 [views.command]
 type = "launcher"
 display = "text"
-
-[views.capture]
-type = "capture"
-
-[views.embedded]
-type = "embedded"

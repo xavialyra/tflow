@@ -1,20 +1,20 @@
-use super::launcher::spawn_items_scheduler;
-use super::{EngineDriver, EngineHost, EngineRegistry, ItemsTaskScheduler, SessionEffect};
+use super::{EngineHost, EngineRegistry, NavigationMode, ViewEffect, ViewInstance, ViewLocation};
 use crate::config::Config;
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
+use serde_json::json;
 use std::time::Instant;
 
-struct ViewInstance {
-    driver: Box<dyn EngineDriver>,
+struct ViewEntry {
+    location: ViewLocation,
+    instance: Box<dyn ViewInstance>,
 }
 
 pub(crate) struct AppSession<'a> {
     config: &'a Config,
     engines: EngineRegistry,
-    views: Vec<ViewInstance>,
-    items_scheduler: ItemsTaskScheduler,
+    views: Vec<ViewEntry>,
     runtime: super::RuntimeStore,
     runtime_log: RuntimeLog,
     active_error: Option<LogRecord>,
@@ -27,21 +27,17 @@ impl<'a> AppSession<'a> {
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
     ) -> Result<Self> {
-        let runtime = super::RuntimeStore::new();
-        let items_scheduler = spawn_items_scheduler(config.clone(), runtime.handle());
-        let root = engines.create_view(
-            config,
-            &config.default_view,
-            "",
-            runtime_log.path(),
-            runtime.handle(),
-            items_scheduler.clone(),
-        )?;
+        let mut runtime = super::RuntimeStore::new();
+        let location = ViewLocation::new(&config.default_view, "");
+        publish_location(&mut runtime, &location);
+        let root = engines.create_view(config, &location, runtime_log.path(), runtime.handle())?;
         Ok(Self {
             config,
             engines,
-            views: vec![ViewInstance { driver: root }],
-            items_scheduler,
+            views: vec![ViewEntry {
+                location,
+                instance: root,
+            }],
             runtime,
             runtime_log,
             active_error: None,
@@ -60,92 +56,101 @@ impl<'a> AppSession<'a> {
         }
     }
 
-    fn step(&mut self, terminal: &mut Terminal) -> Result<SessionEffect> {
-        let config = self.config;
-        let runtime = &mut self.runtime;
-        let runtime_log = &mut self.runtime_log;
-        let active_error = &mut self.active_error;
-        let active_error_deadline = &mut self.active_error_deadline;
+    fn step(&mut self, terminal: &mut Terminal) -> Result<ViewEffect> {
         let mut host = EngineHost {
-            config,
-            runtime,
-            runtime_log,
-            active_error,
-            active_error_deadline,
+            config: self.config,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
         };
         self.views
             .last_mut()
             .context("session has no active view")?
-            .driver
+            .instance
             .step(&mut host, terminal)
     }
 
     fn render(&mut self, terminal: &Terminal) -> Result<()> {
-        let config = self.config;
-        let runtime = &mut self.runtime;
-        let runtime_log = &mut self.runtime_log;
-        let active_error = &mut self.active_error;
-        let active_error_deadline = &mut self.active_error_deadline;
         let host = EngineHost {
-            config,
-            runtime,
-            runtime_log,
-            active_error,
-            active_error_deadline,
+            config: self.config,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
         };
         self.views
             .last()
             .context("session has no active view")?
-            .driver
+            .instance
             .render(&host, terminal)
     }
 
-    fn apply(&mut self, effect: SessionEffect) -> Result<bool> {
+    fn apply(&mut self, effect: ViewEffect) -> Result<bool> {
         match effect {
-            SessionEffect::Continue => Ok(false),
-            SessionEffect::Exit => Ok(true),
-            SessionEffect::Back => {
+            ViewEffect::Continue => Ok(false),
+            ViewEffect::Exit => Ok(true),
+            ViewEffect::Back => {
                 if self.views.len() <= 1 {
                     return Ok(true);
                 }
                 self.views.pop();
+                self.activate_current()?;
                 Ok(false)
             }
-            SessionEffect::Push(driver) => {
-                self.views.push(ViewInstance { driver });
-                Ok(false)
-            }
-            SessionEffect::OpenView {
-                view_ref,
-                input,
-                replace_current,
-            } => {
-                let driver = self.engines.create_view(
+            ViewEffect::Navigate { location, mode } => {
+                publish_location(&mut self.runtime, &location);
+                let view = self.engines.create_view(
                     self.config,
-                    &view_ref,
-                    &input,
+                    &location,
                     self.runtime_log.path(),
                     self.runtime.handle(),
-                    self.items_scheduler.clone(),
-                )?;
-                if replace_current {
+                );
+                let view = match view {
+                    Ok(view) => view,
+                    Err(error) => {
+                        self.record_navigation_error(&location.view_ref, &error.to_string());
+                        self.activate_current()?;
+                        return Ok(false);
+                    }
+                };
+                if mode == NavigationMode::Replace {
                     self.views.pop();
                 }
-                self.views.push(ViewInstance { driver });
-                Ok(false)
-            }
-            SessionEffect::RunCommand {
-                execution,
-                replace_current,
-            } => {
-                let driver = self.engines.create_command(*execution)?;
-                if replace_current {
-                    self.views.pop();
-                }
-                self.views.push(ViewInstance { driver });
+                self.views.push(ViewEntry {
+                    location,
+                    instance: view,
+                });
                 Ok(false)
             }
         }
+    }
+
+    fn activate_current(&mut self) -> Result<()> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        publish_location(&mut self.runtime, &entry.location);
+        let mut host = EngineHost {
+            config: self.config,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        entry.instance.activate(&mut host)
+    }
+
+    fn record_navigation_error(&mut self, view_ref: &str, message: &str) {
+        let mut host = EngineHost {
+            config: self.config,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        host.record_error_message(Some(view_ref), None, message);
     }
 
     fn clear_expired_error(&mut self) {
@@ -157,4 +162,20 @@ impl<'a> AppSession<'a> {
             self.active_error_deadline = None;
         }
     }
+}
+
+fn publish_location(runtime: &mut super::RuntimeStore, location: &ViewLocation) {
+    runtime.replace(json!({
+        "view": {
+            "current": {
+                "ref": location.view_ref,
+                "input": location.input,
+                "query": location.input,
+                "request": {
+                    "input": location.input,
+                    "query": location.input,
+                }
+            }
+        }
+    }));
 }

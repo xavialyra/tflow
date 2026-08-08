@@ -48,8 +48,16 @@ commands = "{{ runtime:view.current.command }}"
 [viewtypes.capture.engine]
 type = "capture"
 
+[viewtypes.capture.engine.config]
+output = "{{ runtime:view.current.input }}"
+title = "Capture"
+
 [viewtypes.embedded.engine]
 type = "embedded"
+
+[viewtypes.embedded.engine.config]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+title = "Embedded"
 
 [test_items]
 items = [{label = "Item", value = "value"}]
@@ -350,6 +358,80 @@ fn ctrl_k_opens_the_command_launcher_view() {
 }
 
 #[test]
+fn command_launcher_navigation_keeps_the_parent_item_context() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.inspect]
+        key = "enter"
+        label = "Inspect"
+        view = "core:capture"
+        input = "parent-value:{{ runtime:view.current.selected_item.value }}"
+
+        [plugins.core.views.command]
+        type = "launcher"
+
+        [plugins.core.views.capture]
+        type = "capture"
+        "#,
+    )
+    .expect("could not write command navigation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x0b")
+        .expect("could not open command launcher");
+    process.master.flush().expect("could not flush Ctrl-K");
+    let _ = wait_for_text(&process.master, "Inspect");
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not navigate from command launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush command navigation");
+    let output = wait_for_text(&process.master, "parent-value:value");
+    assert!(
+        String::from_utf8_lossy(&output).contains("parent-value:value"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not return from capture view");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture return");
+    let _ = wait_for_text(&process.master, "[core:default]");
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove command navigation config");
+}
+
+#[test]
 fn items_errors_are_logged_and_do_not_block_exit() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -474,7 +556,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         view = "core:capture"
-        run = '''printf 'capture-marker:%s\n' "$LAUNCHER_VALUE"'''
+        input = "capture-marker:{{ runtime:view.current.selected_item.value }}"
 
         [plugins.core.views.capture]
         type = "capture"
@@ -543,7 +625,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         view = "core:embedded"
-        run = '''printf 'embedded-marker:%s\n' "$LAUNCHER_VALUE"; exit 0'''
+        input = '''printf 'embedded-marker:%s\n' '{{ runtime:view.current.selected_item.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
         type = "embedded"
@@ -582,6 +664,110 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         "output: {output}"
     );
     fs::remove_dir_all(root).expect("could not remove embedded integration config");
+}
+
+#[test]
+fn failed_view_creation_returns_to_the_current_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [viewtypes.broken.engine]
+        type = "embedded"
+
+        [viewtypes.broken.engine.config]
+        command = "{{ runtime:missing }}"
+
+        [plugins.core.views.default]
+        type = "launcher"
+
+        [plugins.core.views.broken]
+        type = "broken"
+        "#,
+    )
+    .expect("could not write failed navigation integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"core:broken")
+        .expect("could not write broken view route");
+    process
+        .master
+        .flush()
+        .expect("could not flush broken route");
+    let output = wait_for_text(&process.master, "ERROR");
+    assert!(
+        String::from_utf8_lossy(&output).contains("core:default"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher after failed navigation");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove failed navigation config");
+}
+
+#[test]
+fn qualified_view_path_navigates_to_any_engine() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+
+        [plugins.core.views.embedded]
+        type = "embedded"
+        "#,
+    )
+    .expect("could not write qualified route integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"core:embedded printf route-marker")
+        .expect("could not write qualified embedded route");
+    process
+        .master
+        .flush()
+        .expect("could not flush qualified embedded route");
+
+    let mut output = wait_for_text(&process.master, "route-marker");
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher after embedded route");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+    output.extend(remaining);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("route-marker"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove qualified route config");
 }
 
 fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {

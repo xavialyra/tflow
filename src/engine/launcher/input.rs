@@ -1,58 +1,68 @@
-use super::LauncherDriver;
-use crate::engine::{EngineKeyAction, Key};
+use super::LauncherView;
+use crate::input::Key;
 
-impl LauncherDriver {
-    pub(crate) fn handle_input(&mut self, key: Key, command_view: &str) -> EngineKeyAction {
+pub(super) enum LauncherInputAction {
+    Continue,
+    Refresh,
+    ClearError,
+    Activate(Key),
+    OpenCommandView,
+    Back,
+    Exit,
+}
+
+impl LauncherView {
+    pub(super) fn handle_input(&mut self, key: Key, command_view: &str) -> LauncherInputAction {
         match key {
-            Key::CtrlC | Key::CtrlD => EngineKeyAction::Exit,
+            Key::CtrlC | Key::CtrlD => LauncherInputAction::Exit,
             Key::CtrlK => {
                 if self.current().view != command_view {
-                    EngineKeyAction::OpenCommandView
+                    LauncherInputAction::OpenCommandView
                 } else {
-                    EngineKeyAction::Continue
+                    LauncherInputAction::Continue
                 }
             }
             Key::Escape => {
                 if !self.current().input.is_empty() {
                     self.current_mut().input.clear();
-                    EngineKeyAction::Refresh
+                    LauncherInputAction::Refresh
                 } else {
-                    EngineKeyAction::PopView
+                    LauncherInputAction::Back
                 }
             }
             Key::Enter | Key::Alt(_) => {
                 if self.current().command_owner.is_some() && !matches!(key, Key::Enter) {
-                    EngineKeyAction::Continue
+                    LauncherInputAction::Continue
                 } else {
-                    EngineKeyAction::Command(key)
+                    LauncherInputAction::Activate(key)
                 }
             }
             Key::Up => {
                 if !self.current().items.is_empty() {
                     self.current_mut().selected = self.current().selected.saturating_sub(1);
                 }
-                EngineKeyAction::ClearError
+                LauncherInputAction::ClearError
             }
             Key::Down => {
                 if !self.current().items.is_empty() {
                     let last = self.current().items.len() - 1;
                     self.current_mut().selected = (self.current().selected + 1).min(last);
                 }
-                EngineKeyAction::ClearError
+                LauncherInputAction::ClearError
             }
             Key::Backspace => {
                 if self.current_mut().input.pop().is_some() {
-                    EngineKeyAction::Refresh
+                    LauncherInputAction::Refresh
                 } else {
-                    EngineKeyAction::Continue
+                    LauncherInputAction::Continue
                 }
             }
             Key::CtrlU => {
                 if self.current().input.is_empty() {
-                    EngineKeyAction::Continue
+                    LauncherInputAction::Continue
                 } else {
                     self.current_mut().input.clear();
-                    EngineKeyAction::Refresh
+                    LauncherInputAction::Refresh
                 }
             }
             Key::CtrlW => {
@@ -65,16 +75,16 @@ impl LauncherDriver {
                     input.pop();
                 }
                 if input.len() != previous_length {
-                    EngineKeyAction::Refresh
+                    LauncherInputAction::Refresh
                 } else {
-                    EngineKeyAction::Continue
+                    LauncherInputAction::Continue
                 }
             }
             Key::Char(character) if !character.is_control() => {
                 self.current_mut().input.push(character);
-                EngineKeyAction::Refresh
+                LauncherInputAction::Refresh
             }
-            Key::Char(_) => EngineKeyAction::Continue,
+            Key::Char(_) => LauncherInputAction::Continue,
         }
     }
 }

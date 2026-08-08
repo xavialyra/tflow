@@ -1,3 +1,6 @@
+[plugin]
+api = 2
+
 [views.default]
 type = "launcher"
 display_prefix = "sys"
@@ -6,5 +9,8 @@ items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
 [views.default.commands.run]
 key = "enter"
 label = "Run"
-view = "core:capture"
-run = { file = "scripts/run.sh" }
+view = "sys:output"
+input = "{{ runtime:view.current.selected_item.text }}"
+
+[views.output]
+type = "capture"

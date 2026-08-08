@@ -1,10 +1,10 @@
+use super::input::LauncherInputAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, ItemsTaskScheduler};
-use super::render;
+use super::{ViewEvaluator, render};
 use crate::engine::{
-    EngineDriver, EngineHost, EngineKeyAction, Key, LauncherEngine, SessionEffect, TaskCompletion,
-    TaskMode,
+    EngineHost, NavigationMode, TaskCompletion, TaskMode, ViewEffect, ViewInstance, ViewLocation,
 };
-use crate::input::InputDecoder;
+use crate::input::{InputDecoder, Key};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
@@ -46,7 +46,7 @@ impl LauncherFrame {
     }
 }
 
-pub(crate) struct LauncherDriver {
+pub(crate) struct LauncherView {
     frame: LauncherFrame,
     items_scheduler: ItemsTaskScheduler,
     items_task: Option<ItemsTaskHandle>,
@@ -57,7 +57,7 @@ pub(crate) struct LauncherDriver {
     parent_item: Option<Item>,
 }
 
-impl LauncherDriver {
+impl LauncherView {
     pub(crate) fn new(
         view: &str,
         input: &str,
@@ -134,7 +134,7 @@ impl LauncherDriver {
         self.parent_item.as_ref()
     }
 
-    fn request_current(&mut self, host: &mut EngineHost<'_>) -> Result<Option<SessionEffect>> {
+    fn request_current(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
         if self.frame.command_owner.is_some() {
             self.refresh_command_view(host)?;
             return Ok(None);
@@ -150,10 +150,9 @@ impl LauncherDriver {
             self.frame.refresh_deadline = None;
             self.frame.items_pending = false;
             self.frame.pending_command = None;
-            return Ok(Some(SessionEffect::OpenView {
-                view_ref: target_view,
-                input: query,
-                replace_current: false,
+            return Ok(Some(ViewEffect::Navigate {
+                location: ViewLocation::new(target_view, query),
+                mode: NavigationMode::Push,
             }));
         }
 
@@ -170,8 +169,8 @@ impl LauncherDriver {
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
         let current_view = self.frame.view.clone();
         self.publish_runtime(host.config, host.runtime, &input)?;
-        let engine = LauncherEngine::new(host.config, &current_view, host.runtime);
-        let projected = engine
+        let evaluator = ViewEvaluator::new(host.config, &current_view, host.runtime);
+        let projected = evaluator
             .evaluate_field("commands")?
             .context("launcher viewtype has no commands field")?;
         let commands = projected
@@ -304,25 +303,29 @@ impl LauncherDriver {
         events
     }
 
-    fn open_command_driver(&self, host: &EngineHost<'_>) -> Result<SessionEffect> {
+    fn open_command_view(&self, host: &EngineHost<'_>) -> Result<ViewEffect> {
         let command_view_ref = host.config.command_view.clone();
         host.config.command_view()?;
         let parent_item = self.frame.items.get(self.frame.selected).cloned();
         let command_owner = parent_item.as_ref().map(|item| item.source_view.clone());
-        let driver = Self::new(
-            &command_view_ref,
-            "",
-            self.items_scheduler.clone(),
-            host.log_file().map(PathBuf::from),
-            command_owner,
-            parent_item,
-        );
-        Ok(SessionEffect::Push(Box::new(driver)))
+        let context = serde_json::json!({
+            "command_owner": command_owner,
+            "parent_item": parent_item,
+        });
+        Ok(ViewEffect::Navigate {
+            location: ViewLocation::new(command_view_ref, "").with_context(context),
+            mode: NavigationMode::Push,
+        })
     }
 
-    fn handle_command_key(&mut self, host: &mut EngineHost<'_>, key: Key) -> Result<SessionEffect> {
+    fn handle_command_key(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut Terminal,
+        key: Key,
+    ) -> Result<ViewEffect> {
         if self.command_view_active() && !matches!(key, Key::Enter) {
-            return Ok(SessionEffect::Continue);
+            return Ok(ViewEffect::Continue);
         }
         if !self.results_current() {
             if self.command_view_active() {
@@ -330,34 +333,55 @@ impl LauncherDriver {
             } else {
                 self.queue_pending_command(key);
                 self.request_current(host)?;
-                return Ok(SessionEffect::Continue);
+                return Ok(ViewEffect::Continue);
             }
         }
 
-        let Some(action) = self.prepare_command_action(host.config, key, host.log_file())? else {
+        let query = self.frame.query.clone();
+        self.publish_runtime(host.config, host.runtime, &query)?;
+        let Some(action) = self.prepare_command_action(
+            host.config,
+            host.runtime.snapshot(),
+            key,
+            host.log_file(),
+        )?
+        else {
             let view = self.current_view_ref().to_string();
             let message = format!("no command for {}", key_display(key));
             host.record_error_message(Some(&view), None, &message);
-            return Ok(SessionEffect::Continue);
+            return Ok(ViewEffect::Continue);
         };
-        let replace_current = self.command_view_active();
+        let command_view = self.command_view_active();
         match action {
             super::command::CommandAction::Report {
                 invocation,
                 message,
             } => {
                 host.record_error(&invocation, &message);
-                Ok(SessionEffect::Continue)
+                Ok(ViewEffect::Continue)
             }
-            super::command::CommandAction::OpenView { target } => Ok(SessionEffect::OpenView {
-                view_ref: target,
-                input: String::new(),
-                replace_current,
+            super::command::CommandAction::Navigate { target, input } => Ok(ViewEffect::Navigate {
+                location: ViewLocation::new(target, input),
+                mode: if command_view {
+                    NavigationMode::Replace
+                } else {
+                    NavigationMode::Push
+                },
             }),
-            super::command::CommandAction::Execute(execution) => Ok(SessionEffect::RunCommand {
-                execution: Box::new(execution),
-                replace_current,
-            }),
+            super::command::CommandAction::Execute {
+                invocation,
+                prepared,
+                exit,
+            } => {
+                super::command::execute_local(host, prepared, terminal, &invocation, exit)?;
+                if exit {
+                    Ok(ViewEffect::Exit)
+                } else if command_view {
+                    Ok(ViewEffect::Back)
+                } else {
+                    Ok(ViewEffect::Continue)
+                }
+            }
         }
     }
 
@@ -379,7 +403,11 @@ impl LauncherDriver {
             .max(1) as i32
     }
 
-    fn handle_events(&mut self, host: &mut EngineHost<'_>) -> Result<Option<SessionEffect>> {
+    fn handle_events(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut Terminal,
+    ) -> Result<Option<ViewEffect>> {
         for event in self.collect_items() {
             if !event.current {
                 for error in event.errors {
@@ -412,19 +440,20 @@ impl LauncherDriver {
             }
 
             if let Some(key) = event.pending_command {
-                return self.handle_command_key(host, key).map(Some);
+                return self.handle_command_key(host, terminal, key).map(Some);
             }
         }
         Ok(None)
     }
 }
 
-impl EngineDriver for LauncherDriver {
-    fn step(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
-    ) -> Result<SessionEffect> {
+impl ViewInstance for LauncherView {
+    fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+        let query = self.frame.query.clone();
+        self.publish_runtime(host.config, host.runtime, &query)
+    }
+
+    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
         if !self.started {
             self.started = true;
             if let Some(effect) = self.request_current(host)? {
@@ -432,7 +461,7 @@ impl EngineDriver for LauncherDriver {
             }
         }
 
-        if let Some(effect) = self.handle_events(host)? {
+        if let Some(effect) = self.handle_events(host, terminal)? {
             return Ok(effect);
         }
         if self.refresh_due()
@@ -447,22 +476,22 @@ impl EngineDriver for LauncherDriver {
         let mut refresh = false;
         for key in keys {
             match self.handle_input(key, &host.config.command_view) {
-                EngineKeyAction::Continue => {}
-                EngineKeyAction::Refresh => refresh = true,
-                EngineKeyAction::ClearError => host.clear_error(),
-                EngineKeyAction::Command(key) => {
-                    return self.handle_command_key(host, key);
+                LauncherInputAction::Continue => {}
+                LauncherInputAction::Refresh => refresh = true,
+                LauncherInputAction::ClearError => host.clear_error(),
+                LauncherInputAction::Activate(key) => {
+                    return self.handle_command_key(host, terminal, key);
                 }
-                EngineKeyAction::OpenCommandView => return self.open_command_driver(host),
-                EngineKeyAction::PopView => return Ok(SessionEffect::Back),
-                EngineKeyAction::Exit => return Ok(SessionEffect::Exit),
+                LauncherInputAction::OpenCommandView => return self.open_command_view(host),
+                LauncherInputAction::Back => return Ok(ViewEffect::Back),
+                LauncherInputAction::Exit => return Ok(ViewEffect::Exit),
             }
         }
         if refresh {
             host.clear_error();
             self.schedule_refresh();
         }
-        Ok(SessionEffect::Continue)
+        Ok(ViewEffect::Continue)
     }
 
     fn render(&self, host: &EngineHost<'_>, terminal: &Terminal) -> Result<()> {

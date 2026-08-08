@@ -1,60 +1,65 @@
 use crate::config::{Config, EngineDefinition};
 use crate::terminal::Terminal;
 use anyhow::Result;
+use serde_json::Value;
 use std::path::Path;
 
 use super::host::EngineHost;
-use super::launcher::{CommandExecution, ItemsTaskScheduler};
 use super::runtime::RuntimeHandle;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Key {
-    Char(char),
-    Alt(char),
-    Enter,
-    Backspace,
-    Up,
-    Down,
-    Escape,
-    CtrlC,
-    CtrlK,
-    CtrlD,
-    CtrlU,
-    CtrlW,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ViewLocation {
+    pub(crate) view_ref: String,
+    pub(crate) input: String,
+    pub(crate) context: Value,
+}
+
+impl ViewLocation {
+    pub(crate) fn new(view_ref: impl Into<String>, input: impl Into<String>) -> Self {
+        Self {
+            view_ref: view_ref.into(),
+            input: input.into(),
+            context: Value::Null,
+        }
+    }
+
+    pub(crate) fn with_context(mut self, context: Value) -> Self {
+        self.context = context;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EngineKeyAction {
-    Continue,
-    Refresh,
-    ClearError,
-    Command(Key),
-    OpenCommandView,
-    PopView,
-    Exit,
+pub(crate) enum NavigationMode {
+    Push,
+    Replace,
 }
 
-pub(crate) enum SessionEffect {
+pub(crate) enum ViewEffect {
     Continue,
-    OpenView {
-        view_ref: String,
-        input: String,
-        replace_current: bool,
-    },
-    Push(Box<dyn EngineDriver>),
-    RunCommand {
-        execution: Box<CommandExecution>,
-        replace_current: bool,
+    Navigate {
+        location: ViewLocation,
+        mode: NavigationMode,
     },
     Back,
     Exit,
 }
 
-pub(crate) trait EngineDriver {
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal)
-    -> Result<SessionEffect>;
+pub(crate) trait ViewInstance {
+    fn activate(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        Ok(())
+    }
+
+    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
 
     fn render(&self, host: &EngineHost<'_>, terminal: &Terminal) -> Result<()>;
+}
+
+pub(crate) struct ViewContext<'a> {
+    pub(crate) config: &'a Config,
+    pub(crate) location: &'a ViewLocation,
+    pub(crate) log_file: Option<&'a Path>,
+    pub(crate) runtime: RuntimeHandle,
 }
 
 pub(crate) trait Engine {
@@ -62,15 +67,5 @@ pub(crate) trait Engine {
 
     fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()>;
 
-    fn create_view(
-        &self,
-        config: &Config,
-        view_ref: &str,
-        input: &str,
-        log_file: Option<&Path>,
-        runtime: RuntimeHandle,
-        items_scheduler: ItemsTaskScheduler,
-    ) -> Result<Box<dyn EngineDriver>>;
-
-    fn create_command(&self, execution: CommandExecution) -> Result<Box<dyn EngineDriver>>;
+    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
 }

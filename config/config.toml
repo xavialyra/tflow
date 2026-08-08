@@ -12,5 +12,13 @@ commands = "{{ runtime:view.current.command }}"
 [viewtypes.capture.engine]
 type = "capture"
 
+[viewtypes.capture.engine.config]
+output = '{{ script("scripts/run.sh", runtime:view.current.input) }}'
+title = "{{ runtime:view.current.ref }}"
+
 [viewtypes.embedded.engine]
 type = "embedded"
+
+[viewtypes.embedded.engine.config]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+title = "{{ runtime:view.current.ref }}"

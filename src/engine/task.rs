@@ -305,7 +305,7 @@ where
     fn scheduler_is_current(&self) -> bool {
         self.key
             .as_ref()
-            .map_or(true, |key| self.scheduler_is_current_key(key))
+            .is_none_or(|key| self.scheduler_is_current_key(key))
     }
 
     fn scheduler_is_current_key(&self, key: &K) -> bool {

@@ -1,6 +1,6 @@
 use super::*;
-use crate::config::{Config, EngineDefinition};
-use crate::engine::{EngineDriver, EngineHost, SessionEffect};
+use crate::config::EngineDefinition;
+use crate::engine::{EngineHost, ViewContext, ViewEffect, ViewInstance};
 use crate::expression::{EvalContext, ExpressionMethods, Template, TreeReferences};
 use crate::terminal::Terminal;
 use anyhow::Result;
@@ -13,15 +13,15 @@ use std::path::Path;
 fn registry_accepts_custom_engine_implementations() {
     struct TestEngine;
 
-    struct TestDriver;
+    struct TestView;
 
-    impl EngineDriver for TestDriver {
+    impl ViewInstance for TestView {
         fn step(
             &mut self,
             _host: &mut EngineHost<'_>,
             _terminal: &mut Terminal,
-        ) -> Result<SessionEffect> {
-            Ok(SessionEffect::Continue)
+        ) -> Result<ViewEffect> {
+            Ok(ViewEffect::Continue)
         }
 
         fn render(&self, _host: &EngineHost<'_>, _terminal: &Terminal) -> Result<()> {
@@ -38,26 +38,48 @@ fn registry_accepts_custom_engine_implementations() {
             Ok(())
         }
 
-        fn create_view(
-            &self,
-            _config: &Config,
-            _view_ref: &str,
-            _input: &str,
-            _log_file: Option<&Path>,
-            _runtime: RuntimeHandle,
-            _items_scheduler: ItemsTaskScheduler,
-        ) -> Result<Box<dyn EngineDriver>> {
-            Ok(Box::new(TestDriver))
-        }
-
-        fn create_command(&self, _execution: CommandExecution) -> Result<Box<dyn EngineDriver>> {
-            Ok(Box::new(TestDriver))
+        fn create_view(&self, _context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+            Ok(Box::new(TestView))
         }
     }
 
     let mut registry = EngineRegistry::new();
     registry.register(Box::new(TestEngine));
     assert!(registry.contains("test"));
+}
+
+#[test]
+fn registry_rejects_static_engine_field_shape_errors() {
+    let registry = EngineRegistry::new();
+    let embedded = EngineDefinition {
+        engine_type: crate::config::ENGINE_EMBEDDED.to_string(),
+        config: [("command".to_string(), toml::Value::String("sh".to_string()))]
+            .into_iter()
+            .collect(),
+    };
+    assert!(registry.validate_config("bad-embedded", &embedded).is_err());
+    let mixed_embedded = EngineDefinition {
+        engine_type: crate::config::ENGINE_EMBEDDED.to_string(),
+        config: [(
+            "command".to_string(),
+            toml::Value::String("sh {{ runtime:view.current.input }}".to_string()),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    assert!(
+        registry
+            .validate_config("mixed-embedded", &mixed_embedded)
+            .is_err()
+    );
+
+    let capture = EngineDefinition {
+        engine_type: crate::config::ENGINE_CAPTURE.to_string(),
+        config: [("output".to_string(), toml::Value::Integer(1))]
+            .into_iter()
+            .collect(),
+    };
+    assert!(registry.validate_config("bad-capture", &capture).is_err());
 }
 
 #[test]

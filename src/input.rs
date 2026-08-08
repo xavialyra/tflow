@@ -1,5 +1,20 @@
-use crate::engine::Key;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Key {
+    Char(char),
+    Alt(char),
+    Enter,
+    Backspace,
+    Up,
+    Down,
+    Escape,
+    CtrlC,
+    CtrlK,
+    CtrlD,
+    CtrlU,
+    CtrlW,
+}
 
 #[derive(Default)]
 pub(crate) struct InputDecoder {

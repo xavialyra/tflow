@@ -129,13 +129,23 @@ commands = "{{ runtime:view.current.command }}"
 [viewtypes.capture.engine]
 type = "capture"
 
+[viewtypes.capture.engine.config]
+output = "{{ runtime:view.current.input }}"
+title = "Result"
+
 [viewtypes.embedded.engine]
 type = "embedded"
+
+[viewtypes.embedded.engine.config]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+title = "Shell"
 ```
 
-The built-in engines are `launcher`, `capture`, and `embedded`. Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
+The built-in engines are `launcher`, `capture`, and `embedded`. Every configured path is a view: launcher renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation always supplies a view path and an input string; the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
 
-`exit` is not a view. A command with `exit = true` returns an exit event after its script finishes.
+Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not viewtype data fields.
+
+`exit` is not a view. A local command with `exit = true` returns an exit event after its script finishes.
 
 A plugin is packaged as a directory so its configuration and scripts stay together:
 
@@ -149,7 +159,7 @@ plugins/apps/
     └── common.sh
 ```
 
-The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `1` when it is omitted. Its view definitions are relative to that directory namespace:
+The plugin ID is derived from the package directory name. The optional `[plugin]` metadata table currently only carries the launcher protocol version; `api` defaults to `2` when it is omitted. Its view definitions are relative to that directory namespace:
 
 ```toml
 [views.main]
@@ -162,7 +172,7 @@ label = "Open"
 run = { file = "scripts/open.sh" }
 ```
 
-Set `[plugin].api = 1` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
+Set `[plugin].api = 2` explicitly when desired. Unsupported API versions are rejected. Plugin directory names must not contain `:` or whitespace because they form the first part of a view reference. Script paths must remain below the plugin directory. Inline scripts are still supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet; a plugin directory can still be maintained as a Git checkout.
 
 The root config file contains the default view and viewtype profiles:
 
@@ -200,7 +210,7 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-`Esc` returns to the parent view when the query is empty. A capture or embedded view is treated as a temporary child of the view that launched it. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command returns to the parent frame before executing it.
+A qualified path followed by optional input enters any configured view directly, while a unique `display_prefix` remains a shorter route. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command launcher view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
 
 ## Expressions
 
@@ -236,31 +246,34 @@ gio launch "$LAUNCHER_VALUE"
 '''
 ```
 
-A command can run a script and optionally route its output to a built-in view:
+A command is either a local `run` action or navigation to another view. Navigation can evaluate an input string from the current runtime:
 
 ```toml
 [views.main.commands.inspect]
 key = "alt+i"
 label = "Inspect"
-view = "core:capture"
-run = '''
-printf 'desktop file: %s\n' "$LAUNCHER_VALUE"
-'''
+view = "inspect:default"
+input = "{{ runtime:view.current.selected_item.value }}"
 ```
 
-An interactive command can target the embedded view:
+The target owns its behavior. A capture profile evaluates `output` relative to the target plugin and requires a string result. An embedded profile evaluates `command` to a non-empty argv array, so it can host arbitrary PTY views:
 
 ```toml
-[views.main.commands.shell]
-key = "alt+s"
-label = "Shell"
-view = "core:embedded"
-run = '''
-exec sh
-'''
+[viewtypes.shell.engine]
+type = "embedded"
+
+[viewtypes.shell.engine.config]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+
+[viewtypes.btop.engine]
+type = "embedded"
+
+[viewtypes.btop.engine.config]
+command = ["btop"]
+title = "System monitor"
 ```
 
-A command that has a `view` but no `run` is a view navigation command. A command with `exit = true` transfers the terminal to its script and exits the launcher after it finishes:
+Commands cannot combine `run` and `view`. A local command with `exit = true` transfers the terminal to its script and exits the launcher after it finishes:
 
 ```toml
 [views.main.commands.connect]
@@ -335,7 +348,9 @@ Command scripts receive:
 - `LAUNCHER_QUERY`;
 - `LAUNCHER_LOG_FILE`.
 
-Command `shell` selects the command interpreter. When omitted, the source view's `run_shell` is used, then `sh`. File-backed plugin commands run with the plugin directory as their working directory, so relative paths and `LAUNCHER_PLUGIN_DIR` are stable.
+Command `shell` selects the command interpreter. When omitted, the source view's `run_shell` is used, then `sh`. File-backed local commands run with the plugin directory as their working directory, so relative paths and `LAUNCHER_PLUGIN_DIR` are stable.
+
+An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
 ## Keys
 

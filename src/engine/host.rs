@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::engine::CommandInvocation;
+use crate::engine::launcher::CommandInvocation;
 use crate::engine::runtime::RuntimeStore;
 use crate::runtime_log::{LogLevel, LogRecord, RuntimeLog};
 use std::path::Path;
@@ -53,6 +53,16 @@ impl<'a> EngineHost<'a> {
             );
         } else {
             self.record_error(invocation, status);
+        }
+    }
+
+    pub(crate) fn record_view_status(&mut self, view_ref: &str, status: &str, success: bool) {
+        if success {
+            self.clear_error();
+            self.runtime_log
+                .record(LogLevel::Info, Some(view_ref), None, status);
+        } else {
+            self.record_error_message(Some(view_ref), None, status);
         }
     }
 
