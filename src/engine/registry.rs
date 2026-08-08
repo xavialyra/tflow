@@ -43,6 +43,7 @@ impl EngineRegistry {
         location: &ViewLocation,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
+        tasks: super::TaskScheduler,
     ) -> Result<Box<dyn ViewInstance>> {
         let engine_type = config.engine(&location.view_ref)?;
         let engine = self
@@ -54,6 +55,7 @@ impl EngineRegistry {
             location,
             log_file,
             runtime,
+            tasks,
         })
     }
 }

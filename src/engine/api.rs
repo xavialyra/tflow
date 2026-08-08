@@ -6,6 +6,7 @@ use std::path::Path;
 
 use super::host::EngineHost;
 use super::runtime::RuntimeHandle;
+use super::task::TaskScheduler;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewLocation {
@@ -50,6 +51,10 @@ pub(crate) trait ViewInstance {
         Ok(())
     }
 
+    fn deactivate(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
 
     fn render(&self, host: &EngineHost<'_>, terminal: &Terminal) -> Result<()>;
@@ -60,6 +65,7 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) location: &'a ViewLocation,
     pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,
+    pub(crate) tasks: TaskScheduler,
 }
 
 pub(crate) trait Engine {

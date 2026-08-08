@@ -1,12 +1,13 @@
 use crate::cancellation::CancellationToken;
 use crate::config::{Config, View};
-use crate::engine::{RuntimeHandle, TaskHandle, TaskScheduler};
+use crate::engine::{TaskHandle, TaskScheduler};
 use crate::expression::ExpressionMethods;
 use crate::text::sanitize_text;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
@@ -26,7 +27,7 @@ pub(crate) struct Item {
     pub(crate) source_view: String,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(crate) struct ItemsResult {
     pub(crate) items: Vec<Item>,
     pub(crate) errors: Vec<String>,
@@ -37,7 +38,6 @@ pub(crate) struct ItemsRequest {
     pub(crate) input: String,
 }
 
-#[derive(Clone)]
 pub(crate) struct ItemsResponse {
     pub(crate) view: String,
     pub(crate) input: String,
@@ -53,13 +53,18 @@ pub(crate) struct ItemsEvent {
     pub(crate) pending_command: Option<crate::input::Key>,
 }
 
-pub(crate) type ItemsTaskScheduler = TaskScheduler<ItemsRequest, ItemsResponse, String>;
-pub(crate) type ItemsTaskHandle = TaskHandle<ItemsRequest, ItemsResponse, String>;
+pub(crate) type ItemsTaskHandle = TaskHandle<ItemsResponse>;
 
-pub(crate) fn spawn_items_scheduler(config: Config, runtime: RuntimeHandle) -> ItemsTaskScheduler {
-    TaskScheduler::spawn(
-        runtime,
-        move |request: ItemsRequest, runtime_value, cancellation| {
+pub(crate) fn submit_items_task(
+    tasks: &TaskScheduler,
+    config: &Arc<Config>,
+    request: ItemsRequest,
+) -> ItemsTaskHandle {
+    let config = Arc::clone(config);
+    tasks.submit_keyed(
+        request,
+        "launcher-items".to_string(),
+        move |request, runtime_value, cancellation| {
             let (source_prefix, query) = config.resolve_view_prefix(&request.view, &request.input);
             let result = load_items(
                 &config,

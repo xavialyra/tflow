@@ -1,15 +1,18 @@
 use super::input::LauncherInputAction;
-use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, ItemsTaskScheduler};
+use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::LauncherKeymap;
 use super::{ViewEvaluator, render};
+use crate::config::Config;
 use crate::engine::{
-    EngineHost, NavigationMode, TaskCompletion, TaskMode, ViewEffect, ViewInstance, ViewLocation,
+    EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
+    ViewLocation,
 };
 use crate::input::{InputDecoder, Key};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const INPUT_POLL_MS: i32 = 80;
@@ -49,7 +52,8 @@ impl LauncherFrame {
 
 pub(crate) struct LauncherView {
     frame: LauncherFrame,
-    items_scheduler: ItemsTaskScheduler,
+    tasks: TaskScheduler,
+    config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
     log_file: Option<PathBuf>,
@@ -63,25 +67,34 @@ impl LauncherView {
     pub(super) fn new(
         view: &str,
         input: &str,
-        items_scheduler: ItemsTaskScheduler,
+        tasks: TaskScheduler,
+        config: Arc<Config>,
+        keymap: LauncherKeymap,
+    ) -> Self {
+        Self {
+            frame: LauncherFrame::new(view, input),
+            tasks,
+            config,
+            items_task: None,
+            requested_view: String::new(),
+            log_file: None,
+            decoder: InputDecoder::default(),
+            started: false,
+            parent_item: None,
+            keymap,
+        }
+    }
+
+    pub(super) fn with_context(
+        mut self,
         log_file: Option<PathBuf>,
         command_owner: Option<String>,
         parent_item: Option<Item>,
-        keymap: LauncherKeymap,
     ) -> Self {
-        let mut frame = LauncherFrame::new(view, input);
-        frame.command_owner = command_owner;
-        Self {
-            frame,
-            items_scheduler,
-            items_task: None,
-            requested_view: String::new(),
-            log_file,
-            decoder: InputDecoder::default(),
-            started: false,
-            parent_item,
-            keymap,
-        }
+        self.log_file = log_file;
+        self.frame.command_owner = command_owner;
+        self.parent_item = parent_item;
+        self
     }
 
     pub(crate) fn current(&self) -> &LauncherFrame {
@@ -164,7 +177,7 @@ impl LauncherView {
             .config
             .resolve_view_prefix(&current_view, &current_input);
         self.publish_runtime(host.config, host.runtime, &query)?;
-        self.request_items(&current_view, &current_input)?;
+        self.request_items(&current_view, &current_input);
         Ok(None)
     }
 
@@ -214,30 +227,25 @@ impl LauncherView {
         Ok(())
     }
 
-    fn request_items(&mut self, view: &str, input: &str) -> Result<()> {
+    fn request_items(&mut self, view: &str, input: &str) {
         if self.frame.items_pending
             && self.requested_view == view
             && self.frame.requested_input == input
         {
-            return Ok(());
+            return;
         }
         self.requested_view = view.to_string();
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
         self.frame.refresh_deadline = None;
-        self.items_task = Some(
-            self.items_scheduler
-                .submit_keyed(
-                    ItemsRequest {
-                        view: view.to_string(),
-                        input: input.to_string(),
-                    },
-                    "launcher-items".to_string(),
-                    TaskMode::Replace,
-                )
-                .context("could not queue items request")?,
-        );
-        Ok(())
+        self.items_task = Some(submit_items_task(
+            &self.tasks,
+            &self.config,
+            ItemsRequest {
+                view: view.to_string(),
+                input: input.to_string(),
+            },
+        ));
     }
 
     fn collect_items(&mut self) -> Vec<ItemsEvent> {
@@ -251,7 +259,18 @@ impl LauncherView {
                 self.items_task = Some(task);
                 return events;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return events,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.frame.items_pending = false;
+                self.frame.pending_command = None;
+                events.push(ItemsEvent {
+                    current: true,
+                    view: self.requested_view.clone(),
+                    errors: Vec::new(),
+                    failure: Some("items task stopped before producing a result".to_string()),
+                    pending_command: None,
+                });
+                return events;
+            }
         };
         if !task_response.is_current() {
             self.frame.items_pending = false;
@@ -455,6 +474,14 @@ impl ViewInstance for LauncherView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let query = self.frame.query.clone();
         self.publish_runtime(host.config, host.runtime, &query)
+    }
+
+    fn deactivate(&mut self) -> Result<()> {
+        if self.items_task.take().is_some() {
+            self.frame.items_pending = false;
+            self.schedule_refresh();
+        }
+        Ok(())
     }
 
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {

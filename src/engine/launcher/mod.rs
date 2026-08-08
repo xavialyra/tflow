@@ -13,9 +13,10 @@ use crate::expression::ExpressionMethods;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) use command::CommandInvocation;
-pub(crate) use items::{Item, spawn_items_scheduler};
+pub(crate) use items::Item;
 pub(crate) use session::LauncherView;
 
 pub(crate) struct LauncherEngine;
@@ -38,7 +39,6 @@ impl Engine for LauncherEngine {
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
         let keymap = LauncherKeymap::from_value(evaluate_field(&context, "bindings")?)?;
-        let scheduler = spawn_items_scheduler(context.config.clone(), context.runtime.clone());
         let command_owner = context
             .location
             .context
@@ -53,15 +53,20 @@ impl Engine for LauncherEngine {
             .filter(|value| !value.is_null())
             .map(serde_json::from_value)
             .transpose()?;
-        Ok(Box::new(LauncherView::new(
-            &context.location.view_ref,
-            &context.location.input,
-            scheduler,
-            context.log_file.map(PathBuf::from),
-            command_owner,
-            parent_item,
-            keymap,
-        )))
+        Ok(Box::new(
+            LauncherView::new(
+                &context.location.view_ref,
+                &context.location.input,
+                context.tasks.clone(),
+                Arc::new(context.config.clone()),
+                keymap,
+            )
+            .with_context(
+                context.log_file.map(PathBuf::from),
+                command_owner,
+                parent_item,
+            ),
+        ))
     }
 }
 

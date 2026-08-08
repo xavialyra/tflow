@@ -18,6 +18,6 @@ pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_o
 pub(crate) use host::EngineHost;
 pub(crate) use process::PreparedProcess;
 pub(crate) use registry::{EngineRegistry, require_field, validate_fields};
-pub(crate) use runtime::{RuntimeHandle, RuntimeStore};
+pub(crate) use runtime::RuntimeStore;
 pub(crate) use session::AppSession;
-pub(crate) use task::{TaskCompletion, TaskHandle, TaskMode, TaskScheduler};
+pub(crate) use task::{TaskCompletion, TaskHandle, TaskScheduler};

@@ -1,4 +1,7 @@
-use super::{EngineHost, EngineRegistry, NavigationMode, ViewEffect, ViewInstance, ViewLocation};
+use super::{
+    EngineHost, EngineRegistry, NavigationMode, TaskScheduler, ViewEffect, ViewInstance,
+    ViewLocation,
+};
 use crate::config::Config;
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::terminal::Terminal;
@@ -15,6 +18,7 @@ pub(crate) struct AppSession<'a> {
     config: &'a Config,
     engines: EngineRegistry,
     views: Vec<ViewEntry>,
+    tasks: TaskScheduler,
     runtime: super::RuntimeStore,
     runtime_log: RuntimeLog,
     active_error: Option<LogRecord>,
@@ -28,9 +32,16 @@ impl<'a> AppSession<'a> {
         engines: EngineRegistry,
     ) -> Result<Self> {
         let mut runtime = super::RuntimeStore::new();
+        let tasks = TaskScheduler::new(runtime.handle());
         let location = ViewLocation::new(&config.default_view, "");
         publish_location(&mut runtime, &location);
-        let root = engines.create_view(config, &location, runtime_log.path(), runtime.handle())?;
+        let root = engines.create_view(
+            config,
+            &location,
+            runtime_log.path(),
+            runtime.handle(),
+            tasks.clone(),
+        )?;
         Ok(Self {
             config,
             engines,
@@ -38,6 +49,7 @@ impl<'a> AppSession<'a> {
                 location,
                 instance: root,
             }],
+            tasks,
             runtime,
             runtime_log,
             active_error: None,
@@ -99,12 +111,14 @@ impl<'a> AppSession<'a> {
                 Ok(false)
             }
             ViewEffect::Navigate { location, mode } => {
+                self.deactivate_current()?;
                 publish_location(&mut self.runtime, &location);
                 let view = self.engines.create_view(
                     self.config,
                     &location,
                     self.runtime_log.path(),
                     self.runtime.handle(),
+                    self.tasks.clone(),
                 );
                 let view = match view {
                     Ok(view) => view,
@@ -124,6 +138,14 @@ impl<'a> AppSession<'a> {
                 Ok(false)
             }
         }
+    }
+
+    fn deactivate_current(&mut self) -> Result<()> {
+        self.views
+            .last_mut()
+            .context("session has no active view")?
+            .instance
+            .deactivate()
     }
 
     fn activate_current(&mut self) -> Result<()> {
