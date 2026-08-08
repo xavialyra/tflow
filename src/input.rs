@@ -1,6 +1,7 @@
+use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Key {
     Char(char),
     Alt(char),
@@ -9,11 +10,51 @@ pub(crate) enum Key {
     Up,
     Down,
     Escape,
-    CtrlC,
-    CtrlK,
-    CtrlD,
-    CtrlU,
-    CtrlW,
+    Ctrl(char),
+}
+
+impl Key {
+    pub(crate) fn parse_binding(source: &str) -> Result<Self> {
+        let normalized = source.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "enter" | "ctrl+j" | "ctrl+m" => Ok(Self::Enter),
+            "backspace" | "ctrl+h" => Ok(Self::Backspace),
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "escape" | "esc" => Ok(Self::Escape),
+            _ => {
+                let (modifier, value) = normalized
+                    .split_once('+')
+                    .with_context(|| format!("unsupported key binding {:?}", source))?;
+                let mut characters = value.chars();
+                let character = characters
+                    .next()
+                    .with_context(|| format!("key binding {:?} has no key", source))?;
+                if characters.next().is_some() || !character.is_ascii_graphic() {
+                    bail!("key binding {:?} must contain one ASCII key", source);
+                }
+                match modifier {
+                    "alt" => Ok(Self::Alt(character)),
+                    "ctrl" if character.is_ascii_alphabetic() => Ok(Self::Ctrl(character)),
+                    "ctrl" => bail!("key binding {:?} requires a Ctrl letter", source),
+                    _ => bail!("unsupported key modifier {:?}", modifier),
+                }
+            }
+        }
+    }
+
+    pub(crate) fn binding_name(self) -> Option<String> {
+        match self {
+            Self::Enter => Some("enter".to_string()),
+            Self::Backspace => Some("backspace".to_string()),
+            Self::Up => Some("up".to_string()),
+            Self::Down => Some("down".to_string()),
+            Self::Escape => Some("escape".to_string()),
+            Self::Alt(character) => Some(format!("alt+{}", character.to_ascii_lowercase())),
+            Self::Ctrl(character) => Some(format!("ctrl+{}", character.to_ascii_lowercase())),
+            Self::Char(_) => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -57,7 +98,7 @@ impl InputDecoder {
                 }
                 if self.pending[1] != b'[' {
                     if self.pending[1].is_ascii_graphic() {
-                        let character = self.pending[1] as char;
+                        let character = (self.pending[1] as char).to_ascii_lowercase();
                         self.pending.drain(..2);
                         self.escape_since = None;
                         keys.push(Key::Alt(character));
@@ -135,11 +176,7 @@ fn control_key(byte: u8) -> Option<Key> {
     match byte {
         b'\r' | b'\n' => Some(Key::Enter),
         0x7f | 0x08 => Some(Key::Backspace),
-        0x03 => Some(Key::CtrlC),
-        0x04 => Some(Key::CtrlD),
-        0x0b => Some(Key::CtrlK),
-        0x15 => Some(Key::CtrlU),
-        0x17 => Some(Key::CtrlW),
+        0x01..=0x1a => Some(Key::Ctrl((b'a' + byte - 1) as char)),
         _ => None,
     }
 }
@@ -161,14 +198,47 @@ mod tests {
     fn decodes_ascii_and_controls() {
         let mut decoder = InputDecoder::default();
         assert_eq!(
-            decoder.feed(b"a\r\x03"),
-            vec![Key::Char('a'), Key::Enter, Key::CtrlC]
+            decoder.feed(b"a\r\x01\x03\x0b\x15\x17"),
+            vec![
+                Key::Char('a'),
+                Key::Enter,
+                Key::Ctrl('a'),
+                Key::Ctrl('c'),
+                Key::Ctrl('k'),
+                Key::Ctrl('u'),
+                Key::Ctrl('w'),
+            ]
+        );
+    }
+
+    #[test]
+    fn conventional_keys_take_precedence_over_ctrl_aliases() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(
+            decoder.feed(b"\x08\x0a\x0d"),
+            vec![Key::Backspace, Key::Enter, Key::Enter]
         );
     }
 
     #[test]
     fn decodes_navigation_and_alt_keys() {
         let mut decoder = InputDecoder::default();
-        assert_eq!(decoder.feed(b"\x1b[A\x1ba"), vec![Key::Up, Key::Alt('a')]);
+        assert_eq!(
+            decoder.feed(b"\x1b[A\x1ba\x1bA"),
+            vec![Key::Up, Key::Alt('a'), Key::Alt('a')]
+        );
+    }
+
+    #[test]
+    fn parses_configured_key_bindings() {
+        assert_eq!(Key::parse_binding("Ctrl+K").unwrap(), Key::Ctrl('k'));
+        assert_eq!(Key::parse_binding("alt+A").unwrap(), Key::Alt('a'));
+        assert_eq!(Key::parse_binding("esc").unwrap(), Key::Escape);
+        assert_eq!(Key::parse_binding("ctrl+h").unwrap(), Key::Backspace);
+        assert_eq!(Key::parse_binding("ctrl+j").unwrap(), Key::Enter);
+        assert_eq!(Key::parse_binding("ctrl+m").unwrap(), Key::Enter);
+        assert_eq!(Key::Ctrl('R').binding_name().as_deref(), Some("ctrl+r"));
+        assert!(Key::parse_binding("ctrl+1").is_err());
+        assert!(Key::parse_binding("plain").is_err());
     }
 }

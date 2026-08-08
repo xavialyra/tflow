@@ -9,6 +9,17 @@ type = "launcher"
 items = "{{ runtime:view.current.items }}"
 commands = "{{ runtime:view.current.command }}"
 
+[viewtypes.launcher.engine.config.bindings]
+exit = ["ctrl+c", "ctrl+d"]
+open_commands = ["ctrl+k"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]
+delete_backward = ["backspace"]
+clear_input = ["ctrl+u"]
+delete_word = ["ctrl+w"]
+activate = ["enter"]
+
 [viewtypes.capture.engine]
 type = "capture"
 

@@ -1,11 +1,13 @@
 mod command;
 mod input;
 mod items;
+mod keymap;
 mod render;
 mod runtime;
 mod session;
 
-use super::{Engine, RuntimeStore, ViewContext, ViewInstance, validate_fields};
+use self::keymap::LauncherKeymap;
+use super::{Engine, RuntimeStore, ViewContext, ViewInstance, evaluate_field, validate_fields};
 use crate::config::{Config, ENGINE_LAUNCHER, EngineDefinition};
 use crate::expression::ExpressionMethods;
 use anyhow::Result;
@@ -24,10 +26,18 @@ impl Engine for LauncherEngine {
     }
 
     fn validate_config(&self, name: &str, definition: &EngineDefinition) -> Result<()> {
-        validate_fields(name, definition, &["items", "commands"])
+        validate_fields(name, definition, &["items", "commands", "bindings"])?;
+        let bindings = definition
+            .config
+            .get("bindings")
+            .map(serde_json::to_value)
+            .transpose()?;
+        LauncherKeymap::validate_value(bindings.as_ref())?;
+        Ok(())
     }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+        let keymap = LauncherKeymap::from_value(evaluate_field(&context, "bindings")?)?;
         let scheduler = spawn_items_scheduler(context.config.clone(), context.runtime.clone());
         let command_owner = context
             .location
@@ -50,6 +60,7 @@ impl Engine for LauncherEngine {
             context.log_file.map(PathBuf::from),
             command_owner,
             parent_item,
+            keymap,
         )))
     }
 }

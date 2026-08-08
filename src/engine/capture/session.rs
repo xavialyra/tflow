@@ -45,13 +45,14 @@ fn capture_lines(output: &str) -> Vec<String> {
 fn is_return_key(key: &Key) -> bool {
     matches!(
         key,
-        Key::CtrlC | Key::Escape | Key::Enter | Key::Char(_) | Key::Alt(_)
+        Key::Ctrl(_) | Key::Escape | Key::Enter | Key::Char(_) | Key::Alt(_)
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::capture_lines;
+    use super::{capture_lines, is_return_key};
+    use crate::input::Key;
 
     #[test]
     fn capture_lines_keeps_a_visible_line_for_empty_output() {
@@ -61,5 +62,11 @@ mod tests {
     #[test]
     fn capture_lines_sanitizes_each_output_line() {
         assert_eq!(capture_lines("one\x1b[31mtwo\x1b[0m"), vec!["onetwo"]);
+    }
+
+    #[test]
+    fn every_control_key_returns_from_capture() {
+        assert!(is_return_key(&Key::Ctrl('a')));
+        assert!(is_return_key(&Key::Ctrl('z')));
     }
 }

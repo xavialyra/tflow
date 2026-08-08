@@ -1,4 +1,5 @@
 use super::LauncherView;
+use super::keymap::LauncherAction;
 use crate::input::Key;
 
 pub(super) enum LauncherInputAction {
@@ -12,17 +13,42 @@ pub(super) enum LauncherInputAction {
 }
 
 impl LauncherView {
-    pub(super) fn handle_input(&mut self, key: Key, command_view: &str) -> LauncherInputAction {
+    pub(super) fn handle_input(
+        &mut self,
+        key: Key,
+        command_view: &str,
+        command_available: bool,
+    ) -> LauncherInputAction {
+        if let Some(action) = self.keymap.action(key) {
+            return self.apply_launcher_action(action, command_view);
+        }
+        if command_available && self.current().command_owner.is_none() {
+            return LauncherInputAction::Activate(key);
+        }
         match key {
-            Key::CtrlC | Key::CtrlD => LauncherInputAction::Exit,
-            Key::CtrlK => {
+            Key::Char(character) if !character.is_control() => {
+                self.current_mut().input.push(character);
+                LauncherInputAction::Refresh
+            }
+            _ => LauncherInputAction::Continue,
+        }
+    }
+
+    fn apply_launcher_action(
+        &mut self,
+        action: LauncherAction,
+        command_view: &str,
+    ) -> LauncherInputAction {
+        match action {
+            LauncherAction::Exit => LauncherInputAction::Exit,
+            LauncherAction::OpenCommands => {
                 if self.current().view != command_view {
                     LauncherInputAction::OpenCommandView
                 } else {
                     LauncherInputAction::Continue
                 }
             }
-            Key::Escape => {
+            LauncherAction::Back => {
                 if !self.current().input.is_empty() {
                     self.current_mut().input.clear();
                     LauncherInputAction::Refresh
@@ -30,34 +56,27 @@ impl LauncherView {
                     LauncherInputAction::Back
                 }
             }
-            Key::Enter | Key::Alt(_) => {
-                if self.current().command_owner.is_some() && !matches!(key, Key::Enter) {
-                    LauncherInputAction::Continue
-                } else {
-                    LauncherInputAction::Activate(key)
-                }
-            }
-            Key::Up => {
+            LauncherAction::SelectPrevious => {
                 if !self.current().items.is_empty() {
                     self.current_mut().selected = self.current().selected.saturating_sub(1);
                 }
                 LauncherInputAction::ClearError
             }
-            Key::Down => {
+            LauncherAction::SelectNext => {
                 if !self.current().items.is_empty() {
                     let last = self.current().items.len() - 1;
                     self.current_mut().selected = (self.current().selected + 1).min(last);
                 }
                 LauncherInputAction::ClearError
             }
-            Key::Backspace => {
+            LauncherAction::DeleteBackward => {
                 if self.current_mut().input.pop().is_some() {
                     LauncherInputAction::Refresh
                 } else {
                     LauncherInputAction::Continue
                 }
             }
-            Key::CtrlU => {
+            LauncherAction::ClearInput => {
                 if self.current().input.is_empty() {
                     LauncherInputAction::Continue
                 } else {
@@ -65,7 +84,7 @@ impl LauncherView {
                     LauncherInputAction::Refresh
                 }
             }
-            Key::CtrlW => {
+            LauncherAction::DeleteWord => {
                 let input = &mut self.current_mut().input;
                 let previous_length = input.len();
                 while input.chars().last().is_some_and(char::is_whitespace) {
@@ -80,11 +99,7 @@ impl LauncherView {
                     LauncherInputAction::Continue
                 }
             }
-            Key::Char(character) if !character.is_control() => {
-                self.current_mut().input.push(character);
-                LauncherInputAction::Refresh
-            }
-            Key::Char(_) => LauncherInputAction::Continue,
+            LauncherAction::Activate => LauncherInputAction::Activate(Key::Enter),
         }
     }
 }

@@ -287,7 +287,7 @@ exec ssh "$LAUNCHER_VALUE"
 
 The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
 
-Only `Enter` and `Alt+<character>` are available for plugin commands. Plain characters remain search input. `Esc`, `Ctrl-C`, `Ctrl-D`, arrows, and input editing controls are reserved by the launcher or the active child view.
+View commands use the same named-key, Ctrl, and Alt binding syntax as launcher actions. Plain characters remain search input. Launcher actions take priority when a physical key is assigned to both; override or disable that launcher action in the ViewType keymap before assigning the key to a View command.
 
 ## Launcher items
 
@@ -354,11 +354,26 @@ An embedded View starts its argv in the target plugin directory and receives `LA
 
 ## Keys
 
+Launcher shortcuts are semantic engine bindings. A ViewType can override only the actions it needs; omitted actions retain their defaults, while an empty array disables an action:
+
+```toml
+[viewtypes.launcher.engine.config.bindings]
+open_commands = ["ctrl+p"]
+clear_input = ["ctrl+u"]
+exit = ["ctrl+c", "ctrl+d"]
+delete_word = []
+```
+
+Available actions are `exit`, `open_commands`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. One physical key cannot be assigned to multiple launcher actions.
+
+The default bindings are:
+
 - `Enter`: execute the current view's Enter command;
-- `Alt+<character>`: execute a view command;
+- `Alt+<character>` or another unreserved configured key: execute a view command;
 - `Up` / `Down`: move through results;
 - `Esc`: clear the query, then return to the parent view or quit at the root;
-- `Ctrl-C`: quit;
+- `Backspace`: delete the previous character;
+- `Ctrl-C` / `Ctrl-D`: quit;
 - `Ctrl-U`: clear the query;
 - `Ctrl-W`: delete the previous word;
 - `Ctrl-K`: open the command launcher view for the selected item's source view.

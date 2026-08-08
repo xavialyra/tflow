@@ -1,6 +1,7 @@
 use crate::expression::{
     EvalContext, MethodResolver, Template, TreeReferences, evaluate_json_value,
 };
+use crate::input::Key;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -598,22 +599,9 @@ fn validate_view_ref(view_ref: &str) -> Result<()> {
 }
 
 pub fn normalize_key(key: &str) -> Result<String> {
-    let key = key.trim().to_ascii_lowercase();
-    if key == "enter" {
-        return Ok(key);
-    }
-    if let Some(character) = key.strip_prefix("alt+")
-        && character.chars().count() == 1
-    {
-        let character = character.chars().next().unwrap();
-        if character.is_ascii_graphic() {
-            return Ok(format!("alt+{}", character));
-        }
-    }
-    bail!(
-        "unsupported command key {:?}; use enter or alt+<character>",
-        key
-    )
+    Key::parse_binding(key)?
+        .binding_name()
+        .with_context(|| format!("unsupported command key {:?}", key))
 }
 
 fn disabled_plugins(user_config: Option<&toml::Value>) -> Result<BTreeSet<String>> {
@@ -1096,8 +1084,9 @@ mod tests {
     fn command_keys_are_validated_and_normalized() {
         assert_eq!(normalize_key("Alt+C").unwrap(), "alt+c");
         assert_eq!(normalize_key("enter").unwrap(), "enter");
+        assert_eq!(normalize_key("Ctrl+R").unwrap(), "ctrl+r");
+        assert_eq!(normalize_key("Ctrl+J").unwrap(), "enter");
         assert!(normalize_key("c").is_err());
-        assert!(normalize_key("ctrl+c").is_err());
     }
 
     #[test]

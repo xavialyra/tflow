@@ -129,13 +129,7 @@ pub(super) fn find_command(
 }
 
 fn command_key(key: Key) -> Option<String> {
-    match key {
-        Key::Enter => Some("enter".to_string()),
-        Key::Alt(character) if character.is_ascii_graphic() => {
-            Some(format!("alt+{}", character.to_ascii_lowercase()))
-        }
-        _ => None,
-    }
+    key.binding_name()
 }
 
 pub(super) fn add_view_commands(

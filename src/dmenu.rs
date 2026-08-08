@@ -203,7 +203,7 @@ impl DmenuApp {
 
     fn handle_key(&mut self, key: Key) -> Option<Outcome> {
         match key {
-            Key::Escape | Key::CtrlC | Key::CtrlD => Some(Outcome::Cancelled),
+            Key::Escape | Key::Ctrl('c' | 'd') => Some(Outcome::Cancelled),
             Key::Enter => {
                 let matching = self.matching_indices();
                 if let Some(index) = matching.get(self.selected) {
@@ -241,7 +241,7 @@ impl DmenuApp {
                 }
                 None
             }
-            Key::CtrlU => {
+            Key::Ctrl('u') => {
                 if !self.query.is_empty() {
                     self.query.clear();
                     self.selected = 0;
@@ -249,7 +249,7 @@ impl DmenuApp {
                 }
                 None
             }
-            Key::CtrlW => {
+            Key::Ctrl('w') => {
                 let previous_length = self.query.len();
                 while self.query.chars().last().is_some_and(char::is_whitespace) {
                     self.query.pop();
@@ -271,7 +271,7 @@ impl DmenuApp {
                 self.message = None;
                 None
             }
-            Key::Char(_) | Key::Alt(_) | Key::CtrlK => None,
+            Key::Char(_) | Key::Alt(_) | Key::Ctrl(_) => None,
         }
     }
 

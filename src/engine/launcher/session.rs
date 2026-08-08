@@ -1,5 +1,6 @@
 use super::input::LauncherInputAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, ItemsTaskScheduler};
+use super::keymap::LauncherKeymap;
 use super::{ViewEvaluator, render};
 use crate::engine::{
     EngineHost, NavigationMode, TaskCompletion, TaskMode, ViewEffect, ViewInstance, ViewLocation,
@@ -55,16 +56,18 @@ pub(crate) struct LauncherView {
     decoder: InputDecoder,
     started: bool,
     parent_item: Option<Item>,
+    pub(super) keymap: LauncherKeymap,
 }
 
 impl LauncherView {
-    pub(crate) fn new(
+    pub(super) fn new(
         view: &str,
         input: &str,
         items_scheduler: ItemsTaskScheduler,
         log_file: Option<PathBuf>,
         command_owner: Option<String>,
         parent_item: Option<Item>,
+        keymap: LauncherKeymap,
     ) -> Self {
         let mut frame = LauncherFrame::new(view, input);
         frame.command_owner = command_owner;
@@ -77,6 +80,7 @@ impl LauncherView {
             decoder: InputDecoder::default(),
             started: false,
             parent_item,
+            keymap,
         }
     }
 
@@ -475,7 +479,8 @@ impl ViewInstance for LauncherView {
         keys.extend(self.decoder.flush_due());
         let mut refresh = false;
         for key in keys {
-            match self.handle_input(key, &host.config.command_view) {
+            let command_available = self.resolve_command(host.config, key).is_some();
+            match self.handle_input(key, &host.config.command_view, command_available) {
                 LauncherInputAction::Continue => {}
                 LauncherInputAction::Refresh => refresh = true,
                 LauncherInputAction::ClearError => host.clear_error(),
@@ -513,11 +518,7 @@ fn key_display(key: Key) -> String {
         Key::Up => "Up".to_string(),
         Key::Down => "Down".to_string(),
         Key::Backspace => "Backspace".to_string(),
-        Key::CtrlC => "Ctrl-C".to_string(),
-        Key::CtrlD => "Ctrl-D".to_string(),
-        Key::CtrlK => "Ctrl-K".to_string(),
-        Key::CtrlU => "Ctrl-U".to_string(),
-        Key::CtrlW => "Ctrl-W".to_string(),
+        Key::Ctrl(character) => format!("Ctrl-{}", character.to_ascii_uppercase()),
         Key::Char(character) => character.to_string(),
     }
 }

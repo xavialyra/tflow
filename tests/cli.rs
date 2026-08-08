@@ -209,6 +209,49 @@ fn launcher_waits_for_items_before_running_enter_command() {
 }
 
 #[test]
+fn view_commands_accept_unreserved_control_bindings() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "ctrl+r"
+        label = "Run"
+        exit = true
+        run = '''printf 'ctrl-command:%s\n' "$LAUNCHER_VALUE"'''
+        "#,
+    )
+    .expect("could not write control command config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x12")
+        .expect("could not write Ctrl-R command key");
+    process
+        .master
+        .flush()
+        .expect("could not flush Ctrl-R command key");
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("ctrl-command:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove control command config");
+}
+
+#[test]
 fn replacing_items_request_cancels_the_previous_script() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -355,6 +398,67 @@ fn ctrl_k_opens_the_command_launcher_view() {
         "output: {remaining}"
     );
     fs::remove_dir_all(root).expect("could not remove command view config");
+}
+
+#[test]
+fn launcher_bindings_can_override_a_default_shortcut() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [viewtypes.custom-launcher.engine]
+        type = "launcher"
+
+        [viewtypes.custom-launcher.engine.config.bindings]
+        open_commands = ["ctrl+p"]
+
+        [plugins.core.views.default]
+        type = "custom-launcher"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        run = ":"
+
+        [plugins.core.views.command]
+        type = "launcher"
+        "#,
+    )
+    .expect("could not write custom launcher binding config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Item");
+    process
+        .master
+        .write_all(b"\x10")
+        .expect("could not write configured Ctrl-P shortcut");
+    process
+        .master
+        .flush()
+        .expect("could not flush configured shortcut");
+    let output = wait_for_text(&process.master, "[core:command]");
+    assert!(
+        String::from_utf8_lossy(&output).contains("Enter Run"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove custom binding config");
 }
 
 #[test]
