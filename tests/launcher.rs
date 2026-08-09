@@ -611,10 +611,16 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .master
         .flush()
         .expect("could not flush route escape");
-    let output = wait_for_text(&process.master, "core:default");
+    let root_divider = "─".repeat(70);
+    let output = wait_for_text(&process.master, &root_divider);
     assert!(
         String::from_utf8_lossy(&output).contains("  app "),
         "output: {:?}",
+        output
+    );
+    assert!(
+        !String::from_utf8_lossy(&output).contains("core:default"),
+        "root divider unexpectedly included the view name: {:?}",
         output
     );
 
@@ -692,10 +698,16 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route separator deletion");
-    let output = wait_for_text(&process.master, "core:default");
+    let root_divider = "─".repeat(70);
+    let output = wait_for_text(&process.master, &root_divider);
     assert!(
         String::from_utf8_lossy(&output).contains("  app"),
         "output: {:?}",
+        output
+    );
+    assert!(
+        !String::from_utf8_lossy(&output).contains("core:default"),
+        "root divider unexpectedly included the view name: {:?}",
         output
     );
 
@@ -1083,7 +1095,8 @@ fn qualified_view_path_navigates_to_any_engine() {
         .expect("could not flush qualified embedded route");
 
     let mut output = wait_for_text(&process.master, "route-marker");
-    let launcher = wait_for_text(&process.master, "core:default");
+    let root_divider = "─".repeat(70);
+    let launcher = wait_for_text(&process.master, &root_divider);
     output.extend(launcher);
     process
         .master

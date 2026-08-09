@@ -102,6 +102,7 @@ impl<'a> AppSession<'a> {
     }
 
     fn render(&mut self, terminal: &Terminal) -> Result<()> {
+        let show_route_label = self.views.len() > 1;
         let entry = self
             .views
             .last_mut()
@@ -125,6 +126,7 @@ impl<'a> AppSession<'a> {
         let chrome = crate::chrome::ChromeFrame::compose_with_cursor(
             terminal.size().0 as usize,
             &route,
+            show_route_label,
             &shell_input,
             shell_cursor,
             engine_chrome,

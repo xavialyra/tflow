@@ -229,12 +229,13 @@ impl ChromeFrame {
         engine: EngineChrome,
         error: Option<&str>,
     ) -> Self {
-        Self::compose_with_cursor(width, route, input, input.len(), engine, error)
+        Self::compose_with_cursor(width, route, true, input, input.len(), engine, error)
     }
 
     pub(crate) fn compose_with_cursor(
         width: usize,
         route: &RouteDisplay,
+        show_route_label: bool,
         input: &str,
         input_cursor: usize,
         engine: EngineChrome,
@@ -251,8 +252,9 @@ impl ChromeFrame {
                 &engine.commands,
             )
         };
+        let route_label = show_route_label.then(|| route.label());
         Self {
-            divider: divider_line(width, &route.label()),
+            divider: divider_line(width, route_label.as_deref().unwrap_or("")),
             input: input.to_string(),
             input_cursor,
             footer,
@@ -452,6 +454,20 @@ mod tests {
     #[test]
     fn divider_fills_width_without_a_label() {
         assert_eq!(divider_line(5, ""), "─────");
+    }
+
+    #[test]
+    fn compose_hides_route_label_when_requested() {
+        let frame = ChromeFrame::compose_with_cursor(
+            80,
+            &route(),
+            false,
+            "",
+            0,
+            EngineChrome::default(),
+            None,
+        );
+        assert_eq!(frame.divider, "─".repeat(79));
     }
 
     #[test]
