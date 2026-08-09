@@ -662,14 +662,14 @@ impl ViewInstance for PickerView {
         }
     }
 
-    fn render(
+    fn content(
         &mut self,
         _host: &EngineHost<'_>,
         terminal: &Terminal,
         chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<()> {
+    ) -> Result<crate::chrome::ChromeContent> {
         let state = self.render_state();
-        render::render_picker(terminal, &state, chrome)
+        render::picker_content(terminal, &state, chrome)
     }
 }
 

@@ -83,12 +83,12 @@ pub(crate) trait ViewInstance {
         crate::chrome::EngineChrome::default()
     }
 
-    fn render(
+    fn content(
         &mut self,
         host: &EngineHost<'_>,
         terminal: &Terminal,
         chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<()>;
+    ) -> Result<crate::chrome::ChromeContent>;
 }
 
 pub(crate) struct ViewContext<'a> {

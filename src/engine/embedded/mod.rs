@@ -153,32 +153,14 @@ impl ViewInstance for EmbeddedView {
         }
     }
 
-    fn render(
+    fn content(
         &mut self,
         _host: &EngineHost<'_>,
-        terminal: &Terminal,
+        _terminal: &Terminal,
         chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<()> {
+    ) -> Result<crate::chrome::ChromeContent> {
         self.chrome = Some(chrome.clone());
-        let (width, height) = terminal.size();
-        let width = width as usize;
-        let height = height as usize;
-        let layout = chrome.layout();
-        let input = layout.pad_line(&chrome.input_line(), width, layout.viewport_padding);
-        let divider = layout.pad_line(&chrome.divider, width, layout.viewport_padding);
-        let footer = layout.pad_line(&chrome.footer, width, layout.viewport_padding);
-        terminal.write_output(
-            format!(
-                "\x1b[2J\x1b[{};1H{}\x1b[K\x1b[{};1H\x1b[1;36m{}\x1b[0m\x1b[K\x1b[{};1H{}\x1b[K",
-                layout.input_content_row() + 1,
-                input,
-                layout.divider_content_row() + 1,
-                divider,
-                layout.footer_row(height) + 1,
-                footer,
-            )
-            .as_bytes(),
-        )
+        Ok(crate::chrome::ChromeContent::default())
     }
 }
 

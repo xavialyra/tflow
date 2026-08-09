@@ -272,9 +272,12 @@ fn ctrl_k_opens_the_command_picker_view() {
     process.master.flush().expect("could not flush Ctrl-K key");
     let output = wait_for_text(&process.master, "core:command");
     let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("Enter Run"), "output: {output}");
-    assert!(output.contains("Alt-A Apps"), "output: {output}");
-    assert!(output.contains("Alt-S Shell"), "output: {output}");
+    assert!(output.contains("Enter"), "output: {output}");
+    assert!(output.contains("Run"), "output: {output}");
+    assert!(output.contains("Alt-A"), "output: {output}");
+    assert!(output.contains("Apps"), "output: {output}");
+    assert!(output.contains("Alt-S"), "output: {output}");
+    assert!(output.contains("Shell"), "output: {output}");
 
     process
         .master
@@ -410,11 +413,9 @@ fn picker_bindings_can_override_a_default_shortcut() {
         .flush()
         .expect("could not flush configured shortcut");
     let output = wait_for_text(&process.master, "core:command");
-    assert!(
-        String::from_utf8_lossy(&output).contains("Enter Run"),
-        "output: {:?}",
-        output
-    );
+    let output_text = String::from_utf8_lossy(&output);
+    assert!(output_text.contains("Enter"), "output: {:?}", output);
+    assert!(output_text.contains("Run"), "output: {:?}", output);
 
     process
         .master
@@ -586,7 +587,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
     process.master.flush().expect("could not flush app route");
     let output = wait_for_text(&process.master, "apps:default");
     assert!(
-        String::from_utf8_lossy(&output).contains("  app "),
+        String::from_utf8_lossy(&output).contains(" app "),
         "output: {:?}",
         output
     );
@@ -596,9 +597,9 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .write_all(b"aa")
         .expect("could not write app query");
     process.master.flush().expect("could not flush app query");
-    let output = wait_for_text(&process.master, "  app aa");
+    let output = wait_for_text(&process.master, " app aa");
     assert!(
-        String::from_utf8_lossy(&output).contains("  app aa"),
+        String::from_utf8_lossy(&output).contains(" app aa"),
         "output: {:?}",
         output
     );
@@ -611,10 +612,9 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .master
         .flush()
         .expect("could not flush route escape");
-    let root_divider = "─".repeat(70);
-    let output = wait_for_text(&process.master, &root_divider);
+    let output = wait_for_text(&process.master, "0 results");
     assert!(
-        String::from_utf8_lossy(&output).contains("  app "),
+        String::from_utf8_lossy(&output).contains(" app "),
         "output: {:?}",
         output
     );
@@ -683,9 +683,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route parameter deletion");
-    let output = wait_for_text(&process.master, "  app ");
+    let output = wait_for_text(&process.master, " app ");
     assert!(
-        String::from_utf8_lossy(&output).contains("  app "),
+        String::from_utf8_lossy(&output).contains(" app "),
         "output: {:?}",
         output
     );
@@ -698,10 +698,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route separator deletion");
-    let root_divider = "─".repeat(70);
-    let output = wait_for_text(&process.master, &root_divider);
+    let output = wait_for_text(&process.master, "2 results");
     assert!(
-        String::from_utf8_lossy(&output).contains("  app"),
+        String::from_utf8_lossy(&output).contains(" app"),
         "output: {:?}",
         output
     );
@@ -719,9 +718,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route selector deletion");
-    let output = wait_for_text(&process.master, "  ");
+    let output = wait_for_text(&process.master, "2 results");
     assert!(
-        String::from_utf8_lossy(&output).contains("  "),
+        String::from_utf8_lossy(&output).contains("2 results"),
         "output: {:?}",
         output
     );
@@ -736,7 +735,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .expect("could not flush replacement route");
     let output = wait_for_text(&process.master, "sys:default");
     assert!(
-        String::from_utf8_lossy(&output).contains("  sys "),
+        String::from_utf8_lossy(&output).contains(" sys "),
         "output: {:?}",
         output
     );
@@ -1045,7 +1044,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         .expect("could not flush broken route");
     let output = wait_for_text(&process.master, "ERROR");
     assert!(
-        String::from_utf8_lossy(&output).contains("  core:broken"),
+        String::from_utf8_lossy(&output).contains(" core:broken"),
         "output: {:?}",
         output
     );
@@ -1095,8 +1094,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         .expect("could not flush qualified embedded route");
 
     let mut output = wait_for_text(&process.master, "route-marker");
-    let root_divider = "─".repeat(70);
-    let launcher = wait_for_text(&process.master, &root_divider);
+    let launcher = wait_for_text(&process.master, "0 results");
     output.extend(launcher);
     process
         .master

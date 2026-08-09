@@ -4,11 +4,9 @@ use crate::terminal::Terminal;
 use crate::text::matches_query;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
-use std::fmt::Write as FmtWrite;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct Options {
     pub prompt: String,
@@ -336,127 +334,75 @@ impl DmenuApp {
         let width = width as usize;
         let height = height as usize;
         let layout = crate::chrome::ChromeLayout::dmenu();
-        let viewport_width = layout.viewport_width(width);
         let matching = self.matching_indices();
-        let footer_text = self.footer();
         let available_rows = layout.content_rows(height);
         let list_height = self
             .lines
             .map(|lines| lines.min(available_rows))
             .unwrap_or(available_rows);
-        let mut lines = vec![String::new(); height];
-        let input = query_line(
-            &self.prompt,
+        let input_prefix = format!("{}{}", " ".repeat(layout.input.padding.left), self.prompt);
+        let chrome = crate::chrome::ChromeFrame::compose_with_layout(
+            width,
+            layout,
+            input_prefix,
             &self.query,
-            viewport_width,
-            layout.input.padding,
+            self.query.len(),
+            "",
+            self.footer(),
         );
-        if let Some(line) = lines.get_mut(layout.input_content_row()) {
-            *line = layout.pad_line(&input, width, layout.viewport_padding);
-        }
-        if let Some(line) = lines.get_mut(layout.divider_content_row()) {
-            let divider = crate::chrome::divider_line(layout.chrome_width(width), "");
-            *line = layout.pad_line(&divider, width, layout.viewport_padding);
-        }
 
         let start = if self.selected >= list_height && list_height > 0 {
             self.selected + 1 - list_height
         } else {
             0
         };
-        let content_start = layout.content_start_row();
         let selected_row = if matching.is_empty() || list_height == 0 {
             None
         } else {
-            Some(content_start + self.selected.saturating_sub(start))
+            Some(self.selected.saturating_sub(start))
         };
 
+        let mut content_lines = Vec::new();
         if list_height > 0 {
-            let content = if matching.is_empty() {
-                if self.candidates.is_empty() {
+            let empty_message = if matching.is_empty() {
+                Some(if self.candidates.is_empty() {
                     "(no input)".to_string()
                 } else {
                     "(no matches)".to_string()
-                }
+                })
             } else {
-                String::new()
+                None
             };
-            if !content.is_empty() {
-                if let Some(line) = lines.get_mut(content_start) {
-                    let content = layout.pad_line(&content, viewport_width, layout.content_padding);
-                    *line = layout.pad_line(&content, width, layout.viewport_padding);
-                }
+            if let Some(message) = empty_message {
+                content_lines.push(message);
             } else {
-                for (offset, index) in matching.iter().skip(start).take(list_height).enumerate() {
-                    let candidate = &self.candidates[*index];
-                    if let Some(line) = lines.get_mut(content_start + offset) {
-                        let content = self.display_text(candidate);
-                        let content =
-                            layout.pad_line(&content, viewport_width, layout.content_padding);
-                        *line = layout.pad_line(&content, width, layout.viewport_padding);
-                    }
+                for index in matching.iter().skip(start).take(list_height) {
+                    content_lines.push(self.display_text(&self.candidates[*index]));
                 }
             }
         }
 
-        let footer_width = layout.chrome_width(width);
-        let footer = layout.pad_line(
-            &layout.pad_line(&footer_text, footer_width, layout.footer_padding),
-            width,
-            layout.viewport_padding,
-        );
-        if let Some(line) = lines.get_mut(layout.footer_row(height)) {
-            *line = footer;
-        }
-
-        let mut output = String::new();
-        output.push_str("\x1b[H");
-        for row in 0..height {
-            let line = lines.get(row).map(String::as_str).unwrap_or("");
-            let clipped = clip(line, width);
-            if selected_row == Some(row) {
-                let (left, selected, right) = layout.selection_parts(&clipped, width);
-                output.push_str(&left);
-                output.push_str("\x1b[7m");
-                output.push_str(&selected);
-                output.push_str("\x1b[0m");
-                output.push_str(&right);
-            } else if row == layout.divider_content_row() {
-                output.push_str("\x1b[1;36m");
-                output.push_str(&clipped);
-                output.push_str("\x1b[0m");
-            } else {
-                output.push_str(&clipped);
-            }
-            output.push_str("\x1b[K");
-            if row + 1 < height {
-                output.push_str("\r\n");
-            }
-        }
-
-        if height >= 2 {
-            let cursor_width = UnicodeWidthStr::width(input.as_str());
-            let cursor_column = layout.viewport_padding.left
-                + cursor_width.min(viewport_width.saturating_sub(1)).max(1)
-                + 1;
-            let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
-            write!(
-                output,
-                "\x1b[{};{}H\x1b[?25h",
-                layout.input_content_row() + 1,
-                cursor_column.min(max_column)
-            )?;
-        }
-        terminal
-            .write_output(output.as_bytes())
-            .context("could not draw dmenu launcher")
+        chrome.render(
+            terminal,
+            crate::chrome::ChromeContent::new(
+                content_lines,
+                selected_row,
+                crate::chrome::ChromeCursor::Input,
+            ),
+        )
     }
 
-    fn footer(&self) -> String {
+    fn footer(&self) -> crate::chrome::FooterContent {
         if let Some(message) = &self.message {
-            return message.clone();
+            return crate::chrome::FooterContent::plain(message);
         }
-        "Up/Down select | Enter accept | Esc cancel | Ctrl-C cancel".to_string()
+        let commands = vec![
+            ("Up/Down".to_string(), "select".to_string()),
+            ("Enter".to_string(), "accept".to_string()),
+            ("Esc".to_string(), "cancel".to_string()),
+            ("Ctrl-C".to_string(), "cancel".to_string()),
+        ];
+        crate::chrome::command_footer(&commands)
     }
 }
 
@@ -666,71 +612,6 @@ fn selected_fields<'a>(fields: &[&'a str], selector: &FieldSelector) -> Vec<&'a 
             }
         }
     }
-}
-
-fn query_line(
-    prompt: &str,
-    query: &str,
-    width: usize,
-    input_padding: crate::chrome::Insets,
-) -> String {
-    let prefix = format!("{}{}", " ".repeat(input_padding.left), prompt);
-    let prefix = clip(&prefix, width.saturating_sub(input_padding.right));
-    let available = width
-        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
-        .saturating_sub(input_padding.right);
-    format!("{}{}", prefix, clip_tail(query, available))
-}
-
-fn clip(text: &str, width: usize) -> String {
-    if width == 0 || UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
-    }
-    if width <= 3 {
-        return text.chars().take(width).collect();
-    }
-
-    let mut result = String::new();
-    let mut used = 0;
-    for character in text.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width > width - 3 {
-            break;
-        }
-        result.push(character);
-        used += character_width;
-    }
-    result.push_str("...");
-    result
-}
-
-fn clip_tail(text: &str, width: usize) -> String {
-    if width == 0 || UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
-    }
-    if width <= 3 {
-        return text
-            .chars()
-            .rev()
-            .take(width)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-    }
-
-    let mut result = String::new();
-    let mut used = 0;
-    for character in text.chars().rev() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width > width - 3 {
-            break;
-        }
-        result.push(character);
-        used += character_width;
-    }
-    let tail = result.chars().rev().collect::<String>();
-    format!("...{}", tail)
 }
 
 fn sanitize_for_display(text: &str) -> String {

@@ -2,13 +2,12 @@ use crate::terminal::Terminal;
 use crate::vt::VirtualTerminal;
 use anyhow::{Context, Result, bail};
 use std::ffi::CString;
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(40);
 
@@ -313,98 +312,22 @@ fn render_embedded(
     chrome: &crate::chrome::ChromeFrame,
     screen: &VirtualTerminal,
 ) -> Result<()> {
-    let (outer_columns, outer_rows) = terminal.size();
-    let outer_columns = outer_columns as usize;
-    let outer_rows = outer_rows as usize;
-    let layout = chrome.layout();
-    let viewport_width = layout.viewport_width(outer_columns);
-    let content_width = layout.content_width(outer_columns);
-    let inner_rows = layout.content_rows(outer_rows).max(1);
-    let viewport_left = layout.viewport_padding.left;
-    let content_left = viewport_left + layout.content_padding.left;
-    let mut stdout = io::stdout().lock();
-
-    stdout.write_all(b"\x1b[?25l")?;
-    let (input, _) = chrome.input_line_for_width(viewport_width);
-    write_line(
-        &mut stdout,
-        layout.input_content_row() + 1,
-        viewport_left,
-        &input,
-        viewport_width,
-        false,
-    )?;
-    write_line(
-        &mut stdout,
-        layout.divider_content_row() + 1,
-        viewport_left,
-        &chrome.divider,
-        viewport_width,
-        true,
-    )?;
-    for row in 0..inner_rows {
-        write_line(
-            &mut stdout,
-            layout.content_start_row() + row + 1,
-            content_left,
-            &screen.row_text(row),
-            content_width,
-            false,
-        )?;
-    }
-    write_line(
-        &mut stdout,
-        layout.footer_row(outer_rows) + 1,
-        viewport_left,
-        &chrome.footer,
-        viewport_width,
-        false,
-    )?;
-
+    let (_, outer_rows) = terminal.size();
+    let content_rows = chrome.layout().content_rows(outer_rows as usize);
+    let lines = (0..content_rows).map(|row| screen.row_text(row)).collect();
     let (cursor_x, cursor_y, visible) = screen.cursor();
-    if visible {
-        let row = layout.content_start_row() + cursor_y.min(inner_rows.saturating_sub(1)) + 1;
-        let column = content_left + cursor_x.min(content_width.saturating_sub(1)) + 1;
-        write!(stdout, "\x1b[{};{}H\x1b[?25h", row, column)?;
-    } else {
-        stdout.write_all(b"\x1b[?25l")?;
-    }
-    stdout.flush().context("could not draw embedded screen")
-}
-
-fn write_line(
-    stdout: &mut impl Write,
-    row: usize,
-    column_offset: usize,
-    text: &str,
-    width: usize,
-    heading: bool,
-) -> Result<()> {
-    let text = clip_line(text, width);
-    write!(stdout, "\x1b[{};{}H\x1b[K", row, column_offset + 1)?;
-    if heading {
-        write!(stdout, "\x1b[1;36m{}\x1b[0m", text)?;
-    } else {
-        stdout.write_all(text.as_bytes())?;
-    }
-    Ok(())
-}
-
-fn clip_line(text: &str, width: usize) -> String {
-    if width == 0 || UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
-    }
-    let mut output = String::new();
-    let mut used = 0;
-    for character in text.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width > width {
-            break;
-        }
-        output.push(character);
-        used += character_width;
-    }
-    output
+    chrome.render(
+        terminal,
+        crate::chrome::ChromeContent::new(
+            lines,
+            None,
+            crate::chrome::ChromeCursor::Content {
+                row: cursor_y,
+                column: cursor_x,
+                visible,
+            },
+        ),
+    )
 }
 
 fn write_fd(fd: RawFd, bytes: &[u8]) -> Result<()> {

@@ -94,12 +94,12 @@ impl ViewInstance for CaptureView {
         }
     }
 
-    fn render(
+    fn content(
         &mut self,
         _host: &EngineHost<'_>,
         terminal: &Terminal,
         chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<()> {
-        render::render_capture(terminal, self.session.lines(), chrome)
+    ) -> Result<crate::chrome::ChromeContent> {
+        render::capture_content(terminal, self.session.lines(), chrome)
     }
 }

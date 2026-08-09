@@ -132,7 +132,8 @@ impl<'a> AppSession<'a> {
             engine_chrome,
             error.as_deref(),
         );
-        entry.instance.render(&host, terminal, &chrome)
+        let content = entry.instance.content(&host, terminal, &chrome)?;
+        chrome.render(terminal, content)
     }
 
     // Resolve the shell input before the active engine refreshes its parameter view.

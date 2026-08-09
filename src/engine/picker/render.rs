@@ -3,9 +3,8 @@ use super::{Item, PickerView};
 use crate::config::Config;
 use crate::router::ViewCandidate;
 use crate::terminal::Terminal;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::BTreeMap;
-use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
@@ -18,30 +17,19 @@ pub(crate) struct PickerRenderState {
 
 const PICKER_COLUMN_GAP: usize = 2;
 
-pub(crate) fn render_picker(
+pub(crate) fn picker_content(
     terminal: &Terminal,
     state: &PickerRenderState,
     chrome: &crate::chrome::ChromeFrame,
-) -> Result<()> {
+) -> Result<crate::chrome::ChromeContent> {
     let (width, height) = terminal.size();
     let width = width as usize;
     let height = height as usize;
     let layout = chrome.layout();
-    let viewport_width = layout.viewport_width(width);
     let content_area_width = layout.content_width(width);
     let list_height = layout.content_rows(height);
-    let content_start = layout.content_start_row();
-    let mut lines = vec![String::new(); height];
     let prefix_width = prefix_column_width(&state.items, content_area_width);
     let content_width = content_area_width.saturating_sub(prefix_width + PICKER_COLUMN_GAP);
-    let (input_line, _) = chrome.input_line_for_width(viewport_width);
-
-    if let Some(line) = lines.get_mut(layout.input_content_row()) {
-        *line = layout.pad_line(&input_line, width, layout.viewport_padding);
-    }
-    if let Some(line) = lines.get_mut(layout.divider_content_row()) {
-        *line = layout.pad_line(&chrome.divider, width, layout.viewport_padding);
-    }
 
     let completion_start = state.completion.as_ref().map(|completion| {
         if completion.selected >= list_height && list_height > 0 {
@@ -55,10 +43,9 @@ pub(crate) fn render_picker(
             None
         } else {
             Some(
-                content_start
-                    + completion
-                        .selected
-                        .saturating_sub(completion_start.unwrap_or(0)),
+                completion
+                    .selected
+                    .saturating_sub(completion_start.unwrap_or(0)),
             )
         }
     } else {
@@ -70,7 +57,7 @@ pub(crate) fn render_picker(
         if state.items.is_empty() || list_height == 0 {
             None
         } else {
-            Some(content_start + state.selected.saturating_sub(start))
+            Some(state.selected.saturating_sub(start))
         }
     };
 
@@ -114,45 +101,11 @@ pub(crate) fn render_picker(
         }
     }
 
-    for (offset, content) in content_lines.into_iter().take(list_height).enumerate() {
-        let row = content_start + offset;
-        if let Some(line) = lines.get_mut(row) {
-            let content = layout.pad_line(&content, viewport_width, layout.content_padding);
-            *line = layout.pad_line(&content, width, layout.viewport_padding);
-        }
-    }
-    if let Some(line) = lines.get_mut(layout.footer_row(height)) {
-        *line = layout.pad_line(&chrome.footer, width, layout.viewport_padding);
-    }
-
-    let mut stdout = io::stdout().lock();
-    stdout.write_all(b"\x1b[H")?;
-    for row in 0..height {
-        let line = lines.get(row).map(String::as_str).unwrap_or("");
-        let clipped = clip(line, width);
-        if selected_row == Some(row) {
-            let (left, selected, right) = layout.selection_parts(&clipped, width);
-            write!(stdout, "{}\x1b[7m{}\x1b[0m{}", left, selected, right)?
-        } else if row == layout.divider_content_row() {
-            write!(stdout, "\x1b[1;36m{}\x1b[0m", clipped)?;
-        } else {
-            stdout.write_all(clipped.as_bytes())?;
-        }
-        stdout.write_all(b"\x1b[K")?;
-        if row + 1 < height {
-            stdout.write_all(b"\r\n")?;
-        }
-    }
-    let (_, cursor_column) = chrome.input_line_for_width(viewport_width);
-    let cursor_column = layout.viewport_padding.left.saturating_add(cursor_column);
-    let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
-    write!(
-        stdout,
-        "\x1b[{};{}H\x1b[?25h",
-        layout.input_content_row() + 1,
-        cursor_column.max(1).min(max_column)
-    )?;
-    stdout.flush().context("could not draw picker")
+    Ok(crate::chrome::ChromeContent::new(
+        content_lines,
+        selected_row,
+        crate::chrome::ChromeCursor::Input,
+    ))
 }
 
 fn prefix_column_width(items: &[Item], width: usize) -> usize {
