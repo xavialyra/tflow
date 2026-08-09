@@ -16,6 +16,8 @@ pub(crate) struct PickerRenderState {
     pub(crate) completion: Option<ViewCompletion>,
 }
 
+const PICKER_COLUMN_GAP: usize = 2;
+
 pub(crate) fn render_picker(
     terminal: &Terminal,
     state: &PickerRenderState,
@@ -24,14 +26,22 @@ pub(crate) fn render_picker(
     let (width, height) = terminal.size();
     let width = width as usize;
     let height = height as usize;
-    let list_height = height.saturating_sub(3);
-    let mut lines = Vec::with_capacity(height);
-    let prefix_width = prefix_column_width(&state.items, width);
-    let content_width = width.saturating_sub(prefix_width + 4);
-    let (input_line, _) = chrome.input_line_for_width(width);
+    let layout = chrome.layout();
+    let viewport_width = layout.viewport_width(width);
+    let content_area_width = layout.content_width(width);
+    let list_height = layout.content_rows(height);
+    let content_start = layout.content_start_row();
+    let mut lines = vec![String::new(); height];
+    let prefix_width = prefix_column_width(&state.items, content_area_width);
+    let content_width = content_area_width.saturating_sub(prefix_width + PICKER_COLUMN_GAP);
+    let (input_line, _) = chrome.input_line_for_width(viewport_width);
 
-    lines.push(input_line);
-    lines.push(chrome.divider.clone());
+    if let Some(line) = lines.get_mut(layout.input_content_row()) {
+        *line = layout.pad_line(&input_line, width, layout.viewport_padding);
+    }
+    if let Some(line) = lines.get_mut(layout.divider_content_row()) {
+        *line = layout.pad_line(&chrome.divider, width, layout.viewport_padding);
+    }
 
     let completion_start = state.completion.as_ref().map(|completion| {
         if completion.selected >= list_height && list_height > 0 {
@@ -45,9 +55,10 @@ pub(crate) fn render_picker(
             None
         } else {
             Some(
-                2 + completion
-                    .selected
-                    .saturating_sub(completion_start.unwrap_or(0)),
+                content_start
+                    + completion
+                        .selected
+                        .saturating_sub(completion_start.unwrap_or(0)),
             )
         }
     } else {
@@ -59,26 +70,32 @@ pub(crate) fn render_picker(
         if state.items.is_empty() || list_height == 0 {
             None
         } else {
-            Some(2 + state.selected.saturating_sub(start))
+            Some(content_start + state.selected.saturating_sub(start))
         }
     };
 
+    let mut content_lines = Vec::new();
     if list_height > 0 {
         if let Some(completion) = &state.completion {
             if completion.candidates.is_empty() {
-                lines.push("  (no matching views)".to_string());
+                content_lines.push("(no matching views)".to_string());
             } else {
-                let primary_width = completion_primary_width(&completion.candidates, width);
+                let primary_width =
+                    completion_primary_width(&completion.candidates, content_area_width);
                 let start = completion_start.unwrap_or(0);
                 for candidate in completion.candidates.iter().skip(start).take(list_height) {
-                    lines.push(format_view_line(candidate, primary_width, width));
+                    content_lines.push(format_view_line(
+                        candidate,
+                        primary_width,
+                        content_area_width,
+                    ));
                 }
             }
         } else if state.items.is_empty() {
-            lines.push(if state.searching {
-                "  (searching...)".to_string()
+            content_lines.push(if state.searching {
+                "(searching...)".to_string()
             } else {
-                "  (no matches)".to_string()
+                "(no matches)".to_string()
             });
         } else {
             let start = if state.selected >= list_height && list_height > 0 {
@@ -87,7 +104,7 @@ pub(crate) fn render_picker(
                 0
             };
             for item in state.items.iter().skip(start).take(list_height) {
-                lines.push(format_item_line(
+                content_lines.push(format_item_line(
                     &item.prefix,
                     &item.text,
                     prefix_width,
@@ -97,10 +114,16 @@ pub(crate) fn render_picker(
         }
     }
 
-    while lines.len() < 2 + list_height {
-        lines.push(String::new());
+    for (offset, content) in content_lines.into_iter().take(list_height).enumerate() {
+        let row = content_start + offset;
+        if let Some(line) = lines.get_mut(row) {
+            let content = layout.pad_line(&content, viewport_width, layout.content_padding);
+            *line = layout.pad_line(&content, width, layout.viewport_padding);
+        }
     }
-    lines.push(chrome.footer.clone());
+    if let Some(line) = lines.get_mut(layout.footer_row(height)) {
+        *line = layout.pad_line(&chrome.footer, width, layout.viewport_padding);
+    }
 
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[H")?;
@@ -108,8 +131,9 @@ pub(crate) fn render_picker(
         let line = lines.get(row).map(String::as_str).unwrap_or("");
         let clipped = clip(line, width);
         if selected_row == Some(row) {
-            write!(stdout, "\x1b[7m{}\x1b[0m", clipped)?
-        } else if row == 1 {
+            let (left, selected, right) = layout.selection_parts(&clipped, width);
+            write!(stdout, "{}\x1b[7m{}\x1b[0m{}", left, selected, right)?
+        } else if row == layout.divider_content_row() {
             write!(stdout, "\x1b[1;36m{}\x1b[0m", clipped)?;
         } else {
             stdout.write_all(clipped.as_bytes())?;
@@ -119,11 +143,14 @@ pub(crate) fn render_picker(
             stdout.write_all(b"\r\n")?;
         }
     }
-    let (_, cursor_column) = chrome.input_line_for_width(width);
+    let (_, cursor_column) = chrome.input_line_for_width(viewport_width);
+    let cursor_column = layout.viewport_padding.left.saturating_add(cursor_column);
+    let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
     write!(
         stdout,
-        "\x1b[1;{}H\x1b[?25h",
-        cursor_column.max(1).min(width.max(1))
+        "\x1b[{};{}H\x1b[?25h",
+        layout.input_content_row() + 1,
+        cursor_column.max(1).min(max_column)
     )?;
     stdout.flush().context("could not draw picker")
 }
@@ -145,7 +172,12 @@ fn format_item_line(
     content_width: usize,
 ) -> String {
     let prefix = pad_right(&clip(prefix, prefix_width), prefix_width);
-    format!("  {}  {}", prefix, clip(content, content_width))
+    format!(
+        "{}{}{}",
+        prefix,
+        " ".repeat(PICKER_COLUMN_GAP),
+        clip(content, content_width),
+    )
 }
 
 fn completion_primary_width(candidates: &[ViewCandidate], width: usize) -> usize {
@@ -167,34 +199,37 @@ fn format_view_line(candidate: &ViewCandidate, primary_width: usize, width: usiz
     let reference = if candidate.alias.is_some() {
         clip(
             candidate.secondary_label(),
-            width.saturating_sub(primary_width + 4),
+            width.saturating_sub(primary_width + PICKER_COLUMN_GAP),
         )
     } else {
         String::new()
     };
     let used = primary_width
-        + 2
-        + UnicodeWidthStr::width(reference.as_str())
-        + if reference.is_empty() { 0 } else { 2 };
+        + if reference.is_empty() {
+            0
+        } else {
+            PICKER_COLUMN_GAP + UnicodeWidthStr::width(reference.as_str()) + PICKER_COLUMN_GAP
+        };
     let remaining = width.saturating_sub(used);
-    let description = if remaining > 2 {
-        format!("{} [{}]", candidate.plugin_name, candidate.engine_type)
+    let description = if remaining > PICKER_COLUMN_GAP {
+        let description = format!("{} [{}]", candidate.plugin_name, candidate.engine_type);
+        format!(
+            "{}{}",
+            " ".repeat(PICKER_COLUMN_GAP),
+            clip(&description, remaining.saturating_sub(PICKER_COLUMN_GAP),)
+        )
     } else {
         String::new()
     };
     format!(
-        "  {}{}{}",
+        "{}{}{}",
         primary,
         if reference.is_empty() {
             String::new()
         } else {
-            format!("  {}", reference)
+            format!("{}{}", " ".repeat(PICKER_COLUMN_GAP), reference)
         },
-        if description.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", clip(&description, remaining))
-        }
+        description,
     )
 }
 

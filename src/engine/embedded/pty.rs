@@ -53,8 +53,9 @@ pub fn run(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let layout = chrome.layout();
     let (outer_columns, outer_rows) = terminal.size();
-    let (columns, rows) = content_size(outer_columns, outer_rows);
+    let (columns, rows) = content_size(outer_columns, outer_rows, layout);
     let window = libc::winsize {
         ws_row: rows,
         ws_col: columns,
@@ -77,7 +78,7 @@ pub fn run(
     }
 
     set_nonblocking(master)?;
-    let outcome = relay(master, pid, terminal, (columns, rows), chrome);
+    let outcome = relay(master, pid, terminal, (columns, rows), chrome, layout);
     if outcome.is_err() {
         terminate_child(pid);
     }
@@ -118,6 +119,7 @@ fn relay(
     terminal: &Terminal,
     mut last_size: (u16, u16),
     chrome: &crate::chrome::ChromeFrame,
+    layout: crate::chrome::ChromeLayout,
 ) -> Result<EmbeddedOutcome> {
     let mut input = InputRelay::default();
     let mut screen = VirtualTerminal::new(last_size.0, last_size.1);
@@ -134,7 +136,7 @@ fn relay(
         }
 
         let outer_size = terminal.size();
-        let current_size = content_size(outer_size.0, outer_size.1);
+        let current_size = content_size(outer_size.0, outer_size.1, layout);
         if current_size != last_size {
             screen.resize(current_size.0, current_size.1);
             resize_pty(master, pid, current_size)?;
@@ -295,8 +297,15 @@ fn drain_output(
     Ok(reached_eof)
 }
 
-fn content_size(outer_columns: u16, outer_rows: u16) -> (u16, u16) {
-    (outer_columns.max(1), outer_rows.saturating_sub(3).max(1))
+fn content_size(
+    outer_columns: u16,
+    outer_rows: u16,
+    layout: crate::chrome::ChromeLayout,
+) -> (u16, u16) {
+    (
+        layout.content_width(outer_columns as usize).max(1) as u16,
+        layout.content_rows(outer_rows as usize).max(1) as u16,
+    )
 }
 
 fn render_embedded(
@@ -307,34 +316,55 @@ fn render_embedded(
     let (outer_columns, outer_rows) = terminal.size();
     let outer_columns = outer_columns as usize;
     let outer_rows = outer_rows as usize;
-    let inner_width = outer_columns.max(1);
-    let inner_rows = outer_rows.saturating_sub(3).max(1);
+    let layout = chrome.layout();
+    let viewport_width = layout.viewport_width(outer_columns);
+    let content_width = layout.content_width(outer_columns);
+    let inner_rows = layout.content_rows(outer_rows).max(1);
+    let viewport_left = layout.viewport_padding.left;
+    let content_left = viewport_left + layout.content_padding.left;
     let mut stdout = io::stdout().lock();
 
     stdout.write_all(b"\x1b[?25l")?;
-    write_line(&mut stdout, 1, &chrome.input_line(), outer_columns, false)?;
-    write_line(&mut stdout, 2, &chrome.divider, outer_columns, true)?;
+    let (input, _) = chrome.input_line_for_width(viewport_width);
+    write_line(
+        &mut stdout,
+        layout.input_content_row() + 1,
+        viewport_left,
+        &input,
+        viewport_width,
+        false,
+    )?;
+    write_line(
+        &mut stdout,
+        layout.divider_content_row() + 1,
+        viewport_left,
+        &chrome.divider,
+        viewport_width,
+        true,
+    )?;
     for row in 0..inner_rows {
         write_line(
             &mut stdout,
-            3 + row,
+            layout.content_start_row() + row + 1,
+            content_left,
             &screen.row_text(row),
-            outer_columns,
+            content_width,
             false,
         )?;
     }
     write_line(
         &mut stdout,
-        outer_rows.max(1),
+        layout.footer_row(outer_rows) + 1,
+        viewport_left,
         &chrome.footer,
-        outer_columns,
+        viewport_width,
         false,
     )?;
 
     let (cursor_x, cursor_y, visible) = screen.cursor();
     if visible {
-        let row = (3 + cursor_y.min(inner_rows.saturating_sub(1))).min(outer_rows.max(1));
-        let column = cursor_x.min(inner_width.saturating_sub(1)) + 1;
+        let row = layout.content_start_row() + cursor_y.min(inner_rows.saturating_sub(1)) + 1;
+        let column = content_left + cursor_x.min(content_width.saturating_sub(1)) + 1;
         write!(stdout, "\x1b[{};{}H\x1b[?25h", row, column)?;
     } else {
         stdout.write_all(b"\x1b[?25l")?;
@@ -345,12 +375,13 @@ fn render_embedded(
 fn write_line(
     stdout: &mut impl Write,
     row: usize,
+    column_offset: usize,
     text: &str,
     width: usize,
     heading: bool,
 ) -> Result<()> {
     let text = clip_line(text, width);
-    write!(stdout, "\x1b[{};1H\x1b[K", row)?;
+    write!(stdout, "\x1b[{};{}H\x1b[K", row, column_offset + 1)?;
     if heading {
         write!(stdout, "\x1b[1;36m{}\x1b[0m", text)?;
     } else {

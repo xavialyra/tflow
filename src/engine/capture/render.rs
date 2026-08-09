@@ -11,18 +11,49 @@ pub(super) fn render_capture(
     let (width, height) = terminal.size();
     let width = width as usize;
     let height = height as usize;
-    let inner_height = height.saturating_sub(3);
+    let layout = chrome.layout();
+    let viewport_width = layout.viewport_width(width);
+    let inner_height = layout.content_rows(height);
     let start = lines.len().saturating_sub(inner_height);
 
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[?25l")?;
-    write_capture_line(&mut stdout, 1, &chrome.input_line(), width, false)?;
-    write_capture_line(&mut stdout, 2, &chrome.divider, width, true)?;
+    let input = layout.pad_line(&chrome.input_line(), width, layout.viewport_padding);
+    let divider = layout.pad_line(&chrome.divider, width, layout.viewport_padding);
+    let footer = layout.pad_line(&chrome.footer, width, layout.viewport_padding);
+    write_capture_line(
+        &mut stdout,
+        layout.input_content_row() + 1,
+        &input,
+        width,
+        false,
+    )?;
+    write_capture_line(
+        &mut stdout,
+        layout.divider_content_row() + 1,
+        &divider,
+        width,
+        true,
+    )?;
     for row in 0..inner_height {
         let content = lines.get(start + row).map(String::as_str).unwrap_or("");
-        write_capture_line(&mut stdout, 3 + row, content, width, false)?;
+        let content = layout.pad_line(content, viewport_width, layout.content_padding);
+        let content = layout.pad_line(&content, width, layout.viewport_padding);
+        write_capture_line(
+            &mut stdout,
+            layout.content_start_row() + row + 1,
+            &content,
+            width,
+            false,
+        )?;
     }
-    write_capture_line(&mut stdout, height.max(1), &chrome.footer, width, false)?;
+    write_capture_line(
+        &mut stdout,
+        layout.footer_row(height) + 1,
+        &footer,
+        width,
+        false,
+    )?;
     stdout.flush().context("could not draw command output")
 }
 

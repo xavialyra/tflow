@@ -166,27 +166,227 @@ impl ShellInput {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Insets {
+    pub(crate) top: usize,
+    pub(crate) right: usize,
+    pub(crate) bottom: usize,
+    pub(crate) left: usize,
+}
+
+impl Insets {
+    pub(crate) const ZERO: Self = Self {
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+    };
+
+    pub(crate) const fn new(top: usize, right: usize, bottom: usize, left: usize) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+
+    pub(crate) fn horizontal(self) -> usize {
+        self.left.saturating_add(self.right)
+    }
+
+    pub(crate) fn vertical(self) -> usize {
+        self.top.saturating_add(self.bottom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InputLayout {
+    pub(crate) rows: usize,
+    pub(crate) divider_rows: usize,
+    pub(crate) padding: Insets,
+    pub(crate) divider_padding: Insets,
+}
+
+impl Default for InputLayout {
+    fn default() -> Self {
+        Self {
+            rows: 1,
+            divider_rows: 1,
+            padding: Insets::new(0, 0, 0, 2),
+            divider_padding: Insets::ZERO,
+        }
+    }
+}
+
+impl InputLayout {
+    fn input_region_rows(self) -> usize {
+        self.rows.saturating_add(self.padding.vertical())
+    }
+
+    fn divider_region_rows(self) -> usize {
+        self.divider_rows
+            .saturating_add(self.divider_padding.vertical())
+    }
+
+    fn total_rows(self) -> usize {
+        self.input_region_rows()
+            .saturating_add(self.divider_region_rows())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChromeLayout {
+    pub(crate) input: InputLayout,
+    pub(crate) footer_rows: usize,
+    pub(crate) viewport_padding: Insets,
+    pub(crate) content_padding: Insets,
+    pub(crate) footer_padding: Insets,
+}
+
+impl Default for ChromeLayout {
+    fn default() -> Self {
+        Self {
+            input: InputLayout::default(),
+            footer_rows: 1,
+            viewport_padding: Insets::new(1, 1, 0, 1),
+            content_padding: Insets::new(0, 0, 0, 2),
+            footer_padding: Insets::ZERO,
+        }
+    }
+}
+
+impl ChromeLayout {
+    pub(crate) fn dmenu() -> Self {
+        Self {
+            input: InputLayout {
+                padding: Insets::new(0, 0, 0, 1),
+                ..InputLayout::default()
+            },
+            content_padding: Insets::new(0, 0, 0, 1),
+            footer_padding: Insets::new(0, 0, 0, 1),
+            ..Self::default()
+        }
+    }
+
+    fn region_rows(rows: usize, padding: Insets) -> usize {
+        rows.saturating_add(padding.vertical())
+    }
+
+    pub(crate) fn input_row(self) -> usize {
+        self.viewport_padding.top
+    }
+
+    pub(crate) fn input_content_row(self) -> usize {
+        self.input_row().saturating_add(self.input.padding.top)
+    }
+
+    pub(crate) fn divider_row(self) -> usize {
+        self.input_row()
+            .saturating_add(self.input.input_region_rows())
+    }
+
+    pub(crate) fn divider_content_row(self) -> usize {
+        self.divider_row()
+            .saturating_add(self.input.divider_padding.top)
+    }
+
+    pub(crate) fn content_start_row(self) -> usize {
+        self.input_row()
+            .saturating_add(self.input.total_rows())
+            .saturating_add(self.content_padding.top)
+    }
+
+    pub(crate) fn footer_row(self, height: usize) -> usize {
+        height
+            .saturating_sub(
+                self.viewport_padding
+                    .bottom
+                    .saturating_add(Self::region_rows(self.footer_rows, self.footer_padding)),
+            )
+            .saturating_add(self.footer_padding.top)
+    }
+
+    pub(crate) fn content_rows(self, height: usize) -> usize {
+        let content_end = self
+            .footer_row(height)
+            .saturating_sub(self.footer_padding.top);
+        content_end.saturating_sub(
+            self.content_start_row()
+                .saturating_add(self.content_padding.bottom),
+        )
+    }
+
+    pub(crate) fn viewport_width(self, width: usize) -> usize {
+        width.saturating_sub(self.viewport_padding.horizontal())
+    }
+
+    pub(crate) fn content_width(self, width: usize) -> usize {
+        self.viewport_width(width)
+            .saturating_sub(self.content_padding.horizontal())
+    }
+
+    pub(crate) fn chrome_width(self, width: usize) -> usize {
+        self.viewport_width(width)
+    }
+
+    pub(crate) fn pad_line(self, text: &str, width: usize, padding: Insets) -> String {
+        let left = padding.left.min(width);
+        let right = padding.right.min(width.saturating_sub(left));
+        let available = width.saturating_sub(left).saturating_sub(right);
+        let text = clip(text, available);
+        format!("{}{}{}", " ".repeat(left), text, " ".repeat(right),)
+    }
+
+    pub(crate) fn selection_parts(self, text: &str, width: usize) -> (String, String, String) {
+        let clipped = clip(text, width);
+        let left = self.viewport_padding.left.min(width).min(clipped.len());
+        let mut right = self
+            .viewport_padding
+            .right
+            .min(width.saturating_sub(self.viewport_padding.left));
+        let mut body_end = clipped.len();
+        while right > 0 && body_end > left && clipped.as_bytes().get(body_end - 1) == Some(&b' ') {
+            body_end -= 1;
+            right -= 1;
+        }
+        (
+            clipped[..left].to_string(),
+            clipped[left..body_end].to_string(),
+            clipped[body_end..].to_string(),
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChromeFrame {
     pub(crate) divider: String,
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
     pub(crate) footer: String,
+    layout: ChromeLayout,
 }
 
 impl ChromeFrame {
+    pub(crate) fn layout(&self) -> ChromeLayout {
+        self.layout
+    }
+
     pub(crate) fn input_line(&self) -> String {
-        format!("  {}", self.input)
+        format!(
+            "{}{}",
+            " ".repeat(self.layout.input.padding.left),
+            self.input
+        )
     }
 
     pub(crate) fn input_line_for_width(&self, width: usize) -> (String, usize) {
-        let prefix = "  ";
-        let prefix_width = UnicodeWidthStr::width(prefix);
-        let available = width.saturating_sub(prefix_width);
-        if available == 0 {
-            return (clip(prefix, width), width.max(1));
+        let prefix = " ".repeat(self.layout.input.padding.left);
+        let prefix_width = UnicodeWidthStr::width(prefix.as_str());
+        let text_available = width.saturating_sub(self.layout.input.padding.horizontal());
+        if text_available == 0 {
+            return (clip(&prefix, width), width.max(1));
         }
-        let text_available = available.saturating_sub(1);
 
         let cursor = previous_char_boundary(&self.input, self.input_cursor);
         let before = &self.input[..cursor];
@@ -241,23 +441,31 @@ impl ChromeFrame {
         engine: EngineChrome,
         error: Option<&str>,
     ) -> Self {
-        let width = width.saturating_sub(1);
-        let footer = if let Some(error) = error {
-            clip(error, width)
+        let layout = ChromeLayout::default();
+        let width = layout.chrome_width(width);
+        let footer_width = width.saturating_sub(layout.footer_padding.horizontal());
+        let footer_text = if let Some(error) = error {
+            clip(error, footer_width)
         } else {
             footer_line(
-                width,
+                footer_width,
                 engine.title.as_deref(),
                 engine.status.as_deref().unwrap_or(""),
                 &engine.commands,
             )
         };
         let route_label = show_route_label.then(|| route.label());
+        let divider_width = width.saturating_sub(layout.input.divider_padding.horizontal());
         Self {
-            divider: divider_line(width, route_label.as_deref().unwrap_or("")),
+            divider: layout.pad_line(
+                &divider_line(divider_width, route_label.as_deref().unwrap_or("")),
+                width,
+                layout.input.divider_padding,
+            ),
             input: input.to_string(),
             input_cursor,
-            footer,
+            footer: layout.pad_line(&footer_text, width, layout.footer_padding),
+            layout,
         }
     }
 }
@@ -443,12 +651,62 @@ mod tests {
         );
         assert!(frame.divider.starts_with("apps:default (app) "));
         assert!(frame.divider.contains('─'));
-        assert_eq!(UnicodeWidthStr::width(frame.divider.as_str()), 79);
+        assert_eq!(UnicodeWidthStr::width(frame.divider.as_str()), 78);
         assert_eq!(frame.input, "terminal");
         assert_eq!(frame.input_line(), "  terminal");
         assert!(frame.footer.starts_with("12 results"));
         assert!(frame.footer.ends_with(" | Enter Open"));
-        assert_eq!(UnicodeWidthStr::width(frame.footer.as_str()), 79);
+        assert_eq!(UnicodeWidthStr::width(frame.footer.as_str()), 78);
+    }
+
+    #[test]
+    fn default_layout_keeps_the_current_chrome_geometry() {
+        let layout = ChromeLayout::default();
+
+        assert_eq!(layout.input_content_row(), 1);
+        assert_eq!(layout.divider_content_row(), 2);
+        assert_eq!(layout.content_start_row(), 3);
+        assert_eq!(layout.content_rows(24), 20);
+        assert_eq!(layout.footer_row(24), 23);
+        assert_eq!(layout.viewport_width(80), 78);
+        assert_eq!(layout.content_width(80), 76);
+        assert_eq!(layout.chrome_width(80), 78);
+    }
+
+    #[test]
+    fn layout_insets_reserve_rows_and_columns() {
+        let layout = ChromeLayout {
+            input: InputLayout {
+                rows: 2,
+                divider_rows: 1,
+                padding: Insets::new(1, 5, 2, 6),
+                divider_padding: Insets::new(0, 1, 1, 2),
+            },
+            footer_rows: 2,
+            viewport_padding: Insets::new(1, 2, 3, 4),
+            content_padding: Insets::new(2, 3, 4, 5),
+            footer_padding: Insets::new(1, 2, 1, 3),
+        };
+
+        assert_eq!(layout.input_content_row(), 2);
+        assert_eq!(layout.divider_content_row(), 6);
+        assert_eq!(layout.content_start_row(), 10);
+        assert_eq!(layout.content_rows(40), 19);
+        assert_eq!(layout.footer_row(40), 34);
+        assert_eq!(layout.viewport_width(80), 74);
+        assert_eq!(layout.content_width(80), 66);
+        assert_eq!(layout.chrome_width(80), 74);
+    }
+
+    #[test]
+    fn selection_excludes_viewport_padding() {
+        let layout = ChromeLayout::default();
+        let line = layout.pad_line("item", 10, layout.viewport_padding);
+
+        assert_eq!(
+            layout.selection_parts(&line, 10),
+            (" ".into(), "item".into(), " ".into())
+        );
     }
 
     #[test]
@@ -467,7 +725,7 @@ mod tests {
             EngineChrome::default(),
             None,
         );
-        assert_eq!(frame.divider, "─".repeat(79));
+        assert_eq!(frame.divider, "─".repeat(78));
     }
 
     #[test]
@@ -489,7 +747,8 @@ mod tests {
         let mut frame =
             ChromeFrame::compose(12, &route(), "abcdefghij", EngineChrome::default(), None);
         frame.input_cursor = frame.input.len();
-        let (line, cursor_column) = frame.input_line_for_width(12);
+        let viewport_width = ChromeLayout::default().viewport_width(12);
+        let (line, cursor_column) = frame.input_line_for_width(viewport_width);
         assert!(UnicodeWidthStr::width(line.as_str()) <= 12);
         assert!(cursor_column <= 12);
         assert!(line.contains("..."));

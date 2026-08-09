@@ -335,48 +335,79 @@ impl DmenuApp {
         let (width, height) = terminal.size();
         let width = width as usize;
         let height = height as usize;
+        let layout = crate::chrome::ChromeLayout::dmenu();
+        let viewport_width = layout.viewport_width(width);
         let matching = self.matching_indices();
-        let footer = self.footer();
-        let available_rows = height.saturating_sub(3);
+        let footer_text = self.footer();
+        let available_rows = layout.content_rows(height);
         let list_height = self
             .lines
             .map(|lines| lines.min(available_rows))
             .unwrap_or(available_rows);
-        let mut lines = Vec::with_capacity(height);
-
-        lines.push(query_line(&self.prompt, &self.query, width));
-        lines.push(crate::chrome::divider_line(width.saturating_sub(1), ""));
+        let mut lines = vec![String::new(); height];
+        let input = query_line(
+            &self.prompt,
+            &self.query,
+            viewport_width,
+            layout.input.padding,
+        );
+        if let Some(line) = lines.get_mut(layout.input_content_row()) {
+            *line = layout.pad_line(&input, width, layout.viewport_padding);
+        }
+        if let Some(line) = lines.get_mut(layout.divider_content_row()) {
+            let divider = crate::chrome::divider_line(layout.chrome_width(width), "");
+            *line = layout.pad_line(&divider, width, layout.viewport_padding);
+        }
 
         let start = if self.selected >= list_height && list_height > 0 {
             self.selected + 1 - list_height
         } else {
             0
         };
+        let content_start = layout.content_start_row();
         let selected_row = if matching.is_empty() || list_height == 0 {
             None
         } else {
-            Some(2 + self.selected.saturating_sub(start))
+            Some(content_start + self.selected.saturating_sub(start))
         };
 
         if list_height > 0 {
-            if matching.is_empty() {
-                lines.push(if self.candidates.is_empty() {
-                    "   (no input)".to_string()
+            let content = if matching.is_empty() {
+                if self.candidates.is_empty() {
+                    "(no input)".to_string()
                 } else {
-                    "   (no matches)".to_string()
-                });
+                    "(no matches)".to_string()
+                }
             } else {
-                for index in matching.iter().skip(start).take(list_height) {
+                String::new()
+            };
+            if !content.is_empty() {
+                if let Some(line) = lines.get_mut(content_start) {
+                    let content = layout.pad_line(&content, viewport_width, layout.content_padding);
+                    *line = layout.pad_line(&content, width, layout.viewport_padding);
+                }
+            } else {
+                for (offset, index) in matching.iter().skip(start).take(list_height).enumerate() {
                     let candidate = &self.candidates[*index];
-                    lines.push(self.display_text(candidate));
+                    if let Some(line) = lines.get_mut(content_start + offset) {
+                        let content = self.display_text(candidate);
+                        let content =
+                            layout.pad_line(&content, viewport_width, layout.content_padding);
+                        *line = layout.pad_line(&content, width, layout.viewport_padding);
+                    }
                 }
             }
         }
 
-        while lines.len() < height.saturating_sub(1) {
-            lines.push(String::new());
+        let footer_width = layout.chrome_width(width);
+        let footer = layout.pad_line(
+            &layout.pad_line(&footer_text, footer_width, layout.footer_padding),
+            width,
+            layout.viewport_padding,
+        );
+        if let Some(line) = lines.get_mut(layout.footer_row(height)) {
+            *line = footer;
         }
-        lines.push(footer);
 
         let mut output = String::new();
         output.push_str("\x1b[H");
@@ -384,10 +415,13 @@ impl DmenuApp {
             let line = lines.get(row).map(String::as_str).unwrap_or("");
             let clipped = clip(line, width);
             if selected_row == Some(row) {
+                let (left, selected, right) = layout.selection_parts(&clipped, width);
+                output.push_str(&left);
                 output.push_str("\x1b[7m");
-                output.push_str(&clipped);
+                output.push_str(&selected);
                 output.push_str("\x1b[0m");
-            } else if row == 1 {
+                output.push_str(&right);
+            } else if row == layout.divider_content_row() {
                 output.push_str("\x1b[1;36m");
                 output.push_str(&clipped);
                 output.push_str("\x1b[0m");
@@ -401,10 +435,17 @@ impl DmenuApp {
         }
 
         if height >= 2 {
-            let cursor_width =
-                UnicodeWidthStr::width(query_line(&self.prompt, &self.query, width).as_str());
-            let cursor_column = cursor_width.min(width.saturating_sub(1)).max(1) + 1;
-            write!(output, "\x1b[1;{}H\x1b[?25h", cursor_column)?;
+            let cursor_width = UnicodeWidthStr::width(input.as_str());
+            let cursor_column = layout.viewport_padding.left
+                + cursor_width.min(viewport_width.saturating_sub(1)).max(1)
+                + 1;
+            let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
+            write!(
+                output,
+                "\x1b[{};{}H\x1b[?25h",
+                layout.input_content_row() + 1,
+                cursor_column.min(max_column)
+            )?;
         }
         terminal
             .write_output(output.as_bytes())
@@ -413,9 +454,9 @@ impl DmenuApp {
 
     fn footer(&self) -> String {
         if let Some(message) = &self.message {
-            return format!(" {}", message);
+            return message.clone();
         }
-        " Up/Down select | Enter accept | Esc cancel | Ctrl-C cancel".to_string()
+        "Up/Down select | Enter accept | Esc cancel | Ctrl-C cancel".to_string()
     }
 }
 
@@ -627,10 +668,17 @@ fn selected_fields<'a>(fields: &[&'a str], selector: &FieldSelector) -> Vec<&'a 
     }
 }
 
-fn query_line(prompt: &str, query: &str, width: usize) -> String {
-    let prefix = format!(" {}", prompt);
-    let prefix = clip(&prefix, width);
-    let available = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+fn query_line(
+    prompt: &str,
+    query: &str,
+    width: usize,
+    input_padding: crate::chrome::Insets,
+) -> String {
+    let prefix = format!("{}{}", " ".repeat(input_padding.left), prompt);
+    let prefix = clip(&prefix, width.saturating_sub(input_padding.right));
+    let available = width
+        .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+        .saturating_sub(input_padding.right);
     format!("{}{}", prefix, clip_tail(query, available))
 }
 
