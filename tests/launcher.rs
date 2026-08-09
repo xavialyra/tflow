@@ -295,6 +295,83 @@ fn ctrl_k_opens_the_command_picker_view() {
 }
 
 #[test]
+fn tab_opens_view_completion_and_escape_closes_it() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+
+        [plugins.apps.views.main]
+        type = "picker"
+        alias = "app"
+
+        [plugins.sys.views.main]
+        type = "picker"
+        alias = "sys"
+        "#,
+    )
+    .expect("could not write view completion config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\t")
+        .expect("could not open view completion");
+    process
+        .master
+        .flush()
+        .expect("could not flush view completion key");
+    let output = wait_for_text(&process.master, "apps:main");
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("apps:main"), "output: {output}");
+    assert!(output.contains("sys:main"), "output: {output}");
+    assert!(!output.contains("\x1b[7m> "), "output: {output}");
+    assert!(!output.contains(" > "), "output: {output}");
+
+    process
+        .master
+        .write_all(b"\x1b")
+        .expect("could not close view completion");
+    process
+        .master
+        .flush()
+        .expect("could not flush completion close key");
+
+    process
+        .master
+        .write_all(b"\t\r")
+        .expect("could not accept a completed view");
+    process
+        .master
+        .flush()
+        .expect("could not flush completed view");
+    let output = wait_for_text(&process.master, "apps:main");
+    assert!(
+        String::from_utf8_lossy(&output).contains("apps:main"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close completion test launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush completion test close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove view completion config");
+}
+
+#[test]
 fn picker_bindings_can_override_a_default_shortcut() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -509,7 +586,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
     process.master.flush().expect("could not flush app route");
     let output = wait_for_text(&process.master, "apps:default");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > app "),
+        String::from_utf8_lossy(&output).contains("  app "),
         "output: {:?}",
         output
     );
@@ -519,9 +596,9 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .write_all(b"aa")
         .expect("could not write app query");
     process.master.flush().expect("could not flush app query");
-    let output = wait_for_text(&process.master, " > app aa");
+    let output = wait_for_text(&process.master, "  app aa");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > app aa"),
+        String::from_utf8_lossy(&output).contains("  app aa"),
         "output: {:?}",
         output
     );
@@ -536,7 +613,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .expect("could not flush route escape");
     let output = wait_for_text(&process.master, "core:default");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > app "),
+        String::from_utf8_lossy(&output).contains("  app "),
         "output: {:?}",
         output
     );
@@ -600,9 +677,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route parameter deletion");
-    let output = wait_for_text(&process.master, " > app ");
+    let output = wait_for_text(&process.master, "  app ");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > app "),
+        String::from_utf8_lossy(&output).contains("  app "),
         "output: {:?}",
         output
     );
@@ -617,7 +694,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .expect("could not flush route separator deletion");
     let output = wait_for_text(&process.master, "core:default");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > app"),
+        String::from_utf8_lossy(&output).contains("  app"),
         "output: {:?}",
         output
     );
@@ -630,9 +707,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route selector deletion");
-    let output = wait_for_text(&process.master, " > ");
+    let output = wait_for_text(&process.master, "  ");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > "),
+        String::from_utf8_lossy(&output).contains("  "),
         "output: {:?}",
         output
     );
@@ -647,7 +724,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .expect("could not flush replacement route");
     let output = wait_for_text(&process.master, "sys:default");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > sys "),
+        String::from_utf8_lossy(&output).contains("  sys "),
         "output: {:?}",
         output
     );
@@ -956,7 +1033,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         .expect("could not flush broken route");
     let output = wait_for_text(&process.master, "ERROR");
     assert!(
-        String::from_utf8_lossy(&output).contains(" > core:broken"),
+        String::from_utf8_lossy(&output).contains("  core:broken"),
         "output: {:?}",
         output
     );

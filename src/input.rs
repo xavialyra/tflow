@@ -6,7 +6,14 @@ pub(crate) enum Key {
     Char(char),
     Alt(char),
     Enter,
+    Tab,
+    BackTab,
     Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
     Up,
     Down,
     Escape,
@@ -18,7 +25,14 @@ impl Key {
         let normalized = source.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "enter" | "ctrl+j" | "ctrl+m" => Ok(Self::Enter),
+            "tab" | "ctrl+i" => Ok(Self::Tab),
+            "shift+tab" | "backtab" => Ok(Self::BackTab),
             "backspace" | "ctrl+h" => Ok(Self::Backspace),
+            "delete" => Ok(Self::Delete),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "home" => Ok(Self::Home),
+            "end" => Ok(Self::End),
             "up" => Ok(Self::Up),
             "down" => Ok(Self::Down),
             "escape" | "esc" => Ok(Self::Escape),
@@ -46,7 +60,14 @@ impl Key {
     pub(crate) fn binding_name(self) -> Option<String> {
         match self {
             Self::Enter => Some("enter".to_string()),
+            Self::Tab => Some("tab".to_string()),
+            Self::BackTab => Some("shift+tab".to_string()),
             Self::Backspace => Some("backspace".to_string()),
+            Self::Delete => Some("delete".to_string()),
+            Self::Left => Some("left".to_string()),
+            Self::Right => Some("right".to_string()),
+            Self::Home => Some("home".to_string()),
+            Self::End => Some("end".to_string()),
             Self::Up => Some("up".to_string()),
             Self::Down => Some("down".to_string()),
             Self::Escape => Some("escape".to_string()),
@@ -109,35 +130,49 @@ impl InputDecoder {
                     self.escape_since = None;
                     continue;
                 }
-                if self.pending.len() < 3 {
+                let Some(end) = self.pending[2..]
+                    .iter()
+                    .position(|byte| (0x40..=0x7e).contains(byte))
+                    .map(|position| position + 2)
+                else {
+                    if self.pending.len() > 16 {
+                        self.pending.remove(0);
+                        self.escape_since = None;
+                        keys.push(Key::Escape);
+                        continue;
+                    }
                     self.escape_since.get_or_insert_with(Instant::now);
                     break;
-                }
-                let code = self.pending[2];
+                };
+                let params = &self.pending[2..end];
+                let code = self.pending[end];
                 let key = match code {
                     b'A' => Some(Key::Up),
                     b'B' => Some(Key::Down),
+                    b'C' => Some(Key::Right),
+                    b'D' => Some(Key::Left),
+                    b'H' => Some(Key::Home),
+                    b'F' => Some(Key::End),
+                    b'Z' => Some(Key::BackTab),
+                    b'~' => match params
+                        .split(|byte| *byte == b';')
+                        .next()
+                        .and_then(|value| std::str::from_utf8(value).ok())
+                        .and_then(|value| value.parse::<u8>().ok())
+                    {
+                        Some(1 | 7) => Some(Key::Home),
+                        Some(3) => Some(Key::Delete),
+                        Some(4 | 8) => Some(Key::End),
+                        _ => None,
+                    },
                     _ => None,
                 };
+                self.pending.drain(..=end);
+                self.escape_since = None;
                 if let Some(key) = key {
-                    self.pending.drain(..3);
-                    self.escape_since = None;
                     keys.push(key);
-                    continue;
                 }
-                if self.pending.last() == Some(&b'~') {
-                    self.pending.clear();
-                    self.escape_since = None;
-                    continue;
-                }
-                if self.pending.len() > 8 {
-                    self.pending.remove(0);
-                    self.escape_since = None;
-                    keys.push(Key::Escape);
-                    continue;
-                }
-                self.escape_since.get_or_insert_with(Instant::now);
-                break;
+                continue;
             }
 
             if let Some(key) = control_key(first) {
@@ -175,6 +210,7 @@ impl InputDecoder {
 fn control_key(byte: u8) -> Option<Key> {
     match byte {
         b'\r' | b'\n' => Some(Key::Enter),
+        b'\t' => Some(Key::Tab),
         0x7f | 0x08 => Some(Key::Backspace),
         0x01..=0x1a => Some(Key::Ctrl((b'a' + byte - 1) as char)),
         _ => None,
@@ -230,6 +266,23 @@ mod tests {
     }
 
     #[test]
+    fn decodes_editor_keys_and_tab() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(
+            decoder.feed(b"\t\x1b[C\x1b[D\x1b[H\x1b[F\x1b[3~\x1b[Z"),
+            vec![
+                Key::Tab,
+                Key::Right,
+                Key::Left,
+                Key::Home,
+                Key::End,
+                Key::Delete,
+                Key::BackTab,
+            ]
+        );
+    }
+
+    #[test]
     fn parses_configured_key_bindings() {
         assert_eq!(Key::parse_binding("Ctrl+K").unwrap(), Key::Ctrl('k'));
         assert_eq!(Key::parse_binding("alt+A").unwrap(), Key::Alt('a'));
@@ -237,6 +290,10 @@ mod tests {
         assert_eq!(Key::parse_binding("ctrl+h").unwrap(), Key::Backspace);
         assert_eq!(Key::parse_binding("ctrl+j").unwrap(), Key::Enter);
         assert_eq!(Key::parse_binding("ctrl+m").unwrap(), Key::Enter);
+        assert_eq!(Key::parse_binding("tab").unwrap(), Key::Tab);
+        assert_eq!(Key::parse_binding("ctrl+i").unwrap(), Key::Tab);
+        assert_eq!(Key::parse_binding("shift+tab").unwrap(), Key::BackTab);
+        assert_eq!(Key::parse_binding("left").unwrap(), Key::Left);
         assert_eq!(Key::Ctrl('R').binding_name().as_deref(), Some("ctrl+r"));
         assert!(Key::parse_binding("ctrl+1").is_err());
         assert!(Key::parse_binding("plain").is_err());

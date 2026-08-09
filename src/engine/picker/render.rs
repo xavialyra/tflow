@@ -1,5 +1,7 @@
+use super::input::ViewCompletion;
 use super::{Item, PickerView};
 use crate::config::Config;
+use crate::router::ViewCandidate;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -11,6 +13,7 @@ pub(crate) struct PickerRenderState {
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
+    pub(crate) completion: Option<ViewCompletion>,
 }
 
 pub(crate) fn render_picker(
@@ -25,34 +28,66 @@ pub(crate) fn render_picker(
     let mut lines = Vec::with_capacity(height);
     let prefix_width = prefix_column_width(&state.items, width);
     let content_width = width.saturating_sub(prefix_width + 4);
+    let (input_line, _) = chrome.input_line_for_width(width);
 
-    lines.push(chrome.input_line());
+    lines.push(input_line);
     lines.push(chrome.divider.clone());
 
-    let start = if state.selected >= list_height && list_height > 0 {
-        state.selected + 1 - list_height
+    let completion_start = state.completion.as_ref().map(|completion| {
+        if completion.selected >= list_height && list_height > 0 {
+            completion.selected + 1 - list_height
+        } else {
+            0
+        }
+    });
+    let selected_row = if let Some(completion) = &state.completion {
+        if completion.candidates.is_empty() || list_height == 0 {
+            None
+        } else {
+            Some(
+                2 + completion
+                    .selected
+                    .saturating_sub(completion_start.unwrap_or(0)),
+            )
+        }
     } else {
-        0
-    };
-    let selected_row = if state.items.is_empty() || list_height == 0 {
-        None
-    } else {
-        Some(2 + state.selected.saturating_sub(start))
+        let start = if state.selected >= list_height && list_height > 0 {
+            state.selected + 1 - list_height
+        } else {
+            0
+        };
+        if state.items.is_empty() || list_height == 0 {
+            None
+        } else {
+            Some(2 + state.selected.saturating_sub(start))
+        }
     };
 
     if list_height > 0 {
-        if state.items.is_empty() {
-            lines.push(if state.searching {
-                "   (searching...)".to_string()
+        if let Some(completion) = &state.completion {
+            if completion.candidates.is_empty() {
+                lines.push("  (no matching views)".to_string());
             } else {
-                "   (no matches)".to_string()
+                let primary_width = completion_primary_width(&completion.candidates, width);
+                let start = completion_start.unwrap_or(0);
+                for candidate in completion.candidates.iter().skip(start).take(list_height) {
+                    lines.push(format_view_line(candidate, primary_width, width));
+                }
+            }
+        } else if state.items.is_empty() {
+            lines.push(if state.searching {
+                "  (searching...)".to_string()
+            } else {
+                "  (no matches)".to_string()
             });
         } else {
-            for (offset, item) in state.items.iter().skip(start).take(list_height).enumerate() {
-                let index = start + offset;
-                let marker = if index == state.selected { "> " } else { "  " };
+            let start = if state.selected >= list_height && list_height > 0 {
+                state.selected + 1 - list_height
+            } else {
+                0
+            };
+            for item in state.items.iter().skip(start).take(list_height) {
                 lines.push(format_item_line(
-                    marker,
                     &item.prefix,
                     &item.text,
                     prefix_width,
@@ -72,8 +107,8 @@ pub(crate) fn render_picker(
     for row in 0..height {
         let line = lines.get(row).map(String::as_str).unwrap_or("");
         let clipped = clip(line, width);
-        if selected_row == Some(row) && clipped.starts_with("> ") {
-            write!(stdout, "\x1b[7m{}\x1b[0m", clipped)?;
+        if selected_row == Some(row) {
+            write!(stdout, "\x1b[7m{}\x1b[0m", clipped)?
         } else if row == 1 {
             write!(stdout, "\x1b[1;36m{}\x1b[0m", clipped)?;
         } else {
@@ -84,6 +119,12 @@ pub(crate) fn render_picker(
             stdout.write_all(b"\r\n")?;
         }
     }
+    let (_, cursor_column) = chrome.input_line_for_width(width);
+    write!(
+        stdout,
+        "\x1b[1;{}H\x1b[?25h",
+        cursor_column.max(1).min(width.max(1))
+    )?;
     stdout.flush().context("could not draw picker")
 }
 
@@ -98,14 +139,63 @@ fn prefix_column_width(items: &[Item], width: usize) -> usize {
 }
 
 fn format_item_line(
-    marker: &str,
     prefix: &str,
     content: &str,
     prefix_width: usize,
     content_width: usize,
 ) -> String {
     let prefix = pad_right(&clip(prefix, prefix_width), prefix_width);
-    format!("{}{}  {}", marker, prefix, clip(content, content_width))
+    format!("  {}  {}", prefix, clip(content, content_width))
+}
+
+fn completion_primary_width(candidates: &[ViewCandidate], width: usize) -> usize {
+    let maximum = width.saturating_sub(20).max(1);
+    candidates
+        .iter()
+        .map(|candidate| UnicodeWidthStr::width(candidate.primary_label()))
+        .max()
+        .unwrap_or(6)
+        .min(maximum)
+        .max(1)
+}
+
+fn format_view_line(candidate: &ViewCandidate, primary_width: usize, width: usize) -> String {
+    let primary = pad_right(
+        &clip(candidate.primary_label(), primary_width),
+        primary_width,
+    );
+    let reference = if candidate.alias.is_some() {
+        clip(
+            candidate.secondary_label(),
+            width.saturating_sub(primary_width + 4),
+        )
+    } else {
+        String::new()
+    };
+    let used = primary_width
+        + 2
+        + UnicodeWidthStr::width(reference.as_str())
+        + if reference.is_empty() { 0 } else { 2 };
+    let remaining = width.saturating_sub(used);
+    let description = if remaining > 2 {
+        format!("{} [{}]", candidate.plugin_name, candidate.engine_type)
+    } else {
+        String::new()
+    };
+    format!(
+        "  {}{}{}",
+        primary,
+        if reference.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", reference)
+        },
+        if description.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", clip(&description, remaining))
+        }
+    )
 }
 
 fn pad_right(text: &str, width: usize) -> String {
@@ -131,6 +221,7 @@ impl PickerView {
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,
+            completion: self.completion.clone(),
         }
     }
 }

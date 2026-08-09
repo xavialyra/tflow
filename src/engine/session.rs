@@ -112,6 +112,7 @@ impl<'a> AppSession<'a> {
             .as_ref()
             .map(|record| record.label.clone());
         let shell_input = self.input.raw.clone();
+        let shell_cursor = self.input.cursor;
         let host = EngineHost {
             config: self.config,
             input: &mut self.input,
@@ -121,10 +122,11 @@ impl<'a> AppSession<'a> {
             active_error_deadline: &mut self.active_error_deadline,
         };
         let engine_chrome = entry.instance.chrome(&host);
-        let chrome = crate::chrome::ChromeFrame::compose(
+        let chrome = crate::chrome::ChromeFrame::compose_with_cursor(
             terminal.size().0 as usize,
             &route,
             &shell_input,
+            shell_cursor,
             engine_chrome,
             error.as_deref(),
         );
@@ -166,7 +168,10 @@ impl<'a> AppSession<'a> {
                 Ok(None)
             }
             crate::router::RouteResolution::NotMatched if route_child => {
-                Ok(Some(ViewEffect::BackWithInput(raw_input)))
+                Ok(Some(ViewEffect::BackWithInput {
+                    input: raw_input,
+                    cursor: self.input.cursor,
+                }))
             }
             crate::router::RouteResolution::NotMatched => {
                 self.input.params = raw_input;
@@ -200,7 +205,7 @@ impl<'a> AppSession<'a> {
             ViewEffect::Continue => Ok(false),
             ViewEffect::Exit => Ok(true),
             ViewEffect::Back => self.pop_current(None),
-            ViewEffect::BackWithInput(input) => self.pop_current(Some(input)),
+            ViewEffect::BackWithInput { input, cursor } => self.pop_current(Some((input, cursor))),
             ViewEffect::Navigate { location, mode } => {
                 let previous_input = self.input.clone();
                 if let Some(entry) = self.views.last_mut() {
@@ -243,12 +248,12 @@ impl<'a> AppSession<'a> {
         }
     }
 
-    fn pop_current(&mut self, edited_input: Option<String>) -> Result<bool> {
+    fn pop_current(&mut self, edited_input: Option<(String, usize)>) -> Result<bool> {
         if self.views.len() <= 1 {
-            let Some(input) = edited_input else {
+            let Some((input, cursor)) = edited_input else {
                 return Ok(true);
             };
-            self.input = ShellInput::new(input.clone());
+            self.input = ShellInput::with_cursor(input.clone(), cursor);
             if let Some(entry) = self.views.last_mut() {
                 entry.shell_input = self.input.clone();
             }
@@ -260,8 +265,8 @@ impl<'a> AppSession<'a> {
         // An edited pop carries the new buffer; Esc restores the saved parent snapshot.
         let changed = edited_input.is_some();
         self.views.pop();
-        if let Some(input) = edited_input {
-            self.input = ShellInput::new(input);
+        if let Some((input, cursor)) = edited_input {
+            self.input = ShellInput::with_cursor(input, cursor);
             if let Some(entry) = self.views.last_mut() {
                 entry.shell_input = self.input.clone();
             }

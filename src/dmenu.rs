@@ -271,7 +271,16 @@ impl DmenuApp {
                 self.message = None;
                 None
             }
-            Key::Char(_) | Key::Alt(_) | Key::Ctrl(_) => None,
+            Key::Char(_)
+            | Key::Alt(_)
+            | Key::Ctrl(_)
+            | Key::Tab
+            | Key::BackTab
+            | Key::Delete
+            | Key::Left
+            | Key::Right
+            | Key::Home
+            | Key::End => None,
         }
     }
 
@@ -357,14 +366,9 @@ impl DmenuApp {
                     "   (no matches)".to_string()
                 });
             } else {
-                for (offset, index) in matching.iter().skip(start).take(list_height).enumerate() {
+                for index in matching.iter().skip(start).take(list_height) {
                     let candidate = &self.candidates[*index];
-                    let marker = if self.selected == start + offset {
-                        "> "
-                    } else {
-                        "  "
-                    };
-                    lines.push(format!("{}{}", marker, self.display_text(candidate)));
+                    lines.push(self.display_text(candidate));
                 }
             }
         }

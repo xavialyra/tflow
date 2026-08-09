@@ -49,7 +49,10 @@ pub(crate) enum ViewEffect {
         mode: NavigationMode,
     },
     Back,
-    BackWithInput(String),
+    BackWithInput {
+        input: String,
+        cursor: usize,
+    },
     Exit,
 }
 

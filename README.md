@@ -356,21 +356,26 @@ open_commands = ["ctrl+k"]
 delete_word = []
 ```
 
-Available actions are `exit`, `open_commands`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. One physical key cannot be assigned to multiple picker actions.
+Available actions are `exit`, `open_commands`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. `Tab` is reserved for View completion; the arrow, Home/End, and Delete keys edit the input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
 
 The default bindings are:
 
 - `Enter`: execute the current view's Enter command;
+- `Tab`: open View completion; while it is open, `Tab` cycles candidates;
 - `Alt+<character>` or another unreserved configured key: execute a view command;
-- `Up` / `Down`: move through results;
-- `Esc`: clear the query, then return to the parent view or quit at the root;
-- `Backspace`: delete the previous character;
+- `Up` / `Down`: move through results, or move through View completion candidates;
+- `Left` / `Right`: move the input cursor;
+- `Home` / `End`: move the input cursor to the beginning or end;
+- `Esc`: close View completion when it is open; otherwise clear the query, then return to the parent view or quit at the root;
+- `Backspace` / `Delete`: delete before or after the cursor;
 - `Ctrl-C` / `Ctrl-D`: quit;
 - `Ctrl-U`: clear the query;
 - `Ctrl-W`: delete the previous word;
 - `Ctrl-K`: open the command picker view for the selected item's source view.
 
-Input, divider, and footer chrome are composed centrally from the active route, the current engine, and global errors. The divider shows `plugin:view (alias)` followed by a horizontal rule; the alias is omitted when absent. Engine title and status remain on the left of the footer, while engine commands remain right-aligned. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+View completion searches every configured View by alias, canonical reference, and plugin name. `Enter` accepts the highlighted candidate and navigates to its canonical reference. The completion list uses inverse highlighting for the selected row and does not add a selection marker.
+
+Input, divider, and footer chrome are composed centrally from the active route, the current engine, and global errors. The input line keeps the cursor visible and scrolls long input around it without a prompt marker. The divider shows `plugin:view (alias)` followed by a horizontal rule; the alias is omitted when absent. Engine title and status remain on the left of the footer, while engine commands remain right-aligned. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 

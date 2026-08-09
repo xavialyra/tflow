@@ -23,6 +23,24 @@ pub(crate) struct RouteDisplay {
     pub(crate) alias: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewCandidate {
+    pub(crate) view_ref: ViewRef,
+    pub(crate) alias: Option<String>,
+    pub(crate) plugin_name: String,
+    pub(crate) engine_type: String,
+}
+
+impl ViewCandidate {
+    pub(crate) fn primary_label(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.view_ref)
+    }
+
+    pub(crate) fn secondary_label(&self) -> &str {
+        &self.view_ref
+    }
+}
+
 impl RouteDisplay {
     pub(crate) fn label(&self) -> String {
         self.alias
@@ -37,6 +55,7 @@ pub(crate) struct Router {
     views: BTreeSet<ViewRef>,
     aliases: BTreeMap<String, Vec<ViewRef>>,
     display: BTreeMap<ViewRef, RouteDisplay>,
+    candidates: Vec<ViewCandidate>,
 }
 
 impl Router {
@@ -44,7 +63,17 @@ impl Router {
         let views = config.views.keys().cloned().collect::<BTreeSet<_>>();
         let mut aliases = BTreeMap::<String, Vec<ViewRef>>::new();
         let mut display = BTreeMap::new();
+        let mut candidates = Vec::with_capacity(config.views.len());
         for (view_ref, view) in &config.views {
+            let plugin = view_ref
+                .split_once(':')
+                .map(|(plugin, _)| plugin)
+                .unwrap_or(view_ref);
+            let plugin_name = config
+                .plugins
+                .get(plugin)
+                .map(|metadata| metadata.name.clone())
+                .unwrap_or_else(|| plugin.to_string());
             if let Some(alias) = &view.alias {
                 aliases
                     .entry(alias.clone())
@@ -58,16 +87,44 @@ impl Router {
                     alias: view.alias.clone(),
                 },
             );
+            candidates.push(ViewCandidate {
+                view_ref: view_ref.clone(),
+                alias: view.alias.clone(),
+                plugin_name,
+                engine_type: view.engine_type.clone(),
+            });
         }
         for targets in aliases.values_mut() {
             targets.sort();
             targets.dedup();
         }
+        candidates.sort_by(|left, right| left.view_ref.cmp(&right.view_ref));
         Self {
             views,
             aliases,
             display,
+            candidates,
         }
+    }
+
+    pub(crate) fn complete_views(&self, query: &str) -> Vec<ViewCandidate> {
+        let query = query.trim().to_lowercase();
+        let mut matches = self
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                view_match_score(candidate, &query).map(|score| (score, candidate.clone()))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.view_ref.cmp(&right.1.view_ref))
+        });
+        matches
+            .into_iter()
+            .map(|(_, candidate)| candidate)
+            .collect()
     }
 
     pub(crate) fn resolve(&self, current_view_ref: &str, input: &str) -> RouteResolution {
@@ -114,6 +171,46 @@ impl Router {
                 alias: None,
             })
     }
+}
+
+fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<(u8, usize)> {
+    if query.is_empty() {
+        return Some((10, 0));
+    }
+
+    let alias = candidate
+        .alias
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let view_ref = candidate.view_ref.to_lowercase();
+    let plugin_name = candidate.plugin_name.to_lowercase();
+    let fields = [&alias, &view_ref, &plugin_name];
+    if !query
+        .split_whitespace()
+        .all(|token| fields.iter().any(|field| field.contains(token)))
+    {
+        return None;
+    }
+
+    let score = if alias == query {
+        0
+    } else if view_ref == query {
+        1
+    } else if alias.starts_with(query) {
+        2
+    } else if view_ref.starts_with(query) {
+        3
+    } else if plugin_name.starts_with(query) {
+        4
+    } else if alias.contains(query) {
+        5
+    } else if view_ref.contains(query) {
+        6
+    } else {
+        7
+    };
+    Some((score, query.len()))
 }
 
 fn split_selector(input: &str) -> Option<(&str, &str)> {
@@ -252,5 +349,30 @@ mod tests {
             "package-a:default (temp)"
         );
         assert_eq!(router.display("core:default").label(), "core:default");
+    }
+
+    #[test]
+    fn completes_all_views_by_alias_and_reference() {
+        let router = Router::new(&config());
+        let matches = router.complete_views("det");
+        assert_eq!(
+            matches
+                .iter()
+                .map(|candidate| candidate.view_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["package-a:view2"]
+        );
+        assert_eq!(
+            router.complete_views("package-a:")[0].view_ref,
+            "package-a:default"
+        );
+    }
+
+    #[test]
+    fn completion_prefers_exact_aliases() {
+        let router = Router::new(&config());
+        let matches = router.complete_views("temp");
+        assert_eq!(matches[0].alias.as_deref(), Some("temp"));
+        assert_eq!(matches[0].view_ref, "package-a:default");
     }
 }

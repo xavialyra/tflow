@@ -41,7 +41,7 @@ struct Args {
     dmenu0: bool,
 
     /// Prompt shown before the dmenu query.
-    #[arg(long, default_value = "> ")]
+    #[arg(long, default_value = "")]
     prompt: String,
 
     /// Limit the number of visible dmenu result rows.

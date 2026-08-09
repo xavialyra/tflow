@@ -1,13 +1,15 @@
-use super::input::PickerInputAction;
+use super::input::{PickerInputAction, ViewCompletion};
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::PickerKeymap;
 use super::render;
+use crate::chrome::ShellInput;
 use crate::config::Config;
 use crate::engine::{
     EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
     ViewLocation,
 };
 use crate::input::{InputDecoder, Key};
+use crate::router::Router;
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
@@ -59,6 +61,8 @@ pub(crate) struct PickerView {
     started: bool,
     route_child: bool,
     parent_item: Option<Item>,
+    router: Router,
+    pub(super) completion: Option<ViewCompletion>,
     pub(super) keymap: PickerKeymap,
 }
 
@@ -73,7 +77,7 @@ impl PickerView {
         Self {
             frame: PickerFrame::new(view),
             tasks,
-            config,
+            config: Arc::clone(&config),
             items_task: None,
             requested_view: String::new(),
             log_file: None,
@@ -81,6 +85,8 @@ impl PickerView {
             started: false,
             route_child,
             parent_item: None,
+            router: Router::new(&config),
+            completion: None,
             keymap,
         }
     }
@@ -149,6 +155,48 @@ impl PickerView {
 
     pub(crate) fn command_parent_item(&self) -> Option<&Item> {
         self.parent_item.as_ref()
+    }
+
+    pub(super) fn completion_active(&self) -> bool {
+        self.completion.is_some()
+    }
+
+    pub(super) fn close_completion(&mut self) {
+        self.completion = None;
+    }
+
+    pub(super) fn open_completion(&mut self, input: &ShellInput) {
+        let selector_end = input
+            .raw
+            .find(char::is_whitespace)
+            .unwrap_or(input.raw.len());
+        let query_end = input.cursor.min(selector_end);
+        let selector = &input.raw[..query_end];
+        self.completion = Some(ViewCompletion {
+            candidates: self.router.complete_views(selector),
+            selected: 0,
+            selector_start: 0,
+            selector_end,
+        });
+    }
+
+    pub(super) fn cycle_completion(&mut self, direction: isize) {
+        let Some(completion) = self.completion.as_mut() else {
+            return;
+        };
+        if completion.candidates.is_empty() {
+            return;
+        }
+        let count = completion.candidates.len() as isize;
+        completion.selected =
+            ((completion.selected as isize + direction).rem_euclid(count)) as usize;
+    }
+
+    pub(super) fn accept_completion(&mut self, input: &mut ShellInput) -> bool {
+        let Some(completion) = self.completion.take() else {
+            return false;
+        };
+        apply_view_completion(input, &completion)
     }
 
     fn request_current(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
@@ -462,6 +510,29 @@ impl PickerView {
     }
 }
 
+fn apply_view_completion(input: &mut ShellInput, completion: &ViewCompletion) -> bool {
+    let Some(candidate) = completion.candidates.get(completion.selected) else {
+        return false;
+    };
+    let old_cursor = input.cursor;
+    let old_length = completion.selector_end - completion.selector_start;
+    let replacement = candidate.view_ref.clone();
+    input.replace_range(
+        completion.selector_start,
+        completion.selector_end,
+        &replacement,
+    );
+    if old_cursor > completion.selector_end {
+        let new_cursor = if replacement.len() >= old_length {
+            old_cursor + replacement.len() - old_length
+        } else {
+            old_cursor.saturating_sub(old_length - replacement.len())
+        };
+        input.set_cursor(new_cursor);
+    }
+    true
+}
+
 impl ViewInstance for PickerView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let query = self.frame.query.clone();
@@ -469,6 +540,7 @@ impl ViewInstance for PickerView {
     }
 
     fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+        self.close_completion();
         let input = host.input.raw.clone();
         self.items_task.take();
         self.frame.refresh_deadline = None;
@@ -480,11 +552,13 @@ impl ViewInstance for PickerView {
     }
 
     fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        self.close_completion();
         self.schedule_refresh();
         Ok(())
     }
 
     fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        self.close_completion();
         self.items_task.take();
         self.frame.refresh_deadline = None;
         self.frame.items_pending = false;
@@ -493,6 +567,7 @@ impl ViewInstance for PickerView {
     }
 
     fn deactivate(&mut self) -> Result<()> {
+        self.close_completion();
         if self.items_task.take().is_some() {
             self.frame.items_pending = false;
             self.schedule_refresh();
@@ -528,12 +603,20 @@ impl ViewInstance for PickerView {
                 key,
                 &host.config.command_view,
                 command_available,
-                &mut host.input.raw,
+                host.input,
                 nested_input,
             ) {
                 PickerInputAction::Continue => {}
                 PickerInputAction::Refresh => refresh = true,
                 PickerInputAction::ClearError => host.clear_error(),
+                PickerInputAction::OpenCompletion => self.open_completion(host.input),
+                PickerInputAction::CycleCompletion(direction) => self.cycle_completion(direction),
+                PickerInputAction::AcceptCompletion => {
+                    if self.accept_completion(host.input) {
+                        refresh = true;
+                    }
+                }
+                PickerInputAction::CloseCompletion => self.close_completion(),
                 PickerInputAction::Activate(key) => {
                     return self.handle_command_key(host, terminal, key);
                 }
@@ -553,14 +636,29 @@ impl ViewInstance for PickerView {
 
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         let searching = self.frame.refresh_deadline.is_some() || self.frame.items_pending;
+        let (status, commands) = if let Some(completion) = &self.completion {
+            (
+                format!("{} views", completion.candidates.len()),
+                vec![
+                    ("tab".to_string(), "Next".to_string()),
+                    ("enter".to_string(), "Open".to_string()),
+                    ("escape".to_string(), "Close".to_string()),
+                ],
+            )
+        } else {
+            (
+                if searching {
+                    "searching...".to_string()
+                } else {
+                    format!("{} results", self.frame.items.len())
+                },
+                self.visible_commands(host.config),
+            )
+        };
         crate::chrome::EngineChrome {
             title: None,
-            status: Some(if searching {
-                "searching...".to_string()
-            } else {
-                format!("{} results", self.frame.items.len())
-            }),
-            commands: self.visible_commands(host.config),
+            status: Some(status),
+            commands,
         }
     }
 
@@ -578,12 +676,65 @@ impl ViewInstance for PickerView {
 fn key_display(key: Key) -> String {
     match key {
         Key::Enter => "Enter".to_string(),
+        Key::Tab => "Tab".to_string(),
+        Key::BackTab => "Shift-Tab".to_string(),
         Key::Alt(character) => format!("Alt-{}", character.to_ascii_uppercase()),
         Key::Escape => "Esc".to_string(),
+        Key::Left => "Left".to_string(),
+        Key::Right => "Right".to_string(),
+        Key::Home => "Home".to_string(),
+        Key::End => "End".to_string(),
         Key::Up => "Up".to_string(),
         Key::Down => "Down".to_string(),
         Key::Backspace => "Backspace".to_string(),
+        Key::Delete => "Delete".to_string(),
         Key::Ctrl(character) => format!("Ctrl-{}", character.to_ascii_uppercase()),
         Key::Char(character) => character.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::router::ViewCandidate;
+
+    fn candidate() -> ViewCandidate {
+        ViewCandidate {
+            view_ref: "apps:main".to_string(),
+            alias: Some("app".to_string()),
+            plugin_name: "Applications".to_string(),
+            engine_type: "picker".to_string(),
+        }
+    }
+
+    #[test]
+    fn completion_preserves_cursor_in_the_query() {
+        let mut input = ShellInput::new("app query");
+        let completion = ViewCompletion {
+            candidates: vec![candidate()],
+            selected: 0,
+            selector_start: 0,
+            selector_end: 3,
+        };
+
+        assert!(apply_view_completion(&mut input, &completion));
+        assert_eq!(input.raw, "apps:main query");
+        assert_eq!(input.cursor, input.raw.len());
+    }
+
+    #[test]
+    fn completion_places_cursor_after_a_selector_edited_in_place() {
+        let mut input = ShellInput::new("ap query");
+        input.set_cursor(2);
+        let completion = ViewCompletion {
+            candidates: vec![candidate()],
+            selected: 0,
+            selector_start: 0,
+            selector_end: 2,
+        };
+
+        assert!(apply_view_completion(&mut input, &completion));
+        assert_eq!(input.raw, "apps:main query");
+        assert_eq!(input.cursor, "apps:main".len());
     }
 }
