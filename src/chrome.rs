@@ -885,7 +885,7 @@ fn clip_footer(content: &FooterContent, width: usize) -> FooterContent {
 }
 
 fn style_footer(text: &str, key_spans: &[(usize, usize)]) -> String {
-    const KEY_START: &str = "\x1b[100m\x1b[97m";
+    const KEY_START: &str = "\x1b[48;2;220;224;230m\x1b[38;2;25;30;35m";
     const KEY_END: &str = "\x1b[0m";
     let mut output = String::new();
     let mut cursor = 0;
@@ -1064,7 +1064,7 @@ mod tests {
         assert!(
             frame
                 .footer_line(80)
-                .contains("\x1b[100m\x1b[97mEnter\x1b[0m Open")
+                .contains("\x1b[48;2;220;224;230m\x1b[38;2;25;30;35mEnter\x1b[0m Open")
         );
     }
 
