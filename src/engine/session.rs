@@ -1,6 +1,6 @@
 use super::{
-    EngineHost, EngineRegistry, NavigationMode, TaskScheduler, ViewEffect, ViewInstance,
-    ViewLocation, ViewOutput,
+    CompletionRequest, EngineHost, EngineRegistry, NavigationMode, TaskScheduler, ViewEffect,
+    ViewInstance, ViewLocation,
 };
 use crate::chrome::ShellInput;
 use crate::config::{Config, ENGINE_PICKER};
@@ -34,10 +34,10 @@ pub(crate) struct AppSession<'a> {
     active_error_deadline: Option<Instant>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum SessionOutcome {
     Exited,
-    Completed(ViewOutput),
+    Completed(CompletionRequest),
 }
 
 impl<'a> AppSession<'a> {
@@ -127,13 +127,6 @@ impl<'a> AppSession<'a> {
             active_error: None,
             active_error_deadline: None,
         })
-    }
-
-    pub(crate) fn root_state(&self) -> Result<&StateInstance> {
-        self.views
-            .first()
-            .map(|entry| &entry.state)
-            .context("session has no root view")
     }
 
     pub(crate) fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
@@ -311,7 +304,7 @@ impl<'a> AppSession<'a> {
         match effect {
             ViewEffect::Continue => Ok(None),
             ViewEffect::Exit => Ok(Some(SessionOutcome::Exited)),
-            ViewEffect::Complete(output) => Ok(Some(SessionOutcome::Completed(output))),
+            ViewEffect::Complete(completion) => Ok(Some(SessionOutcome::Completed(completion))),
             ViewEffect::Back => self.pop_current(None),
             ViewEffect::BackWithInput { input, cursor } => self.pop_current(Some((input, cursor))),
             ViewEffect::Navigate { location, mode } => {

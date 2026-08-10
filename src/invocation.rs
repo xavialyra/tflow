@@ -1,8 +1,7 @@
 use crate::cancellation::CancellationToken;
 use crate::command_runner::run_bounded_command_with_stdin;
-use crate::config::Config;
+use crate::config::{Config, ConfigReadContext, ConfigScope};
 use crate::engine::{SessionOutcome, ViewOutput};
-use crate::state::StateInstance;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
@@ -86,26 +85,70 @@ pub(crate) struct InvocationResult {
 pub(crate) fn finish(
     config: &Config,
     root_view: &str,
-    state: &StateInstance,
     outcome: SessionOutcome,
     input_length: u64,
 ) -> Result<InvocationResult> {
-    let view = config
-        .view(root_view)
-        .with_context(|| format!("invocation root view {:?} is not configured", root_view))?;
-    let Some(handler) = view.result_handler.as_deref() else {
-        return Ok(default_result(outcome));
+    let SessionOutcome::Completed(completion) = outcome else {
+        let exit_code = config
+            .view(root_view)
+            .with_context(|| format!("invocation root view {:?} is not configured", root_view))?
+            .cancel_exit_code
+            .unwrap_or(0)
+            .into();
+        return Ok(InvocationResult {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code,
+        });
     };
+    let command = config
+        .view(&completion.source_view)
+        .with_context(|| {
+            format!(
+                "completion view {:?} is not configured",
+                completion.source_view
+            )
+        })?
+        .commands
+        .get(&completion.command_id)
+        .with_context(|| {
+            format!(
+                "completion command {:?} is not configured for view {:?}",
+                completion.command_id, completion.source_view
+            )
+        })?;
+    let crate::config::CommandAction::Complete { payload } = &command.action else {
+        anyhow::bail!(
+            "completion command {:?} for view {:?} is not a complete command",
+            completion.command_id,
+            completion.source_view
+        );
+    };
+    let Some(payload) = payload else {
+        return Ok(default_result(completion.output));
+    };
+    let handler_config = &payload.handler;
     let plugin_root = config
-        .plugin_root(root_view)
+        .plugin_root(&completion.source_view)
         .unwrap_or_else(|| Path::new("."));
-    let handler = resolve_handler(plugin_root, handler)?;
-    let context = serde_json::json!({
-        "query": config.query_value(state)?,
-        "input": config.invocation_input(),
-        "result": outcome_value(outcome),
-    });
-    let input = serde_json::to_vec(&context).context("could not serialize result handler input")?;
+    let handler = resolve_handler(plugin_root, handler_config)?;
+    let params = config
+        .get(
+            ConfigReadContext {
+                scope: ConfigScope::View(&completion.state),
+                runtime: &completion.runtime,
+                input: &config.input_value,
+                cancellation: None,
+            },
+            &[
+                "commands",
+                completion.command_id.as_str(),
+                "payload",
+                "params",
+            ],
+        )?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let input = serde_json::to_vec(&params).context("could not serialize completion params")?;
     let mut command = Command::new("sh");
     command.arg(&handler).current_dir(plugin_root);
     let stdout_limit = usize::try_from(input_length)
@@ -135,38 +178,17 @@ impl Drop for InputArtifact {
     }
 }
 
-fn default_result(outcome: SessionOutcome) -> InvocationResult {
-    let stdout = match outcome {
-        SessionOutcome::Exited => Vec::new(),
-        SessionOutcome::Completed(ViewOutput::Selected { item, input }) => {
-            let mut value = item
-                .and_then(|item| item.value)
-                .unwrap_or(input)
-                .into_bytes();
-            value.push(b'\n');
-            value
-        }
-    };
+fn default_result(output: ViewOutput) -> InvocationResult {
+    let ViewOutput::Selected { item, input } = output;
+    let mut stdout = item
+        .and_then(|item| item.value)
+        .unwrap_or(input)
+        .into_bytes();
+    stdout.push(b'\n');
     InvocationResult {
         stdout,
         stderr: Vec::new(),
         exit_code: 0,
-    }
-}
-
-fn outcome_value(outcome: SessionOutcome) -> Value {
-    match outcome {
-        SessionOutcome::Exited => serde_json::json!({"kind": "exited"}),
-        SessionOutcome::Completed(ViewOutput::Selected { item, input }) => serde_json::json!({
-            "kind": "selected",
-            "input": input,
-            "item": item.map(|item| serde_json::json!({
-                "text": item.text,
-                "value": item.value,
-                "metadata": item.metadata,
-                "source_view": item.source_view,
-            })),
-        }),
     }
 }
 

@@ -10,4 +10,7 @@ items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 [views.default.commands.open]
 key = "enter"
 label = "Open"
-run = { file = "scripts/open.sh" }
+type = "run"
+
+[views.default.commands.open.payload]
+handler = { file = "scripts/open.sh" }

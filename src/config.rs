@@ -1,5 +1,6 @@
+use crate::cancellation::CancellationToken;
 use crate::expression::{
-    EvalContext, MethodResolver, Template, TreeReferences, evaluate_json_value,
+    EvalContext, ExpressionMethods, Template, TreeReferences, evaluate_json_value,
 };
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
@@ -32,6 +33,18 @@ pub struct Config {
     pub(crate) invocation_state: StateInstance,
 }
 
+pub(crate) enum ConfigScope<'a> {
+    Root,
+    View(&'a StateInstance),
+}
+
+pub(crate) struct ConfigReadContext<'a> {
+    pub scope: ConfigScope<'a>,
+    pub runtime: &'a Value,
+    pub input: &'a Value,
+    pub cancellation: Option<CancellationToken>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginMetadata {
     pub name: String,
@@ -62,7 +75,7 @@ pub struct View {
     #[serde(default)]
     pub run_shell: Option<String>,
     #[serde(default)]
-    pub result_handler: Option<String>,
+    pub cancel_exit_code: Option<u8>,
     #[serde(default)]
     #[allow(dead_code)]
     pub(crate) query: Option<toml::Table>,
@@ -78,22 +91,53 @@ impl View {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CommandAction {
+    Run {
+        payload: RunPayload,
+    },
+    Navigate {
+        payload: NavigatePayload,
+    },
+    Complete {
+        #[serde(default)]
+        payload: Option<CompletePayload>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunPayload {
+    pub handler: String,
+    #[serde(default)]
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub exit: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavigatePayload {
+    pub target: toml::Value,
+    #[serde(default)]
+    pub query: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletePayload {
+    pub handler: String,
+    #[serde(default)]
+    pub params: toml::Table,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Command {
     pub key: String,
     pub label: String,
-    #[serde(default)]
-    pub run: Option<String>,
-    #[serde(default)]
-    pub shell: Option<String>,
-    #[serde(default)]
-    pub view: Option<ViewRef>,
-    #[serde(default)]
-    pub input: Option<String>,
-    #[serde(default)]
-    pub exit: bool,
-    #[serde(default)]
-    pub complete: bool,
+    #[serde(flatten)]
+    pub action: CommandAction,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,11 +230,6 @@ impl Config {
         }
     }
 
-    pub(crate) fn query_value(&self, state: &StateInstance) -> Result<Option<Value>> {
-        self.state_registry
-            .query_value(self.view_config(state.view_ref())?, state)
-    }
-
     pub(crate) fn has_query(&self, view_ref: &str) -> bool {
         self.state_registry.has_query(view_ref)
     }
@@ -217,10 +256,6 @@ impl Config {
             .and_then(|plugin| plugin.get("views"))
             .and_then(|views| views.get(view))
             .with_context(|| format!("view {:?} configuration disappeared", view_ref))
-    }
-
-    pub(crate) fn invocation_input(&self) -> &Value {
-        &self.input_value
     }
 
     fn from_raw(raw: RawConfig, plugin_roots: BTreeMap<String, PathBuf>) -> Result<Self> {
@@ -323,21 +358,6 @@ impl Config {
                 Template::parse(items)
                     .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
             }
-            if let Some(handler) = &view.result_handler {
-                let path = Path::new(handler);
-                if handler.trim().is_empty()
-                    || path.is_absolute()
-                    || path
-                        .components()
-                        .any(|component| matches!(component, std::path::Component::ParentDir))
-                {
-                    bail!(
-                        "view {:?} has invalid result handler {:?}",
-                        view_ref,
-                        handler
-                    );
-                }
-            }
             if let Some(shell) = &view.run_shell {
                 validate_script(shell, "run_shell", view_ref)?;
             }
@@ -379,73 +399,32 @@ impl Config {
                 if keys.insert(key.clone(), command_id).is_some() {
                     bail!("view {:?} has duplicate command key {:?}", view_ref, key);
                 }
-                if let Some(script) = &command.run {
-                    validate_script(
-                        script,
-                        "command run",
-                        &format!("{}:{}", view_ref, command_id),
-                    )?;
-                }
-                if let Some(target) = &command.view
-                    && !self.views.contains_key(target)
-                {
-                    bail!(
-                        "view {:?} command {:?} references missing view {:?}",
-                        view_ref,
-                        command_id,
-                        target
-                    );
-                }
-                let action_count = usize::from(command.run.is_some())
-                    + usize::from(command.view.is_some())
-                    + usize::from(command.complete);
-                if action_count == 0 {
-                    bail!("view {:?} command {:?} has no action", view_ref, command_id);
-                }
-                if action_count > 1 {
-                    bail!(
-                        "view {:?} command {:?} combines multiple actions",
-                        view_ref,
-                        command_id
-                    );
-                }
-                if command.input.is_some() && command.view.is_none() {
-                    bail!(
-                        "view {:?} command {:?} has input without a target view",
-                        view_ref,
-                        command_id
-                    );
-                }
-                if let Some(input) = &command.input {
-                    Template::parse(input).with_context(|| {
-                        format!(
-                            "view {:?} command {:?} has invalid input expression",
-                            view_ref, command_id
-                        )
-                    })?;
-                }
-                if command.shell.is_some() && command.run.is_none() {
-                    bail!(
-                        "view {:?} command {:?} selects a shell without a run script",
-                        view_ref,
-                        command_id
-                    );
-                }
-                if command.exit && command.run.is_none() {
-                    bail!(
-                        "view {:?} command {:?} exits without a run script",
-                        view_ref,
-                        command_id
-                    );
-                }
-                if command.complete
-                    && (command.input.is_some() || command.shell.is_some() || command.exit)
-                {
-                    bail!(
-                        "view {:?} command {:?} combines complete with run-only fields",
-                        view_ref,
-                        command_id
-                    );
+                match &command.action {
+                    CommandAction::Run { payload } => {
+                        validate_script(
+                            &payload.handler,
+                            "command handler",
+                            &format!("{}:{}", view_ref, command_id),
+                        )?;
+                    }
+                    CommandAction::Navigate { payload } => {
+                        validate_navigation_payload(view_ref, command_id, payload, &self.views)?;
+                    }
+                    CommandAction::Complete { payload } => {
+                        if let Some(payload) = payload {
+                            validate_result_handler(
+                                &payload.handler,
+                                &format!("{}:{}", view_ref, command_id),
+                            )?;
+                            validate_templates(&toml::Value::Table(payload.params.clone()))
+                                .with_context(|| {
+                                    format!(
+                                        "view {:?} command {:?} has invalid completion params",
+                                        view_ref, command_id
+                                    )
+                                })?;
+                        }
+                    }
                 }
             }
         }
@@ -487,112 +466,65 @@ impl Config {
         Ok(view.engine_type.as_str())
     }
 
-    pub fn evaluate_view_field(
+    pub(crate) fn get(
         &self,
-        view_ref: &str,
-        state: &StateInstance,
-        field: &str,
-        runtime: &Value,
-        methods: &mut dyn MethodResolver,
+        context: ConfigReadContext<'_>,
+        path: &[&str],
     ) -> Result<Option<Value>> {
-        let view = self
-            .view(view_ref)
-            .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        let Some(raw) = view.engine_field(field) else {
-            return Ok(None);
+        let fallback;
+        let (raw, this, script_root) = match context.scope {
+            ConfigScope::Root => (&self.config_value, Value::Null, Path::new(".")),
+            ConfigScope::View(state) => {
+                let raw = match self.view_config(state.view_ref()) {
+                    Ok(raw) => raw,
+                    Err(_)
+                        if self
+                            .config_value
+                            .as_object()
+                            .is_some_and(|value| value.is_empty()) =>
+                    {
+                        let view = self.view(state.view_ref()).with_context(|| {
+                            format!("view {:?} is not configured", state.view_ref())
+                        })?;
+                        let mut values = serde_json::Map::new();
+                        if let Some(items) = &view.items {
+                            values.insert("items".to_string(), Value::String(items.clone()));
+                        }
+                        for (name, value) in &view.engine_config {
+                            values.insert(name.clone(), toml_to_json(value)?);
+                        }
+                        fallback = Value::Object(values);
+                        &fallback
+                    }
+                    Err(error) => return Err(error),
+                };
+                (
+                    raw,
+                    self.materialize_view(state)?,
+                    self.plugin_root(state.view_ref())
+                        .unwrap_or_else(|| Path::new(".")),
+                )
+            }
         };
-        let this = self.materialize_view(state)?;
-        self.evaluate_config_value(raw, &this, runtime, methods)
-            .map(Some)
-    }
-
-    pub fn evaluate_default_picker_bindings(
-        &self,
-        runtime: &Value,
-        methods: &mut dyn MethodResolver,
-    ) -> Result<Option<Value>> {
-        let Some(raw) = &self.defaults.picker.bindings else {
-            return Ok(None);
-        };
-        self.evaluate_config_value(raw, &Value::Null, runtime, methods)
-            .map(Some)
-    }
-
-    fn evaluate_config_value(
-        &self,
-        raw: &toml::Value,
-        this: &Value,
-        runtime: &Value,
-        methods: &mut dyn MethodResolver,
-    ) -> Result<Value> {
-        let raw = toml_to_json(raw)?;
-        let references = TreeReferences {
-            config: &self.config_value,
-            this,
-            runtime,
-            input: &self.input_value,
-        };
-        let mut context = EvalContext {
-            references: &references,
-            methods,
-        };
-        if let Some(source) = raw.as_str() {
-            Template::parse(source)?.evaluate_value(&mut context)
-        } else {
-            evaluate_json_value(&raw, &mut context)
-        }
-    }
-
-    pub(crate) fn evaluate_command_input(
-        &self,
-        state: &StateInstance,
-        source: &str,
-        runtime: &Value,
-    ) -> Result<String> {
-        let view_ref = state.view_ref();
-        let root = self.plugin_root(view_ref).unwrap_or_else(|| Path::new("."));
-        let mut methods = crate::expression::ExpressionMethods::new(root);
-        let this = self.materialize_view(state)?;
-        let references = TreeReferences {
-            config: &self.config_value,
-            this: &this,
-            runtime,
-            input: &self.input_value,
-        };
-        let mut context = EvalContext {
-            references: &references,
-            methods: &mut methods,
-        };
-        Template::parse(source)?.evaluate_text(&mut context)
-    }
-
-    pub fn evaluate_view_items(
-        &self,
-        state: &StateInstance,
-        runtime: &Value,
-        methods: &mut dyn MethodResolver,
-    ) -> Result<Option<Value>> {
-        let view_ref = state.view_ref();
-        let Some(source) = self
-            .view(view_ref)
-            .with_context(|| format!("view {:?} is not configured", view_ref))?
-            .items
-            .as_deref()
+        let Some(value) = path
+            .iter()
+            .try_fold(raw, |value, segment| value.get(segment))
         else {
             return Ok(None);
         };
-        let this = self.materialize_view(state)?;
         let references = TreeReferences {
             config: &self.config_value,
             this: &this,
-            runtime,
-            input: &self.input_value,
+            runtime: context.runtime,
+            input: context.input,
         };
-        let mut context = EvalContext {
+        let cancellation = context.cancellation.unwrap_or_else(CancellationToken::new);
+        let mut methods = ExpressionMethods::with_cancellation(script_root, cancellation);
+        let mut evaluator = EvalContext {
             references: &references,
-            methods,
+            methods: &mut methods,
         };
-        Ok(Some(Template::parse(source)?.evaluate_value(&mut context)?))
+        evaluate_json_value(value, &mut evaluator).map(Some)
     }
 
     pub fn command_view(&self) -> Result<&View> {
@@ -800,13 +732,12 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
 }
 
 fn expand_script_refs(value: &mut toml::Value, root: &Path, owner: &str) -> Result<()> {
-    const SCRIPT_KEYS: [&str; 1] = ["run"];
     match value {
         toml::Value::Table(table) => {
             let keys = table.keys().cloned().collect::<Vec<_>>();
             for key in keys {
                 let child = table.get_mut(&key).expect("key collected from table");
-                if SCRIPT_KEYS.contains(&key.as_str())
+                if (key == "run" || key == "handler")
                     && let Some(file) = child
                         .as_table()
                         .and_then(|script| script.get("file"))
@@ -898,6 +829,77 @@ fn validate_plugin_id(plugin_id: &str) -> Result<()> {
 fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
     if script.trim().is_empty() {
         bail!("{} has an empty {} script", owner, kind);
+    }
+    Ok(())
+}
+
+fn validate_navigation_payload(
+    view_ref: &str,
+    command_id: &str,
+    payload: &NavigatePayload,
+    views: &BTreeMap<ViewRef, View>,
+) -> Result<()> {
+    validate_templates(&payload.target).with_context(|| {
+        format!(
+            "view {:?} command {:?} has invalid navigation payload",
+            view_ref, command_id
+        )
+    })?;
+    if let Some(query) = &payload.query {
+        validate_templates(query)?;
+    }
+    let target = &payload.target;
+    let target = target
+        .as_str()
+        .context("navigation input target must be a string or expression")?;
+    if !target.contains("{{") && !views.contains_key(target) {
+        bail!(
+            "view {:?} command {:?} references missing view {:?}",
+            view_ref,
+            command_id,
+            target
+        );
+    }
+    if let Some(query) = &payload.query
+        && !query.is_str()
+    {
+        bail!("navigation input query must be a string or expression");
+    }
+    Ok(())
+}
+
+fn validate_result_handler(handler: &str, owner: &str) -> Result<()> {
+    let path = Path::new(handler);
+    if handler.trim().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("{} has invalid result handler {:?}", owner, handler);
+    }
+    Ok(())
+}
+
+fn validate_templates(value: &toml::Value) -> Result<()> {
+    match value {
+        toml::Value::String(source) => {
+            Template::parse(source)?;
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                validate_templates(value)?;
+            }
+        }
+        toml::Value::Table(values) => {
+            for value in values.values() {
+                validate_templates(value)?;
+            }
+        }
+        toml::Value::Boolean(_)
+        | toml::Value::Datetime(_)
+        | toml::Value::Float(_)
+        | toml::Value::Integer(_) => {}
     }
     Ok(())
 }
@@ -1010,7 +1012,10 @@ mod tests {
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
-            run = ":"
+            type = "run"
+
+            [plugins.core.views.default.commands.open.payload]
+            handler = ":"
             [plugins.apps.views.main]
             type = "picker"
             "#,
@@ -1022,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_cannot_combine_local_execution_and_navigation() {
+    fn navigation_target_must_reference_a_configured_view() {
         let config = config(
             r#"
             default_view = "core:default"
@@ -1031,17 +1036,16 @@ mod tests {
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
-            run = ":"
-            view = "shell:default"
-            [plugins.shell.views.default]
-            type = "embedded"
-            command = ["sh"]
+            type = "navigate"
+            [plugins.core.views.default.commands.open.payload]
+            target = "missing:view"
+            query = "item"
             "#,
         );
         let error = config
             .validate()
-            .expect_err("run and view should be mutually exclusive");
-        assert!(error.to_string().contains("combines multiple actions"));
+            .expect_err("navigation target must reference a configured view");
+        assert!(error.to_string().contains("references missing view"));
     }
 
     #[test]
@@ -1143,7 +1147,10 @@ mod tests {
             [views.main.commands.run]
             key = "enter"
             label = "Run"
-            run = { file = "scripts/run.sh" }
+            type = "run"
+
+            [views.main.commands.run.payload]
+            handler = { file = "scripts/run.sh" }
             "#,
         )
         .unwrap();
@@ -1167,10 +1174,11 @@ mod tests {
             config.views["filetest:main"].items.as_deref(),
             Some("{{ script(\"scripts/items.sh\") }}")
         );
-        assert_eq!(
-            config.views["filetest:main"].commands["run"].run.as_deref(),
-            Some("printf 'run\\n'\\n")
-        );
+        let CommandAction::Run { payload } = &config.views["filetest:main"].commands["run"].action
+        else {
+            panic!("file command did not deserialize as a run action");
+        };
+        assert_eq!(payload.handler, "printf 'run\\n'\\n");
         assert_eq!(
             config.plugin_root("filetest:main"),
             Some(plugin_root.as_path())

@@ -386,22 +386,6 @@ impl StateRegistry {
         Ok(materialized)
     }
 
-    pub(crate) fn query_value(
-        &self,
-        config: &Value,
-        state: &StateInstance,
-    ) -> Result<Option<Value>> {
-        if !self.views.contains_key(&state.view_ref) && state.values.is_empty() {
-            return Ok(None);
-        }
-        let schema = self.schema_for(&state.view_ref, state)?;
-        if schema.query.is_none() {
-            return Ok(None);
-        };
-        let materialized = self.materialize(config, state)?;
-        Ok(lookup_components(&materialized, &["query".to_string()]).cloned())
-    }
-
     fn schema_for<'a>(
         &'a self,
         view_ref: &str,
@@ -582,11 +566,6 @@ fn parse_input_order(value: Option<&Value>) -> Result<Vec<String>> {
                 .context("query input_order entries must be strings")
         })
         .collect()
-}
-
-fn lookup_components<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
-    path.iter()
-        .try_fold(root, |value, component| value.get(component))
 }
 
 fn set_path(root: &mut Value, path: &[String], value: Value) {

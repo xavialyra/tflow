@@ -74,11 +74,8 @@ fn main() -> Result<()> {
 
     let runtime_log =
         runtime_log::RuntimeLog::open().context("could not initialize the launcher runtime log")?;
-    let reserves_stdout = config
-        .view(&root_view)
-        .is_some_and(|view| view.result_handler.is_some());
     let stdout_is_tty = unsafe { libc::isatty(io::stdout().as_raw_fd()) } == 1;
-    let tty = if input.is_tty() && stdout_is_tty && !reserves_stdout {
+    let tty = if input.is_tty() && stdout_is_tty {
         None
     } else {
         Some(
@@ -105,8 +102,7 @@ fn main() -> Result<()> {
         leave_result?;
         Ok(outcome)
     })?;
-    let final_state = app.root_state()?.clone();
-    let result = invocation::finish(&config, &root_view, &final_state, outcome, input.length())?;
+    let result = invocation::finish(&config, &root_view, outcome, input.length())?;
 
     let mut stderr = io::stderr().lock();
     stderr

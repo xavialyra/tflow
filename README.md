@@ -81,13 +81,13 @@ tui-launcher tr --source=en --target=zh --text="hello world" --tags=formal,short
 
 The TUI input controller uses `input_order`, so the same state can be edited as `en zh 'hello world'`; it validates the complete line and commits all ordered fields atomically. Plain query metadata such as `type` and `input_order` remains present when the complete config path is passed to a script.
 
-When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. After the session ends and the terminal is restored, an optional root View `result_handler` receives the final query object, input descriptor, and structured result as JSON; its raw stdout and exit status become the invocation output.
+When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. A `complete` command may explicitly declare a result handler and a JSON `params` object. After the session ends and the terminal is restored, the launcher evaluates that object against the completion-time View state and runtime snapshot, writes it to the handler's stdin, and uses the handler's raw stdout, stderr, and exit status as the invocation result.
 
 `state()` declarations belong to the View configuration where they occur and are keyed relative to that View. Only states below a View's fixed `query` subtree are assignable from CLI/TUI input. Each stack entry owns an independent View state instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Aggregate pickers create independent source View scopes for their item providers. Scripts receive state only when an expression explicitly passes `this:` data.
 
 ## dmenu plugin
 
-The bundled `dmenu:default` View is an ordinary picker plus plugin scripts. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed states below `views.default.query`; its items script reads the complete materialized query object and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. An ordinary `complete = true` command accepts the selection, and the result script maps it back to the original bytes. These scripts require `python3`.
+The bundled `dmenu:default` View is an ordinary picker plus plugin scripts. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed states below `views.default.query`; its items script reads the complete materialized query object and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
 
 ```bash
 printf '%s\n' 'Option 1' 'Option 2' 'Option 3' |
@@ -99,8 +99,7 @@ printf '1\tFirst\n2\tSecond\n' |
 ps aux |
   tui-launcher dmenu:default \
     --with-nth=2,11 \
-    --nth-delimiter=whitespace \
-    --lines:=10
+    --nth-delimiter=whitespace
 
 # NUL-delimited records also use NUL-terminated output.
 printf 'one\0two\0three\0' |
@@ -109,7 +108,7 @@ printf 'one\0two\0three\0' |
 find . -name '*.rs' | tui-launcher dmenu:default --prompt="> "
 ```
 
-The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:default` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--prompt=TEXT`, `--lines:=N`, `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
+The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:default` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--prompt=TEXT`, `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
 
 The View itself uses only generic configuration:
 
@@ -123,19 +122,16 @@ type = "picker"
 alias = "dmenu"
 items = '''{{ script("scripts/items.sh", {
   input = input:$,
-  options = this:query,
-  query = this:query.initial
+  query = this:query
 }, 67108864) }}'''
-result_handler = "scripts/result.sh"
+cancel_exit_code = 1
 prompt = '''{{ this:query.prompt }}'''
-max_rows = '''{{ this:query.lines }}'''
 show_prefix = false
 
 [views.default.query]
 type = "object"
 input_order = ["initial"]
 prompt = '''{{ state("string", null) }}'''
-lines = '''{{ state("integer", null) }}'''
 initial = '''{{ state("string", "") }}'''
 dmenu0 = '''{{ state("boolean", false) }}'''
 index = '''{{ state("boolean", false) }}'''
@@ -153,7 +149,16 @@ exit = ["escape", "ctrl+c", "ctrl+d"]
 [views.default.commands.accept]
 key = "enter"
 label = "Accept"
-complete = true
+type = "complete"
+
+[views.default.commands.accept.payload]
+handler = "scripts/result.sh"
+
+[views.default.commands.accept.payload.params]
+options = "{{ this:query }}"
+stdin = "{{ input:stdin }}"
+selected = "{{ runtime:view.active.selected_item }}"
+typed = "{{ runtime:view.active.input }}"
 ```
 
 ## Views and plugins
@@ -219,7 +224,10 @@ items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 [views.default.commands.open]
 key = "enter"
 label = "Open"
-run = { file = "scripts/open.sh" }
+type = "run"
+
+[views.default.commands.open.payload]
+handler = { file = "scripts/open.sh" }
 ```
 
 Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate names and aliases are accepted; a duplicate alias becomes an error only when it is used, at which point the picker displays the canonical conflicting views and stays on the current view. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
@@ -251,7 +259,10 @@ Commands can open another concrete view. The command belongs in the owning plugi
 [views.main.commands.apps]
 key = "alt+a"
 label = "Apps"
-view = "apps:default"
+type = "navigate"
+
+[views.main.commands.apps.payload]
+target = "apps:default"
 ```
 
 The runtime keeps a view stack. Opening `apps:main` from `core:default` produces:
@@ -278,7 +289,7 @@ References use four namespaces: `config:` for static merged configuration, `this
 items = '{{ path(runtime:view.active, "$.items") }}'
 request = '{{ script("scripts/query.sh", {query = this:query, input = input:$}) }}'
 selected = '{{ path(script("scripts/query.sh"), "$.items") }}'
-run = "{{ config:commands.script }} --query {{ runtime:view.active.query }}"
+handler = "{{ config:commands.script }} --query {{ runtime:view.active.query }}"
 ```
 
 The built-in expression methods are `path` and `script`. `path(value, jsonpath)` applies a JSONPath expression to any JSON value; no match returns `null`, one match keeps its value type, and multiple matches return an array. `script(target, input, max_output_bytes)` runs a plugin-relative shell script, writes the optional JSON input to stdin, and parses the output as JSON. The script owns the input shape; the expression only chooses which JSON value to pass. Script output defaults to a 1 MiB limit; trusted data-source plugins may use the optional third argument to raise it as high as 64 MiB. Script input/output remain bounded and execution has a timeout. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle.
@@ -291,28 +302,44 @@ Commands belong to a concrete view. `Enter` is not a special data-source action;
 [views.main.commands.open]
 key = "enter"
 label = "Open"
-run = '''
+type = "run"
+
+[views.main.commands.open.payload]
+handler = '''
 gio launch "$LAUNCHER_VALUE"
 '''
 ```
 
-A command has exactly one action: local `run`, navigation to another View, or `complete = true`. Completion returns the current selected item (or non-empty input when there is no item) to the invocation host; an empty selection and empty input keep the View open.
+A command has one tagged action: `type = "run"`, `type = "navigate"`, or `type = "complete"`. Every action-specific field belongs to its `payload` table. Navigate payload values are evaluated when the action is read. Completion returns the current selected item (or non-empty input when there is no item) to the invocation host; an empty selection and empty input keep the View open. A complete command without a payload writes the selected value, or the typed input, followed by a newline. With a plugin-relative handler, the evaluated `payload.params` object is written to its stdin after the terminal is restored.
 
 ```toml
 [views.main.commands.accept]
 key = "enter"
 label = "Accept"
-complete = true
+type = "complete"
+
+[views.main.commands.accept.payload]
+handler = "scripts/result.sh"
+
+[views.main.commands.accept.payload.params]
+query = "{{ this:query }}"
+selected = "{{ runtime:view.active.selected_item }}"
+stdin = "{{ input:stdin }}"
 ```
 
-Navigation can evaluate an input string from the current runtime:
+The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
+
+Navigation reads one automatically evaluated request object. `target` may be a literal or an expression; `query` is the target View's initial input:
 
 ```toml
 [views.main.commands.inspect]
 key = "alt+i"
 label = "Inspect"
-view = "inspect:default"
-input = "{{ runtime:view.active.selected_item.value }}"
+type = "navigate"
+
+[views.main.commands.inspect.payload]
+target = "{{ runtime:view.active.selected_item.metadata.target }}"
+query = "{{ runtime:view.active.selected_item.value }}"
 ```
 
 The target owns its behavior. A capture view evaluates `output` relative to its plugin and requires a string result. An embedded view evaluates `command` to a non-empty argv array, so it can host arbitrary PTY processes:
@@ -328,16 +355,19 @@ command = ["btop"]
 title = "System monitor"
 ```
 
-Commands cannot combine actions. A local command with `exit = true` transfers the terminal to its script and exits the launcher after it finishes:
+The action type determines valid fields. A run command with `exit = true` transfers the terminal to its handler and exits the launcher after it finishes:
 
 ```toml
 [views.main.commands.connect]
 key = "enter"
 label = "Connect"
-exit = true
-run = '''
+type = "run"
+
+[views.main.commands.connect.payload]
+handler = '''
 exec ssh "$LAUNCHER_VALUE"
 '''
+exit = true
 ```
 
 The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
@@ -402,7 +432,7 @@ Command `shell` selects the command interpreter. When omitted, the source view's
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
-Picker views accept `bindings`, `prompt`, `max_rows`, and `show_prefix` engine fields. `prompt` changes the input prefix, `max_rows` limits visible results, and `show_prefix = false` hides source prefixes. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete = true` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker views accept `bindings`, `prompt`, and `show_prefix` engine fields. `prompt` changes the input prefix and `show_prefix = false` hides source prefixes. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 

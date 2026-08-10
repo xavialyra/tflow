@@ -22,7 +22,7 @@ fn redirected_stdout_contains_only_the_default_completion_result() {
         [plugins.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
-        complete = true
+        type = "complete"
         "#,
     )
     .unwrap();
@@ -37,7 +37,7 @@ fn redirected_stdout_contains_only_the_default_completion_result() {
 }
 
 #[test]
-fn root_result_handler_receives_query_and_controls_raw_output_and_status() {
+fn completion_handler_receives_explicit_params_and_controls_raw_output_and_status() {
     let root = temporary_root();
     let config = root.join("config.toml");
     let plugin = root.join("plugins/custom");
@@ -62,7 +62,6 @@ fn root_result_handler_receives_query_and_controls_raw_output_and_status() {
         [views.default]
         type = "picker"
         items = "{{ config:catalog.items }}"
-        result_handler = "scripts/result.sh"
 
         [views.default.query]
         type = "object"
@@ -71,7 +70,15 @@ fn root_result_handler_receives_query_and_controls_raw_output_and_status() {
         [views.default.commands.accept]
         key = "enter"
         label = "Accept"
-        complete = true
+        type = "complete"
+
+        [views.default.commands.accept.payload]
+        handler = "scripts/result.sh"
+
+        [views.default.commands.accept.payload.params]
+        options = "{{ this:query }}"
+        stdin = "{{ input:stdin }}"
+        selected = "{{ runtime:view.active.selected_item }}"
         "#,
     )
     .unwrap();
@@ -79,8 +86,9 @@ fn root_result_handler_receives_query_and_controls_raw_output_and_status() {
         plugin.join("scripts/result.sh"),
         r#"#!/bin/sh
 payload=$(cat)
-printf '%s' "$payload" | grep -q '"query":{' || exit 3
+printf '%s' "$payload" | grep -q '"options":{' || exit 3
 printf '%s' "$payload" | grep -q '"tag":"value"' || exit 3
+printf '%s' "$payload" | grep -q '"value":"selected-value"' || exit 3
 printf 'handled-output'
 printf 'handled-warning\n' >&2
 exit 7
@@ -101,7 +109,7 @@ exit 7
 }
 
 #[test]
-fn root_result_handler_keeps_the_root_query_after_child_completion() {
+fn completion_handler_belongs_to_the_completing_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
     let plugin = root.join("plugins/custom");
@@ -126,16 +134,14 @@ fn root_result_handler_keeps_the_root_query_after_child_completion() {
         [views.default]
         type = "picker"
         items = "{{ config:catalog.items }}"
-        result_handler = "scripts/result.sh"
-
-        [views.default.query]
-        type = "object"
-        tag = '''{{ state("string", null) }}'''
 
         [views.default.commands.next]
         key = "enter"
         label = "Next"
-        view = "custom:child"
+        type = "navigate"
+
+        [views.default.commands.next.payload]
+        target = "custom:child"
 
         [views.child]
         type = "picker"
@@ -144,7 +150,13 @@ fn root_result_handler_keeps_the_root_query_after_child_completion() {
         [views.child.commands.accept]
         key = "enter"
         label = "Accept"
-        complete = true
+        type = "complete"
+
+        [views.child.commands.accept.payload]
+        handler = "scripts/result.sh"
+
+        [views.child.commands.accept.payload.params]
+        selected = "{{ runtime:view.active.selected_item }}"
         "#,
     )
     .unwrap();
@@ -152,20 +164,20 @@ fn root_result_handler_keeps_the_root_query_after_child_completion() {
         plugin.join("scripts/result.sh"),
         r#"#!/bin/sh
 payload=$(cat)
-printf '%s' "$payload" | grep -q '"tag":"root-value"' || exit 3
-printf 'root-query'
+printf '%s' "$payload" | grep -q '"value":"selected-value"' || exit 3
+printf 'child-command'
 "#,
     )
     .unwrap();
 
     let config = config.to_str().unwrap();
     let result = run_invocation_steps(
-        &["--config", config, "custom:default", "--tag=root-value"],
+        &["--config", config, "custom:default"],
         b"raw input",
         &[b"\r", b"\r"],
     );
 
     assert_eq!(result.status, 0);
-    assert_eq!(result.stdout, b"root-query");
+    assert_eq!(result.stdout, b"child-command");
     fs::remove_dir_all(root).unwrap();
 }

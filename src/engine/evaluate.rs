@@ -1,22 +1,18 @@
 use super::ViewContext;
-use crate::expression::ExpressionMethods;
+use crate::config::{ConfigReadContext, ConfigScope};
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::path::Path;
 
 pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Value>> {
-    let script_root = context
-        .config
-        .plugin_root(&context.location.view_ref)
-        .unwrap_or_else(|| Path::new("."));
     let runtime = context.runtime.read();
-    let mut methods = ExpressionMethods::new(script_root);
-    context.config.evaluate_view_field(
-        &context.location.view_ref,
-        context.state,
-        name,
-        &runtime,
-        &mut methods,
+    context.config.get(
+        ConfigReadContext {
+            scope: ConfigScope::View(context.state),
+            runtime: &runtime,
+            input: &context.config.input_value,
+            cancellation: None,
+        },
+        &[name],
     )
 }
 

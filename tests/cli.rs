@@ -62,7 +62,7 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
 }
 
 #[test]
-fn check_rejects_invalid_static_picker_fields() {
+fn check_rejects_removed_picker_fields() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -86,7 +86,7 @@ fn check_rejects_invalid_static_picker_fields() {
 
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("max_rows\" must be greater than zero"),
+        String::from_utf8_lossy(&output.stderr).contains("has unsupported field \"max_rows\""),
         "stderr: {:?}",
         output.stderr
     );

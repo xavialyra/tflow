@@ -1,5 +1,8 @@
 use super::Item;
-use crate::config::{Command, Config, normalize_key};
+use crate::config::{
+    Command, CommandAction as ConfigCommandAction, Config, ConfigReadContext, ConfigScope,
+    normalize_key,
+};
 use crate::engine::{EngineHost, PreparedProcess};
 use crate::input::Key;
 use crate::terminal::Terminal;
@@ -16,10 +19,6 @@ pub(crate) struct CommandInvocation {
 }
 
 pub(crate) enum CommandAction {
-    Report {
-        invocation: CommandInvocation,
-        message: String,
-    },
     Navigate {
         target: String,
         input: String,
@@ -29,7 +28,10 @@ pub(crate) enum CommandAction {
         prepared: PreparedProcess,
         exit: bool,
     },
-    Complete,
+    Complete {
+        invocation: CommandInvocation,
+        state: crate::state::StateInstance,
+    },
 }
 
 fn prepare_command(
@@ -42,14 +44,12 @@ fn prepare_command(
     let view = config
         .view(&invocation.source_view)
         .with_context(|| format!("view {:?} disappeared", invocation.source_view))?;
-    let script = invocation
-        .command
-        .run
-        .as_ref()
-        .context("command has no run script")?;
-    let shell = invocation
-        .command
-        .shell
+    let ConfigCommandAction::Run { payload } = &invocation.command.action else {
+        anyhow::bail!("command is not a run action");
+    };
+    let script = &payload.handler;
+    let command_shell = &payload.shell;
+    let shell = command_shell
         .as_deref()
         .or(view.run_shell.as_deref())
         .unwrap_or("sh");
@@ -164,12 +164,7 @@ pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
         "owner": owner,
         "key": key,
         "label": command.label,
-        "run": command.run,
-        "shell": command.shell,
-        "view": command.view,
-        "input": command.input,
-        "exit": command.exit,
-        "complete": command.complete,
+        "action": command.action,
     }))
 }
 
@@ -214,40 +209,57 @@ impl super::PickerView {
         } else {
             self.current().items.get(self.current().selected).cloned()
         };
-        let command = invocation.command.clone();
-
-        if command.complete {
-            return Ok(Some(CommandAction::Complete));
-        }
-
-        if let Some(target) = command.view {
-            let state = if invocation.source_view == active_state.view_ref() {
-                active_state
-            } else {
-                self.source_states
-                    .get(&invocation.source_view)
-                    .unwrap_or(active_state)
-            };
-            let input = config.evaluate_command_input(
-                state,
-                command.input.as_deref().unwrap_or(""),
-                runtime,
-            )?;
-            return Ok(Some(CommandAction::Navigate { target, input }));
-        }
-
-        let Some(_script) = command.run.as_ref() else {
-            return Ok(Some(CommandAction::Report {
-                message: format!("{} has no action", invocation.id),
-                invocation,
-            }));
+        let state = if invocation.source_view == active_state.view_ref() {
+            active_state
+        } else {
+            self.source_states
+                .get(&invocation.source_view)
+                .unwrap_or(active_state)
         };
-        let prepared = prepare_command(config, self, &invocation, item.as_ref(), log_file)?;
-        Ok(Some(CommandAction::Execute {
-            invocation,
-            prepared,
-            exit: command.exit,
-        }))
+        match invocation.command.action.clone() {
+            ConfigCommandAction::Complete { .. } => Ok(Some(CommandAction::Complete {
+                invocation: invocation.clone(),
+                state: state.clone(),
+            })),
+            ConfigCommandAction::Navigate { .. } => {
+                let request = config
+                    .get(
+                        ConfigReadContext {
+                            scope: ConfigScope::View(state),
+                            runtime,
+                            input: &config.input_value,
+                            cancellation: None,
+                        },
+                        &["commands", invocation.id.as_str(), "payload"],
+                    )?
+                    .context("navigation command input is not configured")?;
+                let target = request
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .context("navigation input target must evaluate to a string")?;
+                let target = config.resolve_view(target)?;
+                let input = request
+                    .get("query")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .context("navigation input query must evaluate to a string or null")
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                Ok(Some(CommandAction::Navigate { target, input }))
+            }
+            ConfigCommandAction::Run { payload } => {
+                let exit = payload.exit;
+                let prepared = prepare_command(config, self, &invocation, item.as_ref(), log_file)?;
+                Ok(Some(CommandAction::Execute {
+                    invocation,
+                    prepared,
+                    exit,
+                }))
+            }
+        }
     }
 }
 

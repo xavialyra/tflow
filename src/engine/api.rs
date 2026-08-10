@@ -62,7 +62,16 @@ pub(crate) enum ViewEffect {
         cursor: usize,
     },
     Exit,
-    Complete(ViewOutput),
+    Complete(CompletionRequest),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionRequest {
+    pub(crate) source_view: String,
+    pub(crate) command_id: String,
+    pub(crate) state: StateInstance,
+    pub(crate) runtime: Value,
+    pub(crate) output: ViewOutput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

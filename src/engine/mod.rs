@@ -11,8 +11,8 @@ mod session;
 mod task;
 
 pub(crate) use api::{
-    Engine, NavigationMode, ViewContext, ViewEffect, ViewInstance, ViewLocation, ViewOutput,
-    ViewOutputItem,
+    CompletionRequest, Engine, NavigationMode, ViewContext, ViewEffect, ViewInstance, ViewLocation,
+    ViewOutput, ViewOutputItem,
 };
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;

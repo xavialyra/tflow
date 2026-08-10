@@ -5,8 +5,8 @@ use super::render;
 use crate::chrome::ShellInput;
 use crate::config::Config;
 use crate::engine::{
-    EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
-    ViewLocation, ViewOutput, ViewOutputItem,
+    CompletionRequest, EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect,
+    ViewInstance, ViewLocation, ViewOutput, ViewOutputItem,
 };
 use crate::input::{InputDecoder, Key};
 use crate::router::Router;
@@ -23,7 +23,6 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 pub(super) struct PickerOptions {
     pub(super) show_prefix: bool,
-    pub(super) max_rows: Option<usize>,
     pub(super) input_prefix: Option<String>,
 }
 
@@ -127,12 +126,8 @@ impl PickerView {
         self.log_file.as_deref()
     }
 
-    pub(super) fn list_presentation(&self) -> (bool, Option<usize>, String) {
-        (
-            self.options.show_prefix,
-            self.options.max_rows,
-            "(no matches)".to_string(),
-        )
+    pub(super) fn list_presentation(&self) -> (bool, String) {
+        (self.options.show_prefix, "(no matches)".to_string())
     }
 
     pub(crate) fn schedule_refresh(&mut self) {
@@ -476,13 +471,6 @@ impl PickerView {
         };
         let command_view = self.command_view_active();
         match action {
-            super::command::CommandAction::Report {
-                invocation,
-                message,
-            } => {
-                host.record_error(&invocation, &message);
-                Ok(Some(ViewEffect::Continue))
-            }
             super::command::CommandAction::Navigate { target, input } => {
                 Ok(Some(ViewEffect::Navigate {
                     location: ViewLocation::new(target, input),
@@ -493,9 +481,13 @@ impl PickerView {
                     },
                 }))
             }
-            super::command::CommandAction::Complete => {
-                Ok(self.complete_selection(&host.input.raw.clone()))
-            }
+            super::command::CommandAction::Complete { invocation, state } => Ok(self
+                .complete_selection(
+                    &host.input.raw.clone(),
+                    invocation,
+                    state,
+                    host.runtime.snapshot().clone(),
+                )),
             super::command::CommandAction::Execute {
                 invocation,
                 prepared,
@@ -607,7 +599,13 @@ impl PickerView {
         Ok(())
     }
 
-    fn complete_selection(&mut self, input: &str) -> Option<ViewEffect> {
+    fn complete_selection(
+        &mut self,
+        input: &str,
+        invocation: super::command::CommandInvocation,
+        state: crate::state::StateInstance,
+        runtime: serde_json::Value,
+    ) -> Option<ViewEffect> {
         let item = self
             .frame
             .items
@@ -619,9 +617,15 @@ impl PickerView {
                 source_view: item.source_view.clone(),
             });
         if item.is_some() || !input.is_empty() {
-            return Some(ViewEffect::Complete(ViewOutput::Selected {
-                item,
-                input: input.to_string(),
+            return Some(ViewEffect::Complete(CompletionRequest {
+                source_view: invocation.source_view,
+                command_id: invocation.id,
+                state,
+                runtime,
+                output: ViewOutput::Selected {
+                    item,
+                    input: input.to_string(),
+                },
             }));
         }
         self.feedback = Some("no matching item".to_string());

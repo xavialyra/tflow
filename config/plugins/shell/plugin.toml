@@ -10,8 +10,11 @@ items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 [views.menu.commands.open]
 key = "enter"
 label = "Open shell"
-view = "shell:default"
-input = "exec sh"
+type = "navigate"
+
+[views.menu.commands.open.payload]
+target = "shell:default"
+query = "exec sh"
 
 [views.default]
 type = "embedded"

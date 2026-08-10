@@ -52,7 +52,7 @@ pub struct RunResult {
 
 const TEST_CONFIG: &str = r#"
 [test_items]
-items = [{label = "Item", value = "value"}]
+items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#;
 
 fn with_test_config(source: &str) -> String {

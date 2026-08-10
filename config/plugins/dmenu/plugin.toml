@@ -5,17 +5,15 @@ name = "dmenu"
 [views.default]
 type = "picker"
 alias = "dmenu"
-items = '''{{ script("scripts/items.sh", {input = input:$, options = this:query, query = this:query.initial}, 67108864) }}'''
-result_handler = "scripts/result.sh"
+items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
+cancel_exit_code = 1
 prompt = '''{{ this:query.prompt }}'''
-max_rows = '''{{ this:query.lines }}'''
 show_prefix = false
 
 [views.default.query]
 type = "object"
 input_order = ["initial"]
 prompt = '''{{ state("string", null) }}'''
-lines = '''{{ state("integer", null) }}'''
 initial = '''{{ state("string", "") }}'''
 dmenu0 = '''{{ state("boolean", false) }}'''
 index = '''{{ state("boolean", false) }}'''
@@ -33,4 +31,13 @@ exit = ["escape", "ctrl+c", "ctrl+d"]
 [views.default.commands.accept]
 key = "enter"
 label = "Accept"
-complete = true
+type = "complete"
+
+[views.default.commands.accept.payload]
+handler = "scripts/result.sh"
+
+[views.default.commands.accept.payload.params]
+options = "{{ this:query }}"
+stdin = "{{ input:stdin }}"
+selected = "{{ runtime:view.active.selected_item }}"
+typed = "{{ runtime:view.active.input }}"

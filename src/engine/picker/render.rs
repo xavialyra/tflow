@@ -14,7 +14,6 @@ pub(crate) struct PickerRenderState {
     pub(crate) searching: bool,
     pub(crate) completion: Option<ViewCompletion>,
     pub(crate) show_prefix: bool,
-    pub(crate) max_rows: Option<usize>,
     pub(crate) empty_message: String,
 }
 
@@ -31,10 +30,7 @@ pub(crate) fn picker_content(
     let layout = chrome.layout();
     let content_area_width = layout.content_width(width);
     let available_rows = layout.content_rows(height);
-    let list_height = state
-        .max_rows
-        .map(|rows| rows.min(available_rows))
-        .unwrap_or(available_rows);
+    let list_height = available_rows;
     let prefix_width = if state.show_prefix {
         prefix_column_width(&state.items, content_area_width)
     } else {
@@ -219,14 +215,13 @@ impl PickerView {
 
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
-        let (show_prefix, max_rows, empty_message) = self.list_presentation();
+        let (show_prefix, empty_message) = self.list_presentation();
         PickerRenderState {
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,
             completion: self.completion.clone(),
             show_prefix,
-            max_rows,
             empty_message,
         }
     }

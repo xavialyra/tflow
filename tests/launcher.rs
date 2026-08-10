@@ -28,8 +28,12 @@ fn loads_items_from_an_expression() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = '''printf 'expression-marker:%s\\n' "$LAUNCHER_VALUE"'''
         exit = true
-        run = '''printf 'expression-marker:%s\\n' "$LAUNCHER_VALUE"'''
         "#,
     )
     .expect("could not write expression items config");
@@ -143,8 +147,12 @@ fn waits_for_items_before_running_enter_command() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = '''printf 'picker-marker:%s\n' "$LAUNCHER_VALUE"'''
         exit = true
-        run = '''printf 'picker-marker:%s\n' "$LAUNCHER_VALUE"'''
         "#,
     )
     .expect("could not write launcher integration config");
@@ -186,8 +194,12 @@ fn view_commands_accept_unreserved_control_bindings() {
         [plugins.core.views.default.commands.run]
         key = "ctrl+r"
         label = "Run"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = '''printf 'ctrl-command:%s\n' "$LAUNCHER_VALUE"'''
         exit = true
-        run = '''printf 'ctrl-command:%s\n' "$LAUNCHER_VALUE"'''
         "#,
     )
     .expect("could not write control command config");
@@ -311,18 +323,30 @@ fn ctrl_k_opens_the_command_picker_view() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
-        run = ":"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = ":"
 
         [plugins.core.views.default.commands.apps]
         key = "alt+a"
         label = "Apps"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.apps.payload]
+        handler = '''printf 'command-marker:%s\n' "$LAUNCHER_VALUE"'''
         exit = true
-        run = '''printf 'command-marker:%s\n' "$LAUNCHER_VALUE"'''
 
         [plugins.core.views.default.commands.shell]
         key = "alt+s"
         label = "Shell"
-        run = ":"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.shell.payload]
+        handler = ":"
 
         [plugins.core.views.command]
         type = "picker"
@@ -461,7 +485,11 @@ fn picker_bindings_can_override_a_default_shortcut() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
-        run = ":"
+        type = "run"
+
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = ":"
 
         [plugins.core.views.command]
         type = "picker"
@@ -514,8 +542,11 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         [plugins.core.views.default.commands.inspect]
         key = "enter"
         label = "Inspect"
-        view = "core:capture"
-        input = "parent-value:{{ runtime:view.active.selected_item.value }}"
+        type = "navigate"
+
+        [plugins.core.views.default.commands.inspect.payload]
+        target = "{{ runtime:view.active.selected_item.metadata.target }}"
+        query = "parent-value:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.command]
         type = "picker"
@@ -1005,8 +1036,11 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
-        view = "core:capture"
-        input = "capture-marker:{{ runtime:view.active.selected_item.value }}"
+        type = "navigate"
+
+        [plugins.core.views.default.commands.run.payload]
+        target = "core:capture"
+        query = "capture-marker:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.capture]
         type = "capture"
@@ -1075,8 +1109,11 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
-        view = "core:embedded"
-        input = '''printf 'embedded-marker:%s\n' '{{ runtime:view.active.selected_item.value }}'; exit 0'''
+        type = "navigate"
+
+        [plugins.core.views.default.commands.run.payload]
+        target = "core:embedded"
+        query = '''printf 'embedded-marker:%s\n' '{{ runtime:view.active.selected_item.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
         type = "embedded"

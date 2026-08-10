@@ -10,8 +10,11 @@ items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 [views.default.commands.run]
 key = "enter"
 label = "Run"
-view = "sys:output"
-input = "{{ runtime:view.active.selected_item.text }}"
+type = "navigate"
+
+[views.default.commands.run.payload]
+target = "sys:output"
+query = "{{ runtime:view.active.selected_item.text }}"
 
 [views.output]
 type = "capture"

@@ -217,8 +217,7 @@ def matches_query(text, query):
     return all(token.lower() in folded for token in query.split())
 
 
-def invocation_path(context):
-    descriptor = context.get("input", {}).get("stdin")
+def invocation_path(descriptor):
     if not isinstance(descriptor, dict):
         raise DmenuError("dmenu View requires an stdin descriptor")
     path = descriptor.get("path")
@@ -230,15 +229,21 @@ def invocation_path(context):
 
 
 def item_mode(context):
-    options = context.get("options", {})
-    query = context.get("query", "")
-    if not isinstance(options, dict) or not isinstance(query, str):
+    query = context.get("query", {})
+    if not isinstance(query, dict):
         raise DmenuError("invalid dmenu items context")
+    options = query
+    query = query.get("initial", "")
+    if not isinstance(query, str):
+        raise DmenuError("invalid dmenu query")
     query = sanitize(query)
     delimiter = parse_delimiter(options)
     with_nth = parse_format(string_option(options, "with-nth"))
     match_nth = parse_format(string_option(options, "match-nth"))
-    candidates = read_candidates(invocation_path(context), bool_option(options, "dmenu0"))
+    candidates = read_candidates(
+        invocation_path(context.get("input", {}).get("stdin")),
+        bool_option(options, "dmenu0"),
+    )
     items = []
     for candidate in candidates:
         display = sanitize(render_format(with_nth, candidate["text"], delimiter, " "))
@@ -258,29 +263,27 @@ def item_mode(context):
 
 
 def result_mode(context):
-    options = context.get("query", {})
-    result = context.get("result", {})
-    if not isinstance(options, dict) or not isinstance(result, dict):
-        raise DmenuError("invalid dmenu result context")
-    if result.get("kind") == "exited":
-        return 1
-    if result.get("kind") != "selected":
-        raise DmenuError("dmenu View received an unsupported result")
+    options = context.get("options", {})
+    selected = context.get("selected")
+    typed = context.get("typed", "")
+    if not isinstance(options, dict):
+        raise DmenuError("dmenu completion options must be an object")
+    if selected is not None and not isinstance(selected, dict):
+        raise DmenuError("dmenu selected item must be an object or null")
 
+    candidate_index = selected.get("value") if selected is not None else None
     nul_records = bool_option(options, "dmenu0")
     separator = b"\0" if nul_records else b"\n"
-    item = result.get("item")
-    if item is None:
-        value = result.get("input", "")
-        if not isinstance(value, str):
+    if candidate_index is None:
+        if not isinstance(typed, str):
             raise DmenuError("dmenu unmatched input must be a string")
-        output = sanitize(value).encode("utf-8")
+        output = sanitize(typed).encode("utf-8")
     else:
         try:
-            index = int(item["value"], 10)
-        except (KeyError, TypeError, ValueError) as error:
+            index = int(candidate_index, 10)
+        except (TypeError, ValueError) as error:
             raise DmenuError("dmenu selected item has an invalid index") from error
-        candidates = read_candidates(invocation_path(context), nul_records)
+        candidates = read_candidates(invocation_path(context.get("stdin")), nul_records)
         if index < 0 or index >= len(candidates):
             raise DmenuError(f"dmenu selected item index {index} is out of range")
         candidate = candidates[index]

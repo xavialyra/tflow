@@ -241,7 +241,7 @@ mod tests {
             alias: alias.map(str::to_string),
             items: None,
             run_shell: None,
-            result_handler: None,
+            cancel_exit_code: None,
             query: None,
             commands: BTreeMap::new(),
             engine_config: toml::Table::new(),

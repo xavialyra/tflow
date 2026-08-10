@@ -1,6 +1,5 @@
 use crate::engine::{AppSession, EngineRegistry, SessionOutcome, ViewLocation};
 use crate::runtime_log::RuntimeLog;
-use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::Result;
 
@@ -37,9 +36,5 @@ impl<'a> App<'a> {
 
     pub fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
         self.session.run(terminal)
-    }
-
-    pub(crate) fn root_state(&self) -> Result<&StateInstance> {
-        self.session.root_state()
     }
 }

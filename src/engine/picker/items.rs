@@ -1,14 +1,12 @@
 use crate::cancellation::CancellationToken;
-use crate::config::Config;
+use crate::config::{Config, ConfigReadContext, ConfigScope};
 use crate::engine::{TaskHandle, TaskScheduler};
-use crate::expression::ExpressionMethods;
 use crate::state::StateInstance;
 use crate::text::sanitize_text;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -104,13 +102,17 @@ fn load_items_with_states(
             continue;
         }
 
-        let root = config
-            .plugin_root(&source_ref)
-            .unwrap_or_else(|| Path::new("."));
-        let mut methods = ExpressionMethods::with_cancellation(root, cancellation.clone());
         let fallback_state = StateInstance::empty(&source_ref);
         let state = source_states.get(&source_ref).unwrap_or(&fallback_state);
-        let value = match config.evaluate_view_items(state, runtime, &mut methods) {
+        let value = match config.get(
+            ConfigReadContext {
+                scope: ConfigScope::View(state),
+                runtime,
+                input: &config.input_value,
+                cancellation: Some(cancellation.clone()),
+            },
+            &["items"],
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(error) => {
@@ -176,7 +178,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, Defaults, ENGINE_PICKER, PluginMetadata, View};
+    use crate::config::{Command, CommandAction, Defaults, ENGINE_PICKER, PluginMetadata, View};
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -191,7 +193,7 @@ mod tests {
                 alias: None,
                 items: None,
                 run_shell: None,
-                result_handler: None,
+                cancel_exit_code: None,
                 query: None,
                 commands: BTreeMap::new(),
                 engine_config: toml::Table::new(),
@@ -205,19 +207,20 @@ mod tests {
                 alias: Some("app".to_string()),
                 items: Some("{{ runtime:view.active.items }}".to_string()),
                 run_shell: None,
-                result_handler: None,
+                cancel_exit_code: None,
                 query: None,
                 commands: BTreeMap::from([(
                     "open".to_string(),
                     Command {
                         key: "enter".to_string(),
                         label: "Open".to_string(),
-                        run: None,
-                        shell: None,
-                        view: None,
-                        input: None,
-                        exit: false,
-                        complete: false,
+                        action: CommandAction::Run {
+                            payload: crate::config::RunPayload {
+                                handler: ":".to_string(),
+                                shell: None,
+                                exit: false,
+                            },
+                        },
                     },
                 )]),
                 engine_config: toml::Table::new(),
