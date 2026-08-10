@@ -217,7 +217,6 @@ fn split_selector(input: &str) -> Option<(&str, &str)> {
     input
         .split_once(char::is_whitespace)
         .map(|(selector, query)| (selector, query.trim_start()))
-        .or_else(|| input.contains(':').then_some((input, "")))
 }
 
 fn valid_view_ref(view_ref: &str) -> bool {
@@ -296,6 +295,10 @@ mod tests {
         );
         assert_eq!(
             router.resolve("core:default", "package-a:view2"),
+            RouteResolution::NotMatched
+        );
+        assert_eq!(
+            router.resolve("core:default", "package-a:view2 "),
             RouteResolution::Navigate {
                 target: "package-a:view2".to_string(),
                 query: String::new(),

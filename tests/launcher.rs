@@ -1181,7 +1181,7 @@ fn failed_view_creation_returns_to_the_current_view() {
     wait_for_ready(&process.master);
     process
         .master
-        .write_all(b"core:broken")
+        .write_all(b"core:broken ")
         .expect("could not write broken view route");
     process
         .master

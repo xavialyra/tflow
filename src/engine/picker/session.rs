@@ -638,11 +638,11 @@ impl PickerView {
         host.input.rejected = false;
         self.frame.pending_command = None;
         self.frame.pending_selection = 0;
-        if host.config.has_query(self.current_view_ref()) {
+        if !self.route_child && host.config.has_query(self.current_view_ref()) {
             host.input.params = host.input.raw.clone();
+            let view_ref = self.current_view_ref().to_string();
+            host.sync_query_state(&view_ref)?;
         }
-        let view_ref = self.current_view_ref().to_string();
-        host.sync_query_state(&view_ref)?;
         *refresh = !host.input.rejected;
         Ok(())
     }
@@ -663,7 +663,10 @@ fn apply_view_completion(input: &mut ShellInput, completion: &ViewCompletion) ->
     };
     let old_cursor = input.cursor;
     let old_length = completion.selector_end - completion.selector_start;
-    let replacement = candidate.view_ref.clone();
+    let mut replacement = candidate.view_ref.clone();
+    if completion.selector_end == input.raw.len() {
+        replacement.push(' ');
+    }
     input.replace_range(
         completion.selector_start,
         completion.selector_end,
@@ -885,6 +888,21 @@ mod tests {
 
         assert!(apply_view_completion(&mut input, &completion));
         assert_eq!(input.raw, "apps:main query");
+        assert_eq!(input.cursor, input.raw.len());
+    }
+
+    #[test]
+    fn completion_appends_a_route_separator_at_the_end_of_input() {
+        let mut input = ShellInput::new("app");
+        let completion = ViewCompletion {
+            candidates: vec![candidate()],
+            selected: 0,
+            selector_start: 0,
+            selector_end: 3,
+        };
+
+        assert!(apply_view_completion(&mut input, &completion));
+        assert_eq!(input.raw, "apps:main ");
         assert_eq!(input.cursor, input.raw.len());
     }
 
