@@ -796,10 +796,9 @@ impl ViewInstance for PickerView {
     }
 
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
-        let searching = self.frame.refresh_deadline.is_some() || self.frame.items_pending;
         let (status, commands) = if let Some(completion) = &self.completion {
             (
-                format!("{} views", completion.candidates.len()),
+                selection_count(completion.selected, completion.candidates.len()),
                 vec![
                     ("tab".to_string(), "Next".to_string()),
                     ("enter".to_string(), "Open".to_string()),
@@ -808,13 +807,7 @@ impl ViewInstance for PickerView {
             )
         } else {
             (
-                self.feedback.clone().unwrap_or_else(|| {
-                    if searching {
-                        "searching...".to_string()
-                    } else {
-                        format!("{} results", self.frame.items.len())
-                    }
-                }),
+                selection_count(self.frame.selected, self.frame.items.len()),
                 self.visible_commands(host.config),
             )
         };
@@ -842,6 +835,15 @@ impl ViewInstance for PickerView {
     }
 }
 
+fn selection_count(selected: usize, total: usize) -> String {
+    let current = if total == 0 {
+        0
+    } else {
+        selected.saturating_add(1)
+    };
+    format!("{current}/{total}")
+}
+
 fn key_display(key: Key) -> String {
     match key {
         Key::Enter => "Enter".to_string(),
@@ -866,6 +868,12 @@ fn key_display(key: Key) -> String {
 mod tests {
     use super::*;
     use crate::router::ViewCandidate;
+
+    #[test]
+    fn selection_count_uses_zero_for_an_empty_list() {
+        assert_eq!(selection_count(0, 0), "0/0");
+        assert_eq!(selection_count(1, 3), "2/3");
+    }
 
     fn candidate() -> ViewCandidate {
         ViewCandidate {

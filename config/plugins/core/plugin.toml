@@ -5,6 +5,7 @@ name = "core"
 [views.default]
 type = "picker"
 alias = "core"
+show_prefix = true
 sources = ["sys:default", "shell:menu", "trans:default", "apps:default"]
 
 [views.messages]

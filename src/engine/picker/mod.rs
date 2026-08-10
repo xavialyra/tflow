@@ -74,7 +74,7 @@ impl Engine for PickerEngine {
         drop(runtime);
         let keymap = PickerKeymap::from_values(default_bindings, view_bindings)?;
         let options = PickerOptions {
-            show_prefix: parse_bool(show_prefix, "show_prefix", true)?,
+            show_prefix: parse_bool(show_prefix, "show_prefix", false)?,
             input_prefix: parse_optional_string(prompt, "prompt")?
                 .map(|prompt| sanitize_terminal_text(&prompt)),
         };

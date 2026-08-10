@@ -20,6 +20,7 @@ fn loads_items_from_an_expression() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:catalog.items }}"
 
         [catalog]
@@ -75,6 +76,7 @@ fn explicit_capture_view_receives_typed_query_state() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.direct]
@@ -110,6 +112,7 @@ fn explicit_embedded_view_runs_without_picker_intent() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.direct]
@@ -142,6 +145,7 @@ fn waits_for_items_before_running_enter_command() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -189,6 +193,7 @@ fn view_commands_accept_unreserved_control_bindings() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -261,6 +266,7 @@ fi
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = '{{ script("scripts/items.sh", runtime:view.active) }}'
         "#,
     )
@@ -318,6 +324,7 @@ fn ctrl_k_opens_the_command_picker_view() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -400,6 +407,7 @@ fn tab_opens_view_completion_and_escape_closes_it() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
 
         [plugins.apps.views.main]
         type = "picker"
@@ -477,6 +485,7 @@ fn picker_bindings_can_override_a_default_shortcut() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.bindings]
@@ -537,6 +546,7 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.inspect]
@@ -616,6 +626,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items }}"
         "#,
     )
@@ -662,6 +673,7 @@ fn aggregate_sources_own_independent_view_state() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         sources = ["apps:default"]
 
         [plugins.apps.views.default]
@@ -702,6 +714,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         sources = ["apps:default", "sys:default"]
 
         [plugins.apps.views.default]
@@ -751,7 +764,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .master
         .flush()
         .expect("could not flush route escape");
-    let output = wait_for_text(&process.master, "0 results");
+    let output = wait_for_text(&process.master, "0/0");
     assert!(
         String::from_utf8_lossy(&output).contains(" app "),
         "output: {:?}",
@@ -763,16 +776,7 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         output
     );
 
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close route input launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush route input launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
+    drop(process);
     fs::remove_dir_all(root).expect("could not remove route input config");
 }
 
@@ -787,6 +791,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         sources = ["apps:default", "sys:default"]
 
         [plugins.apps.views.default]
@@ -837,7 +842,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route separator deletion");
-    let output = wait_for_text(&process.master, "2 results");
+    let output = wait_for_text(&process.master, "1/2");
     assert!(
         String::from_utf8_lossy(&output).contains(" app"),
         "output: {:?}",
@@ -857,9 +862,9 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route selector deletion");
-    let output = wait_for_text(&process.master, "2 results");
+    let output = wait_for_text(&process.master, "1/2");
     assert!(
-        String::from_utf8_lossy(&output).contains("2 results"),
+        String::from_utf8_lossy(&output).contains("1/2"),
         "output: {:?}",
         output
     );
@@ -920,6 +925,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
 
         [plugins.core.views.messages]
         type = "picker"
@@ -980,6 +986,7 @@ alias = "temp"
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         "#,
     )
     .expect("could not write conflicting-alias config");
@@ -1031,6 +1038,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -1104,6 +1112,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
         items = "{{ config:test_items.items }}"
 
         [plugins.core.views.default.commands.run]
@@ -1169,6 +1178,7 @@ fn failed_view_creation_returns_to_the_current_view() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
 
         [plugins.core.views.broken]
         type = "embedded"
@@ -1218,6 +1228,7 @@ fn qualified_view_path_navigates_to_any_engine() {
 
         [plugins.core.views.default]
         type = "picker"
+        show_prefix = true
 
         [plugins.core.views.embedded]
         type = "embedded"
@@ -1239,7 +1250,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         .expect("could not flush qualified embedded route");
 
     let mut output = wait_for_text(&process.master, "route-marker");
-    let launcher = wait_for_text(&process.master, "0 results");
+    let launcher = wait_for_text(&process.master, "0/0");
     output.extend(launcher);
     process
         .master

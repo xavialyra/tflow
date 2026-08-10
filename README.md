@@ -432,7 +432,7 @@ Command `shell` selects the command interpreter. When omitted, the source view's
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
-Picker views accept `bindings`, `prompt`, and `show_prefix` engine fields. `prompt` changes the input prefix and `show_prefix = false` hides source prefixes. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker views accept `bindings`, `prompt`, and `show_prefix` engine fields. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `show_prefix = true` to identify each source. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 
