@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) enum PickerAction {
     Exit,
     OpenCommands,
+    OpenCompletion,
     Back,
     SelectPrevious,
     SelectNext,
@@ -18,9 +19,10 @@ pub(super) enum PickerAction {
 }
 
 impl PickerAction {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Exit,
         Self::OpenCommands,
+        Self::OpenCompletion,
         Self::Back,
         Self::SelectPrevious,
         Self::SelectNext,
@@ -34,6 +36,7 @@ impl PickerAction {
         match self {
             Self::Exit => "exit",
             Self::OpenCommands => "open_commands",
+            Self::OpenCompletion => "open_completion",
             Self::Back => "back",
             Self::SelectPrevious => "select_previous",
             Self::SelectNext => "select_next",
@@ -169,6 +172,8 @@ fn default_bindings() -> HashMap<Key, PickerAction> {
         (Key::Ctrl('c'), PickerAction::Exit),
         (Key::Ctrl('d'), PickerAction::Exit),
         (Key::Ctrl('k'), PickerAction::OpenCommands),
+        (Key::Tab, PickerAction::OpenCompletion),
+        (Key::BackTab, PickerAction::OpenCompletion),
         (Key::Escape, PickerAction::Back),
         (Key::Up, PickerAction::SelectPrevious),
         (Key::Down, PickerAction::SelectNext),

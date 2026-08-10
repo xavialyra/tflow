@@ -15,7 +15,7 @@ pub(crate) struct ViewCompletion {
 pub(super) enum PickerInputAction {
     Continue,
     Refresh,
-    ClearError,
+    Select(isize),
     OpenCompletion,
     CycleCompletion(isize),
     AcceptCompletion,
@@ -46,12 +46,6 @@ impl PickerView {
             }
         }
 
-        if key == Key::Tab {
-            return PickerInputAction::OpenCompletion;
-        }
-        if key == Key::BackTab {
-            return PickerInputAction::OpenCompletion;
-        }
         if let Some(action) = self.keymap.action(key) {
             return self.apply_picker_action(action, command_view, input, nested);
         }
@@ -109,6 +103,7 @@ impl PickerView {
                     PickerInputAction::Continue
                 }
             }
+            PickerAction::OpenCompletion => PickerInputAction::OpenCompletion,
             PickerAction::Back => {
                 if nested {
                     PickerInputAction::Back
@@ -119,19 +114,8 @@ impl PickerView {
                     PickerInputAction::Back
                 }
             }
-            PickerAction::SelectPrevious => {
-                if !self.current().items.is_empty() {
-                    self.current_mut().selected = self.current().selected.saturating_sub(1);
-                }
-                PickerInputAction::ClearError
-            }
-            PickerAction::SelectNext => {
-                if !self.current().items.is_empty() {
-                    let last = self.current().items.len() - 1;
-                    self.current_mut().selected = (self.current().selected + 1).min(last);
-                }
-                PickerInputAction::ClearError
-            }
+            PickerAction::SelectPrevious => PickerInputAction::Select(-1),
+            PickerAction::SelectNext => PickerInputAction::Select(1),
             PickerAction::DeleteBackward => {
                 if input.delete_backward() {
                     PickerInputAction::Refresh

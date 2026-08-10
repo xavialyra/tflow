@@ -1,5 +1,6 @@
-use crate::engine::{AppSession, EngineRegistry};
+use crate::engine::{AppSession, EngineRegistry, SessionOutcome, ViewLocation};
 use crate::runtime_log::RuntimeLog;
+use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::Result;
 
@@ -18,7 +19,27 @@ impl<'a> App<'a> {
         })
     }
 
-    pub fn run(&mut self, terminal: &mut Terminal) -> Result<()> {
+    pub(crate) fn with_view(
+        config: &'a crate::config::Config,
+        runtime_log: RuntimeLog,
+        engines: EngineRegistry,
+        view_ref: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            session: AppSession::single_root(
+                config,
+                runtime_log,
+                engines,
+                ViewLocation::new(view_ref, ""),
+            )?,
+        })
+    }
+
+    pub fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
         self.session.run(terminal)
+    }
+
+    pub(crate) fn root_state(&self) -> Result<&StateInstance> {
+        self.session.root_state()
     }
 }

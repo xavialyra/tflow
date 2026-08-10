@@ -3,12 +3,13 @@ mod cancellation;
 mod chrome;
 mod command_runner;
 mod config;
-mod dmenu;
 mod engine;
 mod expression;
 mod input;
+mod invocation;
 mod router;
 mod runtime_log;
+mod state;
 mod terminal;
 mod text;
 mod vt;
@@ -18,8 +19,10 @@ use app::App;
 use clap::Parser;
 use config::Config;
 use std::env;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::os::fd::AsRawFd;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "A dmenu-style TUI workflow launcher")]
@@ -32,111 +35,99 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Read newline-delimited candidates from stdin and select one.
-    #[arg(short = 'd', long)]
-    dmenu: bool,
+    /// View to start directly; defaults to the configured root view.
+    #[arg(value_name = "VIEW")]
+    view: Option<String>,
 
-    /// Read NUL-delimited candidates from stdin and select one.
-    #[arg(long)]
-    dmenu0: bool,
-
-    /// Prompt shown before the dmenu query.
-    #[arg(long, default_value = "")]
-    prompt: String,
-
-    /// Limit the number of visible dmenu result rows.
-    #[arg(long)]
-    lines: Option<usize>,
-
-    /// Initial dmenu query.
-    #[arg(long, default_value = "")]
-    initial: String,
-
-    /// Print the selected zero-based input index instead of its text.
-    #[arg(long)]
-    index: bool,
-
-    /// Change the displayed fields or format.
-    #[arg(long, value_name = "N|FMT")]
-    with_nth: Option<String>,
-
-    /// Change the output fields or format.
-    #[arg(long, value_name = "N|FMT")]
-    accept_nth: Option<String>,
-
-    /// Change the fields used for matching.
-    #[arg(long, value_name = "N|FMT")]
-    match_nth: Option<String>,
-
-    /// Single ASCII field delimiter or whitespace mode; defaults to tab.
-    #[arg(long, value_name = "CHARACTER")]
-    nth_delimiter: Option<String>,
+    /// Keyed values validated against the target View query.
+    #[arg(
+        value_name = "VIEW_OPTION",
+        num_args = 0..,
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    view_options: Vec<String>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let invoked_as_dmenu = invoked_as_dmenu();
-
-    if args.dmenu || args.dmenu0 || invoked_as_dmenu {
-        if args.check {
-            bail!("dmenu mode cannot be combined with --check");
-        }
-        let config_path = args.config.unwrap_or_else(default_config_path);
-        let config = Config::load(&config_path)?;
-        let display = config.dmenu_view()?.display;
-        let outcome = dmenu::run(dmenu::Options {
-            prompt: args.prompt,
-            lines: args.lines,
-            initial: args.initial,
-            index: args.index,
-            dmenu0: args.dmenu0,
-            display,
-            with_nth: args.with_nth,
-            accept_nth: args.accept_nth,
-            match_nth: args.match_nth,
-            nth_delimiter: args.nth_delimiter,
-        })?;
-        return match outcome {
-            dmenu::Outcome::Selected { value, terminator } => {
-                let mut stdout = io::stdout().lock();
-                stdout
-                    .write_all(&value)
-                    .context("could not write selected dmenu value")?;
-                stdout
-                    .write_all(&[terminator])
-                    .context("could not terminate selected dmenu value")?;
-                stdout
-                    .flush()
-                    .context("could not flush selected dmenu value")?;
-                Ok(())
-            }
-            dmenu::Outcome::Cancelled => std::process::exit(1),
-        };
-    }
-
     let config_path = args.config.unwrap_or_else(default_config_path);
+    let mut config = Config::load(&config_path)?;
     let engines = engine::EngineRegistry::new();
-    let config = Config::load_with_engines(&config_path, &engines)?;
 
     if args.check {
+        if args.view.is_some() || !args.view_options.is_empty() {
+            bail!("--check cannot be combined with a target View or View options");
+        }
         println!("configuration is valid: {}", config_path.display());
         return Ok(());
     }
 
+    let explicit_view = args.view.is_some();
+    let root_view = match args.view {
+        Some(selector) => config.resolve_view(&selector)?,
+        None => config.default_view.clone(),
+    };
+    let state = config.bind_invocation_state(&root_view, &args.view_options)?;
+    let input = invocation::InputArtifact::capture()?;
+    config.set_invocation(input.value(), state);
+
     let runtime_log =
         runtime_log::RuntimeLog::open().context("could not initialize the launcher runtime log")?;
-    let mut terminal = terminal::Terminal::enter()
-        .with_context(|| "could not initialize the launcher terminal")?;
-    let mut app = App::with_runtime_log_and_engines(&config, runtime_log, engines)?;
-    app.run(&mut terminal)
-}
+    let reserves_stdout = config
+        .view(&root_view)
+        .is_some_and(|view| view.result_handler.is_some());
+    let stdout_is_tty = unsafe { libc::isatty(io::stdout().as_raw_fd()) } == 1;
+    let tty = if input.is_tty() && stdout_is_tty && !reserves_stdout {
+        None
+    } else {
+        Some(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")
+                .context("could not open /dev/tty for launcher interaction")?,
+        )
+    };
+    let mut terminal = match &tty {
+        Some(tty) => terminal::Terminal::enter_with_fds(tty.as_raw_fd(), tty.as_raw_fd()),
+        None => terminal::Terminal::enter(),
+    }
+    .context("could not initialize the launcher terminal")?;
+    let mut app = if explicit_view {
+        App::with_view(&config, runtime_log, engines, &root_view)?
+    } else {
+        App::with_runtime_log_and_engines(&config, runtime_log, engines)?
+    };
+    let outcome = app.run(&mut terminal);
+    let leave_result = terminal.leave();
+    let outcome = outcome.and_then(|outcome| {
+        leave_result?;
+        Ok(outcome)
+    })?;
+    let final_state = app.root_state()?.clone();
+    let result = invocation::finish(&config, &root_view, &final_state, outcome, input.length())?;
 
-fn invoked_as_dmenu() -> bool {
-    std::env::args_os().next().is_some_and(|argument| {
-        Path::new(&argument)
-            .file_name()
-            .is_some_and(|name| name == "dmenu")
-    })
+    let mut stderr = io::stderr().lock();
+    stderr
+        .write_all(&result.stderr)
+        .context("could not write invocation stderr")?;
+    stderr
+        .flush()
+        .context("could not flush invocation stderr")?;
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(&result.stdout)
+        .context("could not write invocation output")?;
+    stdout
+        .flush()
+        .context("could not flush invocation output")?;
+    let exit_code = result.exit_code;
+    drop(input);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+    Ok(())
 }
 
 fn default_config_path() -> PathBuf {

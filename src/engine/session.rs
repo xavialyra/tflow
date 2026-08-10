@@ -1,11 +1,13 @@
 use super::{
     EngineHost, EngineRegistry, NavigationMode, TaskScheduler, ViewEffect, ViewInstance,
-    ViewLocation,
+    ViewLocation, ViewOutput,
 };
 use crate::chrome::ShellInput;
 use crate::config::{Config, ENGINE_PICKER};
 use crate::runtime_log::{LogRecord, RuntimeLog};
+use crate::state::StateInstance;
 use crate::terminal::Terminal;
+use crate::text::sanitize_terminal_text;
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use std::time::Instant;
 struct ViewEntry {
     location: ViewLocation,
     shell_input: ShellInput,
+    state: StateInstance,
     instance: Box<dyn ViewInstance>,
 }
 
@@ -25,9 +28,16 @@ pub(crate) struct AppSession<'a> {
     runtime: super::RuntimeStore,
     runtime_log: RuntimeLog,
     router: Arc<crate::router::Router>,
+    route_input: bool,
     input: ShellInput,
     active_error: Option<LogRecord>,
     active_error_deadline: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionOutcome {
+    Exited,
+    Completed(ViewOutput),
 }
 
 impl<'a> AppSession<'a> {
@@ -40,10 +50,13 @@ impl<'a> AppSession<'a> {
         let tasks = TaskScheduler::new(runtime.handle());
         let router = Arc::new(crate::router::Router::new(config));
         let location = ViewLocation::new(&config.default_view, "");
-        publish_location(&mut runtime, &location);
+        let state = config.instantiate_state(&location.view_ref)?;
+        let initial_input = sanitize_terminal_text(&config.render_query_input(&state)?);
+        publish_location(config, &mut runtime, &location, &state)?;
         let root = engines.create_view(
             config,
             &location,
+            &state,
             runtime_log.path(),
             runtime.handle(),
             tasks.clone(),
@@ -52,26 +65,83 @@ impl<'a> AppSession<'a> {
             config,
             engines,
             views: vec![ViewEntry {
-                shell_input: ShellInput::new(location.input.clone()),
+                shell_input: ShellInput::new(initial_input.clone()),
                 location,
+                state,
                 instance: root,
             }],
             tasks,
             runtime,
             runtime_log,
             router,
-            input: ShellInput::new(""),
+            route_input: true,
+            input: ShellInput::new(initial_input),
             active_error: None,
             active_error_deadline: None,
         })
     }
 
-    pub(crate) fn run(&mut self, terminal: &mut Terminal) -> Result<()> {
+    pub(crate) fn single_root(
+        config: &'a Config,
+        runtime_log: RuntimeLog,
+        engines: EngineRegistry,
+        location: ViewLocation,
+    ) -> Result<Self> {
+        let mut runtime = super::RuntimeStore::new();
+        let tasks = TaskScheduler::new(runtime.handle());
+        let router = Arc::new(crate::router::Router::new(config));
+        let state = config.invocation_state.clone();
+        let state_input = sanitize_terminal_text(&config.render_query_input(&state)?);
+        let raw_input = location.shell_input.clone().unwrap_or_else(|| {
+            if location.input.is_empty() {
+                state_input
+            } else {
+                location.input.clone()
+            }
+        });
+        let input = ShellInput::new(raw_input);
+        publish_location(config, &mut runtime, &location, &state)?;
+        let root = engines.create_view(
+            config,
+            &location,
+            &state,
+            runtime_log.path(),
+            runtime.handle(),
+            tasks.clone(),
+        )?;
+        Ok(Self {
+            config,
+            engines,
+            views: vec![ViewEntry {
+                shell_input: input.clone(),
+                location,
+                state,
+                instance: root,
+            }],
+            tasks,
+            runtime,
+            runtime_log,
+            router,
+            route_input: false,
+            input,
+            active_error: None,
+            active_error_deadline: None,
+        })
+    }
+
+    pub(crate) fn root_state(&self) -> Result<&StateInstance> {
+        self.views
+            .first()
+            .map(|entry| &entry.state)
+            .context("session has no root view")
+    }
+
+    pub(crate) fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
         loop {
             self.clear_expired_error();
             let effect = self.step(terminal)?;
-            if self.apply(effect)? {
-                return Ok(());
+            if let Some(outcome) = self.apply(effect)? {
+                return Ok(outcome);
             }
             self.render(terminal)?;
         }
@@ -79,19 +149,20 @@ impl<'a> AppSession<'a> {
 
     fn step(&mut self, terminal: &mut Terminal) -> Result<ViewEffect> {
         let effect = {
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no active view")?;
             let mut host = EngineHost {
                 config: self.config,
                 input: &mut self.input,
+                state: &mut entry.state,
                 runtime: &mut self.runtime,
                 runtime_log: &mut self.runtime_log,
                 active_error: &mut self.active_error,
                 active_error_deadline: &mut self.active_error_deadline,
             };
-            self.views
-                .last_mut()
-                .context("session has no active view")?
-                .instance
-                .step(&mut host, terminal)?
+            entry.instance.step(&mut host, terminal)?
         };
         if matches!(effect, ViewEffect::Continue)
             && let Some(effect) = self.reconcile_input()?
@@ -117,6 +188,7 @@ impl<'a> AppSession<'a> {
         let host = EngineHost {
             config: self.config,
             input: &mut self.input,
+            state: &mut entry.state,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -142,6 +214,11 @@ impl<'a> AppSession<'a> {
             return Ok(None);
         }
         self.input.changed = false;
+        if !self.route_input {
+            self.input.params = self.input.raw.clone();
+            self.sync_query_state()?;
+            return Ok(None);
+        }
 
         let entry = self.views.last().context("session has no active view")?;
         let current_view = entry.location.view_ref.clone();
@@ -150,6 +227,7 @@ impl<'a> AppSession<'a> {
             || self.config.engine(&current_view)? != ENGINE_PICKER
         {
             self.input.params = self.input.raw.clone();
+            self.sync_query_state()?;
             return Ok(None);
         }
 
@@ -168,6 +246,7 @@ impl<'a> AppSession<'a> {
             }
             crate::router::RouteResolution::Current { query } => {
                 self.input.params = query;
+                self.sync_query_state()?;
                 Ok(None)
             }
             crate::router::RouteResolution::NotMatched if route_child => {
@@ -178,6 +257,7 @@ impl<'a> AppSession<'a> {
             }
             crate::router::RouteResolution::NotMatched => {
                 self.input.params = raw_input;
+                self.sync_query_state()?;
                 Ok(None)
             }
             crate::router::RouteResolution::Ambiguous { alias, targets } => {
@@ -189,9 +269,14 @@ impl<'a> AppSession<'a> {
                     alias,
                     targets.join(", ")
                 );
+                let entry = self
+                    .views
+                    .last_mut()
+                    .context("session has no active view")?;
                 let mut host = EngineHost {
                     config: self.config,
                     input: &mut self.input,
+                    state: &mut entry.state,
                     runtime: &mut self.runtime,
                     runtime_log: &mut self.runtime_log,
                     active_error: &mut self.active_error,
@@ -203,10 +288,30 @@ impl<'a> AppSession<'a> {
         }
     }
 
-    fn apply(&mut self, effect: ViewEffect) -> Result<bool> {
+    fn sync_query_state(&mut self) -> Result<()> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let view_ref = entry.location.view_ref.clone();
+        let mut host = EngineHost {
+            config: self.config,
+            input: &mut self.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        host.sync_query_state(&view_ref)?;
+        Ok(())
+    }
+
+    fn apply(&mut self, effect: ViewEffect) -> Result<Option<SessionOutcome>> {
         match effect {
-            ViewEffect::Continue => Ok(false),
-            ViewEffect::Exit => Ok(true),
+            ViewEffect::Continue => Ok(None),
+            ViewEffect::Exit => Ok(Some(SessionOutcome::Exited)),
+            ViewEffect::Complete(output) => Ok(Some(SessionOutcome::Completed(output))),
             ViewEffect::Back => self.pop_current(None),
             ViewEffect::BackWithInput { input, cursor } => self.pop_current(Some((input, cursor))),
             ViewEffect::Navigate { location, mode } => {
@@ -215,10 +320,21 @@ impl<'a> AppSession<'a> {
                     entry.shell_input = previous_input.clone();
                 }
                 self.deactivate_current()?;
-                publish_location(&mut self.runtime, &location);
+                let mut state = self.config.instantiate_state(&location.view_ref)?;
+                if !location.input.is_empty()
+                    && let Err(error) = self.config.update_query_input(&mut state, &location.input)
+                {
+                    self.input = previous_input;
+                    self.record_navigation_error(&location.view_ref, &error.to_string());
+                    self.activate_current()?;
+                    self.restore_current_input(false)?;
+                    return Ok(None);
+                }
+                publish_location(self.config, &mut self.runtime, &location, &state)?;
                 let view = self.engines.create_view(
                     self.config,
                     &location,
+                    &state,
                     self.runtime_log.path(),
                     self.runtime.handle(),
                     self.tasks.clone(),
@@ -230,7 +346,7 @@ impl<'a> AppSession<'a> {
                         self.record_navigation_error(&location.view_ref, &error.to_string());
                         self.activate_current()?;
                         self.restore_current_input(false)?;
-                        return Ok(false);
+                        return Ok(None);
                     }
                 };
                 let shell_input = location
@@ -244,17 +360,21 @@ impl<'a> AppSession<'a> {
                 self.views.push(ViewEntry {
                     location,
                     shell_input: self.input.clone(),
+                    state,
                     instance: view,
                 });
-                Ok(false)
+                Ok(None)
             }
         }
     }
 
-    fn pop_current(&mut self, edited_input: Option<(String, usize)>) -> Result<bool> {
+    fn pop_current(
+        &mut self,
+        edited_input: Option<(String, usize)>,
+    ) -> Result<Option<SessionOutcome>> {
         if self.views.len() <= 1 {
             let Some((input, cursor)) = edited_input else {
-                return Ok(true);
+                return Ok(Some(SessionOutcome::Exited));
             };
             self.input = ShellInput::with_cursor(input.clone(), cursor);
             if let Some(entry) = self.views.last_mut() {
@@ -262,7 +382,7 @@ impl<'a> AppSession<'a> {
             }
             self.activate_current()?;
             self.restore_current_input(true)?;
-            return Ok(false);
+            return Ok(None);
         }
 
         // An edited pop carries the new buffer; Esc restores the saved parent snapshot.
@@ -283,7 +403,7 @@ impl<'a> AppSession<'a> {
         }
         self.activate_current()?;
         self.restore_current_input(changed)?;
-        Ok(false)
+        Ok(None)
     }
 
     fn reject_current_input(&mut self) -> Result<()> {
@@ -294,6 +414,7 @@ impl<'a> AppSession<'a> {
         let mut host = EngineHost {
             config: self.config,
             input: &mut self.input,
+            state: &mut entry.state,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -310,6 +431,7 @@ impl<'a> AppSession<'a> {
         let mut host = EngineHost {
             config: self.config,
             input: &mut self.input,
+            state: &mut entry.state,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -335,10 +457,16 @@ impl<'a> AppSession<'a> {
             .views
             .last_mut()
             .context("session has no active view")?;
-        publish_location(&mut self.runtime, &entry.location);
+        publish_location(
+            self.config,
+            &mut self.runtime,
+            &entry.location,
+            &entry.state,
+        )?;
         let mut host = EngineHost {
             config: self.config,
             input: &mut self.input,
+            state: &mut entry.state,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -348,9 +476,14 @@ impl<'a> AppSession<'a> {
     }
 
     fn record_navigation_error(&mut self, view_ref: &str, message: &str) {
+        let entry = self
+            .views
+            .last_mut()
+            .expect("session has no active view while reporting navigation error");
         let mut host = EngineHost {
             config: self.config,
             input: &mut self.input,
+            state: &mut entry.state,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -370,11 +503,18 @@ impl<'a> AppSession<'a> {
     }
 }
 
-fn publish_location(runtime: &mut super::RuntimeStore, location: &ViewLocation) {
-    runtime.replace(json!({
-        "view": {
-            "current": {
+fn publish_location(
+    _config: &Config,
+    runtime: &mut super::RuntimeStore,
+    location: &ViewLocation,
+    state: &StateInstance,
+) -> Result<()> {
+    runtime.set(
+        "/view",
+        json!({
+            "active": {
                 "ref": location.view_ref,
+                "state_revision": state.revision(),
                 "input": location.input,
                 "query": location.input,
                 "request": {
@@ -382,6 +522,45 @@ fn publish_location(runtime: &mut super::RuntimeStore, location: &ViewLocation) 
                     "query": location.input,
                 }
             }
-        }
-    }));
+        }),
+    )?;
+    runtime.set(
+        "/session",
+        json!({
+            "input": {
+                "raw": location.shell_input.as_deref().unwrap_or(&location.input),
+                "params": location.input,
+            }
+        }),
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publishing_a_location_preserves_unrelated_runtime_data() {
+        let mut runtime = super::super::RuntimeStore::new();
+        runtime
+            .set("/invocation_marker", json!({"items": [1, 2]}))
+            .unwrap();
+
+        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let state = config.instantiate_state("core:default").unwrap();
+        publish_location(
+            &config,
+            &mut runtime,
+            &ViewLocation::new("core:default", "query"),
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime.snapshot()["invocation_marker"]["items"],
+            json!([1, 2])
+        );
+        assert_eq!(runtime.snapshot()["view"]["active"]["query"], "query");
+    }
 }

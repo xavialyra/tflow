@@ -5,7 +5,7 @@ name = "shell"
 [views.menu]
 type = "picker"
 alias = "shell"
-items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
+items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 
 [views.menu.commands.open]
 key = "enter"
@@ -15,5 +15,5 @@ input = "exec sh"
 
 [views.default]
 type = "embedded"
-command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
-title = "{{ runtime:view.current.ref }}"
+command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
+title = "{{ runtime:view.active.ref }}"

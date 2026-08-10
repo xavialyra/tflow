@@ -13,6 +13,9 @@ pub(crate) struct PickerRenderState {
     pub(crate) selected: usize,
     pub(crate) searching: bool,
     pub(crate) completion: Option<ViewCompletion>,
+    pub(crate) show_prefix: bool,
+    pub(crate) max_rows: Option<usize>,
+    pub(crate) empty_message: String,
 }
 
 const PICKER_COLUMN_GAP: usize = 2;
@@ -27,9 +30,21 @@ pub(crate) fn picker_content(
     let height = height as usize;
     let layout = chrome.layout();
     let content_area_width = layout.content_width(width);
-    let list_height = layout.content_rows(height);
-    let prefix_width = prefix_column_width(&state.items, content_area_width);
-    let content_width = content_area_width.saturating_sub(prefix_width + PICKER_COLUMN_GAP);
+    let available_rows = layout.content_rows(height);
+    let list_height = state
+        .max_rows
+        .map(|rows| rows.min(available_rows))
+        .unwrap_or(available_rows);
+    let prefix_width = if state.show_prefix {
+        prefix_column_width(&state.items, content_area_width)
+    } else {
+        0
+    };
+    let content_width = if state.show_prefix {
+        content_area_width.saturating_sub(prefix_width + PICKER_COLUMN_GAP)
+    } else {
+        content_area_width
+    };
 
     let completion_start = state.completion.as_ref().map(|completion| {
         if completion.selected >= list_height && list_height > 0 {
@@ -82,7 +97,7 @@ pub(crate) fn picker_content(
             content_lines.push(if state.searching {
                 "(searching...)".to_string()
             } else {
-                "(no matches)".to_string()
+                state.empty_message.clone()
             });
         } else {
             let start = if state.selected >= list_height && list_height > 0 {
@@ -91,12 +106,11 @@ pub(crate) fn picker_content(
                 0
             };
             for item in state.items.iter().skip(start).take(list_height) {
-                content_lines.push(format_item_line(
-                    &item.prefix,
-                    &item.text,
-                    prefix_width,
-                    content_width,
-                ));
+                content_lines.push(if state.show_prefix {
+                    format_item_line(&item.prefix, &item.text, prefix_width, content_width)
+                } else {
+                    clip(&item.text, content_width)
+                });
             }
         }
     }
@@ -205,11 +219,15 @@ impl PickerView {
 
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
+        let (show_prefix, max_rows, empty_message) = self.list_presentation();
         PickerRenderState {
             items: frame.items.clone(),
             selected: frame.selected,
             searching: frame.refresh_deadline.is_some() || frame.items_pending,
             completion: self.completion.clone(),
+            show_prefix,
+            max_rows,
+            empty_message,
         }
     }
 }

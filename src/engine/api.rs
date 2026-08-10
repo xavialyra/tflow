@@ -2,6 +2,7 @@ use super::host::EngineHost;
 use super::runtime::RuntimeHandle;
 use super::task::TaskScheduler;
 use crate::config::{Config, View};
+use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
@@ -13,6 +14,7 @@ pub(crate) struct ViewLocation {
     pub(crate) input: String,
     pub(crate) shell_input: Option<String>,
     pub(crate) context: Value,
+    pub(crate) owner_state: Option<crate::state::StateInstance>,
 }
 
 impl ViewLocation {
@@ -22,6 +24,7 @@ impl ViewLocation {
             input: input.into(),
             shell_input: None,
             context: Value::Null,
+            owner_state: None,
         }
     }
 
@@ -32,6 +35,11 @@ impl ViewLocation {
 
     pub(crate) fn with_context(mut self, context: Value) -> Self {
         self.context = context;
+        self
+    }
+
+    pub(crate) fn with_owner_state(mut self, state: crate::state::StateInstance) -> Self {
+        self.owner_state = Some(state);
         self
     }
 }
@@ -54,6 +62,23 @@ pub(crate) enum ViewEffect {
         cursor: usize,
     },
     Exit,
+    Complete(ViewOutput),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ViewOutput {
+    Selected {
+        item: Option<ViewOutputItem>,
+        input: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewOutputItem {
+    pub(crate) text: String,
+    pub(crate) value: Option<String>,
+    pub(crate) metadata: Value,
+    pub(crate) source_view: String,
 }
 
 pub(crate) trait ViewInstance {
@@ -94,6 +119,7 @@ pub(crate) trait ViewInstance {
 pub(crate) struct ViewContext<'a> {
     pub(crate) config: &'a Config,
     pub(crate) location: &'a ViewLocation,
+    pub(crate) state: &'a StateInstance,
     pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,
     pub(crate) tasks: TaskScheduler,

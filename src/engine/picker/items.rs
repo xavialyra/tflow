@@ -2,16 +2,20 @@ use crate::cancellation::CancellationToken;
 use crate::config::Config;
 use crate::engine::{TaskHandle, TaskScheduler};
 use crate::expression::ExpressionMethods;
+use crate::state::StateInstance;
 use crate::text::sanitize_text;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
     label: String,
+    #[serde(default)]
+    allow_empty: bool,
     #[serde(default)]
     value: Option<String>,
     #[serde(default)]
@@ -37,6 +41,7 @@ pub(crate) struct ItemsRequest {
     pub(crate) view: String,
     pub(crate) input: String,
     pub(crate) query: String,
+    pub(crate) source_states: BTreeMap<String, StateInstance>,
 }
 
 pub(crate) struct ItemsResponse {
@@ -66,8 +71,14 @@ pub(crate) fn submit_items_task(
         request,
         "picker-items".to_string(),
         move |request, runtime_value, cancellation| {
-            let result = load_items(&config, &request.view, &runtime_value, &cancellation)
-                .map_err(|error| error.to_string());
+            let result = load_items_with_states(
+                &config,
+                &request.view,
+                &request.source_states,
+                &runtime_value,
+                &cancellation,
+            )
+            .map_err(|error| error.to_string());
             ItemsResponse {
                 view: request.view,
                 input: request.input,
@@ -78,9 +89,10 @@ pub(crate) fn submit_items_task(
     )
 }
 
-fn load_items(
+fn load_items_with_states(
     config: &Config,
     view_ref: &str,
+    source_states: &BTreeMap<String, StateInstance>,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
@@ -96,7 +108,9 @@ fn load_items(
             .plugin_root(&source_ref)
             .unwrap_or_else(|| Path::new("."));
         let mut methods = ExpressionMethods::with_cancellation(root, cancellation.clone());
-        let value = match config.evaluate_view_items(&source_ref, runtime, &mut methods) {
+        let fallback_state = StateInstance::empty(&source_ref);
+        let state = source_states.get(&source_ref).unwrap_or(&fallback_state);
+        let value = match config.evaluate_view_items(state, runtime, &mut methods) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(error) => {
@@ -108,6 +122,16 @@ fn load_items(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+fn load_items(
+    config: &Config,
+    view_ref: &str,
+    runtime: &Value,
+    cancellation: &CancellationToken,
+) -> Result<ItemsResult> {
+    load_items_with_states(config, view_ref, &BTreeMap::new(), runtime, cancellation)
 }
 
 fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value: Value) {
@@ -131,7 +155,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
             }
         };
         let text = sanitize_text(&parsed.label);
-        if text.is_empty() {
+        if text.is_empty() && !parsed.allow_empty {
             result.errors.push(format!(
                 "{}: items JSON at index {} has an empty label",
                 source_ref, index
@@ -152,7 +176,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, Defaults, DisplayType, ENGINE_PICKER, PluginMetadata, View};
+    use crate::config::{Command, Defaults, ENGINE_PICKER, PluginMetadata, View};
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -163,11 +187,12 @@ mod tests {
             "core:default".to_string(),
             View {
                 engine_type: ENGINE_PICKER.to_string(),
-                display: DisplayType::Text,
                 sources: vec!["apps:main".to_string()],
                 alias: None,
                 items: None,
                 run_shell: None,
+                result_handler: None,
+                query: None,
                 commands: BTreeMap::new(),
                 engine_config: toml::Table::new(),
             },
@@ -176,11 +201,12 @@ mod tests {
             "apps:main".to_string(),
             View {
                 engine_type: ENGINE_PICKER.to_string(),
-                display: DisplayType::Text,
                 sources: Vec::new(),
                 alias: Some("app".to_string()),
-                items: Some("{{ runtime:view.current.items }}".to_string()),
+                items: Some("{{ runtime:view.active.items }}".to_string()),
                 run_shell: None,
+                result_handler: None,
+                query: None,
                 commands: BTreeMap::from([(
                     "open".to_string(),
                     Command {
@@ -191,6 +217,7 @@ mod tests {
                         view: None,
                         input: None,
                         exit: false,
+                        complete: false,
                     },
                 )]),
                 engine_config: toml::Table::new(),
@@ -198,7 +225,6 @@ mod tests {
         );
         Config {
             default_view: "core:default".to_string(),
-            dmenu_view: "core:dmenu".to_string(),
             command_view: "core:command".to_string(),
             views,
             plugins: BTreeMap::from([
@@ -218,6 +244,9 @@ mod tests {
             defaults: Defaults::default(),
             plugin_roots: BTreeMap::new(),
             config_value: Value::Object(serde_json::Map::new()),
+            input_value: Value::Null,
+            state_registry: crate::state::StateRegistry::default(),
+            invocation_state: crate::state::StateInstance::default(),
         }
     }
 
@@ -239,7 +268,7 @@ mod tests {
             "core:default",
             &serde_json::json!({
                 "view": {
-                    "current": {
+                    "active": {
                         "items": [{"label": "Second"}, {"label": "First"}]
                     }
                 }
@@ -263,12 +292,12 @@ mod tests {
     fn item_expressions_require_json_arrays() {
         let mut config = test_config();
         config.views.get_mut("apps:main").unwrap().items =
-            Some("{{ runtime:view.current.query }}".to_string());
+            Some("{{ runtime:view.active.query }}".to_string());
         let result = load_items(
             &config,
             "core:default",
             &serde_json::json!({
-                "view": {"current": {"query": "not-an-array"}}
+                "view": {"active": {"query": "not-an-array"}}
             }),
             &CancellationToken::new(),
         )
@@ -284,7 +313,7 @@ mod tests {
             "core:default",
             &serde_json::json!({
                 "view": {
-                    "current": {
+                    "active": {
                         "items": [{"label": "Valid"}, {"value": "missing-label"}]
                     }
                 }
@@ -310,13 +339,13 @@ mod tests {
 
         let mut config = test_config();
         config.views.get_mut("apps:main").unwrap().items =
-            Some("{{ script(\"items.sh\", runtime:view.current.query) }}".to_string());
+            Some("{{ script(\"items.sh\", runtime:view.active.query) }}".to_string());
         config.plugin_roots.insert("apps".to_string(), root.clone());
         let result = load_items(
             &config,
             "core:default",
             &serde_json::json!({
-                "view": {"current": {"query": "fire"}}
+                "view": {"active": {"query": "fire"}}
             }),
             &CancellationToken::new(),
         )

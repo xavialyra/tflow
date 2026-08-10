@@ -29,6 +29,7 @@ pub(crate) enum CommandAction {
         prepared: PreparedProcess,
         exit: bool,
     },
+    Complete,
 }
 
 fn prepare_command(
@@ -168,6 +169,7 @@ pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
         "view": command.view,
         "input": command.input,
         "exit": command.exit,
+        "complete": command.complete,
     }))
 }
 
@@ -198,6 +200,7 @@ impl super::PickerView {
     pub(crate) fn prepare_command_action(
         &self,
         config: &Config,
+        active_state: &crate::state::StateInstance,
         runtime: &Value,
         key: Key,
         log_file: Option<&Path>,
@@ -213,9 +216,20 @@ impl super::PickerView {
         };
         let command = invocation.command.clone();
 
+        if command.complete {
+            return Ok(Some(CommandAction::Complete));
+        }
+
         if let Some(target) = command.view {
+            let state = if invocation.source_view == active_state.view_ref() {
+                active_state
+            } else {
+                self.source_states
+                    .get(&invocation.source_view)
+                    .unwrap_or(active_state)
+            };
             let input = config.evaluate_command_input(
-                &invocation.source_view,
+                state,
                 command.input.as_deref().unwrap_or(""),
                 runtime,
             )?;

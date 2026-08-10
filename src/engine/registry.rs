@@ -2,6 +2,7 @@ use super::api::{Engine, ViewContext, ViewInstance, ViewLocation};
 use super::runtime::RuntimeHandle;
 use crate::config::{Config, View};
 use crate::expression::validate_json_value;
+use crate::state::StateInstance;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -47,6 +48,7 @@ impl EngineRegistry {
         &self,
         config: &Config,
         location: &ViewLocation,
+        state: &StateInstance,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
         tasks: super::TaskScheduler,
@@ -59,6 +61,7 @@ impl EngineRegistry {
         engine.create_view(ViewContext {
             config,
             location,
+            state,
             log_file,
             runtime,
             tasks,
@@ -157,7 +160,7 @@ mod tests {
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let mixed_embedded =
-            view("type = 'embedded'\ncommand = 'sh {{ runtime:view.current.input }}'");
+            view("type = 'embedded'\ncommand = 'sh {{ runtime:view.active.input }}'");
         assert!(
             registry
                 .validate_config("mixed-embedded", &mixed_embedded)

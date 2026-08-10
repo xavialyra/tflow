@@ -7,16 +7,10 @@ type = "picker"
 alias = "core"
 sources = ["sys:default", "shell:menu", "trans:default", "apps:default"]
 
-[views.dmenu]
-type = "picker"
-display = "text"
-
 [views.messages]
 type = "picker"
-display = "text"
 alias = "log"
-items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+items = '{{ script("scripts/items.sh", runtime:view.active) }}'
 
 [views.command]
 type = "picker"
-display = "text"

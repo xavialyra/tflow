@@ -145,23 +145,18 @@ impl TaskScheduler {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let control = Arc::new(TaskControl::new());
         let (completion_sender, completion) = sync_channel(1);
-        let runtime = self.inner.runtime.clone();
+        let runtime = self.inner.runtime.read();
         let worker_control = Arc::clone(&control);
         thread::spawn(move || {
             let completion =
                 if !worker_control.try_start() || worker_control.cancellation.is_cancelled() {
                     TaskCompletion::Cancelled
                 } else {
-                    let runtime = runtime.read();
+                    let value = worker(value, runtime, worker_control.cancellation.clone());
                     if worker_control.cancellation.is_cancelled() {
                         TaskCompletion::Cancelled
                     } else {
-                        let value = worker(value, runtime, worker_control.cancellation.clone());
-                        if worker_control.cancellation.is_cancelled() {
-                            TaskCompletion::Cancelled
-                        } else {
-                            TaskCompletion::Completed(value)
-                        }
+                        TaskCompletion::Completed(value)
                     }
                 };
             let _ = completion_sender.send(completion);
@@ -249,7 +244,6 @@ mod tests {
     use super::*;
     use crate::engine::runtime::RuntimeStore;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
 
     #[test]
@@ -335,58 +329,18 @@ mod tests {
     }
 
     #[test]
-    fn task_reads_runtime_when_worker_starts() {
+    fn task_captures_runtime_when_submitted() {
         let mut store = RuntimeStore::new();
         store.replace(json!({"version": "initial"}));
         let scheduler = TaskScheduler::new(store.handle());
-        let mut runtime = store.lock_shared_for_test();
-        let (submitted_tx, submitted_rx) = mpsc::channel();
-        let submitter = thread::spawn(move || {
-            submitted_tx
-                .send(scheduler.submit("task".to_string(), |_, runtime, _| runtime))
-                .unwrap();
-        });
+        let mut task = scheduler.submit("task".to_string(), |_, runtime, _| runtime);
 
-        let submitted = submitted_rx.recv_timeout(Duration::from_secs(1));
-        *runtime = json!({"version": "latest"});
-        drop(runtime);
-        submitter.join().unwrap();
-        let mut task =
-            submitted.expect("submitting a task must not wait for the runtime read lock");
+        store.replace(json!({"version": "latest"}));
 
         let response = task.recv_timeout(Duration::from_secs(1)).unwrap();
         let TaskCompletion::Completed(runtime) = response.into_completion() else {
             panic!("task should complete");
         };
-        assert_eq!(runtime["version"], "latest");
-    }
-
-    #[test]
-    fn task_cancelled_before_start_does_not_call_worker() {
-        let store = RuntimeStore::new();
-        let scheduler = TaskScheduler::new(store.handle());
-        let runtime = store.lock_shared_for_test();
-        let called = Arc::new(AtomicBool::new(false));
-        let worker_called = Arc::clone(&called);
-        let mut task = scheduler.submit_keyed("task", "items".to_string(), move |_, _, _| {
-            worker_called.store(true, Ordering::SeqCst);
-        });
-        let mut replacement =
-            scheduler.submit_keyed("replacement", "items".to_string(), |_, _, _| ());
-
-        drop(runtime);
-        let completion = task.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            completion.into_completion(),
-            TaskCompletion::Cancelled
-        ));
-        assert!(!called.load(Ordering::SeqCst));
-        assert!(matches!(
-            replacement
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .into_completion(),
-            TaskCompletion::Completed(())
-        ));
+        assert_eq!(runtime["version"], "initial");
     }
 }

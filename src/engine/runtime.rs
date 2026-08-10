@@ -50,14 +50,6 @@ impl RuntimeStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn lock_shared_for_test(&self) -> std::sync::RwLockWriteGuard<'_, Value> {
-        self.shared
-            .value
-            .write()
-            .expect("runtime handle lock was poisoned")
-    }
-
-    #[cfg(test)]
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }

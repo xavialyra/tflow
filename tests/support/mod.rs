@@ -14,6 +14,18 @@ struct DmenuProcess {
     master: File,
     input: Option<File>,
     output: File,
+    finished: bool,
+}
+
+impl Drop for DmenuProcess {
+    fn drop(&mut self) {
+        if !self.finished {
+            unsafe {
+                libc::kill(self.pid, libc::SIGKILL);
+                libc::waitpid(self.pid, std::ptr::null_mut(), 0);
+            }
+        }
+    }
 }
 
 pub struct LauncherProcess {
@@ -52,38 +64,69 @@ pub fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {
 }
 
 pub fn run_dmenu(extra_args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
+    run_dmenu_steps(extra_args, input, &[keys])
+}
+
+pub fn run_dmenu_steps(extra_args: &[&str], input: &[u8], key_steps: &[&[u8]]) -> RunResult {
     let config = project_config();
     let config = config.to_str().expect("project config path is not UTF-8");
-    let mut args = vec!["--dmenu", "--config", config];
+    let mut args = vec!["--config", config, "dmenu:default"];
     args.extend_from_slice(extra_args);
+    run_invocation_steps(&args, input, key_steps)
+}
 
-    let mut process = spawn(&args);
+pub fn run_invocation(args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
+    run_invocation_steps(args, input, &[keys])
+}
+
+pub fn run_invocation_steps(args: &[&str], input: &[u8], key_steps: &[&[u8]]) -> RunResult {
+    let mut process = spawn(args);
     process
         .input
         .take()
-        .expect("dmenu input pipe is missing")
+        .expect("invocation input pipe is missing")
         .write_all(input)
-        .expect("could not write dmenu input");
+        .expect("could not write invocation input");
     wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(keys)
-        .expect("could not write dmenu key input");
-    process
-        .master
-        .flush()
-        .expect("could not flush dmenu key input");
+    for (index, keys) in key_steps.iter().enumerate() {
+        process
+            .master
+            .write_all(keys)
+            .expect("could not write invocation key input");
+        process
+            .master
+            .flush()
+            .expect("could not flush invocation key input");
+        if index + 1 < key_steps.len() {
+            wait_for_ready(&process.master);
+        }
+    }
 
     let status = wait_for_exit(&mut process);
     let mut stdout = Vec::new();
     process
         .output
         .read_to_end(&mut stdout)
-        .expect("could not read dmenu stdout");
+        .expect("could not read invocation stdout");
+    RunResult { status, stdout }
+}
+
+pub fn run_tty_invocation_with_redirected_stdout(args: &[&str], keys: &[u8]) -> RunResult {
+    let mut process = spawn_tty_with_redirected_stdout(args);
+    wait_for_ready(&process.master);
+    process.master.write_all(keys).unwrap();
+    process.master.flush().unwrap();
+    let status = wait_for_exit(&mut process);
+    let mut stdout = Vec::new();
+    process.output.read_to_end(&mut stdout).unwrap();
     RunResult { status, stdout }
 }
 
 pub fn spawn_launcher(config: &Path) -> LauncherProcess {
+    spawn_launcher_with_args(config, &[])
+}
+
+pub fn spawn_launcher_with_args(config: &Path, extra_args: &[&str]) -> LauncherProcess {
     let window = libc::winsize {
         ws_row: 24,
         ws_col: 80,
@@ -110,7 +153,12 @@ pub fn spawn_launcher(config: &Path) -> LauncherProcess {
         }
         let config =
             CString::new(config.as_os_str().as_bytes()).expect("config path contains a NUL byte");
-        let command = [binary, CString::new("--config").unwrap(), config];
+        let mut command = vec![binary, CString::new("--config").unwrap(), config];
+        command.extend(
+            extra_args
+                .iter()
+                .map(|argument| CString::new(*argument).expect("argument contains a NUL byte")),
+        );
         let mut argv = command
             .iter()
             .map(|argument| argument.as_ptr())
@@ -160,6 +208,7 @@ fn spawn(args: &[&str]) -> DmenuProcess {
         master: unsafe { File::from_raw_fd(master) },
         input: Some(unsafe { File::from_raw_fd(input_pipe[1]) }),
         output: unsafe { File::from_raw_fd(output_pipe[0]) },
+        finished: false,
     }
 }
 
@@ -181,6 +230,45 @@ fn child_exec(input_pipe: [RawFd; 2], output_pipe: [RawFd; 2], master: RawFd, ar
         close_fd(fd);
     }
 
+    exec_binary(args)
+}
+
+fn spawn_tty_with_redirected_stdout(args: &[&str]) -> DmenuProcess {
+    let mut output_pipe = [0; 2];
+    assert_eq!(unsafe { libc::pipe(output_pipe.as_mut_ptr()) }, 0);
+    let window = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let mut master = -1;
+    let pid =
+        unsafe { libc::forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), &window) };
+    assert!(pid >= 0, "could not create redirected-output PTY");
+
+    if pid == 0 {
+        if unsafe { libc::dup2(output_pipe[1], libc::STDOUT_FILENO) } < 0 {
+            unsafe { libc::_exit(127) };
+        }
+        close_fd(output_pipe[0]);
+        close_fd(output_pipe[1]);
+        close_fd(master);
+        exec_binary(args);
+    }
+
+    close_fd(output_pipe[1]);
+    set_nonblocking(master);
+    DmenuProcess {
+        pid,
+        master: unsafe { File::from_raw_fd(master) },
+        input: None,
+        output: unsafe { File::from_raw_fd(output_pipe[0]) },
+        finished: false,
+    }
+}
+
+fn exec_binary(args: &[&str]) -> ! {
     let binary = binary_path();
     let mut command = Vec::with_capacity(args.len() + 1);
     command.push(
@@ -234,6 +322,7 @@ fn wait_for_exit(process: &mut DmenuProcess) -> i32 {
         let mut status = 0;
         let result = unsafe { libc::waitpid(process.pid, &mut status, libc::WNOHANG) };
         if result == process.pid {
+            process.finished = true;
             if libc::WIFEXITED(status) {
                 return libc::WEXITSTATUS(status);
             }

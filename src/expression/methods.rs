@@ -46,10 +46,13 @@ mod tests {
     #[test]
     fn path_projects_an_expression_value() {
         let config = Value::Null;
-        let runtime = serde_json::json!({"view": {"current": {"items": [1, 2]}}});
+        let runtime = serde_json::json!({"view": {"active": {"items": [1, 2]}}});
+        let input = Value::Null;
         let references = TreeReferences {
             config: &config,
+            this: &Value::Null,
             runtime: &runtime,
+            input: &input,
         };
         let mut methods = ExpressionMethods::new(Path::new("."));
         let mut context = EvalContext {
@@ -57,7 +60,7 @@ mod tests {
             methods: &mut methods,
         };
         assert_eq!(
-            Template::parse(r#"{{ path(runtime:view.current, "$.items") }}"#)
+            Template::parse(r#"{{ path(runtime:view.active, "$.items") }}"#)
                 .unwrap()
                 .evaluate_value(&mut context)
                 .unwrap(),

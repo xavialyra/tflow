@@ -91,6 +91,7 @@ impl ViewInstance for CaptureView {
             title: Some(format!("capture: {}", self.session.title())),
             status: Some(self.session.status().to_string()),
             commands: vec![("any key".to_string(), "Back".to_string())],
+            ..crate::chrome::EngineChrome::default()
         }
     }
 

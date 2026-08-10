@@ -45,15 +45,16 @@ pub(crate) fn run_bounded_command_with_stdin(
         .stderr
         .take()
         .context("bounded command has no stderr pipe")?;
-    if let Some(input) = stdin {
+    let stdin_writer = if let Some(input) = stdin {
         let mut child_stdin = child
             .stdin
             .take()
             .context("bounded command has no stdin pipe")?;
-        child_stdin
-            .write_all(input)
-            .context("could not write bounded command input")?;
-    }
+        let input = input.to_vec();
+        Some(thread::spawn(move || child_stdin.write_all(&input)))
+    } else {
+        None
+    };
     let stdout_exceeded = Arc::new(AtomicBool::new(false));
     let stderr_exceeded = Arc::new(AtomicBool::new(false));
     let stdout_thread = spawn_limited_reader(stdout_reader, stdout_limit, &stdout_exceeded);
@@ -88,10 +89,19 @@ pub(crate) fn run_bounded_command_with_stdin(
 
     let stdout = join_reader(stdout_thread, "stdout")?;
     let stderr = join_reader(stderr_thread, "stderr")?;
+    let stdin_result = stdin_writer
+        .map(|writer| {
+            writer
+                .join()
+                .map_err(|_| anyhow!("bounded command stdin writer panicked"))?
+                .context("could not write bounded command input")
+        })
+        .transpose();
     if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
         return Err(anyhow!("bounded command output exceeded configured limits"));
     }
     let status = process_result?;
+    stdin_result?;
     Ok(std::process::Output {
         status,
         stdout,
@@ -169,6 +179,27 @@ mod tests {
         )
         .expect_err("the command should time out");
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn timeout_applies_while_a_child_is_not_reading_stdin() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]);
+        let input = vec![b'x'; 1024 * 1024];
+        let started = Instant::now();
+
+        let error = run_bounded_command_with_stdin(
+            command,
+            Some(&input),
+            Duration::from_millis(50),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .expect_err("the command should time out while stdin is blocked");
+
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

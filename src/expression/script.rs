@@ -9,7 +9,8 @@ use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_SCRIPT_STDOUT: usize = 1024 * 1024;
+const DEFAULT_MAX_SCRIPT_STDOUT: usize = 1024 * 1024;
+const MAX_CONFIGURABLE_SCRIPT_STDOUT: usize = 64 * 1024 * 1024;
 const MAX_SCRIPT_STDERR: usize = 64 * 1024;
 const MAX_SCRIPT_STDIN: usize = 64 * 1024;
 
@@ -19,12 +20,12 @@ pub(super) fn evaluate(
     args: Vec<Value>,
     named_args: BTreeMap<String, Value>,
 ) -> Result<Value> {
-    if args.len() > 2 {
-        bail!("script accepts a target and optional JSON input")
+    if args.len() > 3 {
+        bail!("script accepts a target, optional JSON input, and optional output limit")
     }
     if let Some(name) = named_args
         .keys()
-        .find(|name| *name != "target" && *name != "input")
+        .find(|name| !matches!(name.as_str(), "target" | "input" | "max_output_bytes"))
     {
         bail!("script does not accept named argument {:?}", name)
     }
@@ -33,6 +34,9 @@ pub(super) fn evaluate(
     }
     if args.len() > 1 && named_args.contains_key("input") {
         bail!("script cannot combine positional input with input =")
+    }
+    if args.len() > 2 && named_args.contains_key("max_output_bytes") {
+        bail!("script cannot combine a positional output limit with max_output_bytes =")
     }
 
     let mut args = args.into_iter();
@@ -45,13 +49,34 @@ pub(super) fn evaluate(
         bail!("script requires a non-empty target")
     }
     let input = args.next().or_else(|| named_args.get("input").cloned());
-    run_script(target, root, input.as_ref(), cancellation)
+    let max_output_bytes = args
+        .next()
+        .or_else(|| named_args.get("max_output_bytes").cloned())
+        .map(|value| {
+            value
+                .as_u64()
+                .context("script max_output_bytes must be a positive integer")
+                .and_then(|value| {
+                    usize::try_from(value)
+                        .context("script max_output_bytes is too large for this platform")
+                })
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
+    if max_output_bytes == 0 || max_output_bytes > MAX_CONFIGURABLE_SCRIPT_STDOUT {
+        bail!(
+            "script max_output_bytes must be between 1 and {}",
+            MAX_CONFIGURABLE_SCRIPT_STDOUT
+        );
+    }
+    run_script(target, root, input.as_ref(), max_output_bytes, cancellation)
 }
 
 fn run_script(
     target: &str,
     root: &Path,
     input: Option<&Value>,
+    max_output_bytes: usize,
     cancellation: &CancellationToken,
 ) -> Result<Value> {
     let path = resolve_script_path(root, target)?;
@@ -72,7 +97,7 @@ fn run_script(
         process,
         input.as_deref(),
         SCRIPT_TIMEOUT,
-        MAX_SCRIPT_STDOUT,
+        max_output_bytes,
         MAX_SCRIPT_STDERR,
         cancellation,
     )
@@ -126,9 +151,12 @@ mod tests {
     fn evaluate_expression(source: &str, script_root: &Path) -> Result<Value> {
         let config = Value::Null;
         let runtime = Value::Null;
+        let input = Value::Null;
         let references = TreeReferences {
             config: &config,
+            this: &Value::Null,
             runtime: &runtime,
+            input: &input,
         };
         let mut methods = ExpressionMethods::new(script_root);
         let mut context = EvalContext {
@@ -155,6 +183,29 @@ mod tests {
     }
 
     #[test]
+    fn script_output_limit_can_be_raised_explicitly() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-expression-output-limit-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("large.sh"),
+            "printf '\"'; head -c 1048576 /dev/zero | tr '\\000' x; printf '\"\\n'\n",
+        )
+        .unwrap();
+
+        let error = evaluate_expression(r#"{{ script("large.sh") }}"#, &root).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("output exceeded"), "{message}");
+        let value = evaluate_expression(r#"{{ script("large.sh", null, 2097152) }}"#, &root)
+            .expect("explicit output limit should allow trusted large JSON");
+        assert_eq!(value.as_str().unwrap().len(), 1024 * 1024);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancellation_terminates_a_running_script() {
         let root = env::temp_dir().join(format!(
             "tui-launcher-expression-cancel-{}",
@@ -169,9 +220,12 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let config = Value::Null;
             let runtime = Value::Null;
+            let input = Value::Null;
             let references = TreeReferences {
                 config: &config,
+                this: &Value::Null,
                 runtime: &runtime,
+                input: &input,
             };
             let mut methods = ExpressionMethods::with_cancellation(&worker_root, worker_token);
             let mut context = EvalContext {

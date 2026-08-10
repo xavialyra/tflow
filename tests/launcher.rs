@@ -4,8 +4,9 @@ use std::fs;
 use std::io::Write;
 
 use support::{
-    spawn_launcher, temporary_root, wait_for_launcher_exit, wait_for_nonempty_file,
-    wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
+    spawn_launcher, spawn_launcher_with_args, temporary_root, wait_for_launcher_exit,
+    wait_for_nonempty_file, wait_for_process_exit, wait_for_ready, wait_for_text,
+    write_test_config,
 };
 
 #[test]
@@ -57,6 +58,73 @@ fn loads_items_from_an_expression() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove expression items config");
+}
+
+#[test]
+fn explicit_capture_view_receives_typed_query_state() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.direct]
+        type = "capture"
+        output = "{{ this:query.message }}"
+
+        [plugins.core.views.direct.query]
+        type = "object"
+        message = '''{{ state("string") }}'''
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &["core:direct", "--message=from-option"]);
+    let output = wait_for_text(&process.master, "from-option");
+    assert!(String::from_utf8_lossy(&output).contains("from-option"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_embedded_view_runs_without_picker_intent() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.direct]
+        type = "embedded"
+        command = ["sh", "-lc", "printf 'direct-embedded\\n'; exit 0"]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &["core:direct"]);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("direct-embedded"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -181,7 +249,7 @@ fi
 
         [plugins.core.views.default]
         type = "picker"
-        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+        items = '{{ script("scripts/items.sh", runtime:view.active) }}'
         "#,
     )
     .expect("could not write cancellation integration config");
@@ -447,14 +515,14 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         key = "enter"
         label = "Inspect"
         view = "core:capture"
-        input = "parent-value:{{ runtime:view.current.selected_item.value }}"
+        input = "parent-value:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.command]
         type = "picker"
 
         [plugins.core.views.capture]
         type = "capture"
-        output = "{{ runtime:view.current.input }}"
+        output = "{{ runtime:view.active.input }}"
         title = "Capture"
         "#,
     )
@@ -468,7 +536,7 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         .write_all(b"\x0b")
         .expect("could not open command picker");
     process.master.flush().expect("could not flush Ctrl-K");
-    let _ = wait_for_text(&process.master, "Inspect");
+    let _ = wait_for_text(&process.master, "core:command");
     process
         .master
         .write_all(b"\r")
@@ -550,6 +618,46 @@ fn items_errors_are_logged_and_do_not_block_exit() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove error logging config");
+}
+
+#[test]
+fn aggregate_sources_own_independent_view_state() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        sources = ["apps:default"]
+
+        [plugins.apps.views.default]
+        type = "picker"
+        items = "{{ config:catalog.items }}"
+
+        [plugins.apps.views.default.query]
+        type = "object"
+        input_order = ["text"]
+        text = '''{{ state("string", "source-default") }}'''
+
+        [catalog]
+        items = [{label = "VALUE:{{ this:query.text }}"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let output = wait_for_text(&process.master, "VALUE:source-default");
+    assert!(String::from_utf8_lossy(&output).contains("VALUE:source-default"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -785,7 +893,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
         [plugins.core.views.messages]
         type = "picker"
         alias = "log"
-        items = '{{ script("scripts/items.sh", runtime:view.current) }}'
+        items = '{{ script("scripts/items.sh", runtime:view.active) }}'
         "#,
     )
     .expect("could not write messages integration config");
@@ -898,12 +1006,12 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         view = "core:capture"
-        input = "capture-marker:{{ runtime:view.current.selected_item.value }}"
+        input = "capture-marker:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.capture]
         type = "capture"
         alias = "cap"
-        output = "{{ runtime:view.current.input }}"
+        output = "{{ runtime:view.active.input }}"
         title = "Capture"
         "#,
     )
@@ -968,12 +1076,12 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         view = "core:embedded"
-        input = '''printf 'embedded-marker:%s\n' '{{ runtime:view.current.selected_item.value }}'; exit 0'''
+        input = '''printf 'embedded-marker:%s\n' '{{ runtime:view.active.selected_item.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
         type = "embedded"
         alias = "emb"
-        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
         title = "Embedded"
         "#,
     )
@@ -1076,7 +1184,7 @@ fn qualified_view_path_navigates_to_any_engine() {
 
         [plugins.core.views.embedded]
         type = "embedded"
-        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
         title = "Embedded"
         "#,
     )

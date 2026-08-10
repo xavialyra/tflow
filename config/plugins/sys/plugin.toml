@@ -5,15 +5,15 @@ name = "system"
 [views.default]
 type = "picker"
 alias = "sys"
-items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
+items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
 
 [views.default.commands.run]
 key = "enter"
 label = "Run"
 view = "sys:output"
-input = "{{ runtime:view.current.selected_item.text }}"
+input = "{{ runtime:view.active.selected_item.text }}"
 
 [views.output]
 type = "capture"
-output = '{{ script("scripts/run.sh", runtime:view.current.input) }}'
-title = "{{ runtime:view.current.ref }}"
+output = '{{ script("scripts/run.sh", runtime:view.active.input) }}'
+title = "{{ runtime:view.active.ref }}"

@@ -230,18 +230,19 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Defaults, DisplayType, ENGINE_PICKER, PluginMetadata, View};
+    use crate::config::{Defaults, ENGINE_PICKER, PluginMetadata, View};
     use serde_json::Value;
     use std::collections::BTreeMap;
 
     fn view(alias: Option<&str>) -> View {
         View {
             engine_type: ENGINE_PICKER.to_string(),
-            display: DisplayType::Text,
             sources: Vec::new(),
             alias: alias.map(str::to_string),
             items: None,
             run_shell: None,
+            result_handler: None,
+            query: None,
             commands: BTreeMap::new(),
             engine_config: toml::Table::new(),
         }
@@ -250,7 +251,6 @@ mod tests {
     fn config() -> Config {
         Config {
             default_view: "core:default".to_string(),
-            dmenu_view: "core:dmenu".to_string(),
             command_view: "core:command".to_string(),
             views: BTreeMap::from([
                 ("core:default".to_string(), view(None)),
@@ -274,6 +274,9 @@ mod tests {
             defaults: Defaults::default(),
             plugin_roots: BTreeMap::new(),
             config_value: Value::Object(serde_json::Map::new()),
+            input_value: Value::Null,
+            state_registry: crate::state::StateRegistry::default(),
+            invocation_state: crate::state::StateInstance::default(),
         }
     }
 

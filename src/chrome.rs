@@ -11,6 +11,7 @@ pub(crate) struct EngineChrome {
     pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) commands: Vec<(String, String)>,
+    pub(crate) presentation: ChromePresentation,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +25,22 @@ impl FooterContent {
         Self {
             text: text.into(),
             key_spans: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ChromePresentation {
+    layout: ChromeLayout,
+    input_prefix: Option<String>,
+    footer: Option<FooterContent>,
+}
+
+impl ChromePresentation {
+    pub(crate) fn with_input_prefix(prefix: &str) -> Self {
+        Self {
+            input_prefix: Some(prefix.to_string()),
+            ..Self::default()
         }
     }
 }
@@ -318,18 +335,6 @@ impl Default for ChromeLayout {
 }
 
 impl ChromeLayout {
-    pub(crate) fn dmenu() -> Self {
-        Self {
-            input: InputLayout {
-                padding: Insets::new(0, 0, 0, 1),
-                ..InputLayout::default()
-            },
-            content_padding: Insets::new(0, 0, 0, 1),
-            footer_padding: Insets::new(0, 0, 0, 1),
-            ..Self::default()
-        }
-    }
-
     fn region_rows(rows: usize, padding: Insets) -> usize {
         rows.saturating_add(padding.vertical())
     }
@@ -577,25 +582,37 @@ impl ChromeFrame {
         engine: EngineChrome,
         error: Option<&str>,
     ) -> Self {
-        let layout = ChromeLayout::default();
+        let EngineChrome {
+            title,
+            status,
+            commands,
+            presentation,
+        } = engine;
+        let ChromePresentation {
+            layout,
+            input_prefix,
+            footer,
+        } = presentation;
         let footer_width = layout
             .chrome_width(width)
             .saturating_sub(layout.footer_padding.horizontal());
         let footer = if let Some(error) = error {
             FooterContent::plain(error)
+        } else if let Some(footer) = footer {
+            footer
         } else {
             footer_line(
                 footer_width,
-                engine.title.as_deref(),
-                engine.status.as_deref().unwrap_or(""),
-                &engine.commands,
+                title.as_deref(),
+                status.as_deref().unwrap_or(""),
+                &commands,
             )
         };
         let route_label = show_route_label.then(|| route.label());
         Self::compose_with_layout(
             width,
             layout,
-            " ".repeat(layout.input.padding.left),
+            input_prefix.unwrap_or_else(|| " ".repeat(layout.input.padding.left)),
             input,
             input_cursor,
             route_label.as_deref().unwrap_or(""),
@@ -1046,6 +1063,7 @@ mod tests {
                 title: None,
                 status: Some("12 results".to_string()),
                 commands: vec![("enter".to_string(), "Open".to_string())],
+                ..EngineChrome::default()
             },
             None,
         );
@@ -1066,6 +1084,30 @@ mod tests {
                 .footer_line(80)
                 .contains("\x1b[48;2;220;224;230m\x1b[38;2;25;30;35mEnter\x1b[0m Open")
         );
+    }
+
+    #[test]
+    fn input_prefix_keeps_the_default_layout_and_footer_alignment() {
+        let frame = ChromeFrame::compose_with_cursor(
+            80,
+            &route(),
+            false,
+            "query",
+            5,
+            EngineChrome {
+                status: Some("2 results".to_string()),
+                commands: vec![("enter".to_string(), "accept".to_string())],
+                presentation: ChromePresentation::with_input_prefix("> "),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+
+        assert_eq!(frame.layout(), ChromeLayout::default());
+        assert_eq!(frame.input_line(), "> query");
+        assert!(frame.footer.starts_with("2 results"));
+        assert!(frame.footer.ends_with("Enter accept"));
+        assert_eq!(frame.divider, "─".repeat(78));
     }
 
     #[test]

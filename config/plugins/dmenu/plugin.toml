@@ -1,0 +1,36 @@
+[plugin]
+api = 1
+name = "dmenu"
+
+[views.default]
+type = "picker"
+alias = "dmenu"
+items = '''{{ script("scripts/items.sh", {input = input:$, options = this:query, query = this:query.initial}, 67108864) }}'''
+result_handler = "scripts/result.sh"
+prompt = '''{{ this:query.prompt }}'''
+max_rows = '''{{ this:query.lines }}'''
+show_prefix = false
+
+[views.default.query]
+type = "object"
+input_order = ["initial"]
+prompt = '''{{ state("string", null) }}'''
+lines = '''{{ state("integer", null) }}'''
+initial = '''{{ state("string", "") }}'''
+dmenu0 = '''{{ state("boolean", false) }}'''
+index = '''{{ state("boolean", false) }}'''
+with-nth = '''{{ state("string", null) }}'''
+accept-nth = '''{{ state("string", null) }}'''
+match-nth = '''{{ state("string", null) }}'''
+nth-delimiter = '''{{ state("string", null) }}'''
+
+[views.default.bindings]
+open_commands = []
+open_completion = []
+back = []
+exit = ["escape", "ctrl+c", "ctrl+d"]
+
+[views.default.commands.accept]
+key = "enter"
+label = "Accept"
+complete = true

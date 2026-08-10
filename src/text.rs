@@ -6,6 +6,10 @@ pub(crate) fn matches_query(text: &str, query: &str) -> bool {
 }
 
 pub(crate) fn sanitize_text(text: &str) -> String {
+    sanitize_terminal_text(text).trim().to_string()
+}
+
+pub(crate) fn sanitize_terminal_text(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut escape = false;
     let mut csi = false;
@@ -54,7 +58,7 @@ pub(crate) fn sanitize_text(text: &str) -> String {
         output.push(character);
     }
 
-    output.trim().to_string()
+    output
 }
 
 #[cfg(test)]
@@ -65,6 +69,14 @@ mod tests {
     fn matches_all_query_tokens() {
         assert!(matches_query("Restart API service", "api start"));
         assert!(!matches_query("Restart API service", "api database"));
+    }
+
+    #[test]
+    fn terminal_sanitizer_preserves_printable_spacing() {
+        assert_eq!(
+            sanitize_terminal_text(" > \u{1b}[31mred\u{1b}[0m "),
+            " > red "
+        );
     }
 
     #[test]

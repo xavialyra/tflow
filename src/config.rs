@@ -2,6 +2,7 @@ use crate::expression::{
     EvalContext, MethodResolver, Template, TreeReferences, evaluate_json_value,
 };
 use crate::input::Key;
+use crate::state::{StateInstance, StateRegistry};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,25 +21,20 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 #[derive(Debug, Clone)]
 pub struct Config {
     pub default_view: ViewRef,
-    pub dmenu_view: ViewRef,
     pub command_view: ViewRef,
     pub views: BTreeMap<ViewRef, View>,
     pub plugins: BTreeMap<String, PluginMetadata>,
     pub(crate) defaults: Defaults,
     pub plugin_roots: BTreeMap<String, PathBuf>,
     pub(crate) config_value: Value,
+    pub(crate) input_value: Value,
+    pub(crate) state_registry: StateRegistry,
+    pub(crate) invocation_state: StateInstance,
 }
 
 #[derive(Debug, Clone)]
 pub struct PluginMetadata {
     pub name: String,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum DisplayType {
-    #[default]
-    Text,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -58,8 +54,6 @@ pub struct View {
     #[serde(rename = "type", default = "default_engine_type")]
     pub engine_type: String,
     #[serde(default)]
-    pub display: DisplayType,
-    #[serde(default)]
     pub sources: Vec<ViewRef>,
     #[serde(default)]
     pub alias: Option<String>,
@@ -67,6 +61,11 @@ pub struct View {
     pub items: Option<String>,
     #[serde(default)]
     pub run_shell: Option<String>,
+    #[serde(default)]
+    pub result_handler: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) query: Option<toml::Table>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
     #[serde(flatten)]
@@ -93,14 +92,14 @@ pub struct Command {
     pub input: Option<String>,
     #[serde(default)]
     pub exit: bool,
+    #[serde(default)]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
     #[serde(default = "default_view_name")]
     default_view: String,
-    #[serde(default = "default_dmenu_view_name")]
-    dmenu_view: String,
     #[serde(default = "default_command_view_name")]
     command_view: String,
     #[serde(default)]
@@ -157,8 +156,71 @@ impl Config {
             .context("merged configuration does not match the picker schema")?;
         let mut config = Self::from_raw(raw, plugin_roots)?;
         config.config_value = config_value;
+        config.state_registry = StateRegistry::compile(&config.config_value)?;
         config.validate_with_engines(engines)?;
         Ok(config)
+    }
+
+    pub(crate) fn bind_invocation_state(
+        &self,
+        view_ref: &str,
+        arguments: &[String],
+    ) -> Result<StateInstance> {
+        self.state_registry.bind_cli(view_ref, arguments)
+    }
+
+    pub(crate) fn set_invocation(&mut self, input: Value, state: StateInstance) {
+        self.input_value = input;
+        self.invocation_state = state;
+    }
+
+    pub(crate) fn instantiate_state(&self, view_ref: &str) -> Result<StateInstance> {
+        self.state_registry.instantiate(view_ref)
+    }
+
+    pub(crate) fn materialize_view(&self, state: &StateInstance) -> Result<Value> {
+        match self.view_config(state.view_ref()) {
+            Ok(view) => self.state_registry.materialize(view, state),
+            Err(_) if state.is_empty() => Ok(Value::Null),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn query_value(&self, state: &StateInstance) -> Result<Option<Value>> {
+        self.state_registry
+            .query_value(self.view_config(state.view_ref())?, state)
+    }
+
+    pub(crate) fn has_query(&self, view_ref: &str) -> bool {
+        self.state_registry.has_query(view_ref)
+    }
+
+    pub(crate) fn render_query_input(&self, state: &StateInstance) -> Result<String> {
+        self.state_registry.render_input(state)
+    }
+
+    pub(crate) fn update_query_input(
+        &self,
+        state: &mut StateInstance,
+        source: &str,
+    ) -> Result<bool> {
+        self.state_registry.update_input(state, source)
+    }
+
+    fn view_config(&self, view_ref: &str) -> Result<&Value> {
+        let (plugin, view) = view_ref
+            .split_once(':')
+            .with_context(|| format!("invalid view reference {:?}", view_ref))?;
+        self.config_value
+            .get("plugins")
+            .and_then(|plugins| plugins.get(plugin))
+            .and_then(|plugin| plugin.get("views"))
+            .and_then(|views| views.get(view))
+            .with_context(|| format!("view {:?} configuration disappeared", view_ref))
+    }
+
+    pub(crate) fn invocation_input(&self) -> &Value {
+        &self.input_value
     }
 
     fn from_raw(raw: RawConfig, plugin_roots: BTreeMap<String, PathBuf>) -> Result<Self> {
@@ -182,13 +244,15 @@ impl Config {
 
         Ok(Self {
             default_view: raw.default_view,
-            dmenu_view: raw.dmenu_view,
             command_view: raw.command_view,
             views,
             plugins,
             defaults: raw.defaults,
             plugin_roots,
             config_value: Value::Object(serde_json::Map::new()),
+            input_value: Value::Null,
+            state_registry: StateRegistry::default(),
+            invocation_state: StateInstance::default(),
         })
     }
 
@@ -259,6 +323,21 @@ impl Config {
                 Template::parse(items)
                     .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
             }
+            if let Some(handler) = &view.result_handler {
+                let path = Path::new(handler);
+                if handler.trim().is_empty()
+                    || path.is_absolute()
+                    || path
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    bail!(
+                        "view {:?} has invalid result handler {:?}",
+                        view_ref,
+                        handler
+                    );
+                }
+            }
             if let Some(shell) = &view.run_shell {
                 validate_script(shell, "run_shell", view_ref)?;
             }
@@ -317,16 +396,15 @@ impl Config {
                         target
                     );
                 }
-                if command.run.is_none() && command.view.is_none() {
-                    bail!(
-                        "view {:?} command {:?} has neither a run script nor a target view",
-                        view_ref,
-                        command_id
-                    );
+                let action_count = usize::from(command.run.is_some())
+                    + usize::from(command.view.is_some())
+                    + usize::from(command.complete);
+                if action_count == 0 {
+                    bail!("view {:?} command {:?} has no action", view_ref, command_id);
                 }
-                if command.run.is_some() && command.view.is_some() {
+                if action_count > 1 {
                     bail!(
-                        "view {:?} command {:?} cannot combine run and view",
+                        "view {:?} command {:?} combines multiple actions",
                         view_ref,
                         command_id
                     );
@@ -360,6 +438,15 @@ impl Config {
                         command_id
                     );
                 }
+                if command.complete
+                    && (command.input.is_some() || command.shell.is_some() || command.exit)
+                {
+                    bail!(
+                        "view {:?} command {:?} combines complete with run-only fields",
+                        view_ref,
+                        command_id
+                    );
+                }
             }
         }
 
@@ -368,6 +455,28 @@ impl Config {
 
     pub fn view(&self, view_ref: &str) -> Option<&View> {
         self.views.get(view_ref)
+    }
+
+    pub(crate) fn resolve_view(&self, selector: &str) -> Result<ViewRef> {
+        if self.views.contains_key(selector) {
+            return Ok(selector.to_string());
+        }
+        let matches = self
+            .views
+            .iter()
+            .filter_map(|(view_ref, view)| {
+                (view.alias.as_deref() == Some(selector)).then_some(view_ref.clone())
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [view_ref] => Ok(view_ref.clone()),
+            [] => bail!("view {:?} is not configured", selector),
+            _ => bail!(
+                "view alias {:?} is ambiguous: {}",
+                selector,
+                matches.join(", ")
+            ),
+        }
     }
 
     pub fn engine(&self, view_ref: &str) -> Result<&str> {
@@ -381,6 +490,7 @@ impl Config {
     pub fn evaluate_view_field(
         &self,
         view_ref: &str,
+        state: &StateInstance,
         field: &str,
         runtime: &Value,
         methods: &mut dyn MethodResolver,
@@ -391,7 +501,9 @@ impl Config {
         let Some(raw) = view.engine_field(field) else {
             return Ok(None);
         };
-        self.evaluate_config_value(raw, runtime, methods).map(Some)
+        let this = self.materialize_view(state)?;
+        self.evaluate_config_value(raw, &this, runtime, methods)
+            .map(Some)
     }
 
     pub fn evaluate_default_picker_bindings(
@@ -402,19 +514,23 @@ impl Config {
         let Some(raw) = &self.defaults.picker.bindings else {
             return Ok(None);
         };
-        self.evaluate_config_value(raw, runtime, methods).map(Some)
+        self.evaluate_config_value(raw, &Value::Null, runtime, methods)
+            .map(Some)
     }
 
     fn evaluate_config_value(
         &self,
         raw: &toml::Value,
+        this: &Value,
         runtime: &Value,
         methods: &mut dyn MethodResolver,
     ) -> Result<Value> {
         let raw = toml_to_json(raw)?;
         let references = TreeReferences {
             config: &self.config_value,
+            this,
             runtime,
+            input: &self.input_value,
         };
         let mut context = EvalContext {
             references: &references,
@@ -429,15 +545,19 @@ impl Config {
 
     pub(crate) fn evaluate_command_input(
         &self,
-        view_ref: &str,
+        state: &StateInstance,
         source: &str,
         runtime: &Value,
     ) -> Result<String> {
+        let view_ref = state.view_ref();
         let root = self.plugin_root(view_ref).unwrap_or_else(|| Path::new("."));
         let mut methods = crate::expression::ExpressionMethods::new(root);
+        let this = self.materialize_view(state)?;
         let references = TreeReferences {
             config: &self.config_value,
+            this: &this,
             runtime,
+            input: &self.input_value,
         };
         let mut context = EvalContext {
             references: &references,
@@ -448,10 +568,11 @@ impl Config {
 
     pub fn evaluate_view_items(
         &self,
-        view_ref: &str,
+        state: &StateInstance,
         runtime: &Value,
         methods: &mut dyn MethodResolver,
     ) -> Result<Option<Value>> {
+        let view_ref = state.view_ref();
         let Some(source) = self
             .view(view_ref)
             .with_context(|| format!("view {:?} is not configured", view_ref))?
@@ -460,29 +581,18 @@ impl Config {
         else {
             return Ok(None);
         };
+        let this = self.materialize_view(state)?;
         let references = TreeReferences {
             config: &self.config_value,
+            this: &this,
             runtime,
+            input: &self.input_value,
         };
         let mut context = EvalContext {
             references: &references,
             methods,
         };
         Ok(Some(Template::parse(source)?.evaluate_value(&mut context)?))
-    }
-
-    pub fn dmenu_view(&self) -> Result<&View> {
-        let view = self
-            .views
-            .get(&self.dmenu_view)
-            .with_context(|| format!("dmenu view {:?} is not defined", self.dmenu_view))?;
-        if self.engine(&self.dmenu_view)? != ENGINE_PICKER {
-            bail!(
-                "dmenu view {:?} must use the picker engine",
-                self.dmenu_view
-            );
-        }
-        Ok(view)
     }
 
     pub fn command_view(&self) -> Result<&View> {
@@ -804,10 +914,6 @@ fn default_view_name() -> String {
     "core:default".to_string()
 }
 
-fn default_dmenu_view_name() -> String {
-    "core:dmenu".to_string()
-}
-
 fn default_command_view_name() -> String {
     "core:command".to_string()
 }
@@ -935,7 +1041,7 @@ mod tests {
         let error = config
             .validate()
             .expect_err("run and view should be mutually exclusive");
-        assert!(error.to_string().contains("cannot combine run and view"));
+        assert!(error.to_string().contains("combines multiple actions"));
     }
 
     #[test]
@@ -1110,7 +1216,7 @@ mod tests {
             type = "picker"
             [plugins.base.views.main]
             type = "picker"
-            items = "{{ runtime:view.current.items }}"
+            items = "{{ runtime:view.active.items }}"
             "#,
         )
         .unwrap();

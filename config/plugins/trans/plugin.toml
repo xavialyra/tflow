@@ -5,4 +5,11 @@ name = "translation"
 [views.default]
 type = "picker"
 alias = "tr"
-items = '{{ script("scripts/items.sh", runtime:view.current.query) }}'
+items = '''{{ script("scripts/items.sh", this:query) }}'''
+
+[views.default.query]
+type = "object"
+input_order = ["source", "target", "text"]
+source = '''{{ state("string", null) }}'''
+target = '''{{ state("string", null) }}'''
+text = '''{{ state("string", "") }}'''

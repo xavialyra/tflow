@@ -42,28 +42,30 @@ impl PickerView {
             .log_file()
             .map(|path| path.to_string_lossy().to_string());
         runtime.set(
-            "",
+            "/view",
             serde_json::json!({
-                "view": {
-                    "current": {
-                        "ref": frame.view,
+                "active": {
+                    "ref": frame.view,
+                    "input": query,
+                    "raw_input": raw_input,
+                    "query": query,
+                    "request": {
                         "input": query,
                         "raw_input": raw_input,
                         "query": query,
-                        "request": {
-                            "input": query,
-                            "raw_input": raw_input,
-                            "query": query,
-                        },
-                        "log_file": log_file,
-                        "selected_index": frame.selected,
-                        "selected_item": selected_item,
-                        "items": items,
-                        "command": commands,
-                        "command_owner": owner,
-                    }
+                    },
+                    "log_file": log_file,
+                    "selected_index": frame.selected,
+                    "selected_item": selected_item,
+                    "items": items,
+                    "command": commands,
+                    "command_owner": owner,
                 }
             }),
+        )?;
+        runtime.set(
+            "/session",
+            serde_json::json!({"input": {"raw": raw_input, "params": query}}),
         )?;
         Ok(())
     }

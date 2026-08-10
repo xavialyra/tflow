@@ -6,19 +6,26 @@ use crate::chrome::ShellInput;
 use crate::config::Config;
 use crate::engine::{
     EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
-    ViewLocation,
+    ViewLocation, ViewOutput, ViewOutputItem,
 };
 use crate::input::{InputDecoder, Key};
 use crate::router::Router;
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const INPUT_POLL_MS: i32 = 80;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+
+pub(super) struct PickerOptions {
+    pub(super) show_prefix: bool,
+    pub(super) max_rows: Option<usize>,
+    pub(super) input_prefix: Option<String>,
+}
 
 pub(crate) struct PickerFrame {
     pub(crate) view: String,
@@ -30,6 +37,7 @@ pub(crate) struct PickerFrame {
     pub(crate) results_input: String,
     pub(crate) items_pending: bool,
     pub(crate) pending_command: Option<Key>,
+    pub(crate) pending_selection: isize,
     pub(crate) command_owner: Option<String>,
 }
 
@@ -45,6 +53,7 @@ impl PickerFrame {
             results_input: String::new(),
             items_pending: false,
             pending_command: None,
+            pending_selection: 0,
             command_owner: None,
         }
     }
@@ -56,6 +65,9 @@ pub(crate) struct PickerView {
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
+    pub(super) source_states: BTreeMap<String, crate::state::StateInstance>,
+    options: PickerOptions,
+    feedback: Option<String>,
     log_file: Option<PathBuf>,
     decoder: InputDecoder,
     started: bool,
@@ -73,6 +85,7 @@ impl PickerView {
         config: Arc<Config>,
         route_child: bool,
         keymap: PickerKeymap,
+        options: PickerOptions,
     ) -> Self {
         Self {
             frame: PickerFrame::new(view),
@@ -80,6 +93,9 @@ impl PickerView {
             config: Arc::clone(&config),
             items_task: None,
             requested_view: String::new(),
+            source_states: BTreeMap::new(),
+            options,
+            feedback: None,
             log_file: None,
             decoder: InputDecoder::default(),
             started: false,
@@ -107,17 +123,22 @@ impl PickerView {
         &self.frame
     }
 
-    pub(crate) fn current_mut(&mut self) -> &mut PickerFrame {
-        &mut self.frame
-    }
-
     pub(crate) fn log_file(&self) -> Option<&Path> {
         self.log_file.as_deref()
+    }
+
+    pub(super) fn list_presentation(&self) -> (bool, Option<usize>, String) {
+        (
+            self.options.show_prefix,
+            self.options.max_rows,
+            "(no matches)".to_string(),
+        )
     }
 
     pub(crate) fn schedule_refresh(&mut self) {
         self.frame.refresh_deadline = Some(Instant::now() + SEARCH_DEBOUNCE);
         self.frame.pending_command = None;
+        self.frame.pending_selection = 0;
     }
 
     pub(crate) fn refresh_due(&self) -> bool {
@@ -150,6 +171,7 @@ impl PickerView {
                 .items
                 .get(self.frame.selected)
                 .map(|item| item.source_view.as_str())
+                .or(Some(self.frame.view.as_str()))
         })
     }
 
@@ -209,7 +231,8 @@ impl PickerView {
         let current_input = host.input.raw.clone();
         let query = host.input.params.clone();
         self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
-        self.request_items(&current_view, &current_input, &query);
+        let source_states = self.source_states(host)?;
+        self.request_items(&current_view, &current_input, &query, source_states);
         Ok(None)
     }
 
@@ -220,7 +243,7 @@ impl PickerView {
         let commands = host
             .runtime
             .snapshot()
-            .pointer("/view/current/command")
+            .pointer("/view/active/command")
             .and_then(serde_json::Value::as_array)
             .context("runtime command list must be an array")?;
         let mut items = commands
@@ -228,7 +251,7 @@ impl PickerView {
             .filter_map(|command| {
                 let key = command.get("key")?.as_str()?.to_string();
                 let text = sanitize_text(command.get("label")?.as_str()?);
-                (!text.is_empty()).then_some(Item {
+                (!text.is_empty()).then(|| Item {
                     prefix: "cmd".to_string(),
                     text,
                     value: Some(key),
@@ -257,7 +280,32 @@ impl PickerView {
         Ok(())
     }
 
-    fn request_items(&mut self, view: &str, input: &str, query: &str) {
+    fn source_states(
+        &mut self,
+        host: &EngineHost<'_>,
+    ) -> Result<BTreeMap<String, crate::state::StateInstance>> {
+        let mut states = BTreeMap::new();
+        for (source_ref, _) in host.config.source_views(self.current_view_ref())? {
+            if source_ref == host.state.view_ref() {
+                states.insert(source_ref, host.state.clone());
+                continue;
+            }
+            let state = self
+                .source_states
+                .entry(source_ref.clone())
+                .or_insert(host.config.instantiate_state(&source_ref)?);
+            states.insert(source_ref, state.clone());
+        }
+        Ok(states)
+    }
+
+    fn request_items(
+        &mut self,
+        view: &str,
+        input: &str,
+        query: &str,
+        source_states: BTreeMap<String, crate::state::StateInstance>,
+    ) {
         if self.frame.items_pending
             && self.requested_view == view
             && self.frame.requested_input == input
@@ -275,6 +323,7 @@ impl PickerView {
                 view: view.to_string(),
                 input: input.to_string(),
                 query: query.to_string(),
+                source_states,
             },
         ));
     }
@@ -293,6 +342,7 @@ impl PickerView {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.frame.items_pending = false;
                 self.frame.pending_command = None;
+                self.frame.pending_selection = 0;
                 events.push(ItemsEvent {
                     current: true,
                     view: self.requested_view.clone(),
@@ -334,6 +384,8 @@ impl PickerView {
                     .frame
                     .selected
                     .min(self.frame.items.len().saturating_sub(1));
+                let pending_selection = std::mem::take(&mut self.frame.pending_selection);
+                self.move_selection(pending_selection);
                 pending_command = self.frame.pending_command.take();
                 (errors, None)
             }
@@ -343,6 +395,7 @@ impl PickerView {
                 self.frame.items.clear();
                 self.frame.results_input = response.input;
                 self.frame.selected = 0;
+                self.frame.pending_selection = 0;
                 pending_command = self.frame.pending_command.take();
                 (Vec::new(), Some(error))
             }
@@ -362,12 +415,19 @@ impl PickerView {
         host.config.command_view()?;
         let parent_item = self.frame.items.get(self.frame.selected).cloned();
         let command_owner = parent_item.as_ref().map(|item| item.source_view.clone());
+        let owner_state = command_owner
+            .as_deref()
+            .and_then(|owner| self.source_states.get(owner))
+            .unwrap_or(host.state)
+            .clone();
         let context = serde_json::json!({
             "command_owner": command_owner,
             "parent_item": parent_item,
         });
         Ok(ViewEffect::Navigate {
-            location: ViewLocation::new(command_view_ref, "").with_context(context),
+            location: ViewLocation::new(command_view_ref, "")
+                .with_context(context)
+                .with_owner_state(owner_state),
             mode: NavigationMode::Push,
         })
     }
@@ -377,25 +437,25 @@ impl PickerView {
         host: &mut EngineHost<'_>,
         terminal: &mut Terminal,
         key: Key,
-    ) -> Result<ViewEffect> {
+    ) -> Result<Option<ViewEffect>> {
         if self.command_view_active() && !matches!(key, Key::Enter) {
-            return Ok(ViewEffect::Continue);
+            return Ok(Some(ViewEffect::Continue));
         }
         if host.input.rejected {
-            return Ok(ViewEffect::Continue);
+            return Ok(Some(ViewEffect::Continue));
         }
         let current_input = host.input.raw.clone();
         if !self.results_current(&current_input) {
             if host.input.changed {
                 self.queue_pending_command(key);
-                return Ok(ViewEffect::Continue);
+                return Ok(Some(ViewEffect::Continue));
             }
             if self.command_view_active() {
                 self.request_current(host)?;
             } else {
                 self.queue_pending_command(key);
                 self.request_current(host)?;
-                return Ok(ViewEffect::Continue);
+                return Ok(None);
             }
         }
 
@@ -403,6 +463,7 @@ impl PickerView {
         self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
         let Some(action) = self.prepare_command_action(
             host.config,
+            host.state,
             host.runtime.snapshot(),
             key,
             host.log_file(),
@@ -411,7 +472,7 @@ impl PickerView {
             let view = self.current_view_ref().to_string();
             let message = format!("no command for {}", key_display(key));
             host.record_error_message(Some(&view), None, &message);
-            return Ok(ViewEffect::Continue);
+            return Ok(Some(ViewEffect::Continue));
         };
         let command_view = self.command_view_active();
         match action {
@@ -420,16 +481,21 @@ impl PickerView {
                 message,
             } => {
                 host.record_error(&invocation, &message);
-                Ok(ViewEffect::Continue)
+                Ok(Some(ViewEffect::Continue))
             }
-            super::command::CommandAction::Navigate { target, input } => Ok(ViewEffect::Navigate {
-                location: ViewLocation::new(target, input),
-                mode: if command_view {
-                    NavigationMode::Replace
-                } else {
-                    NavigationMode::Push
-                },
-            }),
+            super::command::CommandAction::Navigate { target, input } => {
+                Ok(Some(ViewEffect::Navigate {
+                    location: ViewLocation::new(target, input),
+                    mode: if command_view {
+                        NavigationMode::Replace
+                    } else {
+                        NavigationMode::Push
+                    },
+                }))
+            }
+            super::command::CommandAction::Complete => {
+                Ok(self.complete_selection(&host.input.raw.clone()))
+            }
             super::command::CommandAction::Execute {
                 invocation,
                 prepared,
@@ -437,11 +503,11 @@ impl PickerView {
             } => {
                 super::command::execute_local(host, prepared, terminal, &invocation, exit)?;
                 if exit {
-                    Ok(ViewEffect::Exit)
+                    Ok(Some(ViewEffect::Exit))
                 } else if command_view {
-                    Ok(ViewEffect::Back)
+                    Ok(Some(ViewEffect::Back))
                 } else {
-                    Ok(ViewEffect::Continue)
+                    Ok(Some(ViewEffect::Continue))
                 }
             }
         }
@@ -502,11 +568,88 @@ impl PickerView {
                 }
             }
 
-            if let Some(key) = event.pending_command {
-                return self.handle_command_key(host, terminal, key).map(Some);
+            if let Some(key) = event.pending_command
+                && let Some(effect) = self.activate_item(host, terminal, key)?
+            {
+                return Ok(Some(effect));
             }
         }
         Ok(None)
+    }
+
+    fn clear_feedback(&mut self) {
+        self.feedback = None;
+    }
+
+    fn move_selection(&mut self, direction: isize) {
+        if self.frame.items.is_empty() {
+            self.frame.selected = 0;
+            return;
+        }
+        let last = self.frame.items.len() - 1;
+        self.frame.selected = self
+            .frame
+            .selected
+            .saturating_add_signed(direction)
+            .min(last);
+    }
+
+    fn select_item(&mut self, host: &mut EngineHost<'_>, direction: isize) -> Result<()> {
+        self.clear_feedback();
+        host.clear_error();
+        let input = host.input.raw.clone();
+        if !self.results_current(&input) {
+            self.frame.pending_selection = self.frame.pending_selection.saturating_add(direction);
+            self.request_current(host)?;
+        } else {
+            self.move_selection(direction);
+        }
+        Ok(())
+    }
+
+    fn complete_selection(&mut self, input: &str) -> Option<ViewEffect> {
+        let item = self
+            .frame
+            .items
+            .get(self.frame.selected)
+            .map(|item| ViewOutputItem {
+                text: item.text.clone(),
+                value: item.value.clone(),
+                metadata: item.metadata.clone(),
+                source_view: item.source_view.clone(),
+            });
+        if item.is_some() || !input.is_empty() {
+            return Some(ViewEffect::Complete(ViewOutput::Selected {
+                item,
+                input: input.to_string(),
+            }));
+        }
+        self.feedback = Some("no matching item".to_string());
+        None
+    }
+
+    fn input_edited(&mut self, host: &mut EngineHost<'_>, refresh: &mut bool) -> Result<()> {
+        self.clear_feedback();
+        host.clear_error();
+        host.input.rejected = false;
+        self.frame.pending_command = None;
+        self.frame.pending_selection = 0;
+        if host.config.has_query(self.current_view_ref()) {
+            host.input.params = host.input.raw.clone();
+        }
+        let view_ref = self.current_view_ref().to_string();
+        host.sync_query_state(&view_ref)?;
+        *refresh = !host.input.rejected;
+        Ok(())
+    }
+
+    fn activate_item(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut Terminal,
+        key: Key,
+    ) -> Result<Option<ViewEffect>> {
+        self.handle_command_key(host, terminal, key)
     }
 }
 
@@ -541,11 +684,13 @@ impl ViewInstance for PickerView {
 
     fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         self.close_completion();
+        self.clear_feedback();
         let input = host.input.raw.clone();
         self.items_task.take();
         self.frame.refresh_deadline = None;
         self.frame.items_pending = false;
         self.frame.pending_command = None;
+        self.frame.pending_selection = 0;
         self.frame.requested_input = input.clone();
         self.frame.results_input = input;
         Ok(())
@@ -553,6 +698,7 @@ impl ViewInstance for PickerView {
 
     fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
         self.close_completion();
+        self.clear_feedback();
         self.schedule_refresh();
         Ok(())
     }
@@ -563,6 +709,7 @@ impl ViewInstance for PickerView {
         self.frame.refresh_deadline = None;
         self.frame.items_pending = false;
         self.frame.pending_command = None;
+        self.frame.pending_selection = 0;
         Ok(())
     }
 
@@ -599,28 +746,33 @@ impl ViewInstance for PickerView {
         for key in keys {
             let command_available = self.resolve_command(host.config, key).is_some();
             let nested_input = self.route_child || self.command_view_active();
-            match self.handle_input(
+            let action = self.handle_input(
                 key,
                 &host.config.command_view,
                 command_available,
                 host.input,
                 nested_input,
-            ) {
+            );
+            match action {
                 PickerInputAction::Continue => {}
-                PickerInputAction::Refresh => refresh = true,
-                PickerInputAction::ClearError => host.clear_error(),
+                PickerInputAction::Refresh => self.input_edited(host, &mut refresh)?,
+                PickerInputAction::Select(direction) => self.select_item(host, direction)?,
                 PickerInputAction::OpenCompletion => self.open_completion(host.input),
                 PickerInputAction::CycleCompletion(direction) => self.cycle_completion(direction),
                 PickerInputAction::AcceptCompletion => {
                     if self.accept_completion(host.input) {
-                        refresh = true;
+                        self.input_edited(host, &mut refresh)?;
                     }
                 }
                 PickerInputAction::CloseCompletion => self.close_completion(),
                 PickerInputAction::Activate(key) => {
-                    return self.handle_command_key(host, terminal, key);
+                    if let Some(effect) = self.activate_item(host, terminal, key)? {
+                        return Ok(effect);
+                    }
                 }
-                PickerInputAction::OpenCommandView => return self.open_command_view(host),
+                PickerInputAction::OpenCommandView => {
+                    return self.open_command_view(host);
+                }
                 PickerInputAction::Back => return Ok(ViewEffect::Back),
                 PickerInputAction::Exit => return Ok(ViewEffect::Exit),
             }
@@ -629,7 +781,9 @@ impl ViewInstance for PickerView {
             host.input.changed = true;
             host.input.rejected = false;
             host.clear_error();
-            self.schedule_refresh();
+            if self.frame.pending_command.is_none() && self.frame.pending_selection == 0 {
+                self.schedule_refresh();
+            }
         }
         Ok(ViewEffect::Continue)
     }
@@ -647,11 +801,13 @@ impl ViewInstance for PickerView {
             )
         } else {
             (
-                if searching {
-                    "searching...".to_string()
-                } else {
-                    format!("{} results", self.frame.items.len())
-                },
+                self.feedback.clone().unwrap_or_else(|| {
+                    if searching {
+                        "searching...".to_string()
+                    } else {
+                        format!("{} results", self.frame.items.len())
+                    }
+                }),
                 self.visible_commands(host.config),
             )
         };
@@ -659,6 +815,12 @@ impl ViewInstance for PickerView {
             title: None,
             status: Some(status),
             commands,
+            presentation: self
+                .options
+                .input_prefix
+                .as_deref()
+                .map(crate::chrome::ChromePresentation::with_input_prefix)
+                .unwrap_or_default(),
         }
     }
 

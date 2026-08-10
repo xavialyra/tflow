@@ -11,9 +11,13 @@ pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Valu
         .unwrap_or_else(|| Path::new("."));
     let runtime = context.runtime.read();
     let mut methods = ExpressionMethods::new(script_root);
-    context
-        .config
-        .evaluate_view_field(&context.location.view_ref, name, &runtime, &mut methods)
+    context.config.evaluate_view_field(
+        &context.location.view_ref,
+        context.state,
+        name,
+        &runtime,
+        &mut methods,
+    )
 }
 
 pub(crate) fn optional_string(context: &ViewContext<'_>, name: &str) -> Result<Option<String>> {

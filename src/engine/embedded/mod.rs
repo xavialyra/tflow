@@ -126,14 +126,13 @@ struct EmbeddedView {
 
 impl ViewInstance for EmbeddedView {
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Ok(ViewEffect::Continue);
+        };
         let session = self
             .session
             .take()
             .context("embedded view was already completed")?;
-        let chrome = self
-            .chrome
-            .as_ref()
-            .context("embedded view was not rendered before it started")?;
         let outcome = session.run(terminal, chrome)?;
         let message = embedded_status_message(outcome);
         let success = matches!(outcome, EmbeddedOutcome::ReturnedToLauncher)
@@ -150,6 +149,7 @@ impl ViewInstance for EmbeddedView {
                 ("Esc".to_string(), "Return".to_string()),
                 ("Ctrl-C".to_string(), "Interrupt".to_string()),
             ],
+            ..crate::chrome::EngineChrome::default()
         }
     }
 
