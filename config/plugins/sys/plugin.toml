@@ -5,7 +5,7 @@ name = "system"
 [views.default]
 type = "picker"
 alias = "sys"
-items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
+items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.run]
 key = "enter"

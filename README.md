@@ -178,7 +178,7 @@ A view's `type` directly selects its engine, and engine-specific fields live on 
 ```toml
 [views.search]
 type = "picker"
-items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
+items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.result]
 type = "capture"
@@ -219,7 +219,7 @@ name = "applications"
 [views.default]
 type = "picker"
 alias = "app"
-items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
+items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.open]
 key = "enter"
@@ -283,7 +283,7 @@ commands = "{{ runtime:view.active.command }}"
 label = "query: {{ runtime:view.active.query }}"
 ```
 
-References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` returns the current View instance's materialized query object while preserving ordinary metadata; `config:` never receives a state overlay.
+References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a materialized object for `query.type = "object"`; `config:` never receives a state overlay.
 
 ```toml
 items = '{{ path(runtime:view.active, "$.items") }}'
@@ -401,7 +401,7 @@ text = '''{{ state("string", "") }}'''
 items = '{{ script("scripts/items.sh", runtime:view.active.request) }}'
 ```
 
-The picker runtime exposes stack-top metadata under `runtime:view.active`, including the route-aware `input`, `query`, and `raw_input` strings. Session input is also published under `runtime:session.input`. Typed plugin parameters live under `this:query` for the expression-owning View instance instead. A source script can receive that complete object, selected runtime metadata, stdin artifacts, or any explicitly constructed JSON value. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
+The picker runtime exposes stack-top metadata under `runtime:view.active`, including the route-aware `input`, `query`, and `raw_input` strings. Session input is also published under `runtime:session.input`. `this:query` belongs to the expression-owning View instance, so an implicit string query is scoped to each source while a declared object query retains its typed parameters. A source script can receive that query value, selected runtime metadata, stdin artifacts, or any explicitly constructed JSON value. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
 
 A root picker view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
 

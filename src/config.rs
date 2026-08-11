@@ -242,6 +242,10 @@ impl Config {
         self.state_registry.update_input(state, source)
     }
 
+    pub(crate) fn has_plain_query(&self, state: &StateInstance) -> Result<bool> {
+        self.state_registry.has_plain_query(state)
+    }
+
     fn view_config(&self, view_ref: &str) -> Result<&Value> {
         let (plugin, view) = view_ref
             .split_once(':')

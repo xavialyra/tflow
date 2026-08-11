@@ -5,7 +5,7 @@ name = "shell"
 [views.menu]
 type = "picker"
 alias = "shell"
-items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
+items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.menu.commands.open]
 key = "enter"

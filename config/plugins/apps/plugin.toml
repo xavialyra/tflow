@@ -5,7 +5,7 @@ name = "applications"
 [views.default]
 type = "picker"
 alias = "app"
-items = '{{ script("scripts/items.sh", runtime:view.active.query) }}'
+items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.open]
 key = "enter"

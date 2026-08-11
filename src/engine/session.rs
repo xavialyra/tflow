@@ -1104,7 +1104,7 @@ mod tests {
         assert!(
             session
                 .apply(ViewEffect::Navigate {
-                    request: NavigationRequest::new("core:command", ""),
+                    request: NavigationRequest::new("core:messages", ""),
                     mode: NavigationMode::Push,
                 })
                 .unwrap()

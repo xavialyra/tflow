@@ -74,6 +74,7 @@ pub(crate) fn submit_items_task(
                 &config,
                 &request.view,
                 &request.source_states,
+                &request.query,
                 &runtime_value,
                 &cancellation,
             )
@@ -92,6 +93,7 @@ fn load_items_with_states(
     config: &Config,
     view_ref: &str,
     source_states: &BTreeMap<String, StateInstance>,
+    query: &str,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
@@ -103,11 +105,16 @@ fn load_items_with_states(
             continue;
         }
 
-        let fallback_state = StateInstance::empty(&source_ref);
-        let state = source_states.get(&source_ref).unwrap_or(&fallback_state);
+        let mut state = source_states
+            .get(&source_ref)
+            .cloned()
+            .unwrap_or_else(|| StateInstance::empty(&source_ref));
+        if config.has_plain_query(&state)? {
+            config.update_query_input(&mut state, query)?;
+        }
         let value = match config.get(
             ConfigReadContext {
-                scope: ConfigScope::View(state),
+                scope: ConfigScope::View(&state),
                 runtime,
                 input: &config.input_value,
                 cancellation: Some(cancellation.clone()),
@@ -134,7 +141,14 @@ fn load_items(
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
-    load_items_with_states(config, view_ref, &BTreeMap::new(), runtime, cancellation)
+    load_items_with_states(
+        config,
+        view_ref,
+        &BTreeMap::new(),
+        "",
+        runtime,
+        cancellation,
+    )
 }
 
 fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value: Value) {
@@ -330,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn item_expressions_pass_runtime_input_to_scripts() {
+    fn item_expressions_pass_this_query_to_scripts() {
         let root =
             env::temp_dir().join(format!("tui-launcher-items-script-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
@@ -343,14 +357,34 @@ mod tests {
 
         let mut config = test_config();
         config.views.get_mut("apps:main").unwrap().items =
-            Some("{{ script(\"items.sh\", runtime:view.active.query) }}".to_string());
+            Some("{{ script(\"items.sh\", this:query) }}".to_string());
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "core": {
+                    "views": {
+                        "default": {"type": "picker", "sources": ["apps:main"]}
+                    }
+                },
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "alias": "app",
+                            "items": "{{ script(\"items.sh\", this:query) }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
-        let result = load_items(
+        let state = config.instantiate_state("apps:main").unwrap();
+        let result = load_items_with_states(
             &config,
             "core:default",
-            &serde_json::json!({
-                "view": {"active": {"query": "fire"}}
-            }),
+            &BTreeMap::from([("apps:main".to_string(), state)]),
+            "fire",
+            &serde_json::json!({}),
             &CancellationToken::new(),
         )
         .unwrap();

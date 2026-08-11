@@ -132,6 +132,7 @@ impl StateDefinition {
 
 #[derive(Debug, Clone)]
 struct QuerySchema {
+    plain: Option<StateKey>,
     fields: BTreeMap<String, StateKey>,
     input_order: Vec<String>,
 }
@@ -163,7 +164,7 @@ impl StateRegistry {
                 let view_ref = format!("{plugin_id}:{view_name}");
                 let mut definitions = BTreeMap::new();
                 scan_definitions(view, &mut Vec::new(), &mut definitions)?;
-                let query = compile_query(view, &definitions)?;
+                let query = compile_query(view, &mut definitions)?;
                 views.insert(view_ref, ViewStateSchema { definitions, query });
             }
         }
@@ -195,6 +196,12 @@ impl StateRegistry {
             }
             bail!("view {:?} does not declare query parameters", view_ref);
         };
+        if query.plain.is_some() {
+            if arguments.is_empty() {
+                return Ok(state);
+            }
+            bail!("view {:?} does not declare query parameters", view_ref);
+        }
         let mut assigned = BTreeSet::new();
         for argument in arguments {
             let raw = argument.strip_prefix("--").with_context(|| {
@@ -265,6 +272,14 @@ impl StateRegistry {
         let Some(query) = schema.query.as_ref() else {
             return Ok(String::new());
         };
+        if let Some(key) = &query.plain {
+            return Ok(state
+                .values
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string());
+        }
         if query.input_order.is_empty() {
             return Ok(String::new());
         }
@@ -309,6 +324,15 @@ impl StateRegistry {
         let Some(query) = schema.query.as_ref() else {
             return Ok(false);
         };
+        if let Some(key) = &query.plain {
+            let value = Value::String(source.to_string());
+            if state.values.get(key) == Some(&value) {
+                return Ok(false);
+            }
+            state.values.insert(key.clone(), value);
+            state.revision = state.revision.wrapping_add(1);
+            return Ok(true);
+        }
         if query.input_order.is_empty() {
             return Ok(false);
         }
@@ -365,6 +389,17 @@ impl StateRegistry {
         state.values = values;
         state.revision = state.revision.wrapping_add(1);
         Ok(true)
+    }
+
+    pub(crate) fn has_plain_query(&self, state: &StateInstance) -> Result<bool> {
+        if !self.views.contains_key(&state.view_ref) && state.is_empty() {
+            return Ok(false);
+        }
+        Ok(self
+            .schema_for(&state.view_ref, state)?
+            .query
+            .as_ref()
+            .is_some_and(|query| query.plain.is_some()))
     }
 
     pub(crate) fn materialize(&self, config: &Value, state: &StateInstance) -> Result<Value> {
@@ -428,14 +463,37 @@ impl StateInstance {
 
 fn compile_query(
     view: &Value,
-    definitions: &BTreeMap<StateKey, StateDefinition>,
+    definitions: &mut BTreeMap<StateKey, StateDefinition>,
 ) -> Result<Option<QuerySchema>> {
-    let Some(query) = view.get("query") else {
-        return Ok(None);
-    };
-    let query = query.as_object().context("view query must be an object")?;
+    let query = view.get("query");
+    if query.is_none()
+        || query
+            .and_then(|query| query.get("type"))
+            .and_then(Value::as_str)
+            == Some("string")
+    {
+        let key = StateKey(vec!["query".to_string()]);
+        definitions.insert(
+            key.clone(),
+            StateDefinition {
+                value_type: StateType::String,
+                default: Value::String(String::new()),
+                required: false,
+                nullable: false,
+            },
+        );
+        return Ok(Some(QuerySchema {
+            plain: Some(key),
+            fields: BTreeMap::new(),
+            input_order: Vec::new(),
+        }));
+    }
+
+    let query = query
+        .and_then(Value::as_object)
+        .context("view query must be an object")?;
     if query.get("type").and_then(Value::as_str) != Some("object") {
-        bail!("view query type must be \"object\"");
+        bail!("view query type must be \"object\" or \"string\"");
     }
     let input_order = parse_input_order(query.get("input_order"))?;
     let mut fields = BTreeMap::new();
@@ -458,6 +516,7 @@ fn compile_query(
         }
     }
     Ok(Some(QuerySchema {
+        plain: None,
         fields,
         input_order,
     }))
@@ -616,6 +675,55 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn undeclared_query_materializes_as_a_string() {
+        let config = serde_json::json!({
+            "plugins": {
+                "core": {
+                    "views": {
+                        "default": {"type": "picker"}
+                    }
+                }
+            }
+        });
+        let registry = StateRegistry::compile(&config).unwrap();
+        let mut state = registry.instantiate("core:default").unwrap();
+
+        assert!(registry.has_plain_query(&state).unwrap());
+        assert_eq!(registry.render_input(&state).unwrap(), "");
+        assert!(registry.update_input(&mut state, "needle").unwrap());
+        assert_eq!(registry.render_input(&state).unwrap(), "needle");
+        assert_eq!(
+            registry
+                .materialize(&config["plugins"]["core"]["views"]["default"], &state)
+                .unwrap()["query"],
+            "needle"
+        );
+    }
+
+    #[test]
+    fn string_query_matches_the_implicit_query_behavior() {
+        let config = serde_json::json!({
+            "plugins": {
+                "core": {
+                    "views": {
+                        "default": {"query": {"type": "string"}}
+                    }
+                }
+            }
+        });
+        let registry = StateRegistry::compile(&config).unwrap();
+        let mut state = registry.instantiate("core:default").unwrap();
+
+        assert!(registry.update_input(&mut state, "needle").unwrap());
+        assert_eq!(
+            registry
+                .materialize(&config["plugins"]["core"]["views"]["default"], &state)
+                .unwrap()["query"],
+            "needle"
+        );
     }
 
     #[test]
