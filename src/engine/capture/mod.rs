@@ -3,7 +3,7 @@ mod session;
 
 use self::session::CaptureSession;
 use super::{
-    Engine, EngineHost, ViewContext, ViewEffect, ViewInstance, evaluate_field,
+    Engine, EngineHost, InputFocus, ViewContext, ViewEffect, ViewInstance, evaluate_field,
     evaluate_optional_string, require_field, validate_fields,
 };
 use crate::config::{ENGINE_CAPTURE, View};
@@ -98,5 +98,9 @@ impl ViewInstance for CaptureView {
 
     fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
         render::render_capture(frame, area, self.session.lines());
+    }
+
+    fn input_focus(&self) -> InputFocus {
+        InputFocus::Unfocused
     }
 }

@@ -102,6 +102,13 @@ mod tests {
                 Ok(ViewEffect::Continue)
             }
 
+            fn render(
+                &mut self,
+                _host: &EngineHost<'_>,
+                _frame: &mut ratatui::Frame,
+                _area: ratatui::layout::Rect,
+            ) {
+            }
         }
 
         impl Engine for TestEngine {

@@ -1,28 +1,20 @@
-use super::pty::{self, EmbeddedOutcome};
 use crate::engine::PreparedProcess;
-use crate::terminal::Terminal;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 pub(crate) struct EmbeddedSession {
-    prepared: PreparedProcess,
+    prepared: Option<PreparedProcess>,
 }
 
 impl EmbeddedSession {
     pub(crate) fn new(prepared: PreparedProcess) -> Self {
-        Self { prepared }
+        Self {
+            prepared: Some(prepared),
+        }
     }
 
-    pub(crate) fn run(
-        &self,
-        terminal: &mut Terminal,
-        chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<EmbeddedOutcome> {
-        pty::run(
-            &self.prepared.argv,
-            &self.prepared.environment,
-            self.prepared.current_dir.as_deref(),
-            terminal,
-            chrome,
-        )
+    pub(crate) fn take_prepared(&mut self) -> Result<PreparedProcess> {
+        self.prepared
+            .take()
+            .context("embedded session was already started")
     }
 }

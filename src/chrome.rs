@@ -51,6 +51,7 @@ pub(crate) struct ChromePresentation {
     layout: ChromeLayout,
     input_prompt: Option<String>,
     input_context_prefix: Option<InputPrefix>,
+    input_muted: bool,
     recognized_input_prefix_end: Option<usize>,
     footer: Option<FooterContent>,
 }
@@ -70,6 +71,11 @@ impl ChromePresentation {
 
     pub(crate) fn with_input_context_prefix(mut self, prefix: InputPrefix) -> Self {
         self.input_context_prefix = Some(prefix);
+        self
+    }
+
+    pub(crate) fn with_unfocused_input(mut self) -> Self {
+        self.input_muted = true;
         self
     }
 }
@@ -409,7 +415,6 @@ impl ChromeLayout {
         let text = clip(text, available);
         format!("{}{}{}", " ".repeat(left), text, " ".repeat(right),)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,6 +424,7 @@ pub(crate) struct ChromeFrame {
     pub(crate) input_cursor: usize,
     input_prefix: String,
     input_prefix_highlight: Option<(usize, usize)>,
+    input_muted: bool,
     recognized_input_prefix_end: Option<usize>,
     pub(crate) footer: String,
     pub(crate) footer_divider: String,
@@ -427,10 +433,6 @@ pub(crate) struct ChromeFrame {
 }
 
 impl ChromeFrame {
-    pub(crate) fn layout(&self) -> ChromeLayout {
-        self.layout
-    }
-
     #[cfg(test)]
     pub(crate) fn input_line(&self) -> String {
         format!("{}{}", self.input_prefix, self.input)
@@ -555,6 +557,7 @@ impl ChromeFrame {
             layout,
             input_prompt,
             input_context_prefix,
+            input_muted,
             recognized_input_prefix_end,
             footer,
         } = presentation;
@@ -578,8 +581,12 @@ impl ChromeFrame {
             Some(context) => {
                 debug_assert!(!context.removable);
                 let start = prompt.len();
-                let end = start.saturating_add(context.text.len());
-                (format!("{}{}", prompt, context.text), Some((start, end)))
+                let highlighted = context.text.trim_end_matches(char::is_whitespace);
+                let end = start.saturating_add(highlighted.len());
+                (
+                    format!("{}{}", prompt, context.text),
+                    (start < end).then_some((start, end)),
+                )
             }
             None => (prompt, None),
         };
@@ -590,6 +597,7 @@ impl ChromeFrame {
             layout,
             input_prefix,
             input_prefix_highlight,
+            input_muted,
             recognized_input_prefix_end,
             input,
             input_cursor,
@@ -603,6 +611,7 @@ impl ChromeFrame {
         layout: ChromeLayout,
         input_prefix: String,
         input_prefix_highlight: Option<(usize, usize)>,
+        input_muted: bool,
         recognized_input_prefix_end: Option<usize>,
         input: &str,
         input_cursor: usize,
@@ -624,6 +633,7 @@ impl ChromeFrame {
             input_cursor,
             input_prefix,
             input_prefix_highlight,
+            input_muted,
             recognized_input_prefix_end,
             footer: footer.text,
             footer_divider: layout.pad_line(
@@ -682,7 +692,7 @@ impl ChromeFrame {
                     let offset = layout.viewport_padding.left;
                     (start.saturating_add(offset), end.saturating_add(offset))
                 });
-                Line::from(input_spans(input, highlighted_prefix))
+                Line::from(input_spans(input, highlighted_prefix, self.input_muted))
             } else if row == layout.divider_content_row() {
                 Line::styled(
                     layout.pad_line(&self.divider, width, layout.viewport_padding),
@@ -764,25 +774,34 @@ impl ChromeFrame {
     }
 }
 
-fn input_spans(text: String, highlighted_prefix: Option<(usize, usize)>) -> Vec<Span<'static>> {
+fn input_spans(
+    text: String,
+    highlighted_prefix: Option<(usize, usize)>,
+    input_muted: bool,
+) -> Vec<Span<'static>> {
+    let input_style = input_muted.then(|| Style::new().fg(Color::Rgb(152, 147, 165)));
+    let span = |text: String| match input_style {
+        Some(style) => Span::styled(text, style),
+        None => Span::raw(text),
+    };
     let Some((start, end)) = highlighted_prefix.filter(|(start, end)| {
         *start < *end
             && *end <= text.len()
             && text.is_char_boundary(*start)
             && text.is_char_boundary(*end)
     }) else {
-        return vec![Span::raw(text)];
+        return vec![span(text)];
     };
     let prefix_style = Style::new()
         .bg(Color::Rgb(242, 233, 225))
         .fg(Color::Rgb(87, 82, 121));
     let mut spans = Vec::new();
     if start > 0 {
-        spans.push(Span::raw(text[..start].to_string()));
+        spans.push(span(text[..start].to_string()));
     }
     spans.push(Span::styled(text[start..end].to_string(), prefix_style));
     if end < text.len() {
-        spans.push(Span::raw(text[end..].to_string()));
+        spans.push(span(text[end..].to_string()));
     }
     spans
 }
@@ -1050,9 +1069,47 @@ mod tests {
         assert_eq!(frame.input_line(), "apps:default query");
         assert_eq!(
             frame.input_prefix_highlight,
-            Some((0, "apps:default ".len()))
+            Some((0, "apps:default".len()))
         );
         assert_eq!(frame.input, "query");
+    }
+
+    #[test]
+    fn unfocused_input_mutes_the_query_but_not_the_context_tag() {
+        use ratatui::Terminal as RatatuiTerminal;
+        use ratatui::backend::TestBackend;
+
+        let frame = ChromeFrame::compose_with_cursor(
+            80,
+            &route(),
+            false,
+            "Show date",
+            "Show date".len(),
+            EngineChrome {
+                presentation: ChromePresentation::default()
+                    .with_input_context_prefix(InputPrefix::context("sys:output "))
+                    .with_unfocused_input(),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|draw| frame.render_frame(draw)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let input_start = ChromeLayout::default().viewport_padding.left;
+        let separator = input_start + UnicodeWidthStr::width("sys:output");
+        let query_start = separator + 1;
+        let tag = buffer.cell((input_start as u16, 1)).unwrap().style();
+        let separator = buffer.cell((separator as u16, 1)).unwrap().style();
+        let query = buffer.cell((query_start as u16, 1)).unwrap().style();
+
+        assert_eq!(tag.fg, Some(Color::Rgb(87, 82, 121)));
+        assert_eq!(tag.bg, Some(Color::Rgb(242, 233, 225)));
+        assert_eq!(separator.fg, Some(Color::Rgb(152, 147, 165)));
+        assert_eq!(separator.bg, Some(Color::Reset));
+        assert_eq!(query.fg, Some(Color::Rgb(152, 147, 165)));
+        assert_eq!(query.bg, Some(Color::Reset));
     }
 
     #[test]
@@ -1072,7 +1129,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(frame.layout(), ChromeLayout::default());
+        assert_eq!(frame.layout, ChromeLayout::default());
         assert_eq!(frame.input_line(), "> query");
         assert!(frame.footer.starts_with("2 results"));
         assert!(frame.footer.ends_with("Enter accept"));

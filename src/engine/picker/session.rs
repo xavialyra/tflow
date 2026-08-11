@@ -899,10 +899,6 @@ impl ViewInstance for PickerView {
         let state = self.render_state();
         render::render_picker(frame, area, &state);
     }
-
-    fn uses_input_cursor(&self) -> bool {
-        true
-    }
 }
 
 fn selection_count(selected: usize, total: usize) -> String {

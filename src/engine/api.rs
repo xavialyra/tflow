@@ -151,6 +151,12 @@ pub(crate) enum InputRefreshPolicy {
     Debounced(Duration),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputFocus {
+    Focused,
+    Unfocused,
+}
+
 #[derive(Clone)]
 pub(crate) struct CommandInvocation {
     pub(crate) id: String,
@@ -172,6 +178,9 @@ pub(crate) enum ViewEffect {
         prepared: PreparedProcess,
         exit: bool,
         return_to_parent: bool,
+    },
+    RunEmbedded {
+        prepared: PreparedProcess,
     },
 }
 
@@ -267,12 +276,10 @@ pub(crate) trait ViewInstance {
         crate::chrome::EngineChrome::default()
     }
 
-    fn prepare_render(&mut self, _chrome: &crate::chrome::ChromeFrame) {}
+    fn render(&mut self, host: &EngineHost<'_>, frame: &mut Frame, area: Rect);
 
-    fn render(&mut self, _host: &EngineHost<'_>, _frame: &mut Frame, _area: Rect) {}
-
-    fn uses_input_cursor(&self) -> bool {
-        false
+    fn input_focus(&self) -> InputFocus {
+        InputFocus::Focused
     }
 }
 

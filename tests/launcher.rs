@@ -92,7 +92,9 @@ fn explicit_capture_view_receives_typed_query_state() {
 
     let mut process = spawn_launcher_with_args(&config, &["core:direct", "--message=from-option"]);
     let output = wait_for_text(&process.master, "from-option");
-    assert!(String::from_utf8_lossy(&output).contains("from-option"));
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("from-option"));
+    assert!(output.contains("core:direct"), "output: {output}");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -168,11 +170,9 @@ fn explicit_embedded_view_receives_typed_query_input() {
     let (status, output) = wait_for_launcher_exit(&mut process);
 
     assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("input=from-option"),
-        "output: {:?}",
-        output
-    );
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("input=from-option"), "output: {output}");
+    assert!(output.contains("core:direct"), "output: {output}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1366,6 +1366,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
     output.extend(remaining);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("capture-marker:value"), "output: {output}");
+    assert!(output.contains("core:capture"), "output: {output}");
     fs::remove_dir_all(root).expect("could not remove capture integration config");
 }
 
@@ -1427,6 +1428,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("embedded-marker:value"), "output: {output}");
+    assert!(output.contains("core:embedded"), "output: {output}");
     assert!(
         !output.contains("finished successfully"),
         "output: {output}"

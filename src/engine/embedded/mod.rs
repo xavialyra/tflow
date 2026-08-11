@@ -4,13 +4,14 @@ mod session;
 use self::pty::EmbeddedOutcome;
 use self::session::EmbeddedSession;
 use super::{
-    Engine, EngineHost, PreparedProcess, ViewContext, ViewEffect, ViewInstance, evaluate_field,
-    evaluate_optional_string, require_field, validate_fields,
+    Engine, EngineHost, InputFocus, PreparedProcess, ViewContext, ViewEffect, ViewInstance,
+    evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
 use crate::config::{ENGINE_EMBEDDED, View};
 use crate::expression::Template;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
+use ratatui::{Frame, layout::Rect};
 
 pub(crate) struct EmbeddedEngine;
 
@@ -105,40 +106,26 @@ impl Engine for EmbeddedEngine {
             ));
         }
         Ok(Box::new(EmbeddedView {
-            view_ref: context.request.view_ref.clone(),
             title: title.clone(),
-            chrome: None,
-            session: Some(EmbeddedSession::new(PreparedProcess {
+            session: EmbeddedSession::new(PreparedProcess {
                 argv: command,
                 environment,
                 current_dir: plugin_root,
-            })),
+            }),
         }))
     }
 }
 
 struct EmbeddedView {
-    view_ref: String,
     title: String,
-    chrome: Option<crate::chrome::ChromeFrame>,
-    session: Option<EmbeddedSession>,
+    session: EmbeddedSession,
 }
 
 impl ViewInstance for EmbeddedView {
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return Ok(ViewEffect::Continue);
-        };
-        let session = self
-            .session
-            .take()
-            .context("embedded view was already completed")?;
-        let outcome = session.run(terminal, chrome)?;
-        let message = embedded_status_message(outcome);
-        let success = matches!(outcome, EmbeddedOutcome::ReturnedToLauncher)
-            || matches!(outcome, EmbeddedOutcome::Exited(0));
-        host.record_view_status(&self.view_ref, &message, success);
-        Ok(ViewEffect::Back(None))
+    fn step(&mut self, _host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
+        Ok(ViewEffect::RunEmbedded {
+            prepared: self.session.take_prepared()?,
+        })
     }
 
     fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
@@ -153,12 +140,40 @@ impl ViewInstance for EmbeddedView {
         }
     }
 
-    fn prepare_render(&mut self, chrome: &crate::chrome::ChromeFrame) {
-        self.chrome = Some(chrome.clone());
+    fn render(&mut self, _host: &EngineHost<'_>, _frame: &mut Frame, _area: Rect) {}
+
+    fn input_focus(&self) -> InputFocus {
+        InputFocus::Unfocused
     }
 }
 
-fn embedded_status_message(outcome: EmbeddedOutcome) -> String {
+pub(crate) fn run(
+    prepared: &PreparedProcess,
+    terminal: &mut Terminal,
+    content_size: &dyn Fn(u16, u16) -> (u16, u16),
+    render: &mut dyn FnMut(
+        &mut Terminal,
+        &crate::embedded_terminal::EmbeddedTerminal,
+    ) -> Result<()>,
+) -> Result<EmbeddedOutcome> {
+    pty::run(
+        &prepared.argv,
+        &prepared.environment,
+        prepared.current_dir.as_deref(),
+        terminal,
+        content_size,
+        render,
+    )
+}
+
+pub(crate) fn embedded_succeeded(outcome: EmbeddedOutcome) -> bool {
+    matches!(
+        outcome,
+        EmbeddedOutcome::ReturnedToLauncher | EmbeddedOutcome::Exited(0)
+    )
+}
+
+pub(crate) fn embedded_status_message(outcome: EmbeddedOutcome) -> String {
     match outcome {
         EmbeddedOutcome::ReturnedToLauncher => "embedded view stopped".to_string(),
         EmbeddedOutcome::Exited(0) => "embedded view finished successfully".to_string(),

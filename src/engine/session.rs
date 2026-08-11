@@ -1,10 +1,10 @@
 use super::{
-    CommandInvocation, CompletionRequest, EngineHost, EngineRegistry, InputRefreshPolicy,
-    InputSeed, NavigationMode, NavigationRequest, TaskScheduler, ViewContext, ViewEffect,
-    ViewInstance,
+    CommandInvocation, CompletionRequest, EngineHost, EngineRegistry, InputFocus,
+    InputRefreshPolicy, InputSeed, NavigationMode, NavigationRequest, TaskScheduler, ViewContext,
+    ViewEffect, ViewInstance,
 };
 use crate::chrome::InputBuffer;
-use crate::config::{Config, ENGINE_PICKER};
+use crate::config::Config;
 use crate::engine::api::{EditorAction, InputEdit, LauncherOutcome, ResolvedLauncherAction};
 use crate::input::{InputDecoder, Key};
 use crate::runtime_log::{LogRecord, RuntimeLog};
@@ -12,6 +12,7 @@ use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use crate::text::sanitize_terminal_text;
 use anyhow::{Context, Result};
+use ratatui::layout::Rect;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -366,29 +367,77 @@ impl<'a> AppSession<'a> {
         effect: ViewEffect,
         terminal: &mut Terminal,
     ) -> Result<ViewEffect> {
-        let ViewEffect::RunCommand {
-            invocation,
-            prepared,
-            exit,
-            return_to_parent,
-        } = effect
-        else {
-            return Ok(effect);
-        };
+        match effect {
+            ViewEffect::RunCommand {
+                invocation,
+                prepared,
+                exit,
+                return_to_parent,
+            } => {
+                terminal.leave()?;
+                let status = prepared.command().status();
+                if !exit {
+                    terminal.reenter()?;
+                }
+                self.record_command_result(&invocation, status);
+                if exit {
+                    Ok(ViewEffect::Exit)
+                } else if return_to_parent {
+                    Ok(ViewEffect::Back(None))
+                } else {
+                    Ok(ViewEffect::Continue)
+                }
+            }
+            ViewEffect::RunEmbedded { prepared } => self.run_embedded(prepared, terminal),
+            effect => Ok(effect),
+        }
+    }
 
-        terminal.leave()?;
-        let status = prepared.command().status();
-        if !exit {
-            terminal.reenter()?;
-        }
-        self.record_command_result(&invocation, status);
-        if exit {
-            Ok(ViewEffect::Exit)
-        } else if return_to_parent {
-            Ok(ViewEffect::Back(None))
-        } else {
-            Ok(ViewEffect::Continue)
-        }
+    fn run_embedded(
+        &mut self,
+        prepared: super::PreparedProcess,
+        terminal: &mut Terminal,
+    ) -> Result<ViewEffect> {
+        let chrome = self.current_chrome(terminal.size().0 as usize)?;
+        let content_size = |columns, rows| {
+            let area = chrome.content_area(Rect::new(0, 0, columns, rows));
+            (area.width.max(1), area.height.max(1))
+        };
+        let mut render =
+            |terminal: &mut Terminal, screen: &crate::embedded_terminal::EmbeddedTerminal| {
+                terminal.draw(|frame| {
+                    let area = chrome.render_chrome(frame);
+                    frame.render_widget(screen.widget(), area);
+                    if let Some((column, row)) = screen.cursor()
+                        && column < area.width as usize
+                        && row < area.height as usize
+                    {
+                        frame.set_cursor_position((
+                            area.x.saturating_add(column as u16),
+                            area.y.saturating_add(row as u16),
+                        ));
+                    }
+                })
+            };
+        let outcome = super::embedded::run(&prepared, terminal, &content_size, &mut render)?;
+        let message = super::embedded::embedded_status_message(outcome);
+        let success = super::embedded::embedded_succeeded(outcome);
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let view_ref = entry.view_ref.clone();
+        let mut host = EngineHost {
+            config: self.config,
+            input: &mut entry.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        host.record_view_status(&view_ref, &message, success);
+        Ok(ViewEffect::Back(None))
     }
 
     fn record_command_result(
@@ -421,10 +470,10 @@ impl<'a> AppSession<'a> {
     fn delete_backward(&mut self) -> Result<bool> {
         let tag_end = {
             let entry = self.views.last().context("session has no active view")?;
-            let is_routable_picker = self.route_input
+            let accepts_route_input = self.route_input
                 && entry.view_ref != self.config.command_view
-                && self.config.engine(&entry.view_ref)? == ENGINE_PICKER;
-            is_routable_picker
+                && entry.instance.input_focus() == InputFocus::Focused;
+            accepts_route_input
                 .then(|| {
                     self.router
                         .recognized_prefix_tag_end(&entry.view_ref, &entry.input.raw)
@@ -530,7 +579,7 @@ impl<'a> AppSession<'a> {
         Ok(())
     }
 
-    fn render(&mut self, terminal: &mut Terminal) -> Result<()> {
+    fn current_chrome(&mut self, width: usize) -> Result<crate::chrome::ChromeFrame> {
         let entry = self
             .views
             .last_mut()
@@ -540,16 +589,18 @@ impl<'a> AppSession<'a> {
             .active_error
             .as_ref()
             .map(|record| record.label.clone());
-        let input_text = entry.input.raw.clone();
-        let input_cursor = entry.input.cursor;
-        let input_context_prefix = (!self.route_input
-            && entry.view_ref != self.config.command_view
-            && self.config.engine(&entry.view_ref)? == ENGINE_PICKER
-            && self
-                .router
-                .recognized_prefix_end(&entry.view_ref, &input_text)
-                .is_none())
-        .then(|| crate::chrome::InputPrefix::context(format!("{} ", entry.view_ref)));
+        let input_focus = entry.instance.input_focus();
+        let input_text = match input_focus {
+            InputFocus::Focused => entry.input.raw.clone(),
+            InputFocus::Unfocused => entry.input.params.clone(),
+        };
+        let input_cursor = match input_focus {
+            InputFocus::Focused => entry.input.cursor,
+            InputFocus::Unfocused => input_text.len(),
+        };
+        let input_context_prefix = ((!self.route_input || input_focus == InputFocus::Unfocused)
+            && entry.view_ref != self.config.command_view)
+            .then(|| crate::chrome::InputPrefix::context(format!("{} ", entry.view_ref)));
         let host = EngineHost {
             config: self.config,
             input: &mut entry.input,
@@ -564,20 +615,39 @@ impl<'a> AppSession<'a> {
             engine_chrome.presentation =
                 engine_chrome.presentation.with_input_context_prefix(prefix);
         }
-        let chrome = crate::chrome::ChromeFrame::compose_with_cursor(
-            terminal.size().0 as usize,
+        if input_focus == InputFocus::Unfocused {
+            engine_chrome.presentation = engine_chrome.presentation.with_unfocused_input();
+        }
+        Ok(crate::chrome::ChromeFrame::compose_with_cursor(
+            width,
             &route,
             false,
             &input_text,
             input_cursor,
             engine_chrome,
             error.as_deref(),
-        );
-        entry.instance.prepare_render(&chrome);
+        ))
+    }
+
+    fn render(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let chrome = self.current_chrome(terminal.size().0 as usize)?;
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let host = EngineHost {
+            config: self.config,
+            input: &mut entry.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
         terminal.draw(|frame| {
             let content_area = chrome.render_chrome(frame);
             entry.instance.render(&host, frame, content_area);
-            if entry.instance.uses_input_cursor() {
+            if entry.instance.input_focus() == InputFocus::Focused {
                 chrome.set_input_cursor(frame);
             }
         })
@@ -599,7 +669,7 @@ impl<'a> AppSession<'a> {
 
         if !self.route_input
             || current_view == self.config.command_view
-            || self.config.engine(&current_view)? != ENGINE_PICKER
+            || entry.instance.input_focus() == InputFocus::Unfocused
         {
             self.commit_query_input(raw_input)?;
             return Ok(None);
@@ -712,8 +782,8 @@ impl<'a> AppSession<'a> {
             ViewEffect::Complete(completion) => {
                 Ok(Some(SessionOutcome::Completed(Box::new(completion))))
             }
-            ViewEffect::RunCommand { .. } => {
-                anyhow::bail!("run command effect reached the navigation dispatcher")
+            ViewEffect::RunCommand { .. } | ViewEffect::RunEmbedded { .. } => {
+                anyhow::bail!("terminal effect reached the navigation dispatcher")
             }
             ViewEffect::Back(edit) => self.pop_current(edit),
             ViewEffect::Navigate { request, mode } => {
@@ -1072,6 +1142,13 @@ mod tests {
             Ok(ViewEffect::Continue)
         }
 
+        fn render(
+            &mut self,
+            _host: &EngineHost<'_>,
+            _frame: &mut ratatui::Frame,
+            _area: ratatui::layout::Rect,
+        ) {
+        }
     }
 
     #[test]

@@ -25,7 +25,8 @@ pub fn run(
     environment: &[(String, String)],
     working_dir: Option<&Path>,
     terminal: &mut Terminal,
-    chrome: &crate::chrome::ChromeFrame,
+    content_size: &dyn Fn(u16, u16) -> (u16, u16),
+    render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
 ) -> Result<EmbeddedOutcome> {
     if command.is_empty() {
         bail!("embedded action has an empty command");
@@ -54,9 +55,8 @@ pub fn run(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let layout = chrome.layout();
     let (outer_columns, outer_rows) = terminal.size();
-    let (columns, rows) = content_size(outer_columns, outer_rows, layout);
+    let (columns, rows) = content_size(outer_columns, outer_rows);
     let window = libc::winsize {
         ws_row: rows,
         ws_col: columns,
@@ -79,7 +79,7 @@ pub fn run(
     }
 
     set_nonblocking(master)?;
-    let outcome = relay(master, pid, terminal, (columns, rows), chrome, layout);
+    let outcome = relay(master, pid, terminal, (columns, rows), content_size, render);
     if outcome.is_err() {
         terminate_child(pid);
     }
@@ -119,13 +119,13 @@ fn relay(
     pid: libc::pid_t,
     terminal: &mut Terminal,
     mut last_size: (u16, u16),
-    chrome: &crate::chrome::ChromeFrame,
-    layout: crate::chrome::ChromeLayout,
+    content_size: &dyn Fn(u16, u16) -> (u16, u16),
+    render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
 ) -> Result<EmbeddedOutcome> {
     let mut input = InputRelay::default();
     let mut responder = TerminalResponder::default();
     let mut screen = EmbeddedTerminal::new(last_size.0, last_size.1);
-    render_embedded(terminal, chrome, &screen)?;
+    render(terminal, &screen)?;
 
     loop {
         if input.escape_expired() {
@@ -133,17 +133,17 @@ fn relay(
             return Ok(EmbeddedOutcome::ReturnedToLauncher);
         }
         if let Some(status) = wait_status(pid, true)? {
-            drain_output(master, &mut responder, &mut screen, terminal, chrome)?;
+            drain_output(master, &mut responder, &mut screen, terminal, render)?;
             return Ok(decode_status(status));
         }
 
         let outer_size = terminal.size();
-        let current_size = content_size(outer_size.0, outer_size.1, layout);
+        let current_size = content_size(outer_size.0, outer_size.1);
         if current_size != last_size {
             screen.resize(current_size.0, current_size.1);
             resize_pty(master, pid, current_size)?;
             last_size = current_size;
-            render_embedded(terminal, chrome, &screen)?;
+            render(terminal, &screen)?;
         }
 
         let mut descriptors = [
@@ -176,7 +176,7 @@ fn relay(
         }
 
         if descriptors[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-            && drain_output(master, &mut responder, &mut screen, terminal, chrome)?
+            && drain_output(master, &mut responder, &mut screen, terminal, render)?
             && let Some(status) = wait_status(pid, true)?
         {
             return Ok(decode_status(status));
@@ -271,7 +271,7 @@ fn drain_output(
     responder: &mut TerminalResponder,
     screen: &mut EmbeddedTerminal,
     terminal: &mut Terminal,
-    chrome: &crate::chrome::ChromeFrame,
+    render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 8192];
     let mut reached_eof = false;
@@ -299,40 +299,9 @@ fn drain_output(
             write_fd(master, PRIMARY_DEVICE_ATTRIBUTES)?;
         }
         screen.feed(output);
-        render_embedded(terminal, chrome, screen)?;
+        render(terminal, screen)?;
     }
     Ok(reached_eof)
-}
-
-fn content_size(
-    outer_columns: u16,
-    outer_rows: u16,
-    layout: crate::chrome::ChromeLayout,
-) -> (u16, u16) {
-    (
-        layout.content_width(outer_columns as usize).max(1) as u16,
-        layout.content_rows(outer_rows as usize).max(1) as u16,
-    )
-}
-
-fn render_embedded(
-    terminal: &mut Terminal,
-    chrome: &crate::chrome::ChromeFrame,
-    screen: &EmbeddedTerminal,
-) -> Result<()> {
-    terminal.draw(|frame| {
-        let area = chrome.render_chrome(frame);
-        frame.render_widget(screen.widget(), area);
-        if let Some((column, row)) = screen.cursor()
-            && column < area.width as usize
-            && row < area.height as usize
-        {
-            frame.set_cursor_position((
-                area.x.saturating_add(column as u16),
-                area.y.saturating_add(row as u16),
-            ));
-        }
-    })
 }
 
 #[derive(Default)]

@@ -37,8 +37,21 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
         } else {
             0
         };
-    let reserves_scrollbar_gutter = state.completion.is_none() && state.items.len() > list_height;
-    let show_scrollbar = reserves_scrollbar_gutter && picker_start > 0;
+    let completion_start = state.completion.as_ref().map(|completion| {
+        if completion.selected >= list_height && list_height > 0 {
+            completion.selected + 1 - list_height
+        } else {
+            0
+        }
+    });
+    let item_count = state
+        .completion
+        .as_ref()
+        .map(|completion| completion.candidates.len())
+        .unwrap_or(state.items.len());
+    let reserves_scrollbar_gutter = item_count > list_height;
+    let scroll_start = completion_start.unwrap_or(picker_start);
+    let show_scrollbar = reserves_scrollbar_gutter && scroll_start > 0;
     let right_padding = PICKER_SIDE_PADDING
         .saturating_add(usize::from(state.show_prefix) * PICKER_PREFIX_RIGHT_PADDING)
         .saturating_add(usize::from(reserves_scrollbar_gutter) * PICKER_SCROLLBAR_WIDTH);
@@ -58,13 +71,6 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
         item_area_width
     };
 
-    let completion_start = state.completion.as_ref().map(|completion| {
-        if completion.selected >= list_height && list_height > 0 {
-            completion.selected + 1 - list_height
-        } else {
-            0
-        }
-    });
     let selected_row = if let Some(completion) = &state.completion {
         if completion.candidates.is_empty() || list_height == 0 {
             None
@@ -90,14 +96,40 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
                 content_lines.push("(no matching views)".to_string());
             } else {
                 let primary_width =
-                    completion_primary_width(&completion.candidates, content_area_width);
+                    completion_primary_width(&completion.candidates, item_area_width);
                 let start = completion_start.unwrap_or(0);
-                for candidate in completion.candidates.iter().skip(start).take(list_height) {
-                    content_lines.push(format_view_line(
-                        candidate,
-                        primary_width,
+                let scrollbar_thumb_top =
+                    scrollbar_thumb_top(start, completion.candidates.len(), list_height);
+                for (index, candidate) in completion
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(list_height)
+                {
+                    let selected = index == completion.selected;
+                    let mut line = format_picker_item_line(
+                        &format_view_line(candidate, primary_width, item_area_width),
                         content_area_width,
-                    ));
+                        selected,
+                        right_padding,
+                    );
+                    let visible_row = index.saturating_sub(start);
+                    let scrollbar_start = if show_scrollbar {
+                        let thumb_height = PICKER_SCROLLBAR_THUMB_HEIGHT.min(list_height);
+                        let thumb = visible_row >= scrollbar_thumb_top
+                            && visible_row < scrollbar_thumb_top.saturating_add(thumb_height);
+                        line = with_scrollbar(line, thumb);
+                        line.ends_with('█')
+                            .then(|| line.len().saturating_sub('█'.len_utf8()))
+                    } else {
+                        None
+                    };
+                    muted_suffix_ranges.push(None);
+                    accent_ranges.push(
+                        scrollbar_start.map(|start| (start, start.saturating_add('█'.len_utf8()))),
+                    );
+                    content_lines.push(line);
                 }
             }
         } else if state.items.is_empty() {
@@ -153,20 +185,12 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
         .into_iter()
         .enumerate()
         .map(|(row, line)| {
-            if state.completion.is_some() {
-                if selected_row == Some(row) {
-                    Line::styled(line, Style::new().add_modifier(Modifier::REVERSED))
-                } else {
-                    Line::raw(line)
-                }
-            } else {
-                picker_line(
-                    line,
-                    selected_row == Some(row),
-                    muted_suffix_ranges.get(row).copied().flatten(),
-                    accent_ranges.get(row).copied().flatten(),
-                )
-            }
+            picker_line(
+                line,
+                selected_row == Some(row),
+                muted_suffix_ranges.get(row).copied().flatten(),
+                accent_ranges.get(row).copied().flatten(),
+            )
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -186,13 +210,13 @@ fn picker_line(
     } else {
         Style::new()
     };
-    let suffix_style = Style::new().fg(Color::Rgb(152, 147, 165)).add_modifier(
-        if selected {
+    let suffix_style = Style::new()
+        .fg(Color::Rgb(152, 147, 165))
+        .add_modifier(if selected {
             Modifier::BOLD
         } else {
             Modifier::empty()
-        },
-    );
+        });
     let (marker, text, marker_width) = if selected {
         match line.strip_prefix('▌') {
             Some(text) => (Some("▌"), text.to_string(), "▌".len()),
@@ -203,7 +227,10 @@ fn picker_line(
     };
     let adjust_range = |range: Option<(usize, usize)>| {
         range.and_then(|(start, end)| {
-            Some((start.checked_sub(marker_width)?, end.checked_sub(marker_width)?))
+            Some((
+                start.checked_sub(marker_width)?,
+                end.checked_sub(marker_width)?,
+            ))
         })
     };
     let suffix_range = adjust_range(suffix_range);
@@ -440,4 +467,46 @@ fn clip(text: &str, width: usize) -> String {
     }
     result.push_str("...");
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn completion_selection_uses_the_picker_marker() {
+        let state = PickerRenderState {
+            items: Vec::new(),
+            selected: 0,
+            searching: false,
+            completion: Some(ViewCompletion {
+                candidates: vec![ViewCandidate {
+                    view_ref: "apps:default".to_string(),
+                    alias: Some("app".to_string()),
+                    plugin_name: "apps".to_string(),
+                    engine_type: "picker".to_string(),
+                }],
+                selected: 0,
+                selector_start: 0,
+                selector_end: 0,
+            }),
+            show_prefix: false,
+            empty_message: "(no matches)".to_string(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 4)).unwrap();
+        terminal
+            .draw(|frame| render_picker(frame, frame.area(), &state))
+            .unwrap();
+
+        let selected = terminal.backend().buffer().cell((0, 0)).unwrap();
+        assert_eq!(selected.symbol(), "▌");
+        assert_eq!(selected.style().fg, Some(Color::LightCyan));
+        assert!(selected.style().add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            terminal.backend().buffer().cell((1, 0)).unwrap().symbol(),
+            " "
+        );
+    }
 }
