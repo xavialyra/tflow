@@ -102,6 +102,81 @@ fn explicit_capture_view_receives_typed_query_state() {
 }
 
 #[test]
+fn explicit_capture_view_receives_typed_runtime_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        show_prefix = true
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.direct]
+        type = "capture"
+        output = "{{ runtime:view.active.input }}"
+
+        [plugins.core.views.direct.query]
+        type = "object"
+        input_order = ["text"]
+        text = '''{{ state("string", "") }}'''
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &["core:direct", "--text=from-option"]);
+    let output = wait_for_text(&process.master, "from-option");
+    assert!(String::from_utf8_lossy(&output).contains("from-option"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_embedded_view_receives_typed_query_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        show_prefix = true
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.direct]
+        type = "embedded"
+        command = ["sh", "-lc", "printf 'input=%s\\n' \"$LAUNCHER_INPUT\""]
+
+        [plugins.core.views.direct.query]
+        type = "object"
+        input_order = ["text"]
+        text = '''{{ state("string", "") }}'''
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &["core:direct", "--text=from-option"]);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("input=from-option"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn explicit_embedded_view_runs_without_picker_intent() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -180,6 +255,56 @@ fn waits_for_items_before_running_enter_command() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove launcher integration config");
+}
+
+#[test]
+fn route_query_and_activate_share_one_input_batch() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+
+        [plugins.apps.views.main]
+        type = "picker"
+        alias = "app"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.apps.views.main.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+
+        [plugins.apps.views.main.commands.run.payload]
+        handler = '''printf 'route-batch:%s:%s\n' "$LAUNCHER_QUERY" "$LAUNCHER_VALUE"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write route batch integration config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"app needle\r")
+        .expect("could not write routed query and activation");
+    process
+        .master
+        .flush()
+        .expect("could not flush routed query and activation");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("route-batch:needle:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove route batch integration config");
 }
 
 #[test]
@@ -472,6 +597,53 @@ fn tab_opens_view_completion_and_escape_closes_it() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove view completion config");
+}
+
+#[test]
+fn typing_dismisses_completion_and_replays_the_character_batch() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+
+        [plugins.apps.views.main]
+        type = "picker"
+        alias = "app"
+
+        [plugins.sys.views.main]
+        type = "picker"
+        alias = "sys"
+        "#,
+    )
+    .expect("could not write completion replay config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\tsys ")
+        .expect("could not write completion replay batch");
+    process
+        .master
+        .flush()
+        .expect("could not flush completion replay batch");
+    let output = wait_for_text(&process.master, "sys:main");
+    assert!(
+        String::from_utf8_lossy(&output).contains(" sys "),
+        "output: {:?}",
+        output
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove completion replay config");
 }
 
 #[test]
@@ -776,7 +948,16 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         output
     );
 
-    drop(process);
+    process
+        .master
+        .write_all(b"\x03")
+        .expect("could not close route input launcher");
+    process
+        .master
+        .flush()
+        .expect("could not flush route input launcher close");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove route input config");
 }
 

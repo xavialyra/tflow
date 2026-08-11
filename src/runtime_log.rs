@@ -72,6 +72,15 @@ pub struct RuntimeLog {
 }
 
 impl RuntimeLog {
+    #[cfg(test)]
+    pub(crate) fn disabled() -> Self {
+        Self {
+            file: None,
+            path: None,
+            sequence: 0,
+        }
+    }
+
     pub fn open() -> std::io::Result<Self> {
         let path = log_path()?;
         if let Some(parent) = path.parent() {

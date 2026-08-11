@@ -1,36 +1,78 @@
 use super::host::EngineHost;
+use super::process::PreparedProcess;
 use super::runtime::RuntimeHandle;
 use super::task::TaskScheduler;
-use crate::config::{Config, View};
+use crate::chrome::InputBuffer;
+use crate::config::{Command, Config, View};
+use crate::input::Key;
 use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InputSeed {
+    pub(crate) raw: String,
+    pub(crate) params: String,
+    pub(crate) cursor: usize,
+}
+
+impl InputSeed {
+    pub(crate) fn new(input: impl Into<String>) -> Self {
+        let input = input.into();
+        let cursor = input.len();
+        Self {
+            raw: input.clone(),
+            params: input,
+            cursor,
+        }
+    }
+
+    pub(crate) fn routed(raw: impl Into<String>, params: impl Into<String>) -> Self {
+        let raw = raw.into();
+        let cursor = raw.len();
+        Self {
+            raw,
+            params: params.into(),
+            cursor,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ViewLocation {
+pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
-    pub(crate) input: String,
-    pub(crate) shell_input: Option<String>,
+    pub(crate) input: InputSeed,
+    pub(crate) route_child: bool,
     pub(crate) context: Value,
     pub(crate) owner_state: Option<crate::state::StateInstance>,
 }
 
-impl ViewLocation {
+impl NavigationRequest {
     pub(crate) fn new(view_ref: impl Into<String>, input: impl Into<String>) -> Self {
         Self {
             view_ref: view_ref.into(),
-            input: input.into(),
-            shell_input: None,
+            input: InputSeed::new(input),
+            route_child: false,
             context: Value::Null,
             owner_state: None,
         }
     }
 
-    pub(crate) fn with_shell_input(mut self, input: impl Into<String>) -> Self {
-        self.shell_input = Some(input.into());
-        self
+    pub(crate) fn routed(
+        view_ref: impl Into<String>,
+        raw: impl Into<String>,
+        params: impl Into<String>,
+    ) -> Self {
+        Self {
+            view_ref: view_ref.into(),
+            input: InputSeed::routed(raw, params),
+            route_child: true,
+            context: Value::Null,
+            owner_state: None,
+        }
     }
 
     pub(crate) fn with_context(mut self, context: Value) -> Self {
@@ -50,19 +92,71 @@ pub(crate) enum NavigationMode {
     Replace,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputEdit {
+    ReplaceRange {
+        start: usize,
+        end: usize,
+        replacement: String,
+        cursor: usize,
+    },
+    SetBuffer {
+        raw: String,
+        cursor: usize,
+    },
+}
+
+/// Semantic launcher actions resolved by the active engine.
+/// Editor actions are applied by the session input controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LauncherAction {
+    DeleteBackward,
+    ClearInput,
+    DeleteWord,
+    Activate,
+    MoveNext,
+    MovePrevious,
+    OpenCompletion,
+    CycleCompletionNext,
+    CycleCompletionPrevious,
+    AcceptCompletion,
+    CloseCompletion,
+    DismissCompletion,
+    Back,
+    Exit,
+    OpenCommandView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputRefreshPolicy {
+    None,
+    Debounced(Duration),
+}
+
+#[derive(Clone)]
+pub(crate) struct CommandInvocation {
+    pub(crate) id: String,
+    pub(crate) source_view: String,
+    pub(crate) command: Command,
+}
+
 pub(crate) enum ViewEffect {
     Continue,
     Navigate {
-        location: ViewLocation,
+        request: NavigationRequest,
         mode: NavigationMode,
     },
-    Back,
-    BackWithInput {
-        input: String,
-        cursor: usize,
-    },
+    Back(Option<InputEdit>),
     Exit,
     Complete(CompletionRequest),
+    RunCommand {
+        invocation: CommandInvocation,
+        prepared: PreparedProcess,
+        exit: bool,
+        return_to_parent: bool,
+    },
+    EditInput(InputEdit),
+    ReplayKey(Key),
 }
 
 #[derive(Debug, Clone)]
@@ -103,8 +197,16 @@ pub(crate) trait ViewInstance {
         Ok(())
     }
 
-    fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+    fn input_committed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
         Ok(())
+    }
+
+    fn input_refresh_policy(&self) -> InputRefreshPolicy {
+        InputRefreshPolicy::None
+    }
+
+    fn input_ready(&mut self, _host: &mut EngineHost<'_>) -> Result<ViewEffect> {
+        Ok(ViewEffect::Continue)
     }
 
     fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
@@ -112,6 +214,27 @@ pub(crate) trait ViewInstance {
     }
 
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
+
+    fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
+        None
+    }
+
+    fn captures_editor_input(&self) -> bool {
+        false
+    }
+
+    fn resolve_launcher_action(&self, _host: &EngineHost<'_>, _key: Key) -> Option<LauncherAction> {
+        None
+    }
+
+    fn handle_launcher_action(
+        &mut self,
+        _host: &mut EngineHost<'_>,
+        _action: LauncherAction,
+        _key: Key,
+    ) -> Result<ViewEffect> {
+        Ok(ViewEffect::Continue)
+    }
 
     fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         crate::chrome::EngineChrome::default()
@@ -127,7 +250,8 @@ pub(crate) trait ViewInstance {
 
 pub(crate) struct ViewContext<'a> {
     pub(crate) config: &'a Config,
-    pub(crate) location: &'a ViewLocation,
+    pub(crate) request: &'a NavigationRequest,
+    pub(crate) input: &'a InputBuffer,
     pub(crate) state: &'a StateInstance,
     pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,

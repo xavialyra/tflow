@@ -1,5 +1,3 @@
-mod command;
-mod input;
 mod items;
 mod keymap;
 mod render;
@@ -7,7 +5,8 @@ mod runtime;
 mod session;
 
 use self::keymap::PickerKeymap;
-use self::session::{PickerOptions, PickerView};
+use self::session::PickerOptions;
+pub(crate) use self::session::PickerView;
 use super::{Engine, ViewContext, ViewInstance, validate_fields};
 use crate::config::{ConfigReadContext, ConfigScope, ENGINE_PICKER, View};
 use crate::text::sanitize_terminal_text;
@@ -16,7 +15,6 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub(crate) use command::CommandInvocation;
 pub(crate) use items::Item;
 
 pub(crate) struct PickerEngine;
@@ -79,13 +77,13 @@ impl Engine for PickerEngine {
                 .map(|prompt| sanitize_terminal_text(&prompt)),
         };
         let command_owner = context
-            .location
+            .request
             .context
             .get("command_owner")
             .and_then(Value::as_str)
             .map(str::to_string);
         let parent_item = context
-            .location
+            .request
             .context
             .get("parent_item")
             .cloned()
@@ -93,10 +91,10 @@ impl Engine for PickerEngine {
             .map(serde_json::from_value)
             .transpose()?;
         let mut picker = PickerView::new(
-            &context.location.view_ref,
+            &context.request.view_ref,
             context.tasks.clone(),
             Arc::new(context.config.clone()),
-            context.location.shell_input.is_some(),
+            context.request.route_child,
             keymap,
             options,
         )
@@ -105,7 +103,7 @@ impl Engine for PickerEngine {
             command_owner.clone(),
             parent_item,
         );
-        if let (Some(owner), Some(state)) = (command_owner, context.location.owner_state.clone()) {
+        if let (Some(owner), Some(state)) = (command_owner, context.request.owner_state.clone()) {
             picker.source_states.insert(owner, state);
         }
         Ok(Box::new(picker))

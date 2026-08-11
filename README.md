@@ -327,7 +327,7 @@ selected = "{{ runtime:view.active.selected_item }}"
 stdin = "{{ input:stdin }}"
 ```
 
-The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
+The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. Handler stdout is limited to 16 MiB and stderr to 64 KiB, with a 10-second timeout. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
 
 Navigation reads one automatically evaluated request object. `target` may be a literal or an expression; `query` is the target View's initial input:
 
@@ -476,4 +476,4 @@ Top status, input, divider, content, and footer chrome are composed and rendered
 
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 
-Picker item expressions are debounced globally by 120ms and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
+Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.

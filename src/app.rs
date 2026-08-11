@@ -1,4 +1,4 @@
-use crate::engine::{AppSession, EngineRegistry, SessionOutcome, ViewLocation};
+use crate::engine::{AppSession, EngineRegistry, SessionOutcome};
 use crate::runtime_log::RuntimeLog;
 use crate::terminal::Terminal;
 use anyhow::Result;
@@ -25,12 +25,7 @@ impl<'a> App<'a> {
         view_ref: &str,
     ) -> Result<Self> {
         Ok(Self {
-            session: AppSession::single_root(
-                config,
-                runtime_log,
-                engines,
-                ViewLocation::new(view_ref, ""),
-            )?,
+            session: AppSession::single_root(config, runtime_log, engines, view_ref)?,
         })
     }
 

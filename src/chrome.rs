@@ -79,15 +79,15 @@ impl ChromeContent {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ShellInput {
+pub(crate) struct InputBuffer {
     pub(crate) raw: String,
     pub(crate) params: String,
     pub(crate) cursor: usize,
-    pub(crate) changed: bool,
     pub(crate) rejected: bool,
 }
 
-impl ShellInput {
+impl InputBuffer {
+    #[cfg(test)]
     pub(crate) fn new(raw: impl Into<String>) -> Self {
         let raw = raw.into();
         let cursor = raw.len();
@@ -95,7 +95,6 @@ impl ShellInput {
             params: raw.clone(),
             raw,
             cursor,
-            changed: false,
             rejected: false,
         }
     }
@@ -107,15 +106,8 @@ impl ShellInput {
             raw,
             params: params.into(),
             cursor,
-            changed: false,
             rejected: false,
         }
-    }
-
-    pub(crate) fn with_cursor(raw: impl Into<String>, cursor: usize) -> Self {
-        let mut input = Self::new(raw);
-        input.set_cursor(cursor);
-        input
     }
 
     pub(crate) fn set_cursor(&mut self, cursor: usize) {
@@ -1188,8 +1180,8 @@ mod tests {
     }
 
     #[test]
-    fn shell_input_edits_at_the_cursor() {
-        let mut input = ShellInput::new("ac");
+    fn input_buffer_edits_at_the_cursor() {
+        let mut input = InputBuffer::new("ac");
         input.move_left();
         input.insert('b');
         assert_eq!(input.raw, "abc");

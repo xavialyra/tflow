@@ -1,22 +1,14 @@
-use super::Item;
+use super::picker::{Item, PickerView};
 use crate::config::{
     Command, CommandAction as ConfigCommandAction, Config, ConfigReadContext, ConfigScope,
     normalize_key,
 };
-use crate::engine::{EngineHost, PreparedProcess};
+use crate::engine::{CommandInvocation, PreparedProcess};
 use crate::input::Key;
-use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
-
-#[derive(Clone)]
-pub(crate) struct CommandInvocation {
-    pub(crate) id: String,
-    pub(crate) source_view: String,
-    pub(crate) command: Command,
-}
 
 pub(crate) enum CommandAction {
     Navigate {
@@ -36,7 +28,8 @@ pub(crate) enum CommandAction {
 
 fn prepare_command(
     config: &Config,
-    driver: &super::PickerView,
+    active_view: &str,
+    query: &str,
     invocation: &CommandInvocation,
     item: Option<&Item>,
     log_file: Option<&Path>,
@@ -66,7 +59,6 @@ fn prepare_command(
     let source_view = item
         .map(|item| item.source_view.clone())
         .unwrap_or_else(|| invocation.source_view.clone());
-    let frame = driver.current();
     let plugin_root = config
         .plugin_root(&source_view)
         .map(|path| path.to_path_buf());
@@ -78,10 +70,10 @@ fn prepare_command(
             "LAUNCHER_PLUGIN".to_string(),
             package_id(&source_view).to_string(),
         ),
-        ("LAUNCHER_VIEW".to_string(), frame.view.clone()),
+        ("LAUNCHER_VIEW".to_string(), active_view.to_string()),
         ("LAUNCHER_VIEW_REF".to_string(), source_view.clone()),
         ("LAUNCHER_COMMAND".to_string(), invocation.id.clone()),
-        ("LAUNCHER_QUERY".to_string(), frame.query.clone()),
+        ("LAUNCHER_QUERY".to_string(), query.to_string()),
     ];
     if let Some(root) = &plugin_root {
         environment.push((
@@ -178,7 +170,7 @@ pub(super) fn runtime_item_value(item: &Item) -> Value {
     })
 }
 
-impl super::PickerView {
+impl PickerView {
     pub(crate) fn resolve_command(&self, config: &Config, key: Key) -> Option<CommandInvocation> {
         let frame = self.current();
         if frame.command_owner.is_some() {
@@ -252,7 +244,14 @@ impl super::PickerView {
             }
             ConfigCommandAction::Run { payload } => {
                 let exit = payload.exit;
-                let prepared = prepare_command(config, self, &invocation, item.as_ref(), log_file)?;
+                let prepared = prepare_command(
+                    config,
+                    self.current_view_ref(),
+                    &self.current().query,
+                    &invocation,
+                    item.as_ref(),
+                    log_file,
+                )?;
                 Ok(Some(CommandAction::Execute {
                     invocation,
                     prepared,
@@ -260,35 +259,5 @@ impl super::PickerView {
                 }))
             }
         }
-    }
-}
-
-pub(super) fn execute_local(
-    host: &mut EngineHost<'_>,
-    prepared: PreparedProcess,
-    terminal: &mut Terminal,
-    invocation: &CommandInvocation,
-    exit: bool,
-) -> Result<()> {
-    terminal.leave()?;
-    let status = prepared.command().status();
-    if !exit {
-        terminal.reenter()?;
-    }
-    match status {
-        Ok(status) => {
-            let message = status_message(&status);
-            host.record_command_status(invocation, &message, status.success());
-        }
-        Err(error) => host.record_error(invocation, &error.to_string()),
-    }
-    Ok(())
-}
-
-fn status_message(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(0) => "finished successfully".to_string(),
-        Some(code) => format!("finished with exit code {}", code),
-        None => "terminated by signal".to_string(),
     }
 }

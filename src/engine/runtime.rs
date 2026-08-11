@@ -54,6 +54,7 @@ impl RuntimeStore {
         self.revision
     }
 
+    #[cfg(test)]
     pub(crate) fn replace(&mut self, value: Value) -> u64 {
         self.value = value;
         self.publish_shared();
@@ -61,36 +62,25 @@ impl RuntimeStore {
         self.revision
     }
 
+    #[cfg(test)]
     pub(crate) fn set(&mut self, pointer: &str, value: Value) -> Result<u64> {
-        if pointer.is_empty() {
-            return Ok(self.replace(value));
+        self.set_many([(pointer, value)])
+    }
+
+    pub(crate) fn set_many<'a>(
+        &mut self,
+        updates: impl IntoIterator<Item = (&'a str, Value)>,
+    ) -> Result<u64> {
+        let mut value = self.value.clone();
+        let mut changed = false;
+        for (pointer, update) in updates {
+            set_pointer(&mut value, pointer, update)?;
+            changed = true;
         }
-        let (parent_pointer, key) = pointer
-            .rsplit_once('/')
-            .context("runtime JSON Pointer must identify a value")?;
-        let parent = if parent_pointer.is_empty() {
-            &mut self.value
-        } else {
-            self.value
-                .pointer_mut(parent_pointer)
-                .context("runtime JSON Pointer parent does not exist")?
-        };
-        let key = decode_json_pointer_token(key)?;
-        match parent {
-            Value::Object(object) => {
-                object.insert(key, value);
-            }
-            Value::Array(array) => {
-                let index = key
-                    .parse::<usize>()
-                    .with_context(|| format!("runtime array index {:?} is invalid", key))?;
-                let slot = array
-                    .get_mut(index)
-                    .context("runtime JSON Pointer array index does not exist")?;
-                *slot = value;
-            }
-            _ => bail!("runtime JSON Pointer parent is not a container"),
+        if !changed {
+            return Ok(self.revision);
         }
+        self.value = value;
         self.publish_shared();
         self.revision = self.revision.wrapping_add(1);
         Ok(self.revision)
@@ -103,6 +93,39 @@ impl RuntimeStore {
             .write()
             .expect("runtime handle lock was poisoned") = self.value.clone();
     }
+}
+
+fn set_pointer(root: &mut Value, pointer: &str, value: Value) -> Result<()> {
+    if pointer.is_empty() {
+        *root = value;
+        return Ok(());
+    }
+    let (parent_pointer, key) = pointer
+        .rsplit_once('/')
+        .context("runtime JSON Pointer must identify a value")?;
+    let parent = if parent_pointer.is_empty() {
+        root
+    } else {
+        root.pointer_mut(parent_pointer)
+            .context("runtime JSON Pointer parent does not exist")?
+    };
+    let key = decode_json_pointer_token(key)?;
+    match parent {
+        Value::Object(object) => {
+            object.insert(key, value);
+        }
+        Value::Array(array) => {
+            let index = key
+                .parse::<usize>()
+                .with_context(|| format!("runtime array index {:?} is invalid", key))?;
+            let slot = array
+                .get_mut(index)
+                .context("runtime JSON Pointer array index does not exist")?;
+            *slot = value;
+        }
+        _ => bail!("runtime JSON Pointer parent is not a container"),
+    }
+    Ok(())
 }
 
 fn decode_json_pointer_token(token: &str) -> Result<String> {
@@ -126,6 +149,40 @@ fn decode_json_pointer_token(token: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_many_publishes_one_atomic_revision() {
+        let mut store = RuntimeStore::new();
+        store.replace(serde_json::json!({
+            "view": {"active": {"input": "old", "query": "old"}}
+        }));
+        let revision = store.revision();
+
+        assert_eq!(
+            store
+                .set_many([
+                    ("/view/active/input", serde_json::json!("new")),
+                    ("/view/active/query", serde_json::json!("new")),
+                ])
+                .unwrap(),
+            revision + 1
+        );
+        assert_eq!(store.snapshot()["view"]["active"]["input"], "new");
+        assert_eq!(store.snapshot()["view"]["active"]["query"], "new");
+
+        let committed = store.snapshot().clone();
+        let revision = store.revision();
+        assert!(
+            store
+                .set_many([
+                    ("/view/active/input", serde_json::json!("partial")),
+                    ("/missing/value", serde_json::json!(true)),
+                ])
+                .is_err()
+        );
+        assert_eq!(store.snapshot(), &committed);
+        assert_eq!(store.revision(), revision);
+    }
 
     #[test]
     fn tracks_revisions_and_json_pointer_updates() {

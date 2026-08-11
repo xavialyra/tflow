@@ -1,5 +1,6 @@
 mod api;
 mod capture;
+mod command;
 mod embedded;
 mod evaluate;
 mod host;
@@ -11,8 +12,8 @@ mod session;
 mod task;
 
 pub(crate) use api::{
-    CompletionRequest, Engine, NavigationMode, ViewContext, ViewEffect, ViewInstance, ViewLocation,
-    ViewOutput, ViewOutputItem,
+    CommandInvocation, CompletionRequest, Engine, InputRefreshPolicy, InputSeed, NavigationMode,
+    NavigationRequest, ViewContext, ViewEffect, ViewInstance, ViewOutput, ViewOutputItem,
 };
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;

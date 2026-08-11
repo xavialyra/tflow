@@ -1,6 +1,7 @@
-use super::input::ViewCompletion;
+use super::session::ViewCompletion;
 use super::{Item, PickerView};
 use crate::config::Config;
+use crate::engine::command;
 use crate::router::ViewCandidate;
 use crate::terminal::Terminal;
 use anyhow::Result;
@@ -207,9 +208,9 @@ impl PickerView {
             return Vec::new();
         };
         let mut commands = BTreeMap::new();
-        super::command::add_view_commands(config, &mut commands, owner);
+        command::add_view_commands(config, &mut commands, owner);
         let mut commands = commands.into_iter().collect::<Vec<_>>();
-        commands.sort_by(|left, right| super::command::compare_bindings(&left.0, &right.0));
+        commands.sort_by(|left, right| command::compare_bindings(&left.0, &right.0));
         commands
     }
 
@@ -219,7 +220,7 @@ impl PickerView {
         PickerRenderState {
             items: frame.items.clone(),
             selected: frame.selected,
-            searching: frame.refresh_deadline.is_some() || frame.items_pending,
+            searching: frame.input_pending || frame.retry_requested || frame.items_pending,
             completion: self.completion.clone(),
             show_prefix,
             empty_message,

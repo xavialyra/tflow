@@ -72,24 +72,24 @@ impl Engine for EmbeddedEngine {
             anyhow::bail!("embedded command must not be empty");
         }
         let title = evaluate_optional_string(&context, "title")?
-            .unwrap_or_else(|| context.location.view_ref.clone());
+            .unwrap_or_else(|| context.request.view_ref.clone());
         let plugin = context
-            .location
+            .request
             .view_ref
             .split_once(':')
             .map(|(package, _)| package)
-            .unwrap_or(&context.location.view_ref)
+            .unwrap_or(&context.request.view_ref)
             .to_string();
         let plugin_root = context
             .config
-            .plugin_root(&context.location.view_ref)
+            .plugin_root(&context.request.view_ref)
             .map(|path| path.to_path_buf());
         let mut environment = vec![
             (
                 "LAUNCHER_VIEW_REF".to_string(),
-                context.location.view_ref.clone(),
+                context.request.view_ref.clone(),
             ),
-            ("LAUNCHER_INPUT".to_string(), context.location.input.clone()),
+            ("LAUNCHER_INPUT".to_string(), context.input.params.clone()),
             ("LAUNCHER_PLUGIN".to_string(), plugin),
         ];
         if let Some(root) = &plugin_root {
@@ -105,7 +105,7 @@ impl Engine for EmbeddedEngine {
             ));
         }
         Ok(Box::new(EmbeddedView {
-            view_ref: context.location.view_ref.clone(),
+            view_ref: context.request.view_ref.clone(),
             title: title.clone(),
             chrome: None,
             session: Some(EmbeddedSession::new(PreparedProcess {
@@ -138,7 +138,7 @@ impl ViewInstance for EmbeddedView {
         let success = matches!(outcome, EmbeddedOutcome::ReturnedToLauncher)
             || matches!(outcome, EmbeddedOutcome::Exited(0));
         host.record_view_status(&self.view_ref, &message, success);
-        Ok(ViewEffect::Back)
+        Ok(ViewEffect::Back(None))
     }
 
     fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {

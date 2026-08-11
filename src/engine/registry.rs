@@ -1,5 +1,6 @@
-use super::api::{Engine, ViewContext, ViewInstance, ViewLocation};
+use super::api::{Engine, NavigationRequest, ViewContext, ViewInstance};
 use super::runtime::RuntimeHandle;
+use crate::chrome::InputBuffer;
 use crate::config::{Config, View};
 use crate::expression::validate_json_value;
 use crate::state::StateInstance;
@@ -47,20 +48,22 @@ impl EngineRegistry {
     pub(crate) fn create_view(
         &self,
         config: &Config,
-        location: &ViewLocation,
+        request: &NavigationRequest,
+        input: &InputBuffer,
         state: &StateInstance,
         log_file: Option<&Path>,
         runtime: RuntimeHandle,
         tasks: super::TaskScheduler,
     ) -> Result<Box<dyn ViewInstance>> {
-        let engine_type = config.engine(&location.view_ref)?;
+        let engine_type = config.engine(&request.view_ref)?;
         let engine = self
             .engines
             .get(engine_type)
             .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
         engine.create_view(ViewContext {
             config,
-            location,
+            request,
+            input,
             state,
             log_file,
             runtime,

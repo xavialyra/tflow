@@ -1,15 +1,17 @@
-use super::input::{PickerInputAction, ViewCompletion};
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::PickerKeymap;
 use super::render;
-use crate::chrome::ShellInput;
+use crate::chrome::InputBuffer;
 use crate::config::Config;
+use crate::engine::api::{InputEdit, LauncherAction};
+use crate::engine::command::{self, CommandAction};
 use crate::engine::{
-    CompletionRequest, EngineHost, NavigationMode, TaskCompletion, TaskScheduler, ViewEffect,
-    ViewInstance, ViewLocation, ViewOutput, ViewOutputItem,
+    CommandInvocation, CompletionRequest, EngineHost, InputRefreshPolicy, NavigationMode,
+    NavigationRequest, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance, ViewOutput,
+    ViewOutputItem,
 };
-use crate::input::{InputDecoder, Key};
-use crate::router::Router;
+use crate::input::Key;
+use crate::router::{Router, ViewCandidate};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
@@ -19,7 +21,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const INPUT_POLL_MS: i32 = 80;
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+const INPUT_DEBOUNCE: Duration = Duration::from_millis(120);
+
+#[derive(Clone)]
+pub(crate) struct ViewCompletion {
+    pub(crate) candidates: Vec<ViewCandidate>,
+    pub(crate) selected: usize,
+    pub(crate) selector_start: usize,
+    pub(crate) selector_end: usize,
+}
 
 pub(super) struct PickerOptions {
     pub(super) show_prefix: bool,
@@ -31,7 +41,8 @@ pub(crate) struct PickerFrame {
     pub(crate) items: Vec<Item>,
     pub(crate) selected: usize,
     pub(crate) query: String,
-    pub(crate) refresh_deadline: Option<Instant>,
+    pub(crate) input_pending: bool,
+    pub(crate) retry_requested: bool,
     pub(crate) requested_input: String,
     pub(crate) results_input: String,
     pub(crate) items_pending: bool,
@@ -47,7 +58,8 @@ impl PickerFrame {
             items: Vec::new(),
             selected: 0,
             query: String::new(),
-            refresh_deadline: None,
+            input_pending: false,
+            retry_requested: false,
             requested_input: String::new(),
             results_input: String::new(),
             items_pending: false,
@@ -64,11 +76,9 @@ pub(crate) struct PickerView {
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
-    pub(super) source_states: BTreeMap<String, crate::state::StateInstance>,
+    pub(crate) source_states: BTreeMap<String, crate::state::StateInstance>,
     options: PickerOptions,
-    feedback: Option<String>,
     log_file: Option<PathBuf>,
-    decoder: InputDecoder,
     started: bool,
     route_child: bool,
     parent_item: Option<Item>,
@@ -94,9 +104,7 @@ impl PickerView {
             requested_view: String::new(),
             source_states: BTreeMap::new(),
             options,
-            feedback: None,
             log_file: None,
-            decoder: InputDecoder::default(),
             started: false,
             route_child,
             parent_item: None,
@@ -130,21 +138,20 @@ impl PickerView {
         (self.options.show_prefix, "(no matches)".to_string())
     }
 
-    pub(crate) fn schedule_refresh(&mut self) {
-        self.frame.refresh_deadline = Some(Instant::now() + SEARCH_DEBOUNCE);
+    pub(crate) fn schedule_retry(&mut self) {
+        if self.frame.input_pending {
+            self.frame.retry_requested = false;
+            return;
+        }
+        self.frame.retry_requested = true;
         self.frame.pending_command = None;
         self.frame.pending_selection = 0;
     }
 
-    pub(crate) fn refresh_due(&self) -> bool {
-        self.frame
-            .refresh_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-    }
-
     pub(crate) fn results_current(&self, input: &str) -> bool {
-        !self.frame.items_pending
-            && self.frame.refresh_deadline.is_none()
+        !self.frame.input_pending
+            && !self.frame.retry_requested
+            && !self.frame.items_pending
             && self.frame.results_input == input
     }
 
@@ -182,7 +189,7 @@ impl PickerView {
         self.completion = None;
     }
 
-    pub(super) fn open_completion(&mut self, input: &ShellInput) {
+    pub(super) fn open_completion(&mut self, input: &InputBuffer) {
         let selector_end = input
             .raw
             .find(char::is_whitespace)
@@ -209,14 +216,16 @@ impl PickerView {
             ((completion.selected as isize + direction).rem_euclid(count)) as usize;
     }
 
-    pub(super) fn accept_completion(&mut self, input: &mut ShellInput) -> bool {
-        let Some(completion) = self.completion.take() else {
-            return false;
-        };
-        apply_view_completion(input, &completion)
+    pub(super) fn accept_completion(&mut self, input: &InputBuffer) -> Option<InputEdit> {
+        let completion = self.completion.take()?;
+        view_completion_edit(input, &completion)
     }
 
     fn request_current(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
+        if host.input.rejected {
+            return Ok(None);
+        }
+        self.frame.input_pending = false;
         if self.frame.command_owner.is_some() {
             self.refresh_command_view(host)?;
             return Ok(None);
@@ -225,7 +234,7 @@ impl PickerView {
         let current_view = self.frame.view.clone();
         let current_input = host.input.raw.clone();
         let query = host.input.params.clone();
-        self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
+        self.publish_runtime(host.config, host.runtime)?;
         let source_states = self.source_states(host)?;
         self.request_items(&current_view, &current_input, &query, source_states);
         Ok(None)
@@ -234,7 +243,7 @@ impl PickerView {
     fn refresh_command_view(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let input = host.input.raw.clone();
         let owner_name = self.frame.command_owner.clone().unwrap_or_default();
-        self.publish_runtime(host.config, host.runtime, &input, &input)?;
+        self.publish_runtime(host.config, host.runtime)?;
         let commands = host
             .runtime
             .snapshot()
@@ -257,7 +266,7 @@ impl PickerView {
             .filter(|item| matches_query(&item.text, &input))
             .collect::<Vec<_>>();
         items.sort_by(|left, right| {
-            super::command::compare_bindings(
+            command::compare_bindings(
                 left.value.as_deref().unwrap_or_default(),
                 right.value.as_deref().unwrap_or_default(),
             )
@@ -271,7 +280,8 @@ impl PickerView {
         self.frame.requested_input = input.clone();
         self.frame.results_input = input;
         self.frame.items_pending = false;
-        self.frame.refresh_deadline = None;
+        self.frame.input_pending = false;
+        self.frame.retry_requested = false;
         Ok(())
     }
 
@@ -310,7 +320,7 @@ impl PickerView {
         self.requested_view = view.to_string();
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
-        self.frame.refresh_deadline = None;
+        self.frame.retry_requested = false;
         self.items_task = Some(submit_items_task(
             &self.tasks,
             &self.config,
@@ -350,20 +360,20 @@ impl PickerView {
         };
         if !task_response.is_current() {
             self.frame.items_pending = false;
-            self.schedule_refresh();
+            self.schedule_retry();
             return events;
         }
         let response = match task_response.into_completion() {
             TaskCompletion::Completed(response) => response,
             TaskCompletion::Cancelled => {
                 self.frame.items_pending = false;
-                self.schedule_refresh();
+                self.schedule_retry();
                 return events;
             }
         };
         if response.view != self.frame.view || response.input != input {
             self.frame.items_pending = false;
-            self.schedule_refresh();
+            self.schedule_retry();
             return events;
         }
         let view = response.view;
@@ -420,7 +430,7 @@ impl PickerView {
             "parent_item": parent_item,
         });
         Ok(ViewEffect::Navigate {
-            location: ViewLocation::new(command_view_ref, "")
+            request: NavigationRequest::new(command_view_ref, "")
                 .with_context(context)
                 .with_owner_state(owner_state),
             mode: NavigationMode::Push,
@@ -430,7 +440,6 @@ impl PickerView {
     fn handle_command_key(
         &mut self,
         host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
         key: Key,
     ) -> Result<Option<ViewEffect>> {
         if self.command_view_active() && !matches!(key, Key::Enter) {
@@ -441,10 +450,6 @@ impl PickerView {
         }
         let current_input = host.input.raw.clone();
         if !self.results_current(&current_input) {
-            if host.input.changed {
-                self.queue_pending_command(key);
-                return Ok(Some(ViewEffect::Continue));
-            }
             if self.command_view_active() {
                 self.request_current(host)?;
             } else {
@@ -454,8 +459,7 @@ impl PickerView {
             }
         }
 
-        let query = self.frame.query.clone();
-        self.publish_runtime(host.config, host.runtime, &current_input, &query)?;
+        self.publish_runtime(host.config, host.runtime)?;
         let Some(action) = self.prepare_command_action(
             host.config,
             host.state,
@@ -471,63 +475,43 @@ impl PickerView {
         };
         let command_view = self.command_view_active();
         match action {
-            super::command::CommandAction::Navigate { target, input } => {
-                Ok(Some(ViewEffect::Navigate {
-                    location: ViewLocation::new(target, input),
-                    mode: if command_view {
-                        NavigationMode::Replace
-                    } else {
-                        NavigationMode::Push
-                    },
-                }))
-            }
-            super::command::CommandAction::Complete { invocation, state } => Ok(self
-                .complete_selection(
-                    &host.input.raw.clone(),
-                    invocation,
-                    state,
-                    host.runtime.snapshot().clone(),
-                )),
-            super::command::CommandAction::Execute {
+            CommandAction::Navigate { target, input } => Ok(Some(ViewEffect::Navigate {
+                request: NavigationRequest::new(target, input),
+                mode: if command_view {
+                    NavigationMode::Replace
+                } else {
+                    NavigationMode::Push
+                },
+            })),
+            CommandAction::Complete { invocation, state } => Ok(self.complete_selection(
+                &host.input.raw.clone(),
+                invocation,
+                state,
+                host.runtime.snapshot().clone(),
+            )),
+            CommandAction::Execute {
                 invocation,
                 prepared,
                 exit,
-            } => {
-                super::command::execute_local(host, prepared, terminal, &invocation, exit)?;
-                if exit {
-                    Ok(Some(ViewEffect::Exit))
-                } else if command_view {
-                    Ok(Some(ViewEffect::Back))
-                } else {
-                    Ok(Some(ViewEffect::Continue))
-                }
-            }
+            } => Ok(Some(ViewEffect::RunCommand {
+                invocation,
+                prepared,
+                exit,
+                return_to_parent: command_view,
+            })),
         }
     }
 
     fn input_timeout(&self, host: &EngineHost<'_>) -> i32 {
-        let now = Instant::now();
-        let refresh_remaining = self
-            .frame
-            .refresh_deadline
-            .map(|deadline| deadline.saturating_duration_since(now));
-        let error_remaining =
-            (*host.active_error_deadline).map(|deadline| deadline.saturating_duration_since(now));
-        [refresh_remaining, error_remaining]
-            .into_iter()
-            .flatten()
-            .min()
+        (*host.active_error_deadline)
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|| Duration::from_millis(INPUT_POLL_MS as u64))
             .as_millis()
             .min(INPUT_POLL_MS as u128)
             .max(1) as i32
     }
 
-    fn handle_events(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
-    ) -> Result<Option<ViewEffect>> {
+    fn handle_events(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
         let input = host.input.raw.clone();
         for event in self.collect_items(&input) {
             if !event.current {
@@ -561,16 +545,12 @@ impl PickerView {
             }
 
             if let Some(key) = event.pending_command
-                && let Some(effect) = self.activate_item(host, terminal, key)?
+                && let Some(effect) = self.activate_item(host, key)?
             {
                 return Ok(Some(effect));
             }
         }
         Ok(None)
-    }
-
-    fn clear_feedback(&mut self) {
-        self.feedback = None;
     }
 
     fn move_selection(&mut self, direction: isize) {
@@ -587,7 +567,10 @@ impl PickerView {
     }
 
     fn select_item(&mut self, host: &mut EngineHost<'_>, direction: isize) -> Result<()> {
-        self.clear_feedback();
+        if host.input.rejected {
+            self.move_selection(direction);
+            return Ok(());
+        }
         host.clear_error();
         let input = host.input.raw.clone();
         if !self.results_current(&input) {
@@ -602,7 +585,7 @@ impl PickerView {
     fn complete_selection(
         &mut self,
         input: &str,
-        invocation: super::command::CommandInvocation,
+        invocation: CommandInvocation,
         state: crate::state::StateInstance,
         runtime: serde_json::Value,
     ) -> Option<ViewEffect> {
@@ -628,92 +611,84 @@ impl PickerView {
                 },
             }));
         }
-        self.feedback = Some("no matching item".to_string());
         None
     }
 
-    fn input_edited(&mut self, host: &mut EngineHost<'_>, refresh: &mut bool) -> Result<()> {
-        self.clear_feedback();
-        host.clear_error();
-        host.input.rejected = false;
-        self.frame.pending_command = None;
-        self.frame.pending_selection = 0;
-        if !self.route_child && host.config.has_query(self.current_view_ref()) {
-            host.input.params = host.input.raw.clone();
-            let view_ref = self.current_view_ref().to_string();
-            host.sync_query_state(&view_ref)?;
-        }
-        *refresh = !host.input.rejected;
-        Ok(())
-    }
-
-    fn activate_item(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
-        key: Key,
-    ) -> Result<Option<ViewEffect>> {
-        self.handle_command_key(host, terminal, key)
+    fn activate_item(&mut self, host: &mut EngineHost<'_>, key: Key) -> Result<Option<ViewEffect>> {
+        self.handle_command_key(host, key)
     }
 }
 
-fn apply_view_completion(input: &mut ShellInput, completion: &ViewCompletion) -> bool {
-    let Some(candidate) = completion.candidates.get(completion.selected) else {
-        return false;
-    };
-    let old_cursor = input.cursor;
+fn view_completion_edit(input: &InputBuffer, completion: &ViewCompletion) -> Option<InputEdit> {
+    let candidate = completion.candidates.get(completion.selected)?;
     let old_length = completion.selector_end - completion.selector_start;
     let mut replacement = candidate.view_ref.clone();
     if completion.selector_end == input.raw.len() {
         replacement.push(' ');
     }
-    input.replace_range(
-        completion.selector_start,
-        completion.selector_end,
-        &replacement,
-    );
-    if old_cursor > completion.selector_end {
-        let new_cursor = if replacement.len() >= old_length {
-            old_cursor + replacement.len() - old_length
+    let cursor = if input.cursor > completion.selector_end {
+        if replacement.len() >= old_length {
+            input.cursor + replacement.len() - old_length
         } else {
-            old_cursor.saturating_sub(old_length - replacement.len())
-        };
-        input.set_cursor(new_cursor);
-    }
-    true
+            input.cursor.saturating_sub(old_length - replacement.len())
+        }
+    } else {
+        completion.selector_start + replacement.len()
+    };
+    Some(InputEdit::ReplaceRange {
+        start: completion.selector_start,
+        end: completion.selector_end,
+        replacement,
+        cursor,
+    })
 }
 
 impl ViewInstance for PickerView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
-        let query = self.frame.query.clone();
-        self.publish_runtime(host.config, host.runtime, &host.input.raw, &query)
+        self.publish_runtime(host.config, host.runtime)
     }
 
     fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         self.close_completion();
-        self.clear_feedback();
         let input = host.input.raw.clone();
         self.items_task.take();
-        self.frame.refresh_deadline = None;
+        self.frame.input_pending = false;
+        self.frame.retry_requested = false;
         self.frame.items_pending = false;
         self.frame.pending_command = None;
         self.frame.pending_selection = 0;
-        self.frame.requested_input = input.clone();
-        self.frame.results_input = input;
+        if self.frame.results_input != input {
+            self.request_current(host)?;
+        }
         Ok(())
     }
 
-    fn input_changed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
-        self.close_completion();
-        self.clear_feedback();
-        self.schedule_refresh();
+    fn input_committed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+        self.frame.input_pending = true;
+        self.frame.pending_command = None;
+        self.frame.pending_selection = 0;
         Ok(())
+    }
+
+    fn input_refresh_policy(&self) -> InputRefreshPolicy {
+        InputRefreshPolicy::Debounced(INPUT_DEBOUNCE)
+    }
+
+    fn input_ready(&mut self, host: &mut EngineHost<'_>) -> Result<ViewEffect> {
+        self.frame.input_pending = false;
+        if !self.results_current(&host.input.raw)
+            && let Some(effect) = self.request_current(host)?
+        {
+            return Ok(effect);
+        }
+        Ok(ViewEffect::Continue)
     }
 
     fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
         self.close_completion();
         self.items_task.take();
-        self.frame.refresh_deadline = None;
+        self.frame.input_pending = false;
+        self.frame.retry_requested = false;
         self.frame.items_pending = false;
         self.frame.pending_command = None;
         self.frame.pending_selection = 0;
@@ -724,12 +699,12 @@ impl ViewInstance for PickerView {
         self.close_completion();
         if self.items_task.take().is_some() {
             self.frame.items_pending = false;
-            self.schedule_refresh();
+            self.schedule_retry();
         }
         Ok(())
     }
 
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+    fn step(&mut self, host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
         if !self.started {
             self.started = true;
             if let Some(effect) = self.request_current(host)? {
@@ -737,60 +712,103 @@ impl ViewInstance for PickerView {
             }
         }
 
-        if let Some(effect) = self.handle_events(host, terminal)? {
+        if let Some(effect) = self.handle_events(host)? {
             return Ok(effect);
         }
-        if self.refresh_due()
+        if self.frame.retry_requested
             && let Some(effect) = self.request_current(host)?
         {
             return Ok(effect);
         }
+        Ok(ViewEffect::Continue)
+    }
 
-        let bytes = terminal.read_input(self.input_timeout(host))?;
-        let mut keys = self.decoder.feed(&bytes);
-        keys.extend(self.decoder.flush_due());
-        let mut refresh = false;
-        for key in keys {
-            let command_available = self.resolve_command(host.config, key).is_some();
-            let nested_input = self.route_child || self.command_view_active();
-            let action = self.handle_input(
-                key,
-                &host.config.command_view,
-                command_available,
-                host.input,
-                nested_input,
-            );
-            match action {
-                PickerInputAction::Continue => {}
-                PickerInputAction::Refresh => self.input_edited(host, &mut refresh)?,
-                PickerInputAction::Select(direction) => self.select_item(host, direction)?,
-                PickerInputAction::OpenCompletion => self.open_completion(host.input),
-                PickerInputAction::CycleCompletion(direction) => self.cycle_completion(direction),
-                PickerInputAction::AcceptCompletion => {
-                    if self.accept_completion(host.input) {
-                        self.input_edited(host, &mut refresh)?;
-                    }
-                }
-                PickerInputAction::CloseCompletion => self.close_completion(),
-                PickerInputAction::Activate(key) => {
-                    if let Some(effect) = self.activate_item(host, terminal, key)? {
-                        return Ok(effect);
-                    }
-                }
-                PickerInputAction::OpenCommandView => {
-                    return self.open_command_view(host);
-                }
-                PickerInputAction::Back => return Ok(ViewEffect::Back),
-                PickerInputAction::Exit => return Ok(ViewEffect::Exit),
-            }
+    fn launcher_input_timeout(&self, host: &EngineHost<'_>) -> Option<i32> {
+        Some(self.input_timeout(host))
+    }
+
+    fn captures_editor_input(&self) -> bool {
+        self.completion_active()
+    }
+
+    fn resolve_launcher_action(&self, host: &EngineHost<'_>, key: Key) -> Option<LauncherAction> {
+        if self.completion_active() {
+            return Some(match key {
+                Key::Escape => LauncherAction::CloseCompletion,
+                Key::Enter => LauncherAction::AcceptCompletion,
+                Key::Tab | Key::Down => LauncherAction::CycleCompletionNext,
+                Key::BackTab | Key::Up => LauncherAction::CycleCompletionPrevious,
+                _ => LauncherAction::DismissCompletion,
+            });
         }
-        if refresh {
-            host.input.changed = true;
-            host.input.rejected = false;
-            host.clear_error();
-            if self.frame.pending_command.is_none() && self.frame.pending_selection == 0 {
-                self.schedule_refresh();
+        match self.keymap.action(key) {
+            Some(super::keymap::PickerAction::Exit) => Some(LauncherAction::Exit),
+            Some(super::keymap::PickerAction::OpenCommands)
+                if self.current().view != host.config.command_view =>
+            {
+                Some(LauncherAction::OpenCommandView)
             }
+            Some(super::keymap::PickerAction::OpenCompletion) => {
+                Some(LauncherAction::OpenCompletion)
+            }
+            Some(super::keymap::PickerAction::Back)
+                if self.route_child || self.command_view_active() || host.input.raw.is_empty() =>
+            {
+                Some(LauncherAction::Back)
+            }
+            Some(super::keymap::PickerAction::Back) => Some(LauncherAction::ClearInput),
+            Some(super::keymap::PickerAction::DeleteBackward) => {
+                Some(LauncherAction::DeleteBackward)
+            }
+            Some(super::keymap::PickerAction::ClearInput) => Some(LauncherAction::ClearInput),
+            Some(super::keymap::PickerAction::DeleteWord) => Some(LauncherAction::DeleteWord),
+            Some(super::keymap::PickerAction::SelectPrevious) => Some(LauncherAction::MovePrevious),
+            Some(super::keymap::PickerAction::SelectNext) => Some(LauncherAction::MoveNext),
+            Some(super::keymap::PickerAction::Activate) => Some(LauncherAction::Activate),
+            None if self.resolve_command(host.config, key).is_some()
+                && self.current().command_owner.is_none() =>
+            {
+                Some(LauncherAction::Activate)
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_launcher_action(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        action: LauncherAction,
+        key: Key,
+    ) -> Result<ViewEffect> {
+        match action {
+            LauncherAction::DeleteBackward
+            | LauncherAction::ClearInput
+            | LauncherAction::DeleteWord => {
+                unreachable!("session-owned editor action reached picker")
+            }
+            LauncherAction::MoveNext => self.select_item(host, 1)?,
+            LauncherAction::MovePrevious => self.select_item(host, -1)?,
+            LauncherAction::OpenCompletion => self.open_completion(host.input),
+            LauncherAction::CycleCompletionNext => self.cycle_completion(1),
+            LauncherAction::CycleCompletionPrevious => self.cycle_completion(-1),
+            LauncherAction::AcceptCompletion => {
+                if let Some(edit) = self.accept_completion(host.input) {
+                    return Ok(ViewEffect::EditInput(edit));
+                }
+            }
+            LauncherAction::CloseCompletion => self.close_completion(),
+            LauncherAction::DismissCompletion => {
+                self.close_completion();
+                return Ok(ViewEffect::ReplayKey(key));
+            }
+            LauncherAction::Activate => {
+                if let Some(effect) = self.activate_item(host, key)? {
+                    return Ok(effect);
+                }
+            }
+            LauncherAction::OpenCommandView => return self.open_command_view(host),
+            LauncherAction::Back => return Ok(ViewEffect::Back(None)),
+            LauncherAction::Exit => return Ok(ViewEffect::Exit),
         }
         Ok(ViewEffect::Continue)
     }
@@ -886,7 +904,7 @@ mod tests {
 
     #[test]
     fn completion_preserves_cursor_in_the_query() {
-        let mut input = ShellInput::new("app query");
+        let input = InputBuffer::new("app query");
         let completion = ViewCompletion {
             candidates: vec![candidate()],
             selected: 0,
@@ -894,14 +912,20 @@ mod tests {
             selector_end: 3,
         };
 
-        assert!(apply_view_completion(&mut input, &completion));
-        assert_eq!(input.raw, "apps:main query");
-        assert_eq!(input.cursor, input.raw.len());
+        assert_eq!(
+            view_completion_edit(&input, &completion),
+            Some(InputEdit::ReplaceRange {
+                start: 0,
+                end: 3,
+                replacement: "apps:main".to_string(),
+                cursor: "apps:main query".len(),
+            })
+        );
     }
 
     #[test]
     fn completion_appends_a_route_separator_at_the_end_of_input() {
-        let mut input = ShellInput::new("app");
+        let input = InputBuffer::new("app");
         let completion = ViewCompletion {
             candidates: vec![candidate()],
             selected: 0,
@@ -909,14 +933,20 @@ mod tests {
             selector_end: 3,
         };
 
-        assert!(apply_view_completion(&mut input, &completion));
-        assert_eq!(input.raw, "apps:main ");
-        assert_eq!(input.cursor, input.raw.len());
+        assert_eq!(
+            view_completion_edit(&input, &completion),
+            Some(InputEdit::ReplaceRange {
+                start: 0,
+                end: 3,
+                replacement: "apps:main ".to_string(),
+                cursor: "apps:main ".len(),
+            })
+        );
     }
 
     #[test]
     fn completion_places_cursor_after_a_selector_edited_in_place() {
-        let mut input = ShellInput::new("ap query");
+        let mut input = InputBuffer::new("ap query");
         input.set_cursor(2);
         let completion = ViewCompletion {
             candidates: vec![candidate()],
@@ -925,8 +955,14 @@ mod tests {
             selector_end: 2,
         };
 
-        assert!(apply_view_completion(&mut input, &completion));
-        assert_eq!(input.raw, "apps:main query");
-        assert_eq!(input.cursor, "apps:main".len());
+        assert_eq!(
+            view_completion_edit(&input, &completion),
+            Some(InputEdit::ReplaceRange {
+                start: 0,
+                end: 2,
+                replacement: "apps:main".to_string(),
+                cursor: "apps:main".len(),
+            })
+        );
     }
 }

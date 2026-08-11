@@ -35,7 +35,7 @@ impl Engine for CaptureEngine {
     }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
-        let default_title = context.location.view_ref.clone();
+        let default_title = context.request.view_ref.clone();
         let evaluated = (|| {
             let title = evaluate_optional_string(&context, "title")?
                 .unwrap_or_else(|| default_title.clone());
@@ -56,7 +56,7 @@ impl Engine for CaptureEngine {
             ),
         };
         Ok(Box::new(CaptureView {
-            view_ref: context.location.view_ref.clone(),
+            view_ref: context.request.view_ref.clone(),
             session: CaptureSession::new(&title, &output, &status),
             status,
             success,
@@ -80,7 +80,7 @@ impl ViewInstance for CaptureView {
             host.record_view_status(&self.view_ref, &self.status, self.success);
         }
         if self.session.return_requested(terminal)? {
-            Ok(ViewEffect::Back)
+            Ok(ViewEffect::Back(None))
         } else {
             Ok(ViewEffect::Continue)
         }

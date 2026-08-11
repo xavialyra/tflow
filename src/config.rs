@@ -230,10 +230,6 @@ impl Config {
         }
     }
 
-    pub(crate) fn has_query(&self, view_ref: &str) -> bool {
-        self.state_registry.has_query(view_ref)
-    }
-
     pub(crate) fn render_query_input(&self, state: &StateInstance) -> Result<String> {
         self.state_registry.render_input(state)
     }

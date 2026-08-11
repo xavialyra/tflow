@@ -1,6 +1,6 @@
 use super::PickerView;
 use crate::config::Config;
-use crate::engine::RuntimeStore;
+use crate::engine::{RuntimeStore, command};
 use anyhow::Result;
 
 impl PickerView {
@@ -8,8 +8,6 @@ impl PickerView {
         &self,
         config: &Config,
         runtime: &mut RuntimeStore,
-        raw_input: &str,
-        query: &str,
     ) -> Result<()> {
         let frame = self.current();
         let owner = self.command_owner().map(str::to_string);
@@ -19,7 +17,7 @@ impl PickerView {
             .map(|(owner, view)| {
                 view.commands
                     .iter()
-                    .map(|(id, command)| super::command::runtime_command_value(owner, id, command))
+                    .map(|(id, command)| command::runtime_command_value(owner, id, command))
                     .collect::<Result<Vec<_>>>()
             })
             .transpose()?
@@ -27,46 +25,33 @@ impl PickerView {
         let items = frame
             .items
             .iter()
-            .map(super::command::runtime_item_value)
+            .map(command::runtime_item_value)
             .collect::<Vec<_>>();
         let selected_item = if frame.command_owner.is_some() {
-            self.command_parent_item()
-                .map(super::command::runtime_item_value)
+            self.command_parent_item().map(command::runtime_item_value)
         } else {
             frame
                 .items
                 .get(frame.selected)
-                .map(super::command::runtime_item_value)
+                .map(command::runtime_item_value)
         };
         let log_file = self
             .log_file()
             .map(|path| path.to_string_lossy().to_string());
-        runtime.set(
-            "/view",
-            serde_json::json!({
-                "active": {
-                    "ref": frame.view,
-                    "input": query,
-                    "raw_input": raw_input,
-                    "query": query,
-                    "request": {
-                        "input": query,
-                        "raw_input": raw_input,
-                        "query": query,
-                    },
-                    "log_file": log_file,
-                    "selected_index": frame.selected,
-                    "selected_item": selected_item,
-                    "items": items,
-                    "command": commands,
-                    "command_owner": owner,
-                }
-            }),
-        )?;
-        runtime.set(
-            "/session",
-            serde_json::json!({"input": {"raw": raw_input, "params": query}}),
-        )?;
+        runtime.set_many([
+            ("/view/active/log_file", serde_json::json!(log_file)),
+            (
+                "/view/active/selected_index",
+                serde_json::json!(frame.selected),
+            ),
+            (
+                "/view/active/selected_item",
+                serde_json::json!(selected_item),
+            ),
+            ("/view/active/items", serde_json::json!(items)),
+            ("/view/active/command", serde_json::json!(commands)),
+            ("/view/active/command_owner", serde_json::json!(owner)),
+        ])?;
         Ok(())
     }
 }

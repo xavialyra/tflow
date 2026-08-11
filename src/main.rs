@@ -102,7 +102,7 @@ fn main() -> Result<()> {
         leave_result?;
         Ok(outcome)
     })?;
-    let result = invocation::finish(&config, &root_view, outcome, input.length())?;
+    let result = invocation::finish(&config, &root_view, outcome)?;
 
     let mut stderr = io::stderr().lock();
     stderr

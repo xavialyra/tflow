@@ -15,6 +15,7 @@ use std::time::Duration;
 
 static INPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(10);
+const RESULT_STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 const RESULT_STDERR_LIMIT: usize = 64 * 1024;
 
 pub(crate) struct InputArtifact {
@@ -58,10 +59,6 @@ impl InputArtifact {
         self.is_tty
     }
 
-    pub(crate) fn length(&self) -> u64 {
-        self.length
-    }
-
     pub(crate) fn value(&self) -> Value {
         serde_json::json!({
             "stdin": {
@@ -86,7 +83,6 @@ pub(crate) fn finish(
     config: &Config,
     root_view: &str,
     outcome: SessionOutcome,
-    input_length: u64,
 ) -> Result<InvocationResult> {
     let SessionOutcome::Completed(completion) = outcome else {
         let exit_code = config
@@ -151,14 +147,11 @@ pub(crate) fn finish(
     let input = serde_json::to_vec(&params).context("could not serialize completion params")?;
     let mut command = Command::new("sh");
     command.arg(&handler).current_dir(plugin_root);
-    let stdout_limit = usize::try_from(input_length)
-        .unwrap_or(usize::MAX)
-        .saturating_add(1024 * 1024);
     let output = run_bounded_command_with_stdin(
         command,
         Some(&input),
         RESULT_TIMEOUT,
-        stdout_limit,
+        RESULT_STDOUT_LIMIT,
         RESULT_STDERR_LIMIT,
         &CancellationToken::new(),
     )

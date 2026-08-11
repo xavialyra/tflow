@@ -186,13 +186,6 @@ impl StateRegistry {
         })
     }
 
-    pub(crate) fn has_query(&self, view_ref: &str) -> bool {
-        self.views
-            .get(view_ref)
-            .and_then(|schema| schema.query.as_ref())
-            .is_some()
-    }
-
     pub(crate) fn bind_cli(&self, view_ref: &str, arguments: &[String]) -> Result<StateInstance> {
         let mut state = self.instantiate(view_ref)?;
         let schema = self.schema_for(view_ref, &state)?;
