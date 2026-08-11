@@ -10,6 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(40);
+const MAX_QUERY_SEQUENCE_LEN: usize = 4096;
+const PRIMARY_DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?6c";
 
 #[derive(Debug, Clone, Copy)]
 pub enum EmbeddedOutcome {
@@ -121,6 +123,7 @@ fn relay(
     layout: crate::chrome::ChromeLayout,
 ) -> Result<EmbeddedOutcome> {
     let mut input = InputRelay::default();
+    let mut responder = TerminalResponder::default();
     let mut screen = EmbeddedTerminal::new(last_size.0, last_size.1);
     render_embedded(terminal, chrome, &screen)?;
 
@@ -130,7 +133,7 @@ fn relay(
             return Ok(EmbeddedOutcome::ReturnedToLauncher);
         }
         if let Some(status) = wait_status(pid, true)? {
-            drain_output(master, &mut screen, terminal, chrome)?;
+            drain_output(master, &mut responder, &mut screen, terminal, chrome)?;
             return Ok(decode_status(status));
         }
 
@@ -173,7 +176,7 @@ fn relay(
         }
 
         if descriptors[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-            && drain_output(master, &mut screen, terminal, chrome)?
+            && drain_output(master, &mut responder, &mut screen, terminal, chrome)?
             && let Some(status) = wait_status(pid, true)?
         {
             return Ok(decode_status(status));
@@ -265,6 +268,7 @@ fn escape_sequence_end(bytes: &[u8]) -> Option<usize> {
 
 fn drain_output(
     master: RawFd,
+    responder: &mut TerminalResponder,
     screen: &mut EmbeddedTerminal,
     terminal: &mut Terminal,
     chrome: &crate::chrome::ChromeFrame,
@@ -290,7 +294,11 @@ fn drain_output(
             reached_eof = true;
             break;
         }
-        screen.feed(&buffer[..count as usize]);
+        let output = &buffer[..count as usize];
+        for _ in 0..responder.primary_device_attribute_queries(output) {
+            write_fd(master, PRIMARY_DEVICE_ATTRIBUTES)?;
+        }
+        screen.feed(output);
         render_embedded(terminal, chrome, screen)?;
     }
     Ok(reached_eof)
@@ -313,6 +321,49 @@ fn render_embedded(
     screen: &EmbeddedTerminal,
 ) -> Result<()> {
     chrome.render_embedded(terminal, screen)
+}
+
+#[derive(Default)]
+struct TerminalResponder {
+    state: TerminalQueryState,
+}
+
+#[derive(Default)]
+enum TerminalQueryState {
+    #[default]
+    Ground,
+    Escape,
+    Csi(Vec<u8>),
+}
+
+impl TerminalResponder {
+    fn primary_device_attribute_queries(&mut self, input: &[u8]) -> usize {
+        let mut queries = 0;
+        for &byte in input {
+            match &mut self.state {
+                TerminalQueryState::Ground if byte == 0x1b => {
+                    self.state = TerminalQueryState::Escape;
+                }
+                TerminalQueryState::Ground => {}
+                TerminalQueryState::Escape if byte == b'[' => {
+                    self.state = TerminalQueryState::Csi(Vec::new());
+                }
+                TerminalQueryState::Escape => self.state = TerminalQueryState::Ground,
+                TerminalQueryState::Csi(sequence) => {
+                    sequence.push(byte);
+                    if (0x40..=0x7e).contains(&byte) {
+                        if byte == b'c' && matches!(sequence.as_slice(), [b'c'] | [b'0', b'c']) {
+                            queries += 1;
+                        }
+                        self.state = TerminalQueryState::Ground;
+                    } else if sequence.len() >= MAX_QUERY_SEQUENCE_LEN {
+                        self.state = TerminalQueryState::Ground;
+                    }
+                }
+            }
+        }
+        queries
+    }
 }
 
 fn write_fd(fd: RawFd, bytes: &[u8]) -> Result<()> {
@@ -411,5 +462,24 @@ fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
         EmbeddedOutcome::Signaled(libc::WTERMSIG(status))
     } else {
         EmbeddedOutcome::Signaled(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalResponder;
+
+    #[test]
+    fn responds_to_primary_device_attributes_across_pty_read_boundaries() {
+        let mut responder = TerminalResponder::default();
+        assert_eq!(responder.primary_device_attribute_queries(b"\x1b["), 0);
+        assert_eq!(responder.primary_device_attribute_queries(b"0c"), 1);
+    }
+
+    #[test]
+    fn ignores_non_primary_device_attribute_sequences() {
+        let mut responder = TerminalResponder::default();
+        assert_eq!(responder.primary_device_attribute_queries(b"\x1b[?6c"), 0);
+        assert_eq!(responder.primary_device_attribute_queries(b"\x1b[>0c"), 0);
     }
 }
