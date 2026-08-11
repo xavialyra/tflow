@@ -191,7 +191,7 @@ command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
 title = "Shell"
 ```
 
-The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation always supplies a view path and an input string; the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
+The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation supplies a view path and may provide an input string; when it does, the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
 
 Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not configurable View fields.
 
@@ -329,7 +329,7 @@ stdin = "{{ input:stdin }}"
 
 The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. Handler stdout is limited to 16 MiB and stderr to 64 KiB, with a 10-second timeout. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
 
-Navigation reads one automatically evaluated request object. `target` may be a literal or an expression; `query` is the target View's initial input:
+Navigation reads one automatically evaluated request object. `target` may be a literal or an expression; `query` is the target View's initial input. Omitting `query`, or evaluating it to `null`, keeps the target View's state defaults, while an explicit empty string clears its editable query:
 
 ```toml
 [views.main.commands.inspect]

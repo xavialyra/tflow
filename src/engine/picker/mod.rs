@@ -1,3 +1,4 @@
+mod command;
 mod items;
 mod keymap;
 mod render;
@@ -16,6 +17,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) use items::Item;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PendingAction {
+    Activate(crate::input::Key),
+    OpenCommandView,
+}
 
 pub(crate) struct PickerEngine;
 

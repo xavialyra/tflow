@@ -97,6 +97,7 @@ pub(crate) fn finish(
             exit_code,
         });
     };
+    let completion = *completion;
     let command = config
         .view(&completion.source_view)
         .with_context(|| {

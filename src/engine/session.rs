@@ -1,10 +1,11 @@
 use super::{
     CommandInvocation, CompletionRequest, EngineHost, EngineRegistry, InputRefreshPolicy,
-    InputSeed, NavigationMode, NavigationRequest, TaskScheduler, ViewEffect, ViewInstance,
+    InputSeed, NavigationMode, NavigationRequest, TaskScheduler, ViewContext, ViewEffect,
+    ViewInstance,
 };
 use crate::chrome::InputBuffer;
 use crate::config::{Config, ENGINE_PICKER};
-use crate::engine::api::{InputEdit, LauncherAction};
+use crate::engine::api::{EditorAction, InputEdit, LauncherOutcome, ResolvedLauncherAction};
 use crate::input::{InputDecoder, Key};
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::state::StateInstance;
@@ -15,6 +16,21 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
+
+#[derive(Clone, Copy)]
+struct QueuedKey {
+    key: Key,
+    replayed: bool,
+}
+
+impl QueuedKey {
+    fn new(key: Key) -> Self {
+        Self {
+            key,
+            replayed: false,
+        }
+    }
+}
 
 struct ViewEntry {
     view_ref: String,
@@ -36,7 +52,7 @@ pub(crate) struct AppSession<'a> {
     router: Arc<crate::router::Router>,
     route_input: bool,
     decoder: InputDecoder,
-    pending_keys: VecDeque<Key>,
+    pending_keys: VecDeque<QueuedKey>,
     active_error: Option<LogRecord>,
     active_error_deadline: Option<Instant>,
 }
@@ -44,7 +60,7 @@ pub(crate) struct AppSession<'a> {
 #[derive(Debug, Clone)]
 pub(crate) enum SessionOutcome {
     Exited,
-    Completed(CompletionRequest),
+    Completed(Box<CompletionRequest>),
 }
 
 impl<'a> AppSession<'a> {
@@ -60,17 +76,22 @@ impl<'a> AppSession<'a> {
         let state = config.instantiate_state(&view_ref)?;
         let initial_input = sanitize_terminal_text(&config.render_query_input(&state)?);
         let request = NavigationRequest::new(&view_ref, initial_input);
-        let input = input_buffer_from_seed(&request.input);
+        let input = input_buffer_from_seed(
+            request
+                .input
+                .as_ref()
+                .context("root navigation request has no input seed")?,
+        );
         publish_location(&mut runtime, &view_ref, &input, &state)?;
-        let root = engines.create_view(
+        let root = engines.create_view(ViewContext {
             config,
-            &request,
-            &input,
-            &state,
-            runtime_log.path(),
-            runtime.handle(),
-            tasks.clone(),
-        )?;
+            request: &request,
+            input: &input,
+            state: &state,
+            log_file: runtime_log.path(),
+            runtime: runtime.handle(),
+            tasks: tasks.clone(),
+        })?;
         Ok(Self {
             config,
             engines,
@@ -107,17 +128,22 @@ impl<'a> AppSession<'a> {
         let state = config.invocation_state.clone();
         let input = sanitize_terminal_text(&config.render_query_input(&state)?);
         let request = NavigationRequest::new(view_ref, input);
-        let input = input_buffer_from_seed(&request.input);
+        let input = input_buffer_from_seed(
+            request
+                .input
+                .as_ref()
+                .context("explicit view request has no input seed")?,
+        );
         publish_location(&mut runtime, view_ref, &input, &state)?;
-        let root = engines.create_view(
+        let root = engines.create_view(ViewContext {
             config,
-            &request,
-            &input,
-            &state,
-            runtime_log.path(),
-            runtime.handle(),
-            tasks.clone(),
-        )?;
+            request: &request,
+            input: &input,
+            state: &state,
+            log_file: runtime_log.path(),
+            runtime: runtime.handle(),
+            tasks: tasks.clone(),
+        })?;
         Ok(Self {
             config,
             engines,
@@ -204,10 +230,13 @@ impl<'a> AppSession<'a> {
         if let Some(timeout) = timeout {
             if self.pending_keys.is_empty() {
                 let bytes = terminal.read_input(timeout)?;
-                self.pending_keys.extend(self.decoder.feed(&bytes));
-                self.pending_keys.extend(self.decoder.flush_due());
+                self.pending_keys
+                    .extend(self.decoder.feed(&bytes).into_iter().map(QueuedKey::new));
+                self.pending_keys
+                    .extend(self.decoder.flush_due().into_iter().map(QueuedKey::new));
             }
-            while let Some(key) = self.pending_keys.pop_front() {
+            while let Some(queued_key) = self.pending_keys.pop_front() {
+                let key = queued_key.key;
                 let captures_editor_input = self
                     .views
                     .last()
@@ -248,79 +277,78 @@ impl<'a> AppSession<'a> {
                     };
                     entry.instance.resolve_launcher_action(&host, key)
                 };
-                let effect = if let Some(action) = action {
-                    let edited = match action {
-                        LauncherAction::DeleteBackward => self
-                            .views
-                            .last_mut()
-                            .context("session has no active view")?
-                            .input
-                            .delete_backward(),
-                        LauncherAction::ClearInput => self
-                            .views
-                            .last_mut()
-                            .context("session has no active view")?
-                            .input
-                            .clear(),
-                        LauncherAction::DeleteWord => self
-                            .views
-                            .last_mut()
-                            .context("session has no active view")?
-                            .input
-                            .delete_word(),
-                        _ => false,
-                    };
-                    if matches!(
-                        action,
-                        LauncherAction::DeleteBackward
-                            | LauncherAction::ClearInput
-                            | LauncherAction::DeleteWord
-                    ) {
-                        if edited {
-                            self.mark_input_changed()?;
-                        }
-                        ViewEffect::Continue
-                    } else if let Some(effect) = self.reconcile_input()? {
-                        self.pending_keys.push_front(key);
-                        effect
-                    } else {
+                let outcome = match action {
+                    Some(ResolvedLauncherAction::Edit(action)) => {
                         let entry = self
                             .views
                             .last_mut()
                             .context("session has no active view")?;
-                        let mut host = EngineHost {
-                            config: self.config,
-                            input: &mut entry.input,
-                            state: &mut entry.state,
-                            runtime: &mut self.runtime,
-                            runtime_log: &mut self.runtime_log,
-                            active_error: &mut self.active_error,
-                            active_error_deadline: &mut self.active_error_deadline,
+                        let edited = match action {
+                            EditorAction::DeleteBackward => entry.input.delete_backward(),
+                            EditorAction::ClearInput => entry.input.clear(),
+                            EditorAction::DeleteWord => entry.input.delete_word(),
                         };
-                        entry
-                            .instance
-                            .handle_launcher_action(&mut host, action, key)?
+                        if edited {
+                            self.mark_input_changed()?;
+                        }
+                        LauncherOutcome::Continue
                     }
-                } else if let Some(changed) = {
-                    let entry = self
-                        .views
-                        .last_mut()
-                        .context("session has no active view")?;
-                    apply_editor_key(&mut entry.input, key)
-                } {
-                    if changed {
-                        self.mark_input_changed()?;
+                    Some(ResolvedLauncherAction::View(action)) => {
+                        if let Some(effect) = self.reconcile_input()? {
+                            self.pending_keys.push_front(queued_key);
+                            LauncherOutcome::Effect(Box::new(effect))
+                        } else {
+                            let entry = self
+                                .views
+                                .last_mut()
+                                .context("session has no active view")?;
+                            let mut host = EngineHost {
+                                config: self.config,
+                                input: &mut entry.input,
+                                state: &mut entry.state,
+                                runtime: &mut self.runtime,
+                                runtime_log: &mut self.runtime_log,
+                                active_error: &mut self.active_error,
+                                active_error_deadline: &mut self.active_error_deadline,
+                            };
+                            entry
+                                .instance
+                                .handle_launcher_action(&mut host, action, key)?
+                        }
                     }
-                    ViewEffect::Continue
-                } else {
-                    ViewEffect::Continue
+                    None => {
+                        if let Some(changed) = {
+                            let entry = self
+                                .views
+                                .last_mut()
+                                .context("session has no active view")?;
+                            apply_editor_key(&mut entry.input, key)
+                        } && changed
+                        {
+                            self.mark_input_changed()?;
+                        }
+                        LauncherOutcome::Continue
+                    }
                 };
-                let effect = self.dispatch_view_effect(effect, terminal)?;
-                match effect {
-                    ViewEffect::Continue => {}
-                    ViewEffect::EditInput(edit) => self.apply_input_edit(edit)?,
-                    ViewEffect::ReplayKey(key) => self.pending_keys.push_front(key),
-                    effect => return Ok(effect),
+                match outcome {
+                    LauncherOutcome::Continue => {}
+                    LauncherOutcome::EditInput(edit) => self.apply_input_edit(edit)?,
+                    LauncherOutcome::ReplayKey(key) => {
+                        anyhow::ensure!(
+                            !queued_key.replayed,
+                            "active view replayed launcher key {key:?} more than once"
+                        );
+                        self.pending_keys.push_front(QueuedKey {
+                            key,
+                            replayed: true,
+                        });
+                    }
+                    LauncherOutcome::Effect(effect) => {
+                        let effect = self.dispatch_view_effect(*effect, terminal)?;
+                        if !matches!(effect, ViewEffect::Continue) {
+                            return Ok(effect);
+                        }
+                    }
                 }
             }
         }
@@ -533,7 +561,7 @@ impl<'a> AppSession<'a> {
         match self.router.resolve(&current_view, &raw_input) {
             crate::router::RouteResolution::Navigate { target, query } => {
                 Ok(Some(ViewEffect::Navigate {
-                    request: NavigationRequest::routed(target, raw_input, query),
+                    request: NavigationRequest::routed(target, raw_input, query, cursor),
                     mode: if route_child {
                         NavigationMode::Replace
                     } else {
@@ -634,46 +662,39 @@ impl<'a> AppSession<'a> {
         match effect {
             ViewEffect::Continue => Ok(None),
             ViewEffect::Exit => Ok(Some(SessionOutcome::Exited)),
-            ViewEffect::Complete(completion) => Ok(Some(SessionOutcome::Completed(completion))),
+            ViewEffect::Complete(completion) => {
+                Ok(Some(SessionOutcome::Completed(Box::new(completion))))
+            }
             ViewEffect::RunCommand { .. } => {
                 anyhow::bail!("run command effect reached the navigation dispatcher")
-            }
-            ViewEffect::EditInput(edit) => {
-                self.apply_input_edit(edit)?;
-                if let Some(effect) = self.reconcile_input()? {
-                    self.apply(effect)
-                } else {
-                    Ok(None)
-                }
-            }
-            ViewEffect::ReplayKey(key) => {
-                self.pending_keys.push_front(key);
-                Ok(None)
             }
             ViewEffect::Back(edit) => self.pop_current(edit),
             ViewEffect::Navigate { request, mode } => {
                 self.deactivate_current()?;
                 let mut state = self.config.instantiate_state(&request.view_ref)?;
-                if let Err(error) = self
-                    .config
-                    .update_query_input(&mut state, &request.input.params)
-                {
-                    self.activate_current()?;
-                    self.reject_navigation_error(&request.view_ref, &error.to_string())?;
-                    self.restore_current_input()?;
-                    return Ok(None);
-                }
-                let input = input_buffer_from_seed(&request.input);
-                publish_location(&mut self.runtime, &request.view_ref, &input, &state)?;
-                let view = self.engines.create_view(
+                let input = match initialize_navigation_input(
                     self.config,
-                    &request,
-                    &input,
-                    &state,
-                    self.runtime_log.path(),
-                    self.runtime.handle(),
-                    self.tasks.clone(),
-                );
+                    &mut state,
+                    request.input.as_ref(),
+                ) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        self.activate_current()?;
+                        self.reject_navigation_error(&request.view_ref, &error.to_string())?;
+                        self.restore_current_input()?;
+                        return Ok(None);
+                    }
+                };
+                publish_location(&mut self.runtime, &request.view_ref, &input, &state)?;
+                let view = self.engines.create_view(ViewContext {
+                    config: self.config,
+                    request: &request,
+                    input: &input,
+                    state: &state,
+                    log_file: self.runtime_log.path(),
+                    runtime: self.runtime.handle(),
+                    tasks: self.tasks.clone(),
+                });
                 let view = match view {
                     Ok(view) => view,
                     Err(error) => {
@@ -705,22 +726,54 @@ impl<'a> AppSession<'a> {
     }
 
     fn pop_current(&mut self, edit: Option<InputEdit>) -> Result<Option<SessionOutcome>> {
-        if self.views.len() <= 1 && edit.is_none() {
-            return Ok(Some(SessionOutcome::Exited));
-        }
-        if self.views.len() > 1 {
-            self.deactivate_current()?;
-            self.views.pop();
-        }
-        self.activate_current()?;
-        self.restore_current_input()?;
-        if let Some(edit) = edit {
+        if self.views.len() <= 1 {
+            let Some(edit) = edit else {
+                return Ok(Some(SessionOutcome::Exited));
+            };
             self.apply_input_edit(edit)?;
-            if let Some(effect) = self.reconcile_input()? {
-                return self.apply(effect);
-            }
+            return match self.reconcile_input()? {
+                Some(effect) => self.apply(effect),
+                None => Ok(None),
+            };
         }
-        Ok(None)
+
+        let returned_from_route_child = self
+            .views
+            .last()
+            .context("session has no active view")?
+            .route_child;
+        self.deactivate_current()?;
+        self.views.pop();
+        let Some(edit) = edit else {
+            if returned_from_route_child {
+                self.remove_route_separator()?;
+            }
+            self.activate_current()?;
+            self.restore_current_input()?;
+            return Ok(None);
+        };
+
+        self.apply_input_edit(edit)?;
+        self.publish_current_location()?;
+        let effect = self.reconcile_input()?;
+        self.activate_current()?;
+        match effect {
+            Some(effect) => self.apply(effect),
+            None => Ok(None),
+        }
+    }
+
+    fn remove_route_separator(&mut self) -> Result<()> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let separator_start = entry.input.raw.trim_end_matches(char::is_whitespace).len();
+        entry.input.raw.truncate(separator_start);
+        entry
+            .input
+            .set_cursor(entry.input.cursor.min(separator_start));
+        Ok(())
     }
 
     fn restore_current_input(&mut self) -> Result<()> {
@@ -748,17 +801,22 @@ impl<'a> AppSession<'a> {
             .deactivate()
     }
 
-    fn activate_current(&mut self) -> Result<()> {
-        let entry = self
-            .views
-            .last_mut()
-            .context("session has no active view")?;
+    fn publish_current_location(&mut self) -> Result<()> {
+        let entry = self.views.last().context("session has no active view")?;
         publish_location(
             &mut self.runtime,
             &entry.view_ref,
             &entry.input,
             &entry.state,
-        )?;
+        )
+    }
+
+    fn activate_current(&mut self) -> Result<()> {
+        self.publish_current_location()?;
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
         let mut host = EngineHost {
             config: self.config,
             input: &mut entry.input,
@@ -808,6 +866,19 @@ fn command_status_message(status: &std::process::ExitStatus) -> String {
         Some(code) => format!("finished with exit code {}", code),
         None => "terminated by signal".to_string(),
     }
+}
+
+fn initialize_navigation_input(
+    config: &Config,
+    state: &mut StateInstance,
+    seed: Option<&InputSeed>,
+) -> Result<InputBuffer> {
+    let Some(seed) = seed else {
+        let input = sanitize_terminal_text(&config.render_query_input(state)?);
+        return Ok(InputBuffer::with_params(input.clone(), input));
+    };
+    config.update_query_input(state, &seed.params)?;
+    Ok(input_buffer_from_seed(seed))
 }
 
 fn input_buffer_from_seed(seed: &InputSeed) -> InputBuffer {
@@ -917,6 +988,144 @@ fn publish_location(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingView {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingView {
+        fn record(&self, event: &str, host: &EngineHost<'_>) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("{event}:{}", host.input.raw));
+        }
+    }
+
+    impl ViewInstance for RecordingView {
+        fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+            self.record("activate", host);
+            Ok(())
+        }
+
+        fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+            self.record("restore", host);
+            Ok(())
+        }
+
+        fn input_committed(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+            self.record("committed", host);
+            Ok(())
+        }
+
+        fn step(
+            &mut self,
+            _host: &mut EngineHost<'_>,
+            _terminal: &mut Terminal,
+        ) -> Result<ViewEffect> {
+            Ok(ViewEffect::Continue)
+        }
+
+        fn content(
+            &mut self,
+            _host: &EngineHost<'_>,
+            _terminal: &Terminal,
+            _chrome: &crate::chrome::ChromeFrame,
+        ) -> Result<crate::chrome::ChromeContent> {
+            Ok(crate::chrome::ChromeContent::default())
+        }
+    }
+
+    #[test]
+    fn routed_navigation_preserves_the_active_cursor() {
+        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let entry = session.views.last_mut().unwrap();
+        entry.input.raw = "app query".to_string();
+        entry.input.cursor = 3;
+        session.mark_input_changed().unwrap();
+
+        let effect = session.reconcile_input().unwrap().unwrap();
+        let ViewEffect::Navigate { request, .. } = &effect else {
+            panic!("route input did not produce navigation");
+        };
+        assert_eq!(request.input.as_ref().unwrap().cursor, 3);
+        assert!(session.apply(effect).unwrap().is_none());
+        assert_eq!(session.views.last().unwrap().input.cursor, 3);
+    }
+
+    #[test]
+    fn returning_from_routed_view_removes_the_route_separator() {
+        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let entry = session.views.last_mut().unwrap();
+        entry.input.raw = "app ".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+
+        let effect = session.reconcile_input().unwrap().unwrap();
+        assert!(session.apply(effect).unwrap().is_none());
+        assert!(session.views.last().unwrap().route_child);
+        assert!(session.pop_current(None).unwrap().is_none());
+
+        let input = &session.views.last().unwrap().input;
+        assert_eq!(input.raw, "app");
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn edited_back_commits_before_activation_without_restoring_stale_input() {
+        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let parent = session.views.last_mut().unwrap();
+        parent.input.raw = "app old".to_string();
+        parent.input.cursor = parent.input.raw.len();
+        parent.instance = Box::new(RecordingView {
+            events: Arc::clone(&events),
+        });
+
+        assert!(
+            session
+                .apply(ViewEffect::Navigate {
+                    request: NavigationRequest::new("core:command", ""),
+                    mode: NavigationMode::Push,
+                })
+                .unwrap()
+                .is_none()
+        );
+        events.lock().unwrap().clear();
+
+        assert!(
+            session
+                .pop_current(Some(InputEdit::SetBuffer {
+                    raw: "edited".to_string(),
+                    cursor: 6,
+                }))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["committed:edited", "activate:edited"]
+        );
+    }
 
     #[test]
     fn configurable_editor_keys_are_not_session_fallbacks() {

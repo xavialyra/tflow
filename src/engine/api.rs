@@ -30,11 +30,9 @@ impl InputSeed {
         }
     }
 
-    pub(crate) fn routed(raw: impl Into<String>, params: impl Into<String>) -> Self {
-        let raw = raw.into();
-        let cursor = raw.len();
+    pub(crate) fn routed(raw: impl Into<String>, params: impl Into<String>, cursor: usize) -> Self {
         Self {
-            raw,
+            raw: raw.into(),
             params: params.into(),
             cursor,
         }
@@ -44,7 +42,7 @@ impl InputSeed {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
-    pub(crate) input: InputSeed,
+    pub(crate) input: Option<InputSeed>,
     pub(crate) route_child: bool,
     pub(crate) context: Value,
     pub(crate) owner_state: Option<crate::state::StateInstance>,
@@ -54,7 +52,17 @@ impl NavigationRequest {
     pub(crate) fn new(view_ref: impl Into<String>, input: impl Into<String>) -> Self {
         Self {
             view_ref: view_ref.into(),
-            input: InputSeed::new(input),
+            input: Some(InputSeed::new(input)),
+            route_child: false,
+            context: Value::Null,
+            owner_state: None,
+        }
+    }
+
+    pub(crate) fn with_defaults(view_ref: impl Into<String>) -> Self {
+        Self {
+            view_ref: view_ref.into(),
+            input: None,
             route_child: false,
             context: Value::Null,
             owner_state: None,
@@ -65,10 +73,11 @@ impl NavigationRequest {
         view_ref: impl Into<String>,
         raw: impl Into<String>,
         params: impl Into<String>,
+        cursor: usize,
     ) -> Self {
         Self {
             view_ref: view_ref.into(),
-            input: InputSeed::routed(raw, params),
+            input: Some(InputSeed::routed(raw, params, cursor)),
             route_child: true,
             context: Value::Null,
             owner_state: None,
@@ -106,13 +115,15 @@ pub(crate) enum InputEdit {
     },
 }
 
-/// Semantic launcher actions resolved by the active engine.
-/// Editor actions are applied by the session input controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LauncherAction {
+pub(crate) enum EditorAction {
     DeleteBackward,
     ClearInput,
     DeleteWord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LauncherAction {
     Activate,
     MoveNext,
     MovePrevious,
@@ -125,6 +136,12 @@ pub(crate) enum LauncherAction {
     Back,
     Exit,
     OpenCommandView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolvedLauncherAction {
+    Edit(EditorAction),
+    View(LauncherAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +172,11 @@ pub(crate) enum ViewEffect {
         exit: bool,
         return_to_parent: bool,
     },
+}
+
+pub(crate) enum LauncherOutcome {
+    Continue,
+    Effect(Box<ViewEffect>),
     EditInput(InputEdit),
     ReplayKey(Key),
 }
@@ -223,7 +245,11 @@ pub(crate) trait ViewInstance {
         false
     }
 
-    fn resolve_launcher_action(&self, _host: &EngineHost<'_>, _key: Key) -> Option<LauncherAction> {
+    fn resolve_launcher_action(
+        &self,
+        _host: &EngineHost<'_>,
+        _key: Key,
+    ) -> Option<ResolvedLauncherAction> {
         None
     }
 
@@ -232,8 +258,8 @@ pub(crate) trait ViewInstance {
         _host: &mut EngineHost<'_>,
         _action: LauncherAction,
         _key: Key,
-    ) -> Result<ViewEffect> {
-        Ok(ViewEffect::Continue)
+    ) -> Result<LauncherOutcome> {
+        Ok(LauncherOutcome::Continue)
     }
 
     fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {

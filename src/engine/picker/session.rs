@@ -1,9 +1,12 @@
+use super::PendingAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::PickerKeymap;
 use super::render;
 use crate::chrome::InputBuffer;
 use crate::config::Config;
-use crate::engine::api::{InputEdit, LauncherAction};
+use crate::engine::api::{
+    EditorAction, InputEdit, LauncherAction, LauncherOutcome, ResolvedLauncherAction,
+};
 use crate::engine::command::{self, CommandAction};
 use crate::engine::{
     CommandInvocation, CompletionRequest, EngineHost, InputRefreshPolicy, NavigationMode,
@@ -46,7 +49,7 @@ pub(crate) struct PickerFrame {
     pub(crate) requested_input: String,
     pub(crate) results_input: String,
     pub(crate) items_pending: bool,
-    pub(crate) pending_command: Option<Key>,
+    pub(crate) pending_action: Option<PendingAction>,
     pub(crate) pending_selection: isize,
     pub(crate) command_owner: Option<String>,
 }
@@ -63,7 +66,7 @@ impl PickerFrame {
             requested_input: String::new(),
             results_input: String::new(),
             items_pending: false,
-            pending_command: None,
+            pending_action: None,
             pending_selection: 0,
             command_owner: None,
         }
@@ -76,7 +79,7 @@ pub(crate) struct PickerView {
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
-    pub(crate) source_states: BTreeMap<String, crate::state::StateInstance>,
+    pub(super) source_states: BTreeMap<String, crate::state::StateInstance>,
     options: PickerOptions,
     log_file: Option<PathBuf>,
     started: bool,
@@ -144,7 +147,7 @@ impl PickerView {
             return;
         }
         self.frame.retry_requested = true;
-        self.frame.pending_command = None;
+        self.frame.pending_action = None;
         self.frame.pending_selection = 0;
     }
 
@@ -163,8 +166,8 @@ impl PickerView {
         &self.frame.view
     }
 
-    pub(crate) fn queue_pending_command(&mut self, key: Key) {
-        self.frame.pending_command = Some(key);
+    pub(crate) fn queue_pending_action(&mut self, action: PendingAction) {
+        self.frame.pending_action = Some(action);
     }
 
     pub(crate) fn command_owner(&self) -> Option<&str> {
@@ -346,14 +349,14 @@ impl PickerView {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.frame.items_pending = false;
-                self.frame.pending_command = None;
+                self.frame.pending_action = None;
                 self.frame.pending_selection = 0;
                 events.push(ItemsEvent {
                     current: true,
                     view: self.requested_view.clone(),
                     errors: Vec::new(),
                     failure: Some("items task stopped before producing a result".to_string()),
-                    pending_command: None,
+                    pending_action: None,
                 });
                 return events;
             }
@@ -377,7 +380,7 @@ impl PickerView {
             return events;
         }
         let view = response.view;
-        let pending_command;
+        let pending_action;
         let (errors, failure) = match response.result {
             Ok(result) => {
                 let errors = result.errors;
@@ -391,7 +394,7 @@ impl PickerView {
                     .min(self.frame.items.len().saturating_sub(1));
                 let pending_selection = std::mem::take(&mut self.frame.pending_selection);
                 self.move_selection(pending_selection);
-                pending_command = self.frame.pending_command.take();
+                pending_action = self.frame.pending_action.take();
                 (errors, None)
             }
             Err(error) => {
@@ -401,7 +404,8 @@ impl PickerView {
                 self.frame.results_input = response.input;
                 self.frame.selected = 0;
                 self.frame.pending_selection = 0;
-                pending_command = self.frame.pending_command.take();
+                self.frame.pending_action = None;
+                pending_action = None;
                 (Vec::new(), Some(error))
             }
         };
@@ -410,7 +414,7 @@ impl PickerView {
             view,
             errors,
             failure,
-            pending_command,
+            pending_action,
         });
         events
     }
@@ -437,6 +441,21 @@ impl PickerView {
         })
     }
 
+    fn handle_open_command_view(
+        &mut self,
+        host: &mut EngineHost<'_>,
+    ) -> Result<Option<ViewEffect>> {
+        if host.input.rejected {
+            return Ok(Some(ViewEffect::Continue));
+        }
+        if !self.results_current(&host.input.raw) {
+            self.queue_pending_action(PendingAction::OpenCommandView);
+            self.request_current(host)?;
+            return Ok(None);
+        }
+        self.open_command_view(host).map(Some)
+    }
+
     fn handle_command_key(
         &mut self,
         host: &mut EngineHost<'_>,
@@ -453,7 +472,7 @@ impl PickerView {
             if self.command_view_active() {
                 self.request_current(host)?;
             } else {
-                self.queue_pending_command(key);
+                self.queue_pending_action(PendingAction::Activate(key));
                 self.request_current(host)?;
                 return Ok(None);
             }
@@ -475,14 +494,20 @@ impl PickerView {
         };
         let command_view = self.command_view_active();
         match action {
-            CommandAction::Navigate { target, input } => Ok(Some(ViewEffect::Navigate {
-                request: NavigationRequest::new(target, input),
-                mode: if command_view {
-                    NavigationMode::Replace
-                } else {
-                    NavigationMode::Push
-                },
-            })),
+            CommandAction::Navigate { target, input } => {
+                let request = match input {
+                    Some(input) => NavigationRequest::new(target, input),
+                    None => NavigationRequest::with_defaults(target),
+                };
+                Ok(Some(ViewEffect::Navigate {
+                    request,
+                    mode: if command_view {
+                        NavigationMode::Replace
+                    } else {
+                        NavigationMode::Push
+                    },
+                }))
+            }
             CommandAction::Complete { invocation, state } => Ok(self.complete_selection(
                 &host.input.raw.clone(),
                 invocation,
@@ -534,6 +559,7 @@ impl PickerView {
                 continue;
             }
 
+            let failed = event.failure.is_some();
             if let Some(error) = event.failure {
                 host.record_error_message(Some(&event.view), None, &error);
             } else if event.errors.is_empty() {
@@ -544,10 +570,14 @@ impl PickerView {
                 }
             }
 
-            if let Some(key) = event.pending_command
-                && let Some(effect) = self.activate_item(host, key)?
-            {
-                return Ok(Some(effect));
+            if !failed && let Some(action) = event.pending_action {
+                let effect = match action {
+                    PendingAction::Activate(key) => self.activate_item(host, key)?,
+                    PendingAction::OpenCommandView => self.handle_open_command_view(host)?,
+                };
+                if effect.is_some() {
+                    return Ok(effect);
+                }
             }
         }
         Ok(None)
@@ -655,7 +685,7 @@ impl ViewInstance for PickerView {
         self.frame.input_pending = false;
         self.frame.retry_requested = false;
         self.frame.items_pending = false;
-        self.frame.pending_command = None;
+        self.frame.pending_action = None;
         self.frame.pending_selection = 0;
         if self.frame.results_input != input {
             self.request_current(host)?;
@@ -665,7 +695,7 @@ impl ViewInstance for PickerView {
 
     fn input_committed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
         self.frame.input_pending = true;
-        self.frame.pending_command = None;
+        self.frame.pending_action = None;
         self.frame.pending_selection = 0;
         Ok(())
     }
@@ -690,7 +720,7 @@ impl ViewInstance for PickerView {
         self.frame.input_pending = false;
         self.frame.retry_requested = false;
         self.frame.items_pending = false;
-        self.frame.pending_command = None;
+        self.frame.pending_action = None;
         self.frame.pending_selection = 0;
         Ok(())
     }
@@ -731,47 +761,57 @@ impl ViewInstance for PickerView {
         self.completion_active()
     }
 
-    fn resolve_launcher_action(&self, host: &EngineHost<'_>, key: Key) -> Option<LauncherAction> {
+    fn resolve_launcher_action(
+        &self,
+        host: &EngineHost<'_>,
+        key: Key,
+    ) -> Option<ResolvedLauncherAction> {
         if self.completion_active() {
-            return Some(match key {
+            let action = match key {
                 Key::Escape => LauncherAction::CloseCompletion,
                 Key::Enter => LauncherAction::AcceptCompletion,
                 Key::Tab | Key::Down => LauncherAction::CycleCompletionNext,
                 Key::BackTab | Key::Up => LauncherAction::CycleCompletionPrevious,
                 _ => LauncherAction::DismissCompletion,
-            });
+            };
+            return Some(ResolvedLauncherAction::View(action));
         }
-        match self.keymap.action(key) {
-            Some(super::keymap::PickerAction::Exit) => Some(LauncherAction::Exit),
+        let action = match self.keymap.action(key) {
+            Some(super::keymap::PickerAction::Exit) => LauncherAction::Exit,
             Some(super::keymap::PickerAction::OpenCommands)
                 if self.current().view != host.config.command_view =>
             {
-                Some(LauncherAction::OpenCommandView)
+                LauncherAction::OpenCommandView
             }
-            Some(super::keymap::PickerAction::OpenCompletion) => {
-                Some(LauncherAction::OpenCompletion)
-            }
+            Some(super::keymap::PickerAction::OpenCompletion) => LauncherAction::OpenCompletion,
             Some(super::keymap::PickerAction::Back)
                 if self.route_child || self.command_view_active() || host.input.raw.is_empty() =>
             {
-                Some(LauncherAction::Back)
+                LauncherAction::Back
             }
-            Some(super::keymap::PickerAction::Back) => Some(LauncherAction::ClearInput),
+            Some(super::keymap::PickerAction::Back) => {
+                return Some(ResolvedLauncherAction::Edit(EditorAction::ClearInput));
+            }
             Some(super::keymap::PickerAction::DeleteBackward) => {
-                Some(LauncherAction::DeleteBackward)
+                return Some(ResolvedLauncherAction::Edit(EditorAction::DeleteBackward));
             }
-            Some(super::keymap::PickerAction::ClearInput) => Some(LauncherAction::ClearInput),
-            Some(super::keymap::PickerAction::DeleteWord) => Some(LauncherAction::DeleteWord),
-            Some(super::keymap::PickerAction::SelectPrevious) => Some(LauncherAction::MovePrevious),
-            Some(super::keymap::PickerAction::SelectNext) => Some(LauncherAction::MoveNext),
-            Some(super::keymap::PickerAction::Activate) => Some(LauncherAction::Activate),
+            Some(super::keymap::PickerAction::ClearInput) => {
+                return Some(ResolvedLauncherAction::Edit(EditorAction::ClearInput));
+            }
+            Some(super::keymap::PickerAction::DeleteWord) => {
+                return Some(ResolvedLauncherAction::Edit(EditorAction::DeleteWord));
+            }
+            Some(super::keymap::PickerAction::SelectPrevious) => LauncherAction::MovePrevious,
+            Some(super::keymap::PickerAction::SelectNext) => LauncherAction::MoveNext,
+            Some(super::keymap::PickerAction::Activate) => LauncherAction::Activate,
             None if self.resolve_command(host.config, key).is_some()
                 && self.current().command_owner.is_none() =>
             {
-                Some(LauncherAction::Activate)
+                LauncherAction::Activate
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        Some(ResolvedLauncherAction::View(action))
     }
 
     fn handle_launcher_action(
@@ -779,13 +819,8 @@ impl ViewInstance for PickerView {
         host: &mut EngineHost<'_>,
         action: LauncherAction,
         key: Key,
-    ) -> Result<ViewEffect> {
+    ) -> Result<LauncherOutcome> {
         match action {
-            LauncherAction::DeleteBackward
-            | LauncherAction::ClearInput
-            | LauncherAction::DeleteWord => {
-                unreachable!("session-owned editor action reached picker")
-            }
             LauncherAction::MoveNext => self.select_item(host, 1)?,
             LauncherAction::MovePrevious => self.select_item(host, -1)?,
             LauncherAction::OpenCompletion => self.open_completion(host.input),
@@ -793,24 +828,32 @@ impl ViewInstance for PickerView {
             LauncherAction::CycleCompletionPrevious => self.cycle_completion(-1),
             LauncherAction::AcceptCompletion => {
                 if let Some(edit) = self.accept_completion(host.input) {
-                    return Ok(ViewEffect::EditInput(edit));
+                    return Ok(LauncherOutcome::EditInput(edit));
                 }
             }
             LauncherAction::CloseCompletion => self.close_completion(),
             LauncherAction::DismissCompletion => {
                 self.close_completion();
-                return Ok(ViewEffect::ReplayKey(key));
+                return Ok(LauncherOutcome::ReplayKey(key));
             }
             LauncherAction::Activate => {
                 if let Some(effect) = self.activate_item(host, key)? {
-                    return Ok(effect);
+                    return Ok(LauncherOutcome::Effect(Box::new(effect)));
                 }
             }
-            LauncherAction::OpenCommandView => return self.open_command_view(host),
-            LauncherAction::Back => return Ok(ViewEffect::Back(None)),
-            LauncherAction::Exit => return Ok(ViewEffect::Exit),
+            LauncherAction::OpenCommandView => {
+                if let Some(effect) = self.handle_open_command_view(host)? {
+                    return Ok(LauncherOutcome::Effect(Box::new(effect)));
+                }
+            }
+            LauncherAction::Back => {
+                return Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))));
+            }
+            LauncherAction::Exit => {
+                return Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)));
+            }
         }
-        Ok(ViewEffect::Continue)
+        Ok(LauncherOutcome::Continue)
     }
 
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
@@ -884,8 +927,57 @@ fn key_display(key: Key) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::items::ItemsResponse;
     use super::*;
+    use crate::engine::RuntimeStore;
     use crate::router::ViewCandidate;
+    use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn failed_item_refresh_discards_pending_actions() {
+        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let runtime = RuntimeStore::new();
+        let tasks = TaskScheduler::new(runtime.handle());
+        let mut picker = PickerView::new(
+            "core:default",
+            tasks,
+            config,
+            false,
+            PickerKeymap::from_values(None, None).unwrap(),
+            PickerOptions {
+                show_prefix: false,
+                input_prefix: None,
+            },
+        );
+        picker.frame.items_pending = true;
+        picker.frame.pending_action = Some(PendingAction::OpenCommandView);
+        picker.items_task = Some(picker.tasks.submit_keyed(
+            (),
+            "picker-items".to_string(),
+            |_, _, _| ItemsResponse {
+                view: "core:default".to_string(),
+                input: String::new(),
+                query: String::new(),
+                result: Err("items provider failed".to_string()),
+            },
+        ));
+
+        let mut events = Vec::new();
+        for _ in 0..10 {
+            events = picker.collect_items("");
+            if !events.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].failure.as_deref(), Some("items provider failed"));
+        assert!(events[0].pending_action.is_none());
+        assert!(picker.frame.pending_action.is_none());
+    }
 
     #[test]
     fn selection_count_uses_zero_for_an_empty_list() {

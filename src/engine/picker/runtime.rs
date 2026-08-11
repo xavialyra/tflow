@@ -1,4 +1,4 @@
-use super::PickerView;
+use super::{Item, PickerView};
 use crate::config::Config;
 use crate::engine::{RuntimeStore, command};
 use anyhow::Result;
@@ -25,15 +25,12 @@ impl PickerView {
         let items = frame
             .items
             .iter()
-            .map(command::runtime_item_value)
+            .map(runtime_item_value)
             .collect::<Vec<_>>();
         let selected_item = if frame.command_owner.is_some() {
-            self.command_parent_item().map(command::runtime_item_value)
+            self.command_parent_item().map(runtime_item_value)
         } else {
-            frame
-                .items
-                .get(frame.selected)
-                .map(command::runtime_item_value)
+            frame.items.get(frame.selected).map(runtime_item_value)
         };
         let log_file = self
             .log_file()
@@ -54,4 +51,14 @@ impl PickerView {
         ])?;
         Ok(())
     }
+}
+
+fn runtime_item_value(item: &Item) -> serde_json::Value {
+    serde_json::json!({
+        "prefix": item.prefix,
+        "text": item.text,
+        "value": item.value,
+        "metadata": item.metadata,
+        "source_view": item.source_view,
+    })
 }

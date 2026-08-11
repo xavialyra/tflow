@@ -1,3 +1,4 @@
+use super::PendingAction;
 use crate::cancellation::CancellationToken;
 use crate::config::{Config, ConfigReadContext, ConfigScope};
 use crate::engine::{TaskHandle, TaskScheduler};
@@ -54,7 +55,7 @@ pub(crate) struct ItemsEvent {
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
     pub(crate) failure: Option<String>,
-    pub(crate) pending_command: Option<crate::input::Key>,
+    pub(crate) pending_action: Option<PendingAction>,
 }
 
 pub(crate) type ItemsTaskHandle = TaskHandle<ItemsResponse>;

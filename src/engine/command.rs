@@ -1,10 +1,10 @@
-use super::picker::{Item, PickerView};
 use crate::config::{
     Command, CommandAction as ConfigCommandAction, Config, ConfigReadContext, ConfigScope,
     normalize_key,
 };
 use crate::engine::{CommandInvocation, PreparedProcess};
 use crate::input::Key;
+use crate::state::StateInstance;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use std::path::Path;
 pub(crate) enum CommandAction {
     Navigate {
         target: String,
-        input: String,
+        input: Option<String>,
     },
     Execute {
         invocation: CommandInvocation,
@@ -22,16 +22,89 @@ pub(crate) enum CommandAction {
     },
     Complete {
         invocation: CommandInvocation,
-        state: crate::state::StateInstance,
+        state: StateInstance,
     },
 }
 
-fn prepare_command(
+pub(crate) struct CommandItem<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) value: Option<&'a str>,
+    pub(crate) metadata: &'a Value,
+    pub(crate) source_view: &'a str,
+}
+
+pub(crate) struct CommandContext<'a> {
+    pub(crate) active_view: &'a str,
+    pub(crate) query: &'a str,
+    pub(crate) state: &'a StateInstance,
+    pub(crate) runtime: &'a Value,
+    pub(crate) item: Option<CommandItem<'a>>,
+    pub(crate) log_file: Option<&'a Path>,
+}
+
+pub(crate) fn prepare_command_action(
+    config: &Config,
+    invocation: CommandInvocation,
+    context: CommandContext<'_>,
+) -> Result<CommandAction> {
+    match invocation.command.action.clone() {
+        ConfigCommandAction::Complete { .. } => Ok(CommandAction::Complete {
+            invocation,
+            state: context.state.clone(),
+        }),
+        ConfigCommandAction::Navigate { .. } => {
+            let request = config
+                .get(
+                    ConfigReadContext {
+                        scope: ConfigScope::View(context.state),
+                        runtime: context.runtime,
+                        input: &config.input_value,
+                        cancellation: None,
+                    },
+                    &["commands", invocation.id.as_str(), "payload"],
+                )?
+                .context("navigation command input is not configured")?;
+            let target = request
+                .get("target")
+                .and_then(Value::as_str)
+                .context("navigation input target must evaluate to a string")?;
+            let target = config.resolve_view(target)?;
+            let input = match request.get("query") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .context("navigation input query must evaluate to a string or null")?
+                        .to_string(),
+                ),
+            };
+            Ok(CommandAction::Navigate { target, input })
+        }
+        ConfigCommandAction::Run { payload } => {
+            let exit = payload.exit;
+            let prepared = prepare_run_command(
+                config,
+                context.active_view,
+                context.query,
+                &invocation,
+                context.item,
+                context.log_file,
+            )?;
+            Ok(CommandAction::Execute {
+                invocation,
+                prepared,
+                exit,
+            })
+        }
+    }
+}
+
+fn prepare_run_command(
     config: &Config,
     active_view: &str,
     query: &str,
     invocation: &CommandInvocation,
-    item: Option<&Item>,
+    item: Option<CommandItem<'_>>,
     log_file: Option<&Path>,
 ) -> Result<PreparedProcess> {
     let view = config
@@ -40,27 +113,32 @@ fn prepare_command(
     let ConfigCommandAction::Run { payload } = &invocation.command.action else {
         anyhow::bail!("command is not a run action");
     };
-    let script = &payload.handler;
-    let command_shell = &payload.shell;
-    let shell = command_shell
+    let shell = payload
+        .shell
         .as_deref()
         .or(view.run_shell.as_deref())
         .unwrap_or("sh");
     let value = item
-        .and_then(|item| item.value.as_deref())
-        .or_else(|| item.map(|item| item.text.as_str()))
+        .as_ref()
+        .and_then(|item| item.value)
+        .or_else(|| item.as_ref().map(|item| item.text))
         .unwrap_or("");
     let metadata = item
-        .map(|item| serde_json::to_string(&item.metadata))
+        .as_ref()
+        .map(|item| serde_json::to_string(item.metadata))
         .transpose()
         .context("could not serialize selected item metadata")?
         .unwrap_or_else(|| Value::Null.to_string());
-    let item_text = item.map(|item| item.text.clone()).unwrap_or_default();
+    let item_text = item
+        .as_ref()
+        .map(|item| item.text.to_string())
+        .unwrap_or_default();
     let source_view = item
-        .map(|item| item.source_view.clone())
-        .unwrap_or_else(|| invocation.source_view.clone());
+        .as_ref()
+        .map(|item| item.source_view)
+        .unwrap_or(&invocation.source_view);
     let plugin_root = config
-        .plugin_root(&source_view)
+        .plugin_root(source_view)
         .map(|path| path.to_path_buf());
     let mut environment = vec![
         ("LAUNCHER_ITEM".to_string(), item_text),
@@ -68,10 +146,10 @@ fn prepare_command(
         ("LAUNCHER_METADATA".to_string(), metadata),
         (
             "LAUNCHER_PLUGIN".to_string(),
-            package_id(&source_view).to_string(),
+            package_id(source_view).to_string(),
         ),
         ("LAUNCHER_VIEW".to_string(), active_view.to_string()),
-        ("LAUNCHER_VIEW_REF".to_string(), source_view.clone()),
+        ("LAUNCHER_VIEW_REF".to_string(), source_view.to_string()),
         ("LAUNCHER_COMMAND".to_string(), invocation.id.clone()),
         ("LAUNCHER_QUERY".to_string(), query.to_string()),
     ];
@@ -91,7 +169,7 @@ fn prepare_command(
         argv: vec![
             shell.to_string(),
             "-c".to_string(),
-            script.clone(),
+            payload.handler.clone(),
             "tui-launcher".to_string(),
         ],
         environment,
@@ -121,8 +199,12 @@ pub(super) fn find_command(
     })
 }
 
-fn command_key(key: Key) -> Option<String> {
-    key.binding_name()
+pub(super) fn find_command_for_key(
+    config: &Config,
+    view_ref: &str,
+    key: Key,
+) -> Option<CommandInvocation> {
+    find_command(config, view_ref, &key.binding_name()?)
 }
 
 pub(super) fn add_view_commands(
@@ -158,106 +240,4 @@ pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
         "label": command.label,
         "action": command.action,
     }))
-}
-
-pub(super) fn runtime_item_value(item: &Item) -> Value {
-    json!({
-        "prefix": item.prefix,
-        "text": item.text,
-        "value": item.value,
-        "metadata": item.metadata,
-        "source_view": item.source_view,
-    })
-}
-
-impl PickerView {
-    pub(crate) fn resolve_command(&self, config: &Config, key: Key) -> Option<CommandInvocation> {
-        let frame = self.current();
-        if frame.command_owner.is_some() {
-            let binding = frame
-                .items
-                .get(frame.selected)
-                .and_then(|item| item.value.as_deref())?;
-            return find_command(config, frame.command_owner.as_deref()?, binding);
-        }
-        let key = command_key(key)?;
-        find_command(config, self.command_owner()?, &key)
-    }
-
-    pub(crate) fn prepare_command_action(
-        &self,
-        config: &Config,
-        active_state: &crate::state::StateInstance,
-        runtime: &Value,
-        key: Key,
-        log_file: Option<&Path>,
-    ) -> Result<Option<CommandAction>> {
-        let Some(invocation) = self.resolve_command(config, key) else {
-            return Ok(None);
-        };
-        let command_view = self.current().command_owner.is_some();
-        let item = if command_view {
-            self.command_parent_item().cloned()
-        } else {
-            self.current().items.get(self.current().selected).cloned()
-        };
-        let state = if invocation.source_view == active_state.view_ref() {
-            active_state
-        } else {
-            self.source_states
-                .get(&invocation.source_view)
-                .unwrap_or(active_state)
-        };
-        match invocation.command.action.clone() {
-            ConfigCommandAction::Complete { .. } => Ok(Some(CommandAction::Complete {
-                invocation: invocation.clone(),
-                state: state.clone(),
-            })),
-            ConfigCommandAction::Navigate { .. } => {
-                let request = config
-                    .get(
-                        ConfigReadContext {
-                            scope: ConfigScope::View(state),
-                            runtime,
-                            input: &config.input_value,
-                            cancellation: None,
-                        },
-                        &["commands", invocation.id.as_str(), "payload"],
-                    )?
-                    .context("navigation command input is not configured")?;
-                let target = request
-                    .get("target")
-                    .and_then(Value::as_str)
-                    .context("navigation input target must evaluate to a string")?;
-                let target = config.resolve_view(target)?;
-                let input = request
-                    .get("query")
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_string)
-                            .context("navigation input query must evaluate to a string or null")
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                Ok(Some(CommandAction::Navigate { target, input }))
-            }
-            ConfigCommandAction::Run { payload } => {
-                let exit = payload.exit;
-                let prepared = prepare_command(
-                    config,
-                    self.current_view_ref(),
-                    &self.current().query,
-                    &invocation,
-                    item.as_ref(),
-                    log_file,
-                )?;
-                Ok(Some(CommandAction::Execute {
-                    invocation,
-                    prepared,
-                    exit,
-                }))
-            }
-        }
-    }
 }

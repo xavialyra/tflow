@@ -522,6 +522,82 @@ fn ctrl_k_opens_the_command_picker_view() {
 }
 
 #[test]
+fn command_picker_waits_for_the_committed_selection() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        command_view = "core:command"
+
+        [plugins.core.views.default]
+        type = "picker"
+        sources = ["alpha:default", "beta:default"]
+
+        [plugins.core.views.command]
+        type = "picker"
+
+        [plugins.alpha.views.default]
+        type = "picker"
+        items = "{{ config:catalog.alpha }}"
+
+        [plugins.alpha.views.default.commands.open]
+        key = "enter"
+        label = "Alpha Action"
+        type = "run"
+
+        [plugins.alpha.views.default.commands.open.payload]
+        handler = ":"
+
+        [plugins.beta.views.default]
+        type = "picker"
+        items = "{{ config:catalog.beta }}"
+
+        [plugins.beta.views.default.commands.open]
+        key = "enter"
+        label = "Beta Action"
+        type = "run"
+
+        [plugins.beta.views.default.commands.open.payload]
+        handler = ":"
+
+        [catalog]
+        alpha = [{label = "Alpha"}]
+        beta = [{label = "Beta"}]
+        "#,
+    )
+    .expect("could not write pending command-view config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "Beta");
+    process
+        .master
+        .write_all(b"x\x1b[B\x0b")
+        .expect("could not write query, selection, and command-view batch");
+    process
+        .master
+        .flush()
+        .expect("could not flush pending command-view batch");
+
+    let output = wait_for_text(&process.master, "Beta Action");
+    let output = String::from_utf8_lossy(&output);
+    let command_screen = output
+        .rsplit_once("core:command")
+        .map(|(_, screen)| screen)
+        .unwrap_or(&output);
+    assert!(command_screen.contains("Beta Action"), "output: {output}");
+    assert!(!command_screen.contains("Alpha Action"), "output: {output}");
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove pending command-view config");
+}
+
+#[test]
 fn tab_opens_view_completion_and_escape_closes_it() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -876,7 +952,7 @@ fn aggregate_sources_own_independent_view_state() {
 }
 
 #[test]
-fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
+fn route_input_returns_to_the_selector_without_the_separator() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -937,11 +1013,6 @@ fn route_input_survives_navigation_and_esc_restores_the_parent_input() {
         .flush()
         .expect("could not flush route escape");
     let output = wait_for_text(&process.master, "0/0");
-    assert!(
-        String::from_utf8_lossy(&output).contains(" app "),
-        "output: {:?}",
-        output
-    );
     assert!(
         !String::from_utf8_lossy(&output).contains("core:default"),
         "root divider unexpectedly included the view name: {:?}",
@@ -1206,6 +1277,72 @@ alias = "temp"
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove conflicting-alias config");
+}
+
+#[test]
+fn navigation_without_query_uses_the_target_view_default() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        type = "picker"
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "navigate"
+
+        [plugins.core.views.default.commands.open.payload]
+        target = "core:capture"
+
+        [plugins.core.views.capture]
+        type = "capture"
+        output = "{{ this:query.text }}"
+
+        [plugins.core.views.capture.query]
+        type = "object"
+        input_order = ["text"]
+        text = '''{{ state("string", "target-default") }}'''
+        "#,
+    )
+    .expect("could not write navigation default config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not navigate without a query");
+    process
+        .master
+        .flush()
+        .expect("could not flush navigation key");
+    let output = wait_for_text(&process.master, "target-default");
+    assert!(
+        String::from_utf8_lossy(&output).contains("target-default"),
+        "output: {:?}",
+        output
+    );
+
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not return from default capture view");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture return");
+    let _ = wait_for_text(&process.master, "Item");
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove navigation default config");
 }
 
 #[test]

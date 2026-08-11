@@ -1,12 +1,8 @@
-use super::api::{Engine, NavigationRequest, ViewContext, ViewInstance};
-use super::runtime::RuntimeHandle;
-use crate::chrome::InputBuffer;
-use crate::config::{Config, View};
+use super::api::{Engine, ViewContext, ViewInstance};
+use crate::config::View;
 use crate::expression::validate_json_value;
-use crate::state::StateInstance;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::path::Path;
 
 pub(crate) struct EngineRegistry {
     engines: BTreeMap<&'static str, Box<dyn Engine>>,
@@ -45,30 +41,13 @@ impl EngineRegistry {
         engine.validate_config(name, view)
     }
 
-    pub(crate) fn create_view(
-        &self,
-        config: &Config,
-        request: &NavigationRequest,
-        input: &InputBuffer,
-        state: &StateInstance,
-        log_file: Option<&Path>,
-        runtime: RuntimeHandle,
-        tasks: super::TaskScheduler,
-    ) -> Result<Box<dyn ViewInstance>> {
-        let engine_type = config.engine(&request.view_ref)?;
+    pub(crate) fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+        let engine_type = context.config.engine(&context.request.view_ref)?;
         let engine = self
             .engines
             .get(engine_type)
             .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
-        engine.create_view(ViewContext {
-            config,
-            request,
-            input,
-            state,
-            log_file,
-            runtime,
-            tasks,
-        })
+        engine.create_view(context)
     }
 }
 
