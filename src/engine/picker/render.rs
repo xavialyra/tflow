@@ -24,7 +24,7 @@ pub(crate) struct PickerRenderState {
 const PICKER_COLUMN_GAP: usize = 2;
 const PICKER_MARKER_WIDTH: usize = 1;
 const PICKER_SIDE_PADDING: usize = 1;
-const PICKER_PREFIX_RIGHT_PADDING: usize = 1;
+const PICKER_PREFIX_RIGHT_PADDING: usize = 0;
 const PICKER_SCROLLBAR_WIDTH: usize = 1;
 const PICKER_SCROLLBAR_THUMB_HEIGHT: usize = 2;
 
