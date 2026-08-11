@@ -417,6 +417,15 @@ impl ChromeLayout {
     }
 }
 
+struct ComposedInput {
+    text: String,
+    cursor: usize,
+    prefix: String,
+    prefix_highlight: Option<(usize, usize)>,
+    muted: bool,
+    recognized_prefix_end: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChromeFrame {
     pub(crate) divider: String,
@@ -595,26 +604,23 @@ impl ChromeFrame {
         Self::compose_with_layout(
             width,
             layout,
-            input_prefix,
-            input_prefix_highlight,
-            input_muted,
-            recognized_input_prefix_end,
-            input,
-            input_cursor,
+            ComposedInput {
+                text: input.to_string(),
+                cursor: input_cursor,
+                prefix: input_prefix,
+                prefix_highlight: input_prefix_highlight,
+                muted: input_muted,
+                recognized_prefix_end: recognized_input_prefix_end,
+            },
             "",
             footer,
         )
     }
 
-    pub(crate) fn compose_with_layout(
+    fn compose_with_layout(
         width: usize,
         layout: ChromeLayout,
-        input_prefix: String,
-        input_prefix_highlight: Option<(usize, usize)>,
-        input_muted: bool,
-        recognized_input_prefix_end: Option<usize>,
-        input: &str,
-        input_cursor: usize,
+        input: ComposedInput,
         divider_label: &str,
         footer: FooterContent,
     ) -> Self {
@@ -629,12 +635,12 @@ impl ChromeFrame {
                 width,
                 layout.input.divider_padding,
             ),
-            input: input.to_string(),
-            input_cursor,
-            input_prefix,
-            input_prefix_highlight,
-            input_muted,
-            recognized_input_prefix_end,
+            input: input.text,
+            input_cursor: input.cursor,
+            input_prefix: input.prefix,
+            input_prefix_highlight: input.prefix_highlight,
+            input_muted: input.muted,
+            recognized_input_prefix_end: input.recognized_prefix_end,
             footer: footer.text,
             footer_divider: layout.pad_line(
                 &divider_line(footer_divider_width, ""),

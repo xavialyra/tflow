@@ -879,13 +879,13 @@ impl ViewInstance for PickerView {
             .as_deref()
             .map(crate::chrome::ChromePresentation::with_input_prefix)
             .unwrap_or_default();
-        if self.frame.command_owner.is_none() && self.frame.view != host.config.command_view {
-            if let Some(end) = self
+        if self.frame.command_owner.is_none()
+            && self.frame.view != host.config.command_view
+            && let Some(end) = self
                 .router
                 .recognized_prefix_end(&self.frame.view, &host.input.raw)
-            {
-                presentation = presentation.with_recognized_input_prefix(end);
-            }
+        {
+            presentation = presentation.with_recognized_input_prefix(end);
         }
         crate::chrome::EngineChrome {
             title: None,
