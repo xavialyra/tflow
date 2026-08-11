@@ -1,6 +1,12 @@
+use crate::embedded_terminal::EmbeddedTerminal;
 use crate::router::RouteDisplay;
 use crate::terminal::Terminal;
-use anyhow::{Context, Result};
+use anyhow::Result;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::Paragraph;
 use std::env;
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
@@ -50,11 +56,6 @@ pub(crate) enum ChromeCursor {
     #[default]
     Hidden,
     Input,
-    Content {
-        row: usize,
-        column: usize,
-        visible: bool,
-    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -439,31 +440,6 @@ impl ChromeLayout {
         )
     }
 
-    fn footer_content_line(self, text: &str, key_spans: &[(usize, usize)], width: usize) -> String {
-        let left = self.footer_padding.left.min(width);
-        let right = self.footer_padding.right.min(width.saturating_sub(left));
-        let available = width.saturating_sub(left).saturating_sub(right);
-        let text = clip(text, available);
-        let text = style_footer(&text, key_spans);
-        format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
-    }
-
-    pub(crate) fn footer_line(
-        self,
-        text: &str,
-        key_spans: &[(usize, usize)],
-        width: usize,
-    ) -> String {
-        let left = self.viewport_padding.left.min(width);
-        let right = self.viewport_padding.right.min(width.saturating_sub(left));
-        let inner = self.footer_content_line(
-            text,
-            key_spans,
-            width.saturating_sub(left).saturating_sub(right),
-        );
-        format!("{}{}{}", " ".repeat(left), inner, " ".repeat(right))
-    }
-
     pub(crate) fn selection_parts(self, text: &str, width: usize) -> (String, String, String) {
         let clipped = clip(text, width);
         let left = self.viewport_padding.left.min(width).min(clipped.len());
@@ -499,11 +475,6 @@ pub(crate) struct ChromeFrame {
 impl ChromeFrame {
     pub(crate) fn layout(&self) -> ChromeLayout {
         self.layout
-    }
-
-    pub(crate) fn footer_line(&self, width: usize) -> String {
-        self.layout
-            .footer_line(&self.footer, &self.footer_keys, width)
     }
 
     #[cfg(test)]
@@ -646,41 +617,83 @@ impl ChromeFrame {
         }
     }
 
-    pub(crate) fn render(&self, terminal: &Terminal, content: ChromeContent) -> Result<()> {
-        let (width, height) = terminal.size();
-        let width = width as usize;
-        let height = height as usize;
+    pub(crate) fn render(&self, terminal: &mut Terminal, content: ChromeContent) -> Result<()> {
+        terminal.draw(|frame| self.render_frame(frame, content))
+    }
+
+    pub(crate) fn render_embedded(
+        &self,
+        terminal: &mut Terminal,
+        screen: &EmbeddedTerminal,
+    ) -> Result<()> {
+        terminal.draw(|frame| self.render_embedded_frame(frame, screen))
+    }
+
+    fn render_embedded_frame(&self, frame: &mut Frame, screen: &EmbeddedTerminal) {
+        self.render_frame(frame, ChromeContent::default());
+        let content_area = self.content_area(frame.area());
+        frame.render_widget(screen.widget(), content_area);
+        if let Some((column, row)) = screen.cursor()
+            && column < content_area.width as usize
+            && row < content_area.height as usize
+        {
+            frame.set_cursor_position((
+                content_area.x.saturating_add(column as u16),
+                content_area.y.saturating_add(row as u16),
+            ));
+        }
+    }
+
+    pub(crate) fn content_area(&self, area: Rect) -> Rect {
+        let layout = self.layout;
+        let width = area.width as usize;
+        let height = area.height as usize;
+        Rect::new(
+            area.x.saturating_add(as_u16(
+                layout
+                    .viewport_padding
+                    .left
+                    .saturating_add(layout.content_padding.left),
+            )),
+            area.y.saturating_add(as_u16(layout.content_start_row())),
+            as_u16(layout.content_width(width)),
+            as_u16(layout.content_rows(height)),
+        )
+    }
+
+    fn render_frame(&self, frame: &mut Frame, content: ChromeContent) {
+        let area = frame.area();
+        let width = area.width as usize;
+        let height = area.height as usize;
         let layout = self.layout;
         let viewport_width = layout.viewport_width(width);
         let content_start = layout.content_start_row();
         let content_rows = layout.content_rows(height);
         let footer_row = layout.footer_row(height);
         let footer_divider_row = layout.footer_divider_content_row(height);
-        let mut output = String::new();
+        let cyan = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let dim = Style::new().add_modifier(Modifier::DIM);
+        let selected = Style::new().add_modifier(Modifier::REVERSED);
+        let mut lines = Vec::with_capacity(height);
 
-        output.push_str("\x1b[?25l\x1b[H");
         for row in 0..height {
-            if row == footer_row {
-                output.push_str(&self.footer_line(width));
+            let line = if row == footer_row {
+                Line::from(self.footer_spans(width))
             } else if row == layout.topbar_content_row() {
-                output.push_str("\x1b[2m");
-                output.push_str(&clip(&layout.system_topbar_line(width), width));
-                output.push_str("\x1b[0m");
+                Line::styled(clip(&layout.system_topbar_line(width), width), dim)
             } else if row == layout.input_content_row() {
                 let (input, _) = self.input_line_for_width(viewport_width);
-                output.push_str(&layout.pad_line(&input, width, layout.viewport_padding));
+                Line::from(layout.pad_line(&input, width, layout.viewport_padding))
             } else if row == layout.divider_content_row() {
-                output.push_str("\x1b[1;36m");
-                output.push_str(&layout.pad_line(&self.divider, width, layout.viewport_padding));
-                output.push_str("\x1b[0m");
+                Line::styled(
+                    layout.pad_line(&self.divider, width, layout.viewport_padding),
+                    cyan,
+                )
             } else if row == footer_divider_row {
-                output.push_str("\x1b[1;36m");
-                output.push_str(&layout.pad_line(
-                    &self.footer_divider,
-                    width,
-                    layout.viewport_padding,
-                ));
-                output.push_str("\x1b[0m");
+                Line::styled(
+                    layout.pad_line(&self.footer_divider, width, layout.viewport_padding),
+                    cyan,
+                )
             } else if row >= content_start && row < content_start.saturating_add(content_rows) {
                 let content_row = row.saturating_sub(content_start);
                 let text = content
@@ -689,27 +702,77 @@ impl ChromeFrame {
                     .map(String::as_str)
                     .unwrap_or("");
                 let text = layout.pad_line(text, viewport_width, layout.content_padding);
-                let line = layout.pad_line(&text, width, layout.viewport_padding);
-                let line = clip(&line, width);
+                let line = clip(
+                    &layout.pad_line(&text, width, layout.viewport_padding),
+                    width,
+                );
                 if content.selected_row == Some(content_row) {
-                    let (left, selected, right) = layout.selection_parts(&line, width);
-                    output.push_str(&left);
-                    output.push_str("\x1b[7m");
-                    output.push_str(&selected);
-                    output.push_str("\x1b[0m");
-                    output.push_str(&right);
+                    let (left, selected_text, right) = layout.selection_parts(&line, width);
+                    Line::from(vec![
+                        Span::raw(left),
+                        Span::styled(selected_text, selected),
+                        Span::raw(right),
+                    ])
                 } else {
-                    output.push_str(&line);
+                    Line::from(line)
                 }
-            }
-            output.push_str("\x1b[K");
-            if row + 1 < height {
-                output.push_str("\r\n");
-            }
+            } else {
+                Line::default()
+            };
+            lines.push(line);
         }
 
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.set_cursor(frame, &content, area, viewport_width);
+    }
+
+    fn footer_spans(&self, width: usize) -> Vec<Span<'static>> {
+        let prefix_width = self
+            .layout
+            .viewport_padding
+            .left
+            .saturating_add(self.layout.footer_padding.left);
+        let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+        let mut cursor = 0;
+        let text = clip(
+            &self.footer,
+            self.layout
+                .chrome_width(width)
+                .saturating_sub(self.layout.footer_padding.horizontal()),
+        );
+        for &(start, end) in &self.footer_keys {
+            let start = start.max(cursor).min(text.len());
+            let end = end.max(start).min(text.len());
+            if start > cursor {
+                spans.push(Span::raw(text[cursor..start].to_string()));
+            }
+            if end > start {
+                spans.push(Span::styled(
+                    text[start..end].to_string(),
+                    Style::new()
+                        .bg(Color::Rgb(220, 224, 230))
+                        .fg(Color::Rgb(25, 30, 35)),
+                ));
+            }
+            cursor = end;
+        }
+        if cursor < text.len() {
+            spans.push(Span::raw(text[cursor..].to_string()));
+        }
+        spans
+    }
+
+    fn set_cursor(
+        &self,
+        frame: &mut Frame,
+        content: &ChromeContent,
+        area: Rect,
+        viewport_width: usize,
+    ) {
+        let layout = self.layout;
+        let width = area.width as usize;
+        let height = area.height as usize;
         match content.cursor {
-            ChromeCursor::Hidden => output.push_str("\x1b[?25l"),
             ChromeCursor::Input => {
                 let (_, cursor_column) = self.input_line_for_width(viewport_width);
                 let row = layout.input_content_row();
@@ -718,43 +781,16 @@ impl ChromeFrame {
                     let column = layout
                         .viewport_padding
                         .left
-                        .saturating_add(cursor_column)
-                        .max(1)
-                        .min(max_column);
-                    output.push_str(&format!("\x1b[{};{}H\x1b[?25h", row + 1, column));
-                } else {
-                    output.push_str("\x1b[?25l");
-                }
-            }
-            ChromeCursor::Content {
-                row,
-                column,
-                visible,
-            } if visible && content_rows > 0 => {
-                let row = content_start + row.min(content_rows.saturating_sub(1));
-                if row < height {
-                    let content_width = layout.content_width(width);
-                    let column = layout
-                        .viewport_padding
-                        .left
-                        .saturating_add(layout.content_padding.left)
-                        .saturating_add(column.min(content_width.saturating_sub(1)))
-                        .saturating_add(1);
-                    let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
-                    output.push_str(&format!(
-                        "\x1b[{};{}H\x1b[?25h",
-                        row + 1,
-                        column.min(max_column)
+                        .saturating_add(cursor_column.saturating_sub(1))
+                        .min(max_column.saturating_sub(1));
+                    frame.set_cursor_position((
+                        area.x.saturating_add(as_u16(column)),
+                        area.y.saturating_add(as_u16(row)),
                     ));
-                } else {
-                    output.push_str("\x1b[?25l");
                 }
             }
-            ChromeCursor::Content { .. } => output.push_str("\x1b[?25l"),
+            ChromeCursor::Hidden => {}
         }
-        terminal
-            .write_output(output.as_bytes())
-            .context("could not draw chrome")
     }
 }
 
@@ -893,26 +929,8 @@ fn clip_footer(content: &FooterContent, width: usize) -> FooterContent {
     }
 }
 
-fn style_footer(text: &str, key_spans: &[(usize, usize)]) -> String {
-    const KEY_START: &str = "\x1b[48;2;220;224;230m\x1b[38;2;25;30;35m";
-    const KEY_END: &str = "\x1b[0m";
-    let mut output = String::new();
-    let mut cursor = 0;
-    for &(start, end) in key_spans {
-        let start = start.max(cursor).min(text.len());
-        let end = end.max(start).min(text.len());
-        if start > cursor {
-            output.push_str(&text[cursor..start]);
-        }
-        if end > start {
-            output.push_str(KEY_START);
-            output.push_str(&text[start..end]);
-            output.push_str(KEY_END);
-        }
-        cursor = end;
-    }
-    output.push_str(&text[cursor..]);
-    output
+fn as_u16(value: usize) -> u16 {
+    value.min(u16::MAX as usize) as u16
 }
 
 fn topbar_text(width: usize) -> String {
@@ -1071,11 +1089,7 @@ mod tests {
         assert_eq!(UnicodeWidthStr::width(frame.footer_divider.as_str()), 78);
         assert!(frame.layout.system_topbar_line(80).contains('@'));
         assert!(frame.layout.system_topbar_line(80).contains(':'));
-        assert!(
-            frame
-                .footer_line(80)
-                .contains("\x1b[48;2;220;224;230m\x1b[38;2;25;30;35mEnter\x1b[0m Open")
-        );
+        assert!(frame.footer.contains("Enter Open"));
     }
 
     #[test]
@@ -1215,5 +1229,51 @@ mod tests {
             Some("view alias is ambiguous"),
         );
         assert_eq!(frame.footer, "view alias is ambiguous");
+    }
+
+    #[test]
+    fn footer_status_keeps_its_separator() {
+        use ratatui::Terminal as RatatuiTerminal;
+        use ratatui::backend::TestBackend;
+
+        let frame = ChromeFrame::compose(
+            80,
+            &route(),
+            "",
+            EngineChrome {
+                status: Some("1/1".to_string()),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
+
+        terminal
+            .draw(|draw| frame.render_frame(draw, ChromeContent::default()))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((1, 23)).unwrap().symbol(), "1");
+        assert_eq!(buffer.cell((2, 23)).unwrap().symbol(), "/");
+        assert_eq!(buffer.cell((3, 23)).unwrap().symbol(), "1");
+    }
+
+    #[test]
+    fn embedded_terminal_keeps_avt_cell_style() {
+        use ratatui::Terminal as RatatuiTerminal;
+        use ratatui::backend::TestBackend;
+
+        let frame = ChromeFrame::compose(80, &route(), "", EngineChrome::default(), None);
+        let mut screen = crate::embedded_terminal::EmbeddedTerminal::new(78, 19);
+        screen.feed(b"\x1b[38;5;196mred\x1b[0m");
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
+
+        terminal
+            .draw(|draw| frame.render_embedded_frame(draw, &screen))
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((1, 3)).unwrap();
+        assert_eq!(cell.symbol(), "r");
+        assert_eq!(cell.style().fg, Some(Color::Indexed(196)));
     }
 }

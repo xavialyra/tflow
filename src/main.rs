@@ -3,6 +3,7 @@ mod cancellation;
 mod chrome;
 mod command_runner;
 mod config;
+mod embedded_terminal;
 mod engine;
 mod expression;
 mod input;
@@ -12,7 +13,6 @@ mod runtime_log;
 mod state;
 mod terminal;
 mod text;
-mod vt;
 
 use anyhow::{Context, Result, bail};
 use app::App;

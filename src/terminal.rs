@@ -1,12 +1,16 @@
 use anyhow::{Context, Result, bail};
+use ratatui::backend::CrosstermBackend;
+use ratatui::{Frame, Terminal as RatatuiTerminal};
+use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 
 pub struct Terminal {
     input_fd: libc::c_int,
     output_fd: libc::c_int,
     original: libc::termios,
     raw: libc::termios,
+    renderer: RatatuiTerminal<CrosstermBackend<File>>,
     active: bool,
     screen_active: bool,
 }
@@ -32,11 +36,15 @@ impl Terminal {
             return Err(io::Error::last_os_error()).context("could not enable raw terminal mode");
         }
 
+        let output = duplicate_fd(output_fd)?;
+        let renderer = RatatuiTerminal::new(CrosstermBackend::new(output))
+            .context("could not initialize Ratatui terminal backend")?;
         let mut terminal = Self {
             input_fd,
             output_fd,
             original,
             raw,
+            renderer,
             active: true,
             screen_active: false,
         };
@@ -71,6 +79,7 @@ impl Terminal {
         }
         self.active = true;
         self.screen_active = false;
+        self.reset_renderer()?;
         self.resume_screen()
     }
 
@@ -84,29 +93,10 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn write_output(&self, bytes: &[u8]) -> Result<()> {
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let count = unsafe {
-                libc::write(
-                    self.output_fd,
-                    bytes[offset..].as_ptr().cast(),
-                    bytes.len() - offset,
-                )
-            };
-            if count > 0 {
-                offset += count as usize;
-                continue;
-            }
-            if count < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error).context("could not write terminal output");
-            }
-            bail!("could not write terminal output: write returned zero");
-        }
+    pub fn draw(&mut self, render: impl FnOnce(&mut Frame)) -> Result<()> {
+        self.renderer
+            .draw(render)
+            .context("could not draw Ratatui frame")?;
         Ok(())
     }
 
@@ -149,6 +139,47 @@ impl Terminal {
         }
         Ok(buffer[..count as usize].to_vec())
     }
+
+    fn reset_renderer(&mut self) -> Result<()> {
+        let output = duplicate_fd(self.output_fd)?;
+        self.renderer = RatatuiTerminal::new(CrosstermBackend::new(output))
+            .context("could not reset Ratatui terminal backend")?;
+        Ok(())
+    }
+
+    fn write_output(&self, bytes: &[u8]) -> Result<()> {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let count = unsafe {
+                libc::write(
+                    self.output_fd,
+                    bytes[offset..].as_ptr().cast(),
+                    bytes.len() - offset,
+                )
+            };
+            if count > 0 {
+                offset += count as usize;
+                continue;
+            }
+            if count < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error).context("could not write terminal output");
+            }
+            bail!("could not write terminal output: write returned zero");
+        }
+        Ok(())
+    }
+}
+
+fn duplicate_fd(fd: libc::c_int) -> Result<File> {
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error()).context("could not duplicate terminal output");
+    }
+    Ok(unsafe { File::from_raw_fd(duplicate) })
 }
 
 impl Drop for Terminal {

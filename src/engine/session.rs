@@ -500,7 +500,7 @@ impl<'a> AppSession<'a> {
         Ok(())
     }
 
-    fn render(&mut self, terminal: &Terminal) -> Result<()> {
+    fn render(&mut self, terminal: &mut Terminal) -> Result<()> {
         let show_route_label = self.views.len() > 1;
         let entry = self
             .views

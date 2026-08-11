@@ -14,7 +14,7 @@ impl EmbeddedSession {
 
     pub(crate) fn run(
         &self,
-        terminal: &Terminal,
+        terminal: &mut Terminal,
         chrome: &crate::chrome::ChromeFrame,
     ) -> Result<EmbeddedOutcome> {
         pty::run(

@@ -1,5 +1,5 @@
+use crate::embedded_terminal::EmbeddedTerminal;
 use crate::terminal::Terminal;
-use crate::vt::VirtualTerminal;
 use anyhow::{Context, Result, bail};
 use std::ffi::CString;
 use std::io;
@@ -22,7 +22,7 @@ pub fn run(
     command: &[String],
     environment: &[(String, String)],
     working_dir: Option<&Path>,
-    terminal: &Terminal,
+    terminal: &mut Terminal,
     chrome: &crate::chrome::ChromeFrame,
 ) -> Result<EmbeddedOutcome> {
     if command.is_empty() {
@@ -115,13 +115,13 @@ fn exec_child(
 fn relay(
     master: RawFd,
     pid: libc::pid_t,
-    terminal: &Terminal,
+    terminal: &mut Terminal,
     mut last_size: (u16, u16),
     chrome: &crate::chrome::ChromeFrame,
     layout: crate::chrome::ChromeLayout,
 ) -> Result<EmbeddedOutcome> {
     let mut input = InputRelay::default();
-    let mut screen = VirtualTerminal::new(last_size.0, last_size.1);
+    let mut screen = EmbeddedTerminal::new(last_size.0, last_size.1);
     render_embedded(terminal, chrome, &screen)?;
 
     loop {
@@ -265,8 +265,8 @@ fn escape_sequence_end(bytes: &[u8]) -> Option<usize> {
 
 fn drain_output(
     master: RawFd,
-    screen: &mut VirtualTerminal,
-    terminal: &Terminal,
+    screen: &mut EmbeddedTerminal,
+    terminal: &mut Terminal,
     chrome: &crate::chrome::ChromeFrame,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 8192];
@@ -308,26 +308,11 @@ fn content_size(
 }
 
 fn render_embedded(
-    terminal: &Terminal,
+    terminal: &mut Terminal,
     chrome: &crate::chrome::ChromeFrame,
-    screen: &VirtualTerminal,
+    screen: &EmbeddedTerminal,
 ) -> Result<()> {
-    let (_, outer_rows) = terminal.size();
-    let content_rows = chrome.layout().content_rows(outer_rows as usize);
-    let lines = (0..content_rows).map(|row| screen.row_text(row)).collect();
-    let (cursor_x, cursor_y, visible) = screen.cursor();
-    chrome.render(
-        terminal,
-        crate::chrome::ChromeContent::new(
-            lines,
-            None,
-            crate::chrome::ChromeCursor::Content {
-                row: cursor_y,
-                column: cursor_x,
-                visible,
-            },
-        ),
-    )
+    chrome.render_embedded(terminal, screen)
 }
 
 fn write_fd(fd: RawFd, bytes: &[u8]) -> Result<()> {

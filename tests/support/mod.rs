@@ -369,14 +369,23 @@ pub fn wait_for_process_exit(pid: libc::pid_t) {
 pub fn wait_for_text(master: &File, needle: &str) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut output = Vec::new();
+    let mut screen = avt::Vt::new(80, 24);
+    let mut pending_utf8 = Vec::new();
+    let mut parsed = 0;
     loop {
         drain_master_into(master, &mut output);
-        if String::from_utf8_lossy(&output).contains(needle) {
-            return output;
+        feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
+        parsed = output.len();
+        let visible = visible_screen(&screen);
+        if String::from_utf8_lossy(&output).contains(needle) || visible.contains(needle) {
+            let mut observed = output;
+            observed.extend_from_slice(b"\n--- visible screen ---\n");
+            observed.extend_from_slice(visible.as_bytes());
+            return observed;
         }
         assert!(
             Instant::now() < deadline,
-            "process did not emit {needle:?}; output: {:?}",
+            "process did not render {needle:?}; visible screen: {visible:?}; output: {:?}",
             output
         );
         thread::sleep(Duration::from_millis(10));
@@ -405,6 +414,42 @@ pub fn wait_for_launcher_exit(process: &mut LauncherProcess) -> (i32, Vec<u8>) {
         assert!(result >= 0, "could not wait for launcher test process");
         assert!(Instant::now() < deadline, "launcher process did not exit");
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn visible_screen(screen: &avt::Vt) -> String {
+    screen
+        .view()
+        .map(avt::Line::text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn feed_terminal_output(screen: &mut avt::Vt, pending_utf8: &mut Vec<u8>, bytes: &[u8]) {
+    pending_utf8.extend_from_slice(bytes);
+    loop {
+        match std::str::from_utf8(pending_utf8) {
+            Ok(text) => {
+                screen.feed_str(text);
+                pending_utf8.clear();
+                return;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    let text = std::str::from_utf8(&pending_utf8[..valid_up_to])
+                        .expect("valid UTF-8 prefix");
+                    screen.feed_str(text);
+                    pending_utf8.drain(..valid_up_to);
+                }
+                if let Some(invalid_length) = error.error_len() {
+                    screen.feed_str("\u{fffd}");
+                    pending_utf8.drain(..invalid_length);
+                } else {
+                    return;
+                }
+            }
+        }
     }
 }
 
