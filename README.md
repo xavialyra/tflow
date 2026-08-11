@@ -411,7 +411,7 @@ System monitor sys
 Package details apps:detail
 ```
 
-Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. An alias is recognized as a route only after a whitespace separator, so typing `app` alone remains ordinary query text; a canonical `plugin:view` reference may still be entered by itself. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace at the end of its selector tag, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Source commands remain owned by the source view.
+Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Both aliases and canonical `plugin:view` references become routes only after a whitespace separator, so `app` and `core:messages` alone remain ordinary query text. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace at the end of its selector tag, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Source commands remain owned by the source view.
 
 ## Command environment
 
