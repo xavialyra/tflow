@@ -1,16 +1,12 @@
-use crate::embedded_terminal::EmbeddedTerminal;
 use crate::router::RouteDisplay;
-use crate::terminal::Terminal;
-use anyhow::Result;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
-use std::env;
-use std::mem::MaybeUninit;
-use std::sync::OnceLock;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+const DIVIDER_COLOR: Color = Color::LightCyan;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EngineChrome {
@@ -35,47 +31,46 @@ impl FooterContent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InputPrefix {
+    text: String,
+    removable: bool,
+}
+
+impl InputPrefix {
+    pub(crate) fn context(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            removable: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ChromePresentation {
     layout: ChromeLayout,
-    input_prefix: Option<String>,
+    input_prompt: Option<String>,
+    input_context_prefix: Option<InputPrefix>,
+    recognized_input_prefix_end: Option<usize>,
     footer: Option<FooterContent>,
 }
 
 impl ChromePresentation {
     pub(crate) fn with_input_prefix(prefix: &str) -> Self {
         Self {
-            input_prefix: Some(prefix.to_string()),
+            input_prompt: Some(prefix.to_string()),
             ..Self::default()
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum ChromeCursor {
-    #[default]
-    Hidden,
-    Input,
-}
+    pub(crate) fn with_recognized_input_prefix(mut self, end: usize) -> Self {
+        self.recognized_input_prefix_end = Some(end);
+        self
+    }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ChromeContent {
-    pub(crate) lines: Vec<String>,
-    pub(crate) selected_row: Option<usize>,
-    pub(crate) cursor: ChromeCursor,
-}
-
-impl ChromeContent {
-    pub(crate) fn new(
-        lines: Vec<String>,
-        selected_row: Option<usize>,
-        cursor: ChromeCursor,
-    ) -> Self {
-        Self {
-            lines,
-            selected_row,
-            cursor,
-        }
+    pub(crate) fn with_input_context_prefix(mut self, prefix: InputPrefix) -> Self {
+        self.input_context_prefix = Some(prefix);
+        self
     }
 }
 
@@ -317,7 +312,7 @@ impl Default for ChromeLayout {
             topbar_rows: 1,
             topbar_padding: Insets::ZERO,
             input: InputLayout::default(),
-            footer_divider_rows: 1,
+            footer_divider_rows: 0,
             footer_divider_padding: Insets::ZERO,
             footer_rows: 1,
             viewport_padding: Insets::new(0, 1, 0, 1),
@@ -381,11 +376,6 @@ impl ChromeLayout {
             ))
     }
 
-    pub(crate) fn footer_divider_content_row(self, height: usize) -> usize {
-        self.footer_divider_row(height)
-            .saturating_add(self.footer_divider_padding.top)
-    }
-
     pub(crate) fn footer_row(self, height: usize) -> usize {
         self.footer_region_row(height)
             .saturating_add(self.footer_padding.top)
@@ -420,44 +410,6 @@ impl ChromeLayout {
         format!("{}{}{}", " ".repeat(left), text, " ".repeat(right),)
     }
 
-    fn topbar_content_line(self, text: &str, width: usize) -> String {
-        self.pad_line(text, width, self.topbar_padding)
-    }
-
-    pub(crate) fn topbar_line(self, text: &str, width: usize) -> String {
-        let left = self.viewport_padding.left.min(width);
-        let right = self.viewport_padding.right.min(width.saturating_sub(left));
-        let inner =
-            self.topbar_content_line(text, width.saturating_sub(left).saturating_sub(right));
-        format!("{}{}{}", " ".repeat(left), inner, " ".repeat(right))
-    }
-
-    pub(crate) fn system_topbar_line(self, width: usize) -> String {
-        let viewport_width = self.viewport_width(width);
-        self.topbar_line(
-            &topbar_text(viewport_width.saturating_sub(self.topbar_padding.horizontal())),
-            width,
-        )
-    }
-
-    pub(crate) fn selection_parts(self, text: &str, width: usize) -> (String, String, String) {
-        let clipped = clip(text, width);
-        let left = self.viewport_padding.left.min(width).min(clipped.len());
-        let mut right = self
-            .viewport_padding
-            .right
-            .min(width.saturating_sub(self.viewport_padding.left));
-        let mut body_end = clipped.len();
-        while right > 0 && body_end > left && clipped.as_bytes().get(body_end - 1) == Some(&b' ') {
-            body_end -= 1;
-            right -= 1;
-        }
-        (
-            clipped[..left].to_string(),
-            clipped[left..body_end].to_string(),
-            clipped[body_end..].to_string(),
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +418,8 @@ pub(crate) struct ChromeFrame {
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
     input_prefix: String,
+    input_prefix_highlight: Option<(usize, usize)>,
+    recognized_input_prefix_end: Option<usize>,
     pub(crate) footer: String,
     pub(crate) footer_divider: String,
     footer_keys: Vec<(usize, usize)>,
@@ -483,13 +437,23 @@ impl ChromeFrame {
     }
 
     pub(crate) fn input_line_for_width(&self, width: usize) -> (String, usize) {
+        let (line, cursor, _) = self.input_line_parts_for_width(width);
+        (line, cursor)
+    }
+
+    fn input_line_parts_for_width(&self, width: usize) -> (String, usize, Option<(usize, usize)>) {
         let prefix = self.input_prefix.as_str();
         let prefix_width = UnicodeWidthStr::width(prefix);
         let text_available = width
             .saturating_sub(prefix_width)
             .saturating_sub(self.layout.input.padding.right);
         if text_available == 0 {
-            return (clip(prefix, width), width.max(1));
+            let text = clip(prefix, width);
+            return (
+                text.clone(),
+                width.max(1),
+                self.static_input_prefix_range(text.len()),
+            );
         }
 
         let cursor = previous_char_boundary(&self.input, self.input_cursor);
@@ -500,6 +464,12 @@ impl ChromeFrame {
             return (
                 format!("{}{}", prefix, self.input),
                 prefix_width + cursor_width + 1,
+                self.highlighted_input_prefix_range(
+                    prefix.len(),
+                    0,
+                    self.input.len(),
+                    prefix.len() + self.input.len(),
+                ),
             );
         }
 
@@ -518,11 +488,41 @@ impl ChromeFrame {
         let start = byte_at_width(&self.input, start_width);
         let visible = clip_from(&self.input[start..], budget);
         let text = format!("{}{}{}", prefix, marker, visible);
+        let output_end = text.len();
         let local_cursor = UnicodeWidthStr::width(&self.input[start..cursor]);
         (
             text,
             prefix_width + UnicodeWidthStr::width(marker) + local_cursor + 1,
+            self.highlighted_input_prefix_range(
+                prefix.len().saturating_add(marker.len()),
+                start,
+                start.saturating_add(visible.len()),
+                output_end,
+            ),
         )
+    }
+
+    fn highlighted_input_prefix_range(
+        &self,
+        output_start: usize,
+        input_start: usize,
+        input_end: usize,
+        output_end: usize,
+    ) -> Option<(usize, usize)> {
+        self.static_input_prefix_range(output_end).or_else(|| {
+            let end = self.recognized_input_prefix_end?;
+            (input_start == 0 && end <= input_end && self.input.is_char_boundary(end))
+                .then_some((output_start, output_start.saturating_add(end)))
+        })
+    }
+
+    fn static_input_prefix_range(&self, output_end: usize) -> Option<(usize, usize)> {
+        self.input_prefix_highlight.filter(|(start, end)| {
+            *start < *end
+                && *end <= output_end
+                && self.input_prefix.is_char_boundary(*start)
+                && self.input_prefix.is_char_boundary(*end)
+        })
     }
 
     #[cfg(test)]
@@ -553,7 +553,9 @@ impl ChromeFrame {
         } = engine;
         let ChromePresentation {
             layout,
-            input_prefix,
+            input_prompt,
+            input_context_prefix,
+            recognized_input_prefix_end,
             footer,
         } = presentation;
         let footer_width = layout
@@ -571,14 +573,27 @@ impl ChromeFrame {
                 &commands,
             )
         };
-        let route_label = show_route_label.then(|| route.label());
+        let prompt = input_prompt.unwrap_or_else(|| " ".repeat(layout.input.padding.left));
+        let (input_prefix, input_prefix_highlight) = match input_context_prefix {
+            Some(context) => {
+                debug_assert!(!context.removable);
+                let start = prompt.len();
+                let end = start.saturating_add(context.text.len());
+                (format!("{}{}", prompt, context.text), Some((start, end)))
+            }
+            None => (prompt, None),
+        };
+        let _ = show_route_label;
+        let _ = route;
         Self::compose_with_layout(
             width,
             layout,
-            input_prefix.unwrap_or_else(|| " ".repeat(layout.input.padding.left)),
+            input_prefix,
+            input_prefix_highlight,
+            recognized_input_prefix_end,
             input,
             input_cursor,
-            route_label.as_deref().unwrap_or(""),
+            "",
             footer,
         )
     }
@@ -587,6 +602,8 @@ impl ChromeFrame {
         width: usize,
         layout: ChromeLayout,
         input_prefix: String,
+        input_prefix_highlight: Option<(usize, usize)>,
+        recognized_input_prefix_end: Option<usize>,
         input: &str,
         input_cursor: usize,
         divider_label: &str,
@@ -606,6 +623,8 @@ impl ChromeFrame {
             input: input.to_string(),
             input_cursor,
             input_prefix,
+            input_prefix_highlight,
+            recognized_input_prefix_end,
             footer: footer.text,
             footer_divider: layout.pad_line(
                 &divider_line(footer_divider_width, ""),
@@ -617,31 +636,10 @@ impl ChromeFrame {
         }
     }
 
-    pub(crate) fn render(&self, terminal: &mut Terminal, content: ChromeContent) -> Result<()> {
-        terminal.draw(|frame| self.render_frame(frame, content))
-    }
-
-    pub(crate) fn render_embedded(
-        &self,
-        terminal: &mut Terminal,
-        screen: &EmbeddedTerminal,
-    ) -> Result<()> {
-        terminal.draw(|frame| self.render_embedded_frame(frame, screen))
-    }
-
-    fn render_embedded_frame(&self, frame: &mut Frame, screen: &EmbeddedTerminal) {
-        self.render_frame(frame, ChromeContent::default());
+    pub(crate) fn render_chrome(&self, frame: &mut Frame) -> Rect {
         let content_area = self.content_area(frame.area());
-        frame.render_widget(screen.widget(), content_area);
-        if let Some((column, row)) = screen.cursor()
-            && column < content_area.width as usize
-            && row < content_area.height as usize
-        {
-            frame.set_cursor_position((
-                content_area.x.saturating_add(column as u16),
-                content_area.y.saturating_add(row as u16),
-            ));
-        }
+        self.render_frame(frame);
+        content_area
     }
 
     pub(crate) fn content_area(&self, area: Rect) -> Rect {
@@ -661,61 +659,35 @@ impl ChromeFrame {
         )
     }
 
-    fn render_frame(&self, frame: &mut Frame, content: ChromeContent) {
+    fn render_frame(&self, frame: &mut Frame) {
         let area = frame.area();
         let width = area.width as usize;
         let height = area.height as usize;
         let layout = self.layout;
         let viewport_width = layout.viewport_width(width);
-        let content_start = layout.content_start_row();
-        let content_rows = layout.content_rows(height);
         let footer_row = layout.footer_row(height);
-        let footer_divider_row = layout.footer_divider_content_row(height);
-        let cyan = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-        let dim = Style::new().add_modifier(Modifier::DIM);
-        let selected = Style::new().add_modifier(Modifier::REVERSED);
+        let cyan = Style::new().fg(DIVIDER_COLOR).add_modifier(Modifier::BOLD);
         let mut lines = Vec::with_capacity(height);
 
         for row in 0..height {
             let line = if row == footer_row {
                 Line::from(self.footer_spans(width))
             } else if row == layout.topbar_content_row() {
-                Line::styled(clip(&layout.system_topbar_line(width), width), dim)
+                Line::default()
             } else if row == layout.input_content_row() {
-                let (input, _) = self.input_line_for_width(viewport_width);
-                Line::from(layout.pad_line(&input, width, layout.viewport_padding))
+                let (input, _, highlighted_prefix) =
+                    self.input_line_parts_for_width(viewport_width);
+                let input = layout.pad_line(&input, width, layout.viewport_padding);
+                let highlighted_prefix = highlighted_prefix.map(|(start, end)| {
+                    let offset = layout.viewport_padding.left;
+                    (start.saturating_add(offset), end.saturating_add(offset))
+                });
+                Line::from(input_spans(input, highlighted_prefix))
             } else if row == layout.divider_content_row() {
                 Line::styled(
                     layout.pad_line(&self.divider, width, layout.viewport_padding),
                     cyan,
                 )
-            } else if row == footer_divider_row {
-                Line::styled(
-                    layout.pad_line(&self.footer_divider, width, layout.viewport_padding),
-                    cyan,
-                )
-            } else if row >= content_start && row < content_start.saturating_add(content_rows) {
-                let content_row = row.saturating_sub(content_start);
-                let text = content
-                    .lines
-                    .get(content_row)
-                    .map(String::as_str)
-                    .unwrap_or("");
-                let text = layout.pad_line(text, viewport_width, layout.content_padding);
-                let line = clip(
-                    &layout.pad_line(&text, width, layout.viewport_padding),
-                    width,
-                );
-                if content.selected_row == Some(content_row) {
-                    let (left, selected_text, right) = layout.selection_parts(&line, width);
-                    Line::from(vec![
-                        Span::raw(left),
-                        Span::styled(selected_text, selected),
-                        Span::raw(right),
-                    ])
-                } else {
-                    Line::from(line)
-                }
             } else {
                 Line::default()
             };
@@ -723,75 +695,96 @@ impl ChromeFrame {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
-        self.set_cursor(frame, &content, area, viewport_width);
     }
 
     fn footer_spans(&self, width: usize) -> Vec<Span<'static>> {
-        let prefix_width = self
-            .layout
-            .viewport_padding
-            .left
-            .saturating_add(self.layout.footer_padding.left);
-        let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+        let layout = self.layout;
+        let viewport_left = layout.viewport_padding.left.min(width);
+        let footer_width = layout.chrome_width(width);
+        let footer_left = layout.footer_padding.left.min(footer_width);
+        let footer_style = Style::new()
+            .bg(Color::Rgb(255, 250, 243))
+            .fg(Color::Rgb(87, 82, 121));
+        let key_style = Style::new()
+            .bg(Color::Rgb(242, 233, 225))
+            .fg(Color::Rgb(180, 99, 122));
+        let mut spans = vec![Span::raw(" ".repeat(viewport_left))];
+        spans.push(Span::styled(" ".repeat(footer_left), footer_style));
         let mut cursor = 0;
         let text = clip(
             &self.footer,
-            self.layout
-                .chrome_width(width)
-                .saturating_sub(self.layout.footer_padding.horizontal()),
+            footer_width.saturating_sub(layout.footer_padding.horizontal()),
         );
         for &(start, end) in &self.footer_keys {
             let start = start.max(cursor).min(text.len());
             let end = end.max(start).min(text.len());
             if start > cursor {
-                spans.push(Span::raw(text[cursor..start].to_string()));
+                spans.push(Span::styled(text[cursor..start].to_string(), footer_style));
             }
             if end > start {
-                spans.push(Span::styled(
-                    text[start..end].to_string(),
-                    Style::new()
-                        .bg(Color::Rgb(220, 224, 230))
-                        .fg(Color::Rgb(25, 30, 35)),
-                ));
+                spans.push(Span::styled(text[start..end].to_string(), key_style));
             }
             cursor = end;
         }
         if cursor < text.len() {
-            spans.push(Span::raw(text[cursor..].to_string()));
+            spans.push(Span::styled(text[cursor..].to_string(), footer_style));
         }
+        let used = footer_left.saturating_add(UnicodeWidthStr::width(text.as_str()));
+        spans.push(Span::styled(
+            " ".repeat(footer_width.saturating_sub(used)),
+            footer_style,
+        ));
+        let viewport_right = width
+            .saturating_sub(viewport_left)
+            .saturating_sub(footer_width);
+        spans.push(Span::raw(" ".repeat(viewport_right)));
         spans
     }
 
-    fn set_cursor(
-        &self,
-        frame: &mut Frame,
-        content: &ChromeContent,
-        area: Rect,
-        viewport_width: usize,
-    ) {
+    pub(crate) fn set_input_cursor(&self, frame: &mut Frame) {
+        let area = frame.area();
         let layout = self.layout;
         let width = area.width as usize;
         let height = area.height as usize;
-        match content.cursor {
-            ChromeCursor::Input => {
-                let (_, cursor_column) = self.input_line_for_width(viewport_width);
-                let row = layout.input_content_row();
-                if row < height {
-                    let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
-                    let column = layout
-                        .viewport_padding
-                        .left
-                        .saturating_add(cursor_column.saturating_sub(1))
-                        .min(max_column.saturating_sub(1));
-                    frame.set_cursor_position((
-                        area.x.saturating_add(as_u16(column)),
-                        area.y.saturating_add(as_u16(row)),
-                    ));
-                }
-            }
-            ChromeCursor::Hidden => {}
+        let viewport_width = layout.viewport_width(width);
+        let (_, cursor_column) = self.input_line_for_width(viewport_width);
+        let row = layout.input_content_row();
+        if row < height {
+            let max_column = width.saturating_sub(layout.viewport_padding.right).max(1);
+            let column = layout
+                .viewport_padding
+                .left
+                .saturating_add(cursor_column.saturating_sub(1))
+                .min(max_column.saturating_sub(1));
+            frame.set_cursor_position((
+                area.x.saturating_add(as_u16(column)),
+                area.y.saturating_add(as_u16(row)),
+            ));
         }
     }
+}
+
+fn input_spans(text: String, highlighted_prefix: Option<(usize, usize)>) -> Vec<Span<'static>> {
+    let Some((start, end)) = highlighted_prefix.filter(|(start, end)| {
+        *start < *end
+            && *end <= text.len()
+            && text.is_char_boundary(*start)
+            && text.is_char_boundary(*end)
+    }) else {
+        return vec![Span::raw(text)];
+    };
+    let prefix_style = Style::new()
+        .bg(Color::Rgb(242, 233, 225))
+        .fg(Color::Rgb(87, 82, 121));
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::raw(text[..start].to_string()));
+    }
+    spans.push(Span::styled(text[start..end].to_string(), prefix_style));
+    if end < text.len() {
+        spans.push(Span::raw(text[end..].to_string()));
+    }
+    spans
 }
 
 pub(crate) fn divider_line(width: usize, label: &str) -> String {
@@ -933,57 +926,6 @@ fn as_u16(value: usize) -> u16 {
     value.min(u16::MAX as usize) as u16
 }
 
-fn topbar_text(width: usize) -> String {
-    let left = format!(
-        "{}@{}",
-        env::var("USER").unwrap_or_else(|_| "user".to_string()),
-        hostname(),
-    );
-    let right = local_time();
-    if width == 0 {
-        return String::new();
-    }
-
-    let right = clip(&right, width);
-    let left_budget = width.saturating_sub(UnicodeWidthStr::width(right.as_str()) + 1);
-    let left = clip(&left, left_budget);
-    let gap = width.saturating_sub(
-        UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(right.as_str()),
-    );
-    format!("{}{}{}", left, " ".repeat(gap), right)
-}
-
-fn hostname() -> String {
-    static HOSTNAME: OnceLock<String> = OnceLock::new();
-    HOSTNAME
-        .get_or_init(|| {
-            let mut buffer = [0_u8; 256];
-            let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-            if result != 0 {
-                return "localhost".to_string();
-            }
-            let length = buffer
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(buffer.len());
-            String::from_utf8_lossy(&buffer[..length]).into_owned()
-        })
-        .clone()
-}
-
-fn local_time() -> String {
-    let timestamp = unsafe { libc::time(std::ptr::null_mut()) };
-    let mut local = MaybeUninit::<libc::tm>::uninit();
-    if unsafe { libc::localtime_r(&timestamp, local.as_mut_ptr()) }.is_null() {
-        return "--:--:--".to_string();
-    }
-    let local = unsafe { local.assume_init() };
-    format!(
-        "{:02}:{:02}:{:02}",
-        local.tm_hour, local.tm_min, local.tm_sec
-    )
-}
-
 fn display_binding(key: &str) -> String {
     match key {
         "enter" => return "Enter".to_string(),
@@ -1077,8 +1019,7 @@ mod tests {
             },
             None,
         );
-        assert!(frame.divider.starts_with("apps:default (app) "));
-        assert!(frame.divider.contains('─'));
+        assert_eq!(frame.divider, "─".repeat(78));
         assert_eq!(UnicodeWidthStr::width(frame.divider.as_str()), 78);
         assert_eq!(frame.input, "terminal");
         assert_eq!(frame.input_line(), "terminal");
@@ -1087,9 +1028,31 @@ mod tests {
         assert!(!frame.footer.ends_with("| Enter Open"));
         assert_eq!(UnicodeWidthStr::width(frame.footer.as_str()), 78);
         assert_eq!(UnicodeWidthStr::width(frame.footer_divider.as_str()), 78);
-        assert!(frame.layout.system_topbar_line(80).contains('@'));
-        assert!(frame.layout.system_topbar_line(80).contains(':'));
         assert!(frame.footer.contains("Enter Open"));
+    }
+
+    #[test]
+    fn input_context_prefix_is_rendered_separately_from_query_input() {
+        let frame = ChromeFrame::compose_with_cursor(
+            80,
+            &route(),
+            false,
+            "query",
+            5,
+            EngineChrome {
+                presentation: ChromePresentation::default()
+                    .with_input_context_prefix(InputPrefix::context("apps:default ")),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+
+        assert_eq!(frame.input_line(), "apps:default query");
+        assert_eq!(
+            frame.input_prefix_highlight,
+            Some((0, "apps:default ".len()))
+        );
+        assert_eq!(frame.input, "query");
     }
 
     #[test]
@@ -1124,8 +1087,7 @@ mod tests {
         assert_eq!(layout.input_content_row(), 1);
         assert_eq!(layout.divider_content_row(), 2);
         assert_eq!(layout.content_start_row(), 3);
-        assert_eq!(layout.content_rows(24), 19);
-        assert_eq!(layout.footer_divider_content_row(24), 22);
+        assert_eq!(layout.content_rows(24), 20);
         assert_eq!(layout.footer_row(24), 23);
         assert_eq!(layout.viewport_width(80), 78);
         assert_eq!(layout.input.padding, Insets::ZERO);
@@ -1161,17 +1123,6 @@ mod tests {
         assert_eq!(layout.viewport_width(80), 74);
         assert_eq!(layout.content_width(80), 66);
         assert_eq!(layout.chrome_width(80), 74);
-    }
-
-    #[test]
-    fn selection_excludes_viewport_padding() {
-        let layout = ChromeLayout::default();
-        let line = layout.pad_line("item", 10, layout.viewport_padding);
-
-        assert_eq!(
-            layout.selection_parts(&line, 10),
-            (" ".into(), "item".into(), " ".into())
-        );
     }
 
     #[test]
@@ -1248,9 +1199,7 @@ mod tests {
         );
         let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
 
-        terminal
-            .draw(|draw| frame.render_frame(draw, ChromeContent::default()))
-            .unwrap();
+        terminal.draw(|draw| frame.render_frame(draw)).unwrap();
 
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer.cell((1, 23)).unwrap().symbol(), "1");
@@ -1269,7 +1218,10 @@ mod tests {
         let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
 
         terminal
-            .draw(|draw| frame.render_embedded_frame(draw, &screen))
+            .draw(|draw| {
+                let area = frame.render_chrome(draw);
+                draw.render_widget(screen.widget(), area);
+            })
             .unwrap();
 
         let cell = terminal.backend().buffer().cell((1, 3)).unwrap();

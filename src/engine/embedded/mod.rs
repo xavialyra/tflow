@@ -153,14 +153,8 @@ impl ViewInstance for EmbeddedView {
         }
     }
 
-    fn content(
-        &mut self,
-        _host: &EngineHost<'_>,
-        _terminal: &Terminal,
-        chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<crate::chrome::ChromeContent> {
+    fn prepare_render(&mut self, chrome: &crate::chrome::ChromeFrame) {
         self.chrome = Some(chrome.clone());
-        Ok(crate::chrome::ChromeContent::default())
     }
 }
 

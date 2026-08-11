@@ -628,10 +628,10 @@ fn tab_opens_view_completion_and_escape_closes_it() {
         .master
         .flush()
         .expect("could not flush view completion key");
-    let output = wait_for_text(&process.master, "apps:main");
+    let output = wait_for_text(&process.master, "app");
     let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("apps:main"), "output: {output}");
-    assert!(output.contains("sys:main"), "output: {output}");
+    assert!(output.contains("app"), "output: {output}");
+    assert!(output.contains("sys"), "output: {output}");
     assert!(!output.contains("\x1b[7m> "), "output: {output}");
     assert!(!output.contains(" > "), "output: {output}");
 
@@ -652,9 +652,9 @@ fn tab_opens_view_completion_and_escape_closes_it() {
         .master
         .flush()
         .expect("could not flush completed view");
-    let output = wait_for_text(&process.master, "apps:main");
+    let output = wait_for_text(&process.master, "app");
     assert!(
-        String::from_utf8_lossy(&output).contains("apps:main"),
+        String::from_utf8_lossy(&output).contains("app"),
         "output: {:?}",
         output
     );
@@ -705,7 +705,7 @@ fn typing_dismisses_completion_and_replays_the_character_batch() {
         .master
         .flush()
         .expect("could not flush completion replay batch");
-    let output = wait_for_text(&process.master, "sys:main");
+    let output = wait_for_text(&process.master, "sys");
     assert!(
         String::from_utf8_lossy(&output).contains(" sys "),
         "output: {:?}",
@@ -821,7 +821,7 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         .write_all(b"\x0b")
         .expect("could not open command picker");
     process.master.flush().expect("could not flush Ctrl-K");
-    let _ = wait_for_text(&process.master, "core:command");
+    let _ = wait_for_text(&process.master, "Inspect");
     process
         .master
         .write_all(b"\r")
@@ -845,7 +845,7 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         .master
         .flush()
         .expect("could not flush capture return");
-    let _ = wait_for_text(&process.master, "core:default");
+    let _ = wait_for_text(&process.master, "Item");
     process
         .master
         .write_all(b"\x03")
@@ -948,7 +948,7 @@ fn aggregate_sources_own_independent_view_state() {
 }
 
 #[test]
-fn route_input_returns_to_the_selector_without_the_separator() {
+fn route_input_escape_removes_the_route_tag() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -981,7 +981,7 @@ fn route_input_returns_to_the_selector_without_the_separator() {
         .write_all(b"app ")
         .expect("could not write app route");
     process.master.flush().expect("could not flush app route");
-    let _ = wait_for_text(&process.master, "apps:default");
+    let _ = wait_for_text(&process.master, "app");
 
     process
         .master
@@ -998,7 +998,7 @@ fn route_input_returns_to_the_selector_without_the_separator() {
         .master
         .flush()
         .expect("could not flush route escape");
-    let _ = wait_for_text(&process.master, "sys     Item");
+    let _ = wait_for_text(&process.master, "no matches)");
     process
         .master
         .write_all(b"\x03")
@@ -1049,7 +1049,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush app route query");
-    let _ = wait_for_text(&process.master, "apps:default");
+    let _ = wait_for_text(&process.master, "app");
 
     process
         .master
@@ -1064,19 +1064,19 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
     process
         .master
         .write_all(b"\x7f")
-        .expect("could not delete route separator");
+        .expect("could not delete route tag");
     process
         .master
         .flush()
-        .expect("could not flush route separator deletion");
+        .expect("could not flush route tag deletion");
     process
         .master
         .write_all(b"\x7f\x7f\x7f")
-        .expect("could not delete route selector");
+        .expect("could not delete input after route tag removal");
     process
         .master
         .flush()
-        .expect("could not flush route selector deletion");
+        .expect("could not flush input deletion after route tag removal");
     process
         .master
         .write_all(b"sys ")
@@ -1085,7 +1085,7 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush replacement route");
-    let _ = wait_for_text(&process.master, "sys:default");
+    let _ = wait_for_text(&process.master, "sys");
 
     process
         .master
@@ -1145,7 +1145,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
         .write_all(b"log ")
         .expect("could not write view alias");
     process.master.flush().expect("could not flush view alias");
-    let _ = wait_for_text(&process.master, "core:messages (log)");
+    let _ = wait_for_text(&process.master, "log");
     let output = wait_for_text(&process.master, "preexisting log");
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("preexisting log"), "output: {output}");
@@ -1348,7 +1348,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         .master
         .flush()
         .expect("could not flush capture return key");
-    let launcher = wait_for_text(&process.master, "core:default");
+    let launcher = wait_for_text(&process.master, "Item");
 
     process
         .master
@@ -1366,7 +1366,6 @@ fn capture_command_returns_to_launcher_and_restores_input() {
     output.extend(remaining);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("capture-marker:value"), "output: {output}");
-    assert!(output.contains("core:capture (cap)"), "output: {output}");
     fs::remove_dir_all(root).expect("could not remove capture integration config");
 }
 
@@ -1428,7 +1427,6 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("embedded-marker:value"), "output: {output}");
-    assert!(output.contains("core:embedded (emb)"), "output: {output}");
     assert!(
         !output.contains("finished successfully"),
         "output: {output}"
@@ -1519,7 +1517,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         .expect("could not flush qualified embedded route");
 
     let mut output = wait_for_text(&process.master, "route-marker");
-    let launcher = wait_for_text(&process.master, "0/0");
+    let launcher = wait_for_text(&process.master, "0 of 0");
     output.extend(launcher);
     process
         .master

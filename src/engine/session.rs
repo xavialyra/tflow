@@ -279,14 +279,19 @@ impl<'a> AppSession<'a> {
                 };
                 let outcome = match action {
                     Some(ResolvedLauncherAction::Edit(action)) => {
-                        let entry = self
-                            .views
-                            .last_mut()
-                            .context("session has no active view")?;
                         let edited = match action {
-                            EditorAction::DeleteBackward => entry.input.delete_backward(),
-                            EditorAction::ClearInput => entry.input.clear(),
-                            EditorAction::DeleteWord => entry.input.delete_word(),
+                            EditorAction::DeleteBackward => self.delete_backward()?,
+                            EditorAction::ClearInput | EditorAction::DeleteWord => {
+                                let entry = self
+                                    .views
+                                    .last_mut()
+                                    .context("session has no active view")?;
+                                match action {
+                                    EditorAction::ClearInput => entry.input.clear(),
+                                    EditorAction::DeleteWord => entry.input.delete_word(),
+                                    EditorAction::DeleteBackward => unreachable!(),
+                                }
+                            }
                         };
                         if edited {
                             self.mark_input_changed()?;
@@ -413,6 +418,31 @@ impl<'a> AppSession<'a> {
         }
     }
 
+    fn delete_backward(&mut self) -> Result<bool> {
+        let tag_end = {
+            let entry = self.views.last().context("session has no active view")?;
+            let is_routable_picker = self.route_input
+                && entry.view_ref != self.config.command_view
+                && self.config.engine(&entry.view_ref)? == ENGINE_PICKER;
+            is_routable_picker
+                .then(|| {
+                    self.router
+                        .recognized_prefix_tag_end(&entry.view_ref, &entry.input.raw)
+                })
+                .flatten()
+                .filter(|end| entry.input.cursor == *end)
+        };
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        if let Some(end) = tag_end {
+            entry.input.replace_range(0, end, "");
+            return Ok(true);
+        }
+        Ok(entry.input.delete_backward())
+    }
+
     fn mark_input_changed(&mut self) -> Result<()> {
         let entry = self
             .views
@@ -501,7 +531,6 @@ impl<'a> AppSession<'a> {
     }
 
     fn render(&mut self, terminal: &mut Terminal) -> Result<()> {
-        let show_route_label = self.views.len() > 1;
         let entry = self
             .views
             .last_mut()
@@ -513,6 +542,14 @@ impl<'a> AppSession<'a> {
             .map(|record| record.label.clone());
         let input_text = entry.input.raw.clone();
         let input_cursor = entry.input.cursor;
+        let input_context_prefix = (!self.route_input
+            && entry.view_ref != self.config.command_view
+            && self.config.engine(&entry.view_ref)? == ENGINE_PICKER
+            && self
+                .router
+                .recognized_prefix_end(&entry.view_ref, &input_text)
+                .is_none())
+        .then(|| crate::chrome::InputPrefix::context(format!("{} ", entry.view_ref)));
         let host = EngineHost {
             config: self.config,
             input: &mut entry.input,
@@ -522,18 +559,28 @@ impl<'a> AppSession<'a> {
             active_error: &mut self.active_error,
             active_error_deadline: &mut self.active_error_deadline,
         };
-        let engine_chrome = entry.instance.chrome(&host);
+        let mut engine_chrome = entry.instance.chrome(&host);
+        if let Some(prefix) = input_context_prefix {
+            engine_chrome.presentation =
+                engine_chrome.presentation.with_input_context_prefix(prefix);
+        }
         let chrome = crate::chrome::ChromeFrame::compose_with_cursor(
             terminal.size().0 as usize,
             &route,
-            show_route_label,
+            false,
             &input_text,
             input_cursor,
             engine_chrome,
             error.as_deref(),
         );
-        let content = entry.instance.content(&host, terminal, &chrome)?;
-        chrome.render(terminal, content)
+        entry.instance.prepare_render(&chrome);
+        terminal.draw(|frame| {
+            let content_area = chrome.render_chrome(frame);
+            entry.instance.render(&host, frame, content_area);
+            if entry.instance.uses_input_cursor() {
+                chrome.set_input_cursor(frame);
+            }
+        })
     }
 
     fn reconcile_input(&mut self) -> Result<Option<ViewEffect>> {
@@ -746,7 +793,7 @@ impl<'a> AppSession<'a> {
         self.views.pop();
         let Some(edit) = edit else {
             if returned_from_route_child {
-                self.remove_route_separator()?;
+                self.remove_route_tag()?;
             }
             self.activate_current()?;
             self.restore_current_input()?;
@@ -763,16 +810,14 @@ impl<'a> AppSession<'a> {
         }
     }
 
-    fn remove_route_separator(&mut self) -> Result<()> {
+    fn remove_route_tag(&mut self) -> Result<()> {
         let entry = self
             .views
             .last_mut()
             .context("session has no active view")?;
-        let separator_start = entry.input.raw.trim_end_matches(char::is_whitespace).len();
-        entry.input.raw.truncate(separator_start);
-        entry
-            .input
-            .set_cursor(entry.input.cursor.min(separator_start));
+        entry.input.clear();
+        entry.input.params.clear();
+        entry.input.rejected = false;
         Ok(())
     }
 
@@ -1027,14 +1072,6 @@ mod tests {
             Ok(ViewEffect::Continue)
         }
 
-        fn content(
-            &mut self,
-            _host: &EngineHost<'_>,
-            _terminal: &Terminal,
-            _chrome: &crate::chrome::ChromeFrame,
-        ) -> Result<crate::chrome::ChromeContent> {
-            Ok(crate::chrome::ChromeContent::default())
-        }
     }
 
     #[test]
@@ -1061,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn returning_from_routed_view_removes_the_route_separator() {
+    fn returning_from_routed_view_removes_the_route_tag() {
         let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
         let mut session = AppSession::new(
             &config,
@@ -1080,8 +1117,9 @@ mod tests {
         assert!(session.pop_current(None).unwrap().is_none());
 
         let input = &session.views.last().unwrap().input;
-        assert_eq!(input.raw, "app");
-        assert_eq!(input.cursor, 3);
+        assert_eq!(input.raw, "");
+        assert_eq!(input.params, "");
+        assert_eq!(input.cursor, 0);
     }
 
     #[test]

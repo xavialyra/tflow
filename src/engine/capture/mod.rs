@@ -9,6 +9,7 @@ use super::{
 use crate::config::{ENGINE_CAPTURE, View};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
+use ratatui::{Frame, layout::Rect};
 
 pub(crate) struct CaptureEngine;
 
@@ -95,12 +96,7 @@ impl ViewInstance for CaptureView {
         }
     }
 
-    fn content(
-        &mut self,
-        _host: &EngineHost<'_>,
-        terminal: &Terminal,
-        chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<crate::chrome::ChromeContent> {
-        render::capture_content(terminal, self.session.lines(), chrome)
+    fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
+        render::render_capture(frame, area, self.session.lines());
     }
 }

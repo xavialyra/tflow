@@ -403,12 +403,12 @@ items = '{{ script("scripts/items.sh", runtime:view.active.request) }}'
 
 The picker runtime exposes stack-top metadata under `runtime:view.active`, including the route-aware `input`, `query`, and `raw_input` strings. Session input is also published under `runtime:session.input`. `this:query` belongs to the expression-owning View instance, so an implicit string query is scoped to each source while a declared object query retains its typed parameters. A source script can receive that query value, selected runtime metadata, stdin artifacts, or any explicitly constructed JSON value. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
 
-A root picker view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured:
+A root picker view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
 
 ```text
-app          Terminal
-sys          System monitor
-apps:detail  Package details
+Terminal       app
+System monitor sys
+Package details apps:detail
 ```
 
 Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. An alias is recognized as a route only after a whitespace separator, so typing `app` alone remains ordinary query text; a canonical `plugin:view` reference may still be entered by itself. The input bar belongs to the session chrome: its route selector and query are kept across view changes, while the target engine receives only the query. `Esc` returns from a child view and restores the parent input snapshot; deleting the route selector with Backspace cancels that route and keeps the edited input in the parent view. Source commands remain owned by the source view.
@@ -472,7 +472,7 @@ The default bindings are:
 
 View completion searches every configured View by alias, canonical reference, and plugin name. `Enter` accepts the highlighted candidate and navigates to its canonical reference. The completion list uses inverse highlighting for the selected row and does not add a selection marker.
 
-Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line shows the current `user@hostname` on the left and local `HH:MM:SS` time on the right. The input line keeps the cursor visible and scrolls long input around it without a prompt marker. The root view's divider is a plain horizontal rule; nested views show `plugin:view (alias)` followed by a horizontal rule, with the alias omitted when absent. A second horizontal rule separates content from the footer. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The input line keeps the cursor visible and scrolls long input around it without a prompt marker. The root view's divider is a plain horizontal rule; nested views show `plugin:view (alias)` followed by a horizontal rule, with the alias omitted when absent. The footer follows the content directly and uses a Rose Pine Dawn surface background inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
 When additional view commands do not fit, `Ctrl-K commands` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
 

@@ -102,14 +102,6 @@ mod tests {
                 Ok(ViewEffect::Continue)
             }
 
-            fn content(
-                &mut self,
-                _host: &EngineHost<'_>,
-                _terminal: &Terminal,
-                _chrome: &crate::chrome::ChromeFrame,
-            ) -> Result<crate::chrome::ChromeContent> {
-                Ok(crate::chrome::ChromeContent::default())
-            }
         }
 
         impl Engine for TestEngine {

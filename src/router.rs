@@ -41,15 +41,6 @@ impl ViewCandidate {
     }
 }
 
-impl RouteDisplay {
-    pub(crate) fn label(&self) -> String {
-        self.alias
-            .as_deref()
-            .map(|alias| format!("{} ({})", self.view_ref, alias))
-            .unwrap_or_else(|| self.view_ref.clone())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct Router {
     views: BTreeSet<ViewRef>,
@@ -160,6 +151,34 @@ impl Router {
                 targets,
             },
         }
+    }
+
+    pub(crate) fn recognized_prefix_end(
+        &self,
+        current_view_ref: &str,
+        input: &str,
+    ) -> Option<usize> {
+        let (selector, _) = split_selector(input)?;
+        match self.resolve(current_view_ref, input) {
+            RouteResolution::Current { .. } | RouteResolution::Navigate { .. } => {
+                Some(selector.len())
+            }
+            RouteResolution::NotMatched | RouteResolution::Ambiguous { .. } => None,
+        }
+    }
+
+    pub(crate) fn recognized_prefix_tag_end(
+        &self,
+        current_view_ref: &str,
+        input: &str,
+    ) -> Option<usize> {
+        let prefix_end = self.recognized_prefix_end(current_view_ref, input)?;
+        let separator_end = input[prefix_end..]
+            .char_indices()
+            .find(|(_, character)| !character.is_whitespace())
+            .map(|(offset, _)| prefix_end.saturating_add(offset))
+            .unwrap_or(input.len());
+        (separator_end > prefix_end).then_some(separator_end)
     }
 
     pub(crate) fn display(&self, view_ref: &str) -> RouteDisplay {
@@ -320,6 +339,19 @@ mod tests {
     }
 
     #[test]
+    fn recognized_prefix_tag_includes_the_separator() {
+        let router = Router::new(&config());
+        assert_eq!(
+            router.recognized_prefix_tag_end("core:default", "temp  query"),
+            Some("temp  ".len())
+        );
+        assert_eq!(
+            router.recognized_prefix_tag_end("core:default", "unknown query"),
+            None
+        );
+    }
+
+    #[test]
     fn plain_plugin_id_does_not_expand_to_default() {
         let router = Router::new(&config());
         assert_eq!(
@@ -350,11 +382,12 @@ mod tests {
     #[test]
     fn display_contains_the_optional_alias() {
         let router = Router::new(&config());
-        assert_eq!(
-            router.display("package-a:default").label(),
-            "package-a:default (temp)"
-        );
-        assert_eq!(router.display("core:default").label(), "core:default");
+        let aliased = router.display("package-a:default");
+        assert_eq!(aliased.view_ref, "package-a:default");
+        assert_eq!(aliased.alias.as_deref(), Some("temp"));
+        let canonical = router.display("core:default");
+        assert_eq!(canonical.view_ref, "core:default");
+        assert_eq!(canonical.alias, None);
     }
 
     #[test]

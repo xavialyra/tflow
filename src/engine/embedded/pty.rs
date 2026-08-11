@@ -320,7 +320,19 @@ fn render_embedded(
     chrome: &crate::chrome::ChromeFrame,
     screen: &EmbeddedTerminal,
 ) -> Result<()> {
-    chrome.render_embedded(terminal, screen)
+    terminal.draw(|frame| {
+        let area = chrome.render_chrome(frame);
+        frame.render_widget(screen.widget(), area);
+        if let Some((column, row)) = screen.cursor()
+            && column < area.width as usize
+            && row < area.height as usize
+        {
+            frame.set_cursor_position((
+                area.x.saturating_add(column as u16),
+                area.y.saturating_add(row as u16),
+            ));
+        }
+    })
 }
 
 #[derive(Default)]

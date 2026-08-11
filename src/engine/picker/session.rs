@@ -18,6 +18,7 @@ use crate::router::{Router, ViewCandidate};
 use crate::terminal::Terminal;
 use crate::text::{matches_query, sanitize_text};
 use anyhow::{Context, Result};
+use ratatui::{Frame, layout::Rect};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -872,27 +873,35 @@ impl ViewInstance for PickerView {
                 self.visible_commands(host.config),
             )
         };
+        let mut presentation = self
+            .options
+            .input_prefix
+            .as_deref()
+            .map(crate::chrome::ChromePresentation::with_input_prefix)
+            .unwrap_or_default();
+        if self.frame.command_owner.is_none() && self.frame.view != host.config.command_view {
+            if let Some(end) = self
+                .router
+                .recognized_prefix_end(&self.frame.view, &host.input.raw)
+            {
+                presentation = presentation.with_recognized_input_prefix(end);
+            }
+        }
         crate::chrome::EngineChrome {
             title: None,
             status: Some(status),
             commands,
-            presentation: self
-                .options
-                .input_prefix
-                .as_deref()
-                .map(crate::chrome::ChromePresentation::with_input_prefix)
-                .unwrap_or_default(),
+            presentation,
         }
     }
 
-    fn content(
-        &mut self,
-        _host: &EngineHost<'_>,
-        terminal: &Terminal,
-        chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<crate::chrome::ChromeContent> {
+    fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
         let state = self.render_state();
-        render::picker_content(terminal, &state, chrome)
+        render::render_picker(frame, area, &state);
+    }
+
+    fn uses_input_cursor(&self) -> bool {
+        true
     }
 }
 
@@ -902,7 +911,7 @@ fn selection_count(selected: usize, total: usize) -> String {
     } else {
         selected.saturating_add(1)
     };
-    format!("{current}/{total}")
+    format!("{current} of {total}")
 }
 
 fn key_display(key: Key) -> String {
@@ -981,8 +990,8 @@ mod tests {
 
     #[test]
     fn selection_count_uses_zero_for_an_empty_list() {
-        assert_eq!(selection_count(0, 0), "0/0");
-        assert_eq!(selection_count(1, 3), "2/3");
+        assert_eq!(selection_count(0, 0), "0 of 0");
+        assert_eq!(selection_count(1, 3), "2 of 3");
     }
 
     fn candidate() -> ViewCandidate {

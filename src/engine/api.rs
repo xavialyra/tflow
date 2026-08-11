@@ -8,6 +8,7 @@ use crate::input::Key;
 use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::Result;
+use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -266,12 +267,13 @@ pub(crate) trait ViewInstance {
         crate::chrome::EngineChrome::default()
     }
 
-    fn content(
-        &mut self,
-        host: &EngineHost<'_>,
-        terminal: &Terminal,
-        chrome: &crate::chrome::ChromeFrame,
-    ) -> Result<crate::chrome::ChromeContent>;
+    fn prepare_render(&mut self, _chrome: &crate::chrome::ChromeFrame) {}
+
+    fn render(&mut self, _host: &EngineHost<'_>, _frame: &mut Frame, _area: Rect) {}
+
+    fn uses_input_cursor(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) struct ViewContext<'a> {
