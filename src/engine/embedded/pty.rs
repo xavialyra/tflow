@@ -348,7 +348,14 @@ impl TerminalResponder {
                 TerminalQueryState::Escape if byte == b'[' => {
                     self.state = TerminalQueryState::Csi(Vec::new());
                 }
+                TerminalQueryState::Escape if byte == 0x1b => {}
                 TerminalQueryState::Escape => self.state = TerminalQueryState::Ground,
+                TerminalQueryState::Csi(_) if byte == 0x1b => {
+                    self.state = TerminalQueryState::Escape;
+                }
+                TerminalQueryState::Csi(_) if matches!(byte, 0x18 | 0x1a) => {
+                    self.state = TerminalQueryState::Ground;
+                }
                 TerminalQueryState::Csi(sequence) => {
                     sequence.push(byte);
                     if (0x40..=0x7e).contains(&byte) {
@@ -481,5 +488,18 @@ mod tests {
         let mut responder = TerminalResponder::default();
         assert_eq!(responder.primary_device_attribute_queries(b"\x1b[?6c"), 0);
         assert_eq!(responder.primary_device_attribute_queries(b"\x1b[>0c"), 0);
+    }
+
+    #[test]
+    fn restarts_after_an_incomplete_or_cancelled_csi_sequence() {
+        let mut responder = TerminalResponder::default();
+        assert_eq!(
+            responder.primary_device_attribute_queries(b"\x1b[31\x1b[0c"),
+            1
+        );
+        assert_eq!(
+            responder.primary_device_attribute_queries(b"\x1b[31\x18\x1b[0c"),
+            1
+        );
     }
 }

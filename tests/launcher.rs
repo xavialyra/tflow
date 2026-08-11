@@ -988,6 +988,8 @@ fn route_input_returns_to_the_selector_without_the_separator() {
         .write_all(b"aa")
         .expect("could not write app query");
     process.master.flush().expect("could not flush app query");
+    let _ = wait_for_text(&process.master, "aa");
+
     process
         .master
         .write_all(b"\x1b")
@@ -996,6 +998,7 @@ fn route_input_returns_to_the_selector_without_the_separator() {
         .master
         .flush()
         .expect("could not flush route escape");
+    let _ = wait_for_text(&process.master, "sys     Item");
     process
         .master
         .write_all(b"\x03")
@@ -1056,6 +1059,8 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         .master
         .flush()
         .expect("could not flush route parameter deletion");
+    let _ = wait_for_text(&process.master, "Item");
+
     process
         .master
         .write_all(b"\x7f")
