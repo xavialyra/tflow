@@ -4,6 +4,7 @@ use ratatui::{Frame, Terminal as RatatuiTerminal};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::time::Duration;
 
 pub struct Terminal {
     input_fd: libc::c_int,
@@ -11,6 +12,7 @@ pub struct Terminal {
     original: libc::termios,
     raw: libc::termios,
     renderer: RatatuiTerminal<CrosstermBackend<File>>,
+    image_picker: Option<ratatui_image::picker::Picker>,
     active: bool,
     screen_active: bool,
 }
@@ -45,6 +47,7 @@ impl Terminal {
             original,
             raw,
             renderer,
+            image_picker: None,
             active: true,
             screen_active: false,
         };
@@ -112,6 +115,27 @@ impl Terminal {
         } else {
             (80, 24)
         }
+    }
+
+    pub(crate) fn image_picker(&mut self) -> ratatui_image::picker::Picker {
+        if let Some(picker) = &self.image_picker {
+            return picker.clone();
+        }
+
+        let stdin_is_tty = unsafe { libc::isatty(io::stdin().as_raw_fd()) } == 1;
+        let stdout_is_tty = unsafe { libc::isatty(io::stdout().as_raw_fd()) } == 1;
+        let picker = if stdin_is_tty && stdout_is_tty {
+            let options = ratatui_image::picker::cap_parser::QueryStdioOptions {
+                timeout: Duration::from_millis(250),
+                ..Default::default()
+            };
+            ratatui_image::picker::Picker::from_query_stdio_with_options(options)
+                .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
+        } else {
+            ratatui_image::picker::Picker::halfblocks()
+        };
+        self.image_picker = Some(picker.clone());
+        picker
     }
 
     pub fn read_input(&self, timeout_ms: i32) -> Result<Vec<u8>> {

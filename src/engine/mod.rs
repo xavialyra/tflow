@@ -4,6 +4,7 @@ mod command;
 mod embedded;
 mod evaluate;
 mod host;
+mod image_path;
 mod picker;
 mod process;
 mod registry;

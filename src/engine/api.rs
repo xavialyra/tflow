@@ -137,6 +137,7 @@ pub(crate) enum LauncherAction {
     Back,
     Exit,
     OpenCommandView,
+    TogglePreview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

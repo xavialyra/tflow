@@ -1,0 +1,41 @@
+[plugin]
+api = 1
+name = "images"
+
+[views.menu]
+alias = "images"
+
+[views.menu.engine]
+type = "picker"
+
+[views.menu.engine.config]
+items = '{{ script("scripts/items.sh") }}'
+
+[views.menu.engine.config.layout]
+direction = "horizontal"
+gap = 1
+
+[[views.menu.engine.config.layout.panes]]
+slot = "items"
+grow = 1
+min = 28
+
+[[views.menu.engine.config.layout.panes]]
+slot = "preview"
+size = 36
+min = 24
+
+[views.menu.engine.config.preview]
+
+[[views.menu.engine.config.preview.blocks]]
+type = "image"
+source = "/metadata/thumbnail"
+grow = 1
+
+[[views.menu.engine.config.preview.blocks]]
+type = "separator"
+
+[[views.menu.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/summary"
+size = 5

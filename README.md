@@ -7,7 +7,7 @@ The launcher has two configuration concepts:
 - a plugin namespace, such as `apps` or `ssh`;
 - a concrete view, such as `apps:main` or `apps:detail`.
 
-Each view selects one built-in engine with `type = "picker"`, `type = "capture"`, or `type = "embedded"` and owns that engine's configuration.
+Each view selects one built-in engine in its `[views.<name>.engine]` table. Engine-specific fields live beneath `[views.<name>.engine.config]`; routing, state, and commands remain on the View.
 
 ## Run
 
@@ -118,15 +118,21 @@ api = 1
 name = "dmenu"
 
 [views.default]
-type = "picker"
 alias = "dmenu"
+cancel_exit_code = 1
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 items = '''{{ script("scripts/items.sh", {
   input = input:$,
   query = this:query
 }, 67108864) }}'''
-cancel_exit_code = 1
 prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
+
+[views.default.engine.config.bindings]
 
 [views.default.query]
 type = "object"
@@ -140,7 +146,6 @@ accept-nth = '''{{ state("string", null) }}'''
 match-nth = '''{{ state("string", null) }}'''
 nth-delimiter = '''{{ state("string", null) }}'''
 
-[views.default.bindings]
 open_commands = []
 open_completion = []
 back = []
@@ -173,25 +178,72 @@ apps:detail
 
 A view may also define a short `alias` for picker input. Canonical references contain `:` and are always exact; tokens without `:` are resolved only as aliases.
 
-A view's `type` directly selects its engine, and engine-specific fields live on that view:
+A view's `engine.type` selects its engine, and its `engine.config` table is validated by that engine:
 
 ```toml
-[views.search]
+[views.search.engine]
 type = "picker"
+
+[views.search.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
-[views.result]
+[views.result.engine]
 type = "capture"
+
+[views.result.engine.config]
 output = "{{ runtime:view.active.input }}"
 title = "Result"
 
-[views.shell]
+[views.shell.engine]
 type = "embedded"
+
+[views.shell.engine.config]
 command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
 title = "Shell"
 ```
 
-The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Navigation supplies a view path and may provide an input string; when it does, the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
+The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Picker image preview paths may be absolute, use `~` or `~/` for the current user's home directory, or be relative to the selected item's source plugin directory. Image previews use Kitty, Sixel, or iTerm2 when the active terminal reports support and otherwise render a Unicode half-block fallback. Navigation supplies a view path and may provide an input string; when it does, the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
+
+A picker can reserve a `preview` pane beside its item list. The layout is a two-pane horizontal or vertical split with one `items` slot and one `preview` slot. Preview blocks read JSON Pointer values from the selected item, including its `metadata`:
+
+```toml
+[views.files.engine]
+type = "picker"
+
+[views.files.engine.config]
+items = '{{ script("scripts/items.sh") }}'
+
+[views.files.engine.config.layout]
+direction = "horizontal"
+gap = 1
+
+[[views.files.engine.config.layout.panes]]
+slot = "items"
+grow = 1
+min = 28
+
+[[views.files.engine.config.layout.panes]]
+slot = "preview"
+size = 36
+min = 24
+
+[views.files.engine.config.preview]
+
+[[views.files.engine.config.preview.blocks]]
+type = "image"
+source = "/metadata/thumbnail"
+grow = 1
+
+[[views.files.engine.config.preview.blocks]]
+type = "separator"
+
+[[views.files.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/summary"
+size = 5
+```
+
+Supported preview block types are `image`, `text`, and `separator`. A separator renders a horizontal line, needs no `source`, and occupies one row by default; use `size` to reserve more rows. An image path is resolved relative to the selected item's source plugin; image decoding runs in a cancellable background task. When the terminal is too small to satisfy both pane minimums, the preview hides and the picker list uses the full content area.
 
 Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not configurable View fields.
 
@@ -217,8 +269,12 @@ api = 1
 name = "applications"
 
 [views.default]
-type = "picker"
 alias = "app"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.open]
@@ -244,8 +300,10 @@ open_commands = ["ctrl+k"]
 The `core` plugin can aggregate picker views from several plugin packages:
 
 ```toml
-[views.default]
+[views.default.engine]
 type = "picker"
+
+[views.default.engine.config]
 sources = ["sys:default", "apps:default"]
 ```
 
@@ -376,11 +434,13 @@ View commands use the same named-key, Ctrl, and Alt binding syntax as picker act
 
 ## Picker items
 
-A concrete picker view can define an `items` expression. The expression returns one JSON array, and every item must contain a `label` plus an optional `value` and `metadata`:
+A concrete picker view can define an `items` expression in its engine config. The expression returns one JSON array, and every item must contain a `label` plus an optional `value` and `metadata`:
 
 ```toml
-[views.main]
+[views.main.engine]
 type = "picker"
+
+[views.main.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.main.query]
@@ -403,7 +463,7 @@ items = '{{ script("scripts/items.sh", runtime:view.active.request) }}'
 
 The picker runtime exposes stack-top metadata under `runtime:view.active`, including the route-aware `input`, `query`, and `raw_input` strings. Session input is also published under `runtime:session.input`. `this:query` belongs to the expression-owning View instance, so an implicit string query is scoped to each source while a declared object query retains its typed parameters. A source script can receive that query value, selected runtime metadata, stdin artifacts, or any explicitly constructed JSON value. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
 
-A root picker view evaluates the `items` expression of each view in `sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
+A root picker view evaluates the `items` expression of each view in `engine.config.sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
 
 ```text
 Terminal       app
@@ -432,7 +492,7 @@ Command `shell` selects the command interpreter. When omitted, the source view's
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
-Picker views accept `bindings`, `prompt`, and `show_prefix` engine fields. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `show_prefix = true` to identify each source. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `engine.config.show_prefix = true` to identify each source. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 
@@ -440,7 +500,8 @@ Picker shortcuts are semantic engine bindings. Root defaults apply to every pick
 
 ```toml
 [defaults.picker.bindings]
-open_commands = ["ctrl+p"]
+open_commands = ["ctrl+k"]
+toggle_preview = ["ctrl+p"]
 clear_input = ["ctrl+u"]
 exit = ["ctrl+c", "ctrl+d"]
 ```
@@ -448,12 +509,12 @@ exit = ["ctrl+c", "ctrl+d"]
 A View can override only the actions it needs; omitted actions inherit the root or built-in defaults, while an empty array disables an action:
 
 ```toml
-[views.main.bindings]
+[views.main.engine.config.bindings]
 open_commands = ["ctrl+k"]
 delete_word = []
 ```
 
-Available actions are `exit`, `open_commands`, `open_completion`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, and `activate`. Bindings accept `enter`, `tab`, `backtab`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. The arrow, Home/End, and Delete keys edit the input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
+Available actions are `exit`, `open_commands`, `open_completion`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, `activate`, and `toggle_preview`. `toggle_preview` only affects picker Views that configure a preview; other picker Views ignore it. Bindings accept `enter`, `tab`, `backtab`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. The arrow, Home/End, and Delete keys edit the input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
 
 The default bindings are:
 
@@ -469,6 +530,7 @@ The default bindings are:
 - `Ctrl-U`: clear the query;
 - `Ctrl-W`: delete the previous word;
 - `Ctrl-K`: open the command picker view for the selected item's source view.
+- `Ctrl-P`: show or hide the preview in a picker View that configures one.
 
 View completion searches every configured View by alias, canonical reference, and plugin name. `Enter` accepts the highlighted candidate and navigates to its canonical reference. The completion list uses the same fixed marker column, `▌` selection marker, bold selected text, and scrollbar gutter as picker items.
 

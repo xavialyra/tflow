@@ -1,6 +1,7 @@
 use super::PendingAction;
 use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
 use super::keymap::PickerKeymap;
+use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
 use crate::chrome::InputBuffer;
 use crate::config::Config;
@@ -38,6 +39,7 @@ pub(crate) struct ViewCompletion {
 pub(super) struct PickerOptions {
     pub(super) show_prefix: bool,
     pub(super) input_prefix: Option<String>,
+    pub(super) preview: Option<PickerPreviewConfig>,
 }
 
 pub(crate) struct PickerFrame {
@@ -89,6 +91,7 @@ pub(crate) struct PickerView {
     router: Router,
     pub(super) completion: Option<ViewCompletion>,
     pub(super) keymap: PickerKeymap,
+    preview: Option<PickerPreview>,
 }
 
 impl PickerView {
@@ -100,6 +103,7 @@ impl PickerView {
         keymap: PickerKeymap,
         options: PickerOptions,
     ) -> Self {
+        let preview = options.preview.clone().map(PickerPreview::new);
         Self {
             frame: PickerFrame::new(view),
             tasks,
@@ -115,6 +119,7 @@ impl PickerView {
             router: Router::new(&config),
             completion: None,
             keymap,
+            preview,
         }
     }
 
@@ -528,6 +533,16 @@ impl PickerView {
         }
     }
 
+    fn update_preview(&mut self, config: &Config, terminal: &mut Terminal) {
+        let item = (!self.completion_active())
+            .then(|| self.frame.items.get(self.frame.selected))
+            .flatten()
+            .cloned();
+        if let Some(preview) = &mut self.preview {
+            preview.update(item.as_ref(), config, &self.tasks, terminal);
+        }
+    }
+
     fn input_timeout(&self, host: &EngineHost<'_>) -> i32 {
         (*host.active_error_deadline)
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
@@ -735,7 +750,7 @@ impl ViewInstance for PickerView {
         Ok(())
     }
 
-    fn step(&mut self, host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
+    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
         if !self.started {
             self.started = true;
             if let Some(effect) = self.request_current(host)? {
@@ -746,6 +761,7 @@ impl ViewInstance for PickerView {
         if let Some(effect) = self.handle_events(host)? {
             return Ok(effect);
         }
+        self.update_preview(host.config, terminal);
         if self.frame.retry_requested
             && let Some(effect) = self.request_current(host)?
         {
@@ -805,6 +821,9 @@ impl ViewInstance for PickerView {
             Some(super::keymap::PickerAction::SelectPrevious) => LauncherAction::MovePrevious,
             Some(super::keymap::PickerAction::SelectNext) => LauncherAction::MoveNext,
             Some(super::keymap::PickerAction::Activate) => LauncherAction::Activate,
+            Some(super::keymap::PickerAction::TogglePreview) if self.preview.is_some() => {
+                LauncherAction::TogglePreview
+            }
             None if self.resolve_command(host.config, key).is_some()
                 && self.current().command_owner.is_none() =>
             {
@@ -845,6 +864,11 @@ impl ViewInstance for PickerView {
             LauncherAction::OpenCommandView => {
                 if let Some(effect) = self.handle_open_command_view(host)? {
                     return Ok(LauncherOutcome::Effect(Box::new(effect)));
+                }
+            }
+            LauncherAction::TogglePreview => {
+                if let Some(preview) = &mut self.preview {
+                    preview.toggle_visibility();
                 }
             }
             LauncherAction::Back => {
@@ -897,7 +921,16 @@ impl ViewInstance for PickerView {
 
     fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
         let state = self.render_state();
-        render::render_picker(frame, area, &state);
+        if let Some(preview) = &mut self.preview {
+            let (items_area, preview_area) = preview.areas(area);
+            render::render_picker(frame, items_area, &state);
+            if let Some(preview_area) = preview_area {
+                preview.render(frame, preview_area);
+                preview.render_separator(frame, items_area, preview_area);
+            }
+        } else {
+            render::render_picker(frame, area, &state);
+        }
     }
 }
 
@@ -954,6 +987,7 @@ mod tests {
             PickerOptions {
                 show_prefix: false,
                 input_prefix: None,
+                preview: None,
             },
         );
         picker.frame.items_pending = true;

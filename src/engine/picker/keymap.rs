@@ -16,10 +16,11 @@ pub(super) enum PickerAction {
     ClearInput,
     DeleteWord,
     Activate,
+    TogglePreview,
 }
 
 impl PickerAction {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Exit,
         Self::OpenCommands,
         Self::OpenCompletion,
@@ -30,6 +31,7 @@ impl PickerAction {
         Self::ClearInput,
         Self::DeleteWord,
         Self::Activate,
+        Self::TogglePreview,
     ];
 
     fn name(self) -> &'static str {
@@ -44,6 +46,7 @@ impl PickerAction {
             Self::ClearInput => "clear_input",
             Self::DeleteWord => "delete_word",
             Self::Activate => "activate",
+            Self::TogglePreview => "toggle_preview",
         }
     }
 
@@ -218,6 +221,15 @@ mod tests {
         );
         assert_eq!(keymap.action(Key::Ctrl('p')), None);
         assert_eq!(keymap.action(Key::Ctrl('k')), None);
+    }
+
+    #[test]
+    fn toggle_preview_binding_is_recognized() {
+        let keymap = PickerKeymap::from_value(Some(json!({"toggle_preview": ["ctrl+p"]}))).unwrap();
+        assert_eq!(
+            keymap.action(Key::Ctrl('p')),
+            Some(PickerAction::TogglePreview)
+        );
     }
 
     #[test]

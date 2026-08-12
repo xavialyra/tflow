@@ -4,6 +4,7 @@ command_view = "core:command"
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 open_commands = ["ctrl+k"]
+toggle_preview = ["ctrl+p"]
 back = ["escape"]
 select_previous = ["up"]
 select_next = ["down"]

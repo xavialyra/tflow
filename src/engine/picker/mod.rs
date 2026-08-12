@@ -1,6 +1,7 @@
 mod command;
 mod items;
 mod keymap;
+mod preview;
 mod render;
 mod runtime;
 mod session;
@@ -32,9 +33,15 @@ impl Engine for PickerEngine {
     }
 
     fn validate_config(&self, name: &str, view: &View) -> Result<()> {
-        validate_fields(name, view, &["bindings", "prompt", "show_prefix"])?;
+        validate_fields(
+            name,
+            view,
+            &["bindings", "prompt", "show_prefix", "layout", "preview"],
+        )?;
         validate_static_string(view.engine_field("prompt"), "prompt")?;
         validate_static_bool(view.engine_field("show_prefix"), "show_prefix")?;
+        validate_static_table(view.engine_field("layout"), "layout")?;
+        validate_static_table(view.engine_field("preview"), "preview")?;
         Ok(())
     }
 
@@ -76,12 +83,31 @@ impl Engine for PickerEngine {
             },
             &["show_prefix"],
         )?;
+        let layout = context.config.get(
+            ConfigReadContext {
+                scope: ConfigScope::View(context.state),
+                runtime: &runtime,
+                input: &context.config.input_value,
+                cancellation: None,
+            },
+            &["layout"],
+        )?;
+        let preview = context.config.get(
+            ConfigReadContext {
+                scope: ConfigScope::View(context.state),
+                runtime: &runtime,
+                input: &context.config.input_value,
+                cancellation: None,
+            },
+            &["preview"],
+        )?;
         drop(runtime);
         let keymap = PickerKeymap::from_values(default_bindings, view_bindings)?;
         let options = PickerOptions {
             show_prefix: parse_bool(show_prefix, "show_prefix", false)?,
             input_prefix: parse_optional_string(prompt, "prompt")?
                 .map(|prompt| sanitize_terminal_text(&prompt)),
+            preview: self::preview::parse(layout, preview)?,
         };
         let command_owner = context
             .request
@@ -129,6 +155,13 @@ fn validate_static_string(value: Option<&toml::Value>, name: &str) -> Result<()>
     match value {
         None | Some(toml::Value::String(_)) => Ok(()),
         Some(_) => bail!("picker field {:?} must be a string or expression", name),
+    }
+}
+
+fn validate_static_table(value: Option<&toml::Value>, name: &str) -> Result<()> {
+    match value {
+        None | Some(toml::Value::Table(_)) => Ok(()),
+        Some(_) => bail!("picker field {:?} must be a table", name),
     }
 }
 
