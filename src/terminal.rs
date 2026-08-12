@@ -1,10 +1,13 @@
 use anyhow::{Context, Result, bail};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal as RatatuiTerminal};
+use ratatui_image::FontSize;
+use ratatui_image::picker::ProtocolType;
+use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions, Response};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct Terminal {
     input_fd: libc::c_int,
@@ -203,39 +206,150 @@ fn duplicate_fd(fd: libc::c_int) -> Result<File> {
 fn query_image_picker(
     input_fd: libc::c_int,
     output_fd: libc::c_int,
-    options: ratatui_image::picker::cap_parser::QueryStdioOptions,
+    options: QueryStdioOptions,
 ) -> Result<ratatui_image::picker::Picker> {
-    let saved_stdin = duplicate_fd(libc::STDIN_FILENO)?;
-    let saved_stdout = duplicate_fd(libc::STDOUT_FILENO)?;
+    let is_tmux = std::env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
+        || std::env::var("TERM_PROGRAM").is_ok_and(|term| term == "tmux");
+    let timeout = options.timeout;
+    let query = Parser::query(is_tmux, options);
+    write_fd(output_fd, query.as_bytes())?;
 
-    let result = (|| {
-        redirect_fd(input_fd, libc::STDIN_FILENO)?;
-        redirect_fd(output_fd, libc::STDOUT_FILENO)?;
-        ratatui_image::picker::Picker::from_query_stdio_with_options(options)
-            .context("could not query terminal image capabilities")
-    })();
+    let deadline = Instant::now() + timeout;
+    let mut parser = Parser::new();
+    let mut responses = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("terminal image capability query timed out");
+        }
+        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: input_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let polled = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if polled < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("could not read terminal image capabilities");
+        }
+        if polled == 0 {
+            bail!("terminal image capability query timed out");
+        }
+        if descriptor.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
+            continue;
+        }
 
-    let stdin_restore = restore_fd(&saved_stdin, libc::STDIN_FILENO);
-    let stdout_restore = restore_fd(&saved_stdout, libc::STDOUT_FILENO);
-    match (result, stdin_restore, stdout_restore) {
-        (Ok(picker), Ok(()), Ok(())) => Ok(picker),
-        (Err(error), _, _) => Err(error),
-        (Ok(_), Err(error), _) | (Ok(_), Ok(()), Err(error)) => Err(error),
+        let mut buffer = [0_u8; 256];
+        let count = unsafe { libc::read(input_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if count < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("could not read terminal image capabilities");
+        }
+        if count == 0 {
+            bail!("terminal image capability query reached end of input");
+        }
+        for byte in &buffer[..count as usize] {
+            responses.extend(parser.push(char::from(*byte)));
+        }
+        if responses
+            .iter()
+            .any(|response| matches!(response, Response::Status))
+        {
+            break;
+        }
     }
+
+    let font_size = responses
+        .iter()
+        .find_map(|response| match response {
+            Response::CellSize(Some((width, height))) => Some(FontSize::new(*width, *height)),
+            _ => None,
+        })
+        .or_else(|| font_size_from_fd(output_fd));
+    let Some(font_size) = font_size else {
+        return Ok(ratatui_image::picker::Picker::halfblocks());
+    };
+
+    #[allow(deprecated)]
+    let mut picker = ratatui_image::picker::Picker::from_fontsize(font_size);
+    let protocol = responses
+        .iter()
+        .find_map(|response| match response {
+            Response::Kitty => Some(ProtocolType::Kitty),
+            Response::Sixel => Some(ProtocolType::Sixel),
+            _ => None,
+        })
+        .or_else(environment_image_protocol)
+        .unwrap_or(ProtocolType::Halfblocks);
+    picker.set_protocol_type(protocol);
+    Ok(picker)
 }
 
-fn redirect_fd(source: libc::c_int, target: libc::c_int) -> Result<()> {
-    if unsafe { libc::dup2(source, target) } < 0 {
-        return Err(io::Error::last_os_error()).context("could not redirect terminal fd");
+fn write_fd(fd: libc::c_int, bytes: &[u8]) -> Result<()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let count =
+            unsafe { libc::write(fd, bytes[offset..].as_ptr().cast(), bytes.len() - offset) };
+        if count > 0 {
+            offset += count as usize;
+        } else if count < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("could not query terminal image capabilities");
+        } else {
+            bail!("could not query terminal image capabilities: write returned zero");
+        }
     }
     Ok(())
 }
 
-fn restore_fd(saved: &File, target: libc::c_int) -> Result<()> {
-    if unsafe { libc::dup2(saved.as_raw_fd(), target) } < 0 {
-        return Err(io::Error::last_os_error()).context("could not restore standard fd");
+fn font_size_from_fd(fd: libc::c_int) -> Option<FontSize> {
+    let mut window: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut window) } != 0
+        || window.ws_xpixel == 0
+        || window.ws_ypixel == 0
+        || window.ws_col == 0
+        || window.ws_row == 0
+    {
+        return None;
     }
-    Ok(())
+    Some(FontSize::new(
+        window.ws_xpixel / window.ws_col,
+        window.ws_ypixel / window.ws_row,
+    ))
+}
+
+fn environment_image_protocol() -> Option<ProtocolType> {
+    if std::env::var("ITERM_SESSION_ID").is_ok_and(|value| !value.is_empty())
+        || std::env::var("WEZTERM_EXECUTABLE").is_ok_and(|value| !value.is_empty())
+    {
+        return Some(ProtocolType::Iterm2);
+    }
+    let term_program = std::env::var("TERM_PROGRAM").ok()?;
+    if term_program.contains("iTerm")
+        || term_program.contains("WezTerm")
+        || term_program.contains("mintty")
+        || term_program.contains("vscode")
+        || term_program.contains("Tabby")
+        || term_program.contains("Hyper")
+        || term_program.contains("rio")
+        || term_program.contains("Bobcat")
+        || term_program.contains("WarpTerminal")
+        || std::env::var("LC_TERMINAL").is_ok_and(|term| term.contains("iTerm"))
+    {
+        Some(ProtocolType::Iterm2)
+    } else {
+        None
+    }
 }
 
 impl Drop for Terminal {
