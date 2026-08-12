@@ -71,7 +71,6 @@ struct PreviewBlockConfig {
 enum PreviewBlockKind {
     Image,
     Text,
-    Json,
     Separator,
 }
 
@@ -170,7 +169,6 @@ pub(super) struct PickerPreview {
 enum PreviewBlockState {
     Empty,
     Text(String),
-    Json(String),
     Image {
         protocol: Option<StatefulProtocol>,
         error: Option<String>,
@@ -346,11 +344,6 @@ impl PickerPreview {
                         self.blocks[index] = PreviewBlockState::Text(text.to_string());
                     }
                 }
-                PreviewBlockKind::Json => {
-                    if let Ok(text) = serde_json::to_string_pretty(value) {
-                        self.blocks[index] = PreviewBlockState::Json(text);
-                    }
-                }
                 PreviewBlockKind::Image => {
                     let Some(path) = value.as_str() else {
                         continue;
@@ -436,11 +429,10 @@ impl PickerPreview {
             }
             match state {
                 PreviewBlockState::Empty => {}
-                PreviewBlockState::Text(text) | PreviewBlockState::Json(text) => frame
-                    .render_widget(
-                        Paragraph::new(text.as_str()).wrap(Wrap { trim: false }),
-                        area,
-                    ),
+                PreviewBlockState::Text(text) => frame.render_widget(
+                    Paragraph::new(text.as_str()).wrap(Wrap { trim: false }),
+                    area,
+                ),
                 PreviewBlockState::Image {
                     protocol: Some(protocol),
                     ..
@@ -507,6 +499,24 @@ mod tests {
                 Some(
                     json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})
                 )
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_undocumented_json_blocks() {
+        assert!(
+            parse(
+                Some(json!({
+                    "panes": [
+                        {"slot": "items", "grow": 1},
+                        {"slot": "preview", "grow": 1}
+                    ]
+                })),
+                Some(json!({
+                    "blocks": [{"type": "json", "source": "/metadata" , "grow": 1}]
+                })),
             )
             .is_err()
         );

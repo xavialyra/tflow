@@ -122,18 +122,12 @@ impl Terminal {
             return picker.clone();
         }
 
-        let stdin_is_tty = unsafe { libc::isatty(io::stdin().as_raw_fd()) } == 1;
-        let stdout_is_tty = unsafe { libc::isatty(io::stdout().as_raw_fd()) } == 1;
-        let picker = if stdin_is_tty && stdout_is_tty {
-            let options = ratatui_image::picker::cap_parser::QueryStdioOptions {
-                timeout: Duration::from_millis(250),
-                ..Default::default()
-            };
-            ratatui_image::picker::Picker::from_query_stdio_with_options(options)
-                .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
-        } else {
-            ratatui_image::picker::Picker::halfblocks()
+        let options = ratatui_image::picker::cap_parser::QueryStdioOptions {
+            timeout: Duration::from_millis(250),
+            ..Default::default()
         };
+        let picker = query_image_picker(self.input_fd, self.output_fd, options)
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
         self.image_picker = Some(picker.clone());
         picker
     }
@@ -204,6 +198,44 @@ fn duplicate_fd(fd: libc::c_int) -> Result<File> {
         return Err(io::Error::last_os_error()).context("could not duplicate terminal output");
     }
     Ok(unsafe { File::from_raw_fd(duplicate) })
+}
+
+fn query_image_picker(
+    input_fd: libc::c_int,
+    output_fd: libc::c_int,
+    options: ratatui_image::picker::cap_parser::QueryStdioOptions,
+) -> Result<ratatui_image::picker::Picker> {
+    let saved_stdin = duplicate_fd(libc::STDIN_FILENO)?;
+    let saved_stdout = duplicate_fd(libc::STDOUT_FILENO)?;
+
+    let result = (|| {
+        redirect_fd(input_fd, libc::STDIN_FILENO)?;
+        redirect_fd(output_fd, libc::STDOUT_FILENO)?;
+        ratatui_image::picker::Picker::from_query_stdio_with_options(options)
+            .context("could not query terminal image capabilities")
+    })();
+
+    let stdin_restore = restore_fd(&saved_stdin, libc::STDIN_FILENO);
+    let stdout_restore = restore_fd(&saved_stdout, libc::STDOUT_FILENO);
+    match (result, stdin_restore, stdout_restore) {
+        (Ok(picker), Ok(()), Ok(())) => Ok(picker),
+        (Err(error), _, _) => Err(error),
+        (Ok(_), Err(error), _) | (Ok(_), Ok(()), Err(error)) => Err(error),
+    }
+}
+
+fn redirect_fd(source: libc::c_int, target: libc::c_int) -> Result<()> {
+    if unsafe { libc::dup2(source, target) } < 0 {
+        return Err(io::Error::last_os_error()).context("could not redirect terminal fd");
+    }
+    Ok(())
+}
+
+fn restore_fd(saved: &File, target: libc::c_int) -> Result<()> {
+    if unsafe { libc::dup2(saved.as_raw_fd(), target) } < 0 {
+        return Err(io::Error::last_os_error()).context("could not restore standard fd");
+    }
+    Ok(())
 }
 
 impl Drop for Terminal {

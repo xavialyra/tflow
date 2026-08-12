@@ -824,6 +824,13 @@ impl ViewInstance for PickerView {
             Some(super::keymap::PickerAction::TogglePreview) if self.preview.is_some() => {
                 LauncherAction::TogglePreview
             }
+            Some(super::keymap::PickerAction::TogglePreview)
+                if self.resolve_command(host.config, key).is_some()
+                    && self.current().command_owner.is_none() =>
+            {
+                LauncherAction::Activate
+            }
+            Some(super::keymap::PickerAction::TogglePreview) => return None,
             None if self.resolve_command(host.config, key).is_some()
                 && self.current().command_owner.is_none() =>
             {
