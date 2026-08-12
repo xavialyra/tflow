@@ -130,6 +130,42 @@ fn validate_layout(layout: &PickerLayout) -> Result<()> {
     Ok(())
 }
 
+fn pane_lengths(
+    length: u16,
+    gap: u16,
+    items: &PaneConfig,
+    preview: &PaneConfig,
+) -> Option<(u16, u16)> {
+    let available = length.checked_sub(gap)?;
+    let items_fixed = items.size.map(|size| size.max(items.min));
+    let preview_fixed = preview.size.map(|size| size.max(preview.min));
+    let fixed_total = items_fixed
+        .unwrap_or(0)
+        .saturating_add(preview_fixed.unwrap_or(0));
+    let grow_minimum = if items_fixed.is_none() { items.min } else { 0 }.saturating_add(
+        if preview_fixed.is_none() {
+            preview.min
+        } else {
+            0
+        },
+    );
+    if fixed_total.saturating_add(grow_minimum) > available {
+        return None;
+    }
+
+    let remaining = available
+        .saturating_sub(fixed_total)
+        .saturating_sub(grow_minimum);
+    let items_grow = items.grow.unwrap_or(0);
+    let preview_grow = preview.grow.unwrap_or(0);
+    let grow_total = items_grow.saturating_add(preview_grow).max(1);
+    let items_extra = remaining.saturating_mul(items_grow) / grow_total;
+    let preview_extra = remaining.saturating_sub(items_extra);
+    let items_length = items_fixed.unwrap_or(items.min.saturating_add(items_extra));
+    let preview_length = preview_fixed.unwrap_or(preview.min.saturating_add(preview_extra));
+    Some((items_length, preview_length))
+}
+
 fn validate_blocks(blocks: &[PreviewBlockConfig]) -> Result<()> {
     if blocks.is_empty() {
         bail!("picker preview requires at least one block");
@@ -218,29 +254,18 @@ impl PickerPreview {
             .iter()
             .find(|pane| pane.slot == "preview")
             .expect("validated preview pane");
-        let (length, items_min, preview_min) = match self.config.layout.direction {
-            Direction::Horizontal => (area.width, items.min, preview.min),
-            Direction::Vertical => (area.height, items.min, preview.min),
+        let (items_length, preview_length) = match pane_lengths(
+            match self.config.layout.direction {
+                Direction::Horizontal => area.width,
+                Direction::Vertical => area.height,
+            },
+            self.config.layout.gap,
+            items,
+            preview,
+        ) {
+            Some(lengths) => lengths,
+            None => return (area, None),
         };
-        if length
-            < items_min
-                .saturating_add(preview_min)
-                .saturating_add(self.config.layout.gap)
-        {
-            return (area, None);
-        }
-        let available = length.saturating_sub(self.config.layout.gap);
-        let preview_length = preview
-            .size
-            .unwrap_or_else(|| {
-                let total = items
-                    .grow
-                    .unwrap_or(0)
-                    .saturating_add(preview.grow.unwrap_or(0));
-                available.saturating_mul(preview.grow.unwrap_or(0)) / total.max(1)
-            })
-            .clamp(preview.min, available.saturating_sub(items.min));
-        let items_length = available.saturating_sub(preview_length);
         match self.config.layout.direction {
             Direction::Horizontal => (
                 Rect::new(area.x, area.y, items_length, area.height),
@@ -551,6 +576,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn fixed_items_pane_keeps_its_configured_width() {
+        let config = parse(
+            Some(json!({
+                "gap": 1,
+                "panes": [
+                    {"slot": "items", "size": 30},
+                    {"slot": "preview", "grow": 1}
+                ]
+            })),
+            Some(json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})),
+        )
+        .unwrap()
+        .unwrap();
+        let preview = PickerPreview::new(config);
+        let (items, preview_area) = preview.areas(Rect::new(0, 0, 80, 10));
+        assert_eq!(items.width, 30);
+        assert_eq!(preview_area.unwrap().width, 49);
+    }
+
+    #[test]
+    fn fixed_panes_keep_both_configured_widths() {
+        let config = parse(
+            Some(json!({
+                "panes": [
+                    {"slot": "items", "size": 30},
+                    {"slot": "preview", "size": 36}
+                ]
+            })),
+            Some(json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})),
+        )
+        .unwrap()
+        .unwrap();
+        let preview = PickerPreview::new(config);
+        let (items, preview_area) = preview.areas(Rect::new(0, 0, 80, 10));
+        assert_eq!(items.width, 30);
+        assert_eq!(preview_area.unwrap().width, 36);
     }
 
     #[test]
