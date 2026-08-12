@@ -247,12 +247,16 @@ impl Config {
         self.state_registry.instantiate(view_ref)
     }
 
-    pub(crate) fn materialize_view(&self, state: &StateInstance) -> Result<Value> {
-        match self.view_config(state.view_ref()) {
-            Ok(view) => self.state_registry.materialize(view, state),
-            Err(_) if state.is_empty() => Ok(Value::Null),
-            Err(error) => Err(error),
-        }
+    pub(crate) fn query_value(&self, state: &StateInstance) -> Result<Value> {
+        self.state_registry.query_value(state)
+    }
+
+    pub(crate) fn update_query_value(
+        &self,
+        state: &mut StateInstance,
+        value: &Value,
+    ) -> Result<bool> {
+        self.state_registry.update_value(state, value)
     }
 
     pub(crate) fn render_query_input(&self, state: &StateInstance) -> Result<String> {
@@ -527,7 +531,7 @@ impl Config {
                 };
                 (
                     raw,
-                    self.materialize_view(state)?,
+                    serde_json::json!({"query": self.query_value(state)?}),
                     self.plugin_root(state.view_ref())
                         .unwrap_or_else(|| Path::new(".")),
                 )
@@ -918,11 +922,6 @@ fn validate_navigation_payload(
             command_id,
             target
         );
-    }
-    if let Some(query) = &payload.query
-        && !query.is_str()
-    {
-        bail!("navigation input query must be a string or expression");
     }
     Ok(())
 }

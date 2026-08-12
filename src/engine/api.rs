@@ -44,6 +44,7 @@ impl InputSeed {
 pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
+    pub(crate) query: Option<Value>,
     pub(crate) route_child: bool,
     pub(crate) context: Value,
     pub(crate) owner_state: Option<crate::state::StateInstance>,
@@ -54,6 +55,7 @@ impl NavigationRequest {
         Self {
             view_ref: view_ref.into(),
             input: Some(InputSeed::new(input)),
+            query: None,
             route_child: false,
             context: Value::Null,
             owner_state: None,
@@ -64,6 +66,7 @@ impl NavigationRequest {
         Self {
             view_ref: view_ref.into(),
             input: None,
+            query: None,
             route_child: false,
             context: Value::Null,
             owner_state: None,
@@ -79,10 +82,17 @@ impl NavigationRequest {
         Self {
             view_ref: view_ref.into(),
             input: Some(InputSeed::routed(raw, params, cursor)),
+            query: None,
             route_child: true,
             context: Value::Null,
             owner_state: None,
         }
+    }
+
+    pub(crate) fn with_query(mut self, query: Value) -> Self {
+        self.input = None;
+        self.query = Some(query);
+        self
     }
 
     pub(crate) fn with_context(mut self, context: Value) -> Self {

@@ -88,7 +88,7 @@ fn explicit_capture_view_receives_typed_query_state() {
         output = "{{ this:query.message }}"
         [plugins.core.views.direct.query]
         type = "object"
-        message = '''{{ state("string") }}'''
+        message = { type = "string" }
         "#,
     )
     .unwrap();
@@ -129,7 +129,7 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
-        text = '''{{ state("string", "") }}'''
+        text = { type = "string", default = "" }
         "#,
     )
     .unwrap();
@@ -168,7 +168,7 @@ fn explicit_embedded_view_receives_typed_query_input() {
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
-        text = '''{{ state("string", "") }}'''
+        text = { type = "string", default = "" }
         "#,
     )
     .unwrap();
@@ -969,7 +969,7 @@ fn aggregate_sources_own_independent_view_state() {
         [plugins.apps.views.default.query]
         type = "object"
         input_order = ["text"]
-        text = '''{{ state("string", "source-default") }}'''
+        text = { type = "string", default = "source-default" }
 
         [catalog]
         items = [{label = "VALUE:{{ this:query.text }}"}]
@@ -1317,7 +1317,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         [plugins.core.views.capture.query]
         type = "object"
         input_order = ["text"]
-        text = '''{{ state("string", "target-default") }}'''
+        text = { type = "string", default = "target-default" }
         "#,
     )
     .expect("could not write navigation default config");

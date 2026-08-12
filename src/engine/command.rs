@@ -13,7 +13,7 @@ use std::path::Path;
 pub(crate) enum CommandAction {
     Navigate {
         target: String,
-        input: Option<String>,
+        query: Option<Value>,
     },
     Execute {
         invocation: CommandInvocation,
@@ -69,16 +69,11 @@ pub(crate) fn prepare_command_action(
                 .and_then(Value::as_str)
                 .context("navigation input target must evaluate to a string")?;
             let target = config.resolve_view(target)?;
-            let input = match request.get("query") {
+            let query = match request.get("query") {
                 None | Some(Value::Null) => None,
-                Some(value) => Some(
-                    value
-                        .as_str()
-                        .context("navigation input query must evaluate to a string or null")?
-                        .to_string(),
-                ),
+                Some(value) => Some(value.clone()),
             };
-            Ok(CommandAction::Navigate { target, input })
+            Ok(CommandAction::Navigate { target, query })
         }
         ConfigCommandAction::Run { payload } => {
             let exit = payload.exit;

@@ -793,6 +793,7 @@ impl<'a> AppSession<'a> {
                     self.config,
                     &mut state,
                     request.input.as_ref(),
+                    request.query.as_ref(),
                 ) {
                     Ok(input) => input,
                     Err(error) => {
@@ -987,7 +988,13 @@ fn initialize_navigation_input(
     config: &Config,
     state: &mut StateInstance,
     seed: Option<&InputSeed>,
+    query: Option<&serde_json::Value>,
 ) -> Result<InputBuffer> {
+    if let Some(query) = query {
+        config.update_query_value(state, query)?;
+        let input = sanitize_terminal_text(&config.render_query_input(state)?);
+        return Ok(InputBuffer::with_params(input.clone(), input));
+    }
     let Some(seed) = seed else {
         let input = sanitize_terminal_text(&config.render_query_input(state)?);
         return Ok(InputBuffer::with_params(input.clone(), input));
@@ -1272,7 +1279,7 @@ mod tests {
             [plugins.core.views.default.query]
             type = "object"
             input_order = ["count"]
-            count = '''{{ state("integer", 1) }}'''
+            count = { type = "integer", default = 1 }
             "#,
         )
         .unwrap();

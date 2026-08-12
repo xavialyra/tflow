@@ -66,28 +66,28 @@ Global options must precede the View. Every argument after the View must use an 
 [views.default.query]
 type = "object"
 input_order = ["source", "target", "text"]
-source = '''{{ state("string", null) }}'''
-target = '''{{ state("string", null) }}'''
-text = '''{{ state("string", "") }}'''
-tags = '''{{ state("array<string>", []) }}'''
-limit = '''{{ state("integer", 10) }}'''
+source = { type = "string", nullable = true }
+target = { type = "string", nullable = true }
+text = { type = "string", default = "" }
+tags = { type = "array<string>", default = [] }
+limit = { type = "integer", default = 10 }
 ```
 
-`state(type)` declares a required value; `state(type, null)` declares an optional value; any other static default initializes the state. `--name=value` supplies a string, `--name:=VALUE` supplies typed JSON, `--flag`/`--no-flag` supply booleans, and declared arrays accept one comma-separated token. For example:
+Query fields declare their type directly. A field with no `default` and no `nullable = true` is required; nullable fields default to `null`, and fields with a default use that value. `--name=value` is parsed using the declared field type, `--name:=VALUE` supplies typed JSON, `--flag`/`--no-flag` supply booleans, and declared arrays accept one comma-separated token. For example:
 
 ```bash
 tui-launcher tr --source=en --target=zh --text="hello world" --tags=formal,short --limit:=5
 ```
 
-The TUI input controller uses `input_order`, so the same state can be edited as `en zh 'hello world'`; it validates the complete line and commits all ordered fields atomically. Plain query metadata such as `type` and `input_order` remains present when the complete config path is passed to a script.
+The TUI input controller uses `input_order`, so the same query can be edited as `en zh 'hello world'`; it validates the complete line and commits all ordered fields atomically. Query schema metadata such as `type` and `input_order` is not included in `this:query`.
 
 When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. A `complete` command may explicitly declare a result handler and a JSON `params` object. After the session ends and the terminal is restored, the launcher evaluates that object against the completion-time View state and runtime snapshot, writes it to the handler's stdin, and uses the handler's raw stdout, stderr, and exit status as the invocation result.
 
-`state()` declarations belong to the View configuration where they occur and are keyed relative to that View. Only states below a View's fixed `query` subtree are assignable from CLI/TUI input. Each stack entry owns an independent View state instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Aggregate pickers create independent source View scopes for their item providers. Scripts receive state only when an expression explicitly passes `this:` data.
+Each stack entry owns an independent committed query instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Aggregate pickers create independent source View query scopes for their item providers. Scripts receive the typed query only when an expression explicitly passes `this:query`.
 
 ## dmenu plugin
 
-The bundled `dmenu:default` View is an ordinary picker plus plugin scripts. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed states below `views.default.query`; its items script reads the complete materialized query object and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
+The bundled `dmenu:default` View is an ordinary picker plus plugin scripts. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed query fields below `views.default.query`; its items script reads `this:query` and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
 
 ```bash
 printf '%s\n' 'Option 1' 'Option 2' 'Option 3' |
@@ -137,14 +137,14 @@ show_prefix = false
 [views.default.query]
 type = "object"
 input_order = ["initial"]
-prompt = '''{{ state("string", null) }}'''
-initial = '''{{ state("string", "") }}'''
-dmenu0 = '''{{ state("boolean", false) }}'''
-index = '''{{ state("boolean", false) }}'''
-with-nth = '''{{ state("string", null) }}'''
-accept-nth = '''{{ state("string", null) }}'''
-match-nth = '''{{ state("string", null) }}'''
-nth-delimiter = '''{{ state("string", null) }}'''
+prompt = { type = "string", nullable = true }
+initial = { type = "string", default = "" }
+dmenu0 = { type = "boolean", default = false }
+index = { type = "boolean", default = false }
+with-nth = { type = "string", nullable = true }
+accept-nth = { type = "string", nullable = true }
+match-nth = { type = "string", nullable = true }
+nth-delimiter = { type = "string", nullable = true }
 
 open_commands = []
 open_completion = []
@@ -341,7 +341,7 @@ commands = "{{ runtime:view.active.command }}"
 label = "query: {{ runtime:view.active.query }}"
 ```
 
-References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a materialized object for `query.type = "object"`; `config:` never receives a state overlay.
+References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's committed query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a typed object for `query.type = "object"`; `config:` never receives a query overlay.
 
 ```toml
 items = '{{ path(runtime:view.active, "$.items") }}'
@@ -387,7 +387,7 @@ stdin = "{{ input:stdin }}"
 
 The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. Handler stdout is limited to 16 MiB and stderr to 64 KiB, with a 10-second timeout. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
 
-Navigation reads one automatically evaluated request object. `target` may be a literal or an expression; `query` is the target View's initial input. Omitting `query`, or evaluating it to `null`, keeps the target View's state defaults, while an explicit empty string clears its editable query:
+Navigation reads one automatically evaluated request object. `target` may be a literal or an expression. `query` may be a string, which is parsed by the target View's query schema, or an object, which is validated directly and completed with defaults. Omitting `query`, or evaluating it to `null`, keeps the target View's query defaults, while an explicit empty string clears its editable query:
 
 ```toml
 [views.main.commands.inspect]
@@ -446,7 +446,7 @@ items = '{{ script("scripts/items.sh", this:query) }}'
 [views.main.query]
 type = "object"
 input_order = ["text"]
-text = '''{{ state("string", "") }}'''
+text = { type = "string", default = "" }
 ```
 
 ```json
@@ -492,7 +492,7 @@ Command `shell` selects the command interpreter. When omitted, the source view's
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
-Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `engine.config.show_prefix = true` to identify each source. Input defaults and types belong to query `state()` declarations; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `engine.config.show_prefix = true` to identify each source. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 

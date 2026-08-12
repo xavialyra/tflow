@@ -67,7 +67,7 @@ fn completion_handler_receives_explicit_params_and_controls_raw_output_and_statu
         items = "{{ config:catalog.items }}"
         [views.default.query]
         type = "object"
-        tag = '''{{ state("string", null) }}'''
+        tag = { type = "string", nullable = true }
 
         [views.default.commands.accept]
         key = "enter"

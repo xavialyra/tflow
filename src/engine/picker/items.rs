@@ -365,7 +365,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "input=$(cat)\nprintf '[{\\\"label\\\":%s}]\\n' \"$input\"\n",
+            "jq -cn --arg label \"$(cat | jq -r .)\" '[{label: $label}]'\n",
         )
         .unwrap();
 
@@ -407,6 +407,13 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
+        assert_eq!(
+            result.items.len(),
+            1,
+            "items={:?} errors={:?}",
+            result.items,
+            result.errors
+        );
         assert_eq!(result.items[0].text, "fire");
         fs::remove_dir_all(root).unwrap();
     }

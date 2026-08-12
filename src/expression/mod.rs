@@ -37,100 +37,6 @@ pub struct Template {
     parts: Vec<TemplatePart>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StateDeclarationSyntax {
-    pub(crate) type_name: String,
-    pub(crate) default: Option<Value>,
-}
-
-pub(crate) fn parse_state_declaration(source: &str) -> Result<Option<StateDeclarationSyntax>> {
-    let template = Template::parse(source)?;
-    let [
-        TemplatePart::Expr(Expr::Call {
-            name,
-            args,
-            named_args,
-        }),
-    ] = template.parts.as_slice()
-    else {
-        if template_contains_call(&template, "state") {
-            bail!("state must be the complete value of a configuration field");
-        }
-        return Ok(None);
-    };
-    if name != "state" {
-        if expression_contains_call(&template.parts[0], "state") {
-            bail!("state cannot be nested inside another expression");
-        }
-        return Ok(None);
-    }
-    if !named_args.is_empty() || !(1..=2).contains(&args.len()) {
-        bail!("state accepts a type and optional static default value");
-    }
-    let type_name = match &args[0] {
-        Expr::Literal(Value::String(value)) if !value.is_empty() => value.clone(),
-        _ => bail!("state requires a non-empty string type"),
-    };
-    let default = args.get(1).map(static_expression_value).transpose()?;
-    Ok(Some(StateDeclarationSyntax { type_name, default }))
-}
-
-fn template_contains_call(template: &Template, name: &str) -> bool {
-    template
-        .parts
-        .iter()
-        .any(|part| expression_contains_call(part, name))
-}
-
-fn expression_contains_call(part: &TemplatePart, target: &str) -> bool {
-    match part {
-        TemplatePart::Text(_) => false,
-        TemplatePart::Expr(expression) => expression_has_call(expression, target),
-    }
-}
-
-fn expression_has_call(expression: &Expr, target: &str) -> bool {
-    match expression {
-        Expr::Call {
-            name,
-            args,
-            named_args,
-        } => {
-            name == target
-                || args.iter().any(|value| expression_has_call(value, target))
-                || named_args
-                    .values()
-                    .any(|value| expression_has_call(value, target))
-        }
-        Expr::Array(values) => values
-            .iter()
-            .any(|value| expression_has_call(value, target)),
-        Expr::Object(values) => values
-            .values()
-            .any(|value| expression_has_call(value, target)),
-        Expr::Literal(_) | Expr::Ref { .. } => false,
-    }
-}
-
-fn static_expression_value(expression: &Expr) -> Result<Value> {
-    match expression {
-        Expr::Literal(value) => Ok(value.clone()),
-        Expr::Array(values) => values
-            .iter()
-            .map(static_expression_value)
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array),
-        Expr::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), static_expression_value(value)?)))
-            .collect::<Result<Map<_, _>>>()
-            .map(Value::Object),
-        Expr::Ref { .. } | Expr::Call { .. } => {
-            bail!("state default values must be static JSON")
-        }
-    }
-}
-
 pub trait ReferenceResolver {
     fn resolve_reference(&self, namespace: &str, path: &str) -> Result<Value>;
 }
@@ -796,21 +702,6 @@ mod tests {
             references,
             methods,
         }
-    }
-
-    #[test]
-    fn state_declarations_are_complete_and_static() {
-        assert_eq!(
-            parse_state_declaration("{{ state(\"array<string>\", []) }}").unwrap(),
-            Some(StateDeclarationSyntax {
-                type_name: "array<string>".to_string(),
-                default: Some(serde_json::json!([])),
-            })
-        );
-        assert!(parse_state_declaration("prefix {{ state(\"string\", null) }}").is_err());
-        assert!(
-            parse_state_declaration("{{ state(\"string\", runtime:view.active.input) }}").is_err()
-        );
     }
 
     #[test]

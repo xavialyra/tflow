@@ -14,6 +14,6 @@ items = '''{{ script("scripts/items.sh", this:query) }}'''
 [views.default.query]
 type = "object"
 input_order = ["source", "target", "text"]
-source = '''{{ state("string", null) }}'''
-target = '''{{ state("string", null) }}'''
-text = '''{{ state("string", "") }}'''
+source = { type = "string", nullable = true }
+target = { type = "string", nullable = true }
+text = { type = "string", default = "" }

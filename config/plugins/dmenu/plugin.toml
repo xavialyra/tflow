@@ -17,14 +17,14 @@ show_prefix = false
 [views.default.query]
 type = "object"
 input_order = ["initial"]
-prompt = '''{{ state("string", null) }}'''
-initial = '''{{ state("string", "") }}'''
-dmenu0 = '''{{ state("boolean", false) }}'''
-index = '''{{ state("boolean", false) }}'''
-with-nth = '''{{ state("string", null) }}'''
-accept-nth = '''{{ state("string", null) }}'''
-match-nth = '''{{ state("string", null) }}'''
-nth-delimiter = '''{{ state("string", null) }}'''
+prompt = { type = "string", nullable = true }
+initial = { type = "string", default = "" }
+dmenu0 = { type = "boolean", default = false }
+index = { type = "boolean", default = false }
+with-nth = { type = "string", nullable = true }
+accept-nth = { type = "string", nullable = true }
+match-nth = { type = "string", nullable = true }
+nth-delimiter = { type = "string", nullable = true }
 
 [views.default.engine.config.bindings]
 open_commands = []

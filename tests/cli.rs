@@ -35,7 +35,7 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
         output = "{{ this:query.message }}"
         [plugins.core.views.default.query]
         type = "object"
-        message = '''{{ state("string", "") }}'''
+        message = { type = "string", default = "" }
         "#,
     )
     .unwrap();

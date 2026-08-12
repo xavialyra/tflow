@@ -500,9 +500,9 @@ impl PickerView {
         };
         let command_view = self.command_view_active();
         match action {
-            CommandAction::Navigate { target, input } => {
-                let request = match input {
-                    Some(input) => NavigationRequest::new(target, input),
+            CommandAction::Navigate { target, query } => {
+                let request = match query {
+                    Some(query) => NavigationRequest::new(target, "").with_query(query),
                     None => NavigationRequest::with_defaults(target),
                 };
                 Ok(Some(ViewEffect::Navigate {
