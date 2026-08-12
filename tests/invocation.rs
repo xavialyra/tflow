@@ -16,9 +16,10 @@ fn redirected_stdout_contains_only_the_default_completion_result() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
@@ -60,9 +61,10 @@ fn completion_handler_receives_explicit_params_and_controls_raw_output_and_statu
         name = "custom"
 
         [views.default]
+        [views.default.engine]
         type = "picker"
+        [views.default.engine.config]
         items = "{{ config:catalog.items }}"
-
         [views.default.query]
         type = "object"
         tag = '''{{ state("string", null) }}'''
@@ -132,9 +134,10 @@ fn completion_handler_belongs_to_the_completing_command() {
         name = "custom"
 
         [views.default]
+        [views.default.engine]
         type = "picker"
+        [views.default.engine.config]
         items = "{{ config:catalog.items }}"
-
         [views.default.commands.next]
         key = "enter"
         label = "Next"
@@ -144,9 +147,10 @@ fn completion_handler_belongs_to_the_completing_command() {
         target = "custom:child"
 
         [views.child]
+        [views.child.engine]
         type = "picker"
+        [views.child.engine.config]
         items = "{{ config:catalog.items }}"
-
         [views.child.commands.accept]
         key = "enter"
         label = "Accept"

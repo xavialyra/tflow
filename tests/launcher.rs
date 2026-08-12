@@ -19,10 +19,11 @@ fn loads_items_from_an_expression() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:catalog.items }}"
-
         [catalog]
         items = [{label = "Item", value = "value"}]
 
@@ -75,14 +76,16 @@ fn explicit_capture_view_receives_typed_query_state() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.direct]
+        [plugins.core.views.direct.engine]
         type = "capture"
+        [plugins.core.views.direct.engine.config]
         output = "{{ this:query.message }}"
-
         [plugins.core.views.direct.query]
         type = "object"
         message = '''{{ state("string") }}'''
@@ -113,14 +116,16 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.direct]
+        [plugins.core.views.direct.engine]
         type = "capture"
+        [plugins.core.views.direct.engine.config]
         output = "{{ runtime:view.active.input }}"
-
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
@@ -150,14 +155,16 @@ fn explicit_embedded_view_receives_typed_query_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.direct]
+        [plugins.core.views.direct.engine]
         type = "embedded"
+        [plugins.core.views.direct.engine.config]
         command = ["sh", "-lc", "printf 'input=%s\\n' \"$LAUNCHER_INPUT\""]
-
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
@@ -186,14 +193,17 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.direct]
+        [plugins.core.views.direct.engine]
         type = "embedded"
+        [plugins.core.views.direct.engine.config]
         command = ["sh", "-lc", "printf 'direct-embedded\\n'; exit 0"]
-        "#,
+"#,
     )
     .unwrap();
 
@@ -219,10 +229,11 @@ fn waits_for_items_before_running_enter_command() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -267,13 +278,15 @@ fn route_query_and_activate_share_one_input_batch() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
-
+        [plugins.core.views.default.engine.config]
         [plugins.apps.views.main]
-        type = "picker"
         alias = "app"
+        [plugins.apps.views.main.engine]
+        type = "picker"
+        [plugins.apps.views.main.engine.config]
         items = "{{ config:test_items.items }}"
-
         [plugins.apps.views.main.commands.run]
         key = "enter"
         label = "Run"
@@ -317,10 +330,11 @@ fn view_commands_accept_unreserved_control_bindings() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.run]
         key = "ctrl+r"
         label = "Run"
@@ -364,7 +378,7 @@ fn replacing_items_request_cancels_the_previous_script() {
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"picker\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
     )
     .expect("could not write cancellation plugin manifest");
     let old_pid_path = root.join("old.pid");
@@ -390,10 +404,12 @@ fi
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = '{{ script("scripts/items.sh", runtime:view.active) }}'
-        "#,
+"#,
     )
     .expect("could not write cancellation integration config");
 
@@ -448,10 +464,11 @@ fn ctrl_k_opens_the_command_picker_view() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -481,8 +498,10 @@ fn ctrl_k_opens_the_command_picker_view() {
         handler = ":"
 
         [plugins.core.views.command]
+        [plugins.core.views.command.engine]
         type = "picker"
-        "#,
+        [plugins.core.views.command.engine.config]
+"#,
     )
     .expect("could not write command view integration config");
 
@@ -529,16 +548,19 @@ fn command_picker_waits_for_the_committed_selection() {
         command_view = "core:command"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         sources = ["alpha:default", "beta:default"]
-
         [plugins.core.views.command]
+        [plugins.core.views.command.engine]
         type = "picker"
-
+        [plugins.core.views.command.engine.config]
         [plugins.alpha.views.default]
+        [plugins.alpha.views.default.engine]
         type = "picker"
+        [plugins.alpha.views.default.engine.config]
         items = "{{ config:catalog.alpha }}"
-
         [plugins.alpha.views.default.commands.open]
         key = "enter"
         label = "Alpha Action"
@@ -548,9 +570,10 @@ fn command_picker_waits_for_the_committed_selection() {
         handler = ":"
 
         [plugins.beta.views.default]
+        [plugins.beta.views.default.engine]
         type = "picker"
+        [plugins.beta.views.default.engine.config]
         items = "{{ config:catalog.beta }}"
-
         [plugins.beta.views.default.commands.open]
         key = "enter"
         label = "Beta Action"
@@ -604,17 +627,21 @@ fn tab_opens_view_completion_and_escape_closes_it() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
-
         [plugins.apps.views.main]
-        type = "picker"
         alias = "app"
-
-        [plugins.sys.views.main]
+        [plugins.apps.views.main.engine]
         type = "picker"
+        [plugins.apps.views.main.engine.config]
+        [plugins.sys.views.main]
         alias = "sys"
-        "#,
+        [plugins.sys.views.main.engine]
+        type = "picker"
+        [plugins.sys.views.main.engine.config]
+"#,
     )
     .expect("could not write view completion config");
 
@@ -682,16 +709,20 @@ fn typing_dismisses_completion_and_replays_the_character_batch() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
-
+        [plugins.core.views.default.engine.config]
         [plugins.apps.views.main]
-        type = "picker"
         alias = "app"
-
-        [plugins.sys.views.main]
+        [plugins.apps.views.main.engine]
         type = "picker"
+        [plugins.apps.views.main.engine.config]
+        [plugins.sys.views.main]
         alias = "sys"
-        "#,
+        [plugins.sys.views.main.engine]
+        type = "picker"
+        [plugins.sys.views.main.engine.config]
+"#,
     )
     .expect("could not write completion replay config");
 
@@ -729,11 +760,12 @@ fn picker_bindings_can_override_a_default_shortcut() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
-        [plugins.core.views.default.bindings]
+        [plugins.core.views.default.engine.config.bindings]
         open_commands = ["ctrl+p"]
 
         [plugins.core.views.default.commands.run]
@@ -746,8 +778,10 @@ fn picker_bindings_can_override_a_default_shortcut() {
         handler = ":"
 
         [plugins.core.views.command]
+        [plugins.core.views.command.engine]
         type = "picker"
-        "#,
+        [plugins.core.views.command.engine.config]
+"#,
     )
     .expect("could not write custom picker binding config");
 
@@ -789,10 +823,11 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.inspect]
         key = "enter"
         label = "Inspect"
@@ -803,13 +838,16 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         query = "parent-value:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.command]
+        [plugins.core.views.command.engine]
         type = "picker"
-
+        [plugins.core.views.command.engine.config]
         [plugins.core.views.capture]
+        [plugins.core.views.capture.engine]
         type = "capture"
+        [plugins.core.views.capture.engine.config]
         output = "{{ runtime:view.active.input }}"
         title = "Capture"
-        "#,
+"#,
     )
     .expect("could not write command navigation integration config");
 
@@ -869,10 +907,12 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items }}"
-        "#,
+"#,
     )
     .expect("could not write error logging config");
 
@@ -916,14 +956,16 @@ fn aggregate_sources_own_independent_view_state() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         sources = ["apps:default"]
-
         [plugins.apps.views.default]
+        [plugins.apps.views.default.engine]
         type = "picker"
+        [plugins.apps.views.default.engine.config]
         items = "{{ config:catalog.items }}"
-
         [plugins.apps.views.default.query]
         type = "object"
         input_order = ["text"]
@@ -957,20 +999,24 @@ fn route_input_escape_removes_the_route_tag() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         sources = ["apps:default", "sys:default"]
-
         [plugins.apps.views.default]
-        type = "picker"
         alias = "app"
-        items = "{{ config:test_items.items }}"
-
-        [plugins.sys.views.default]
+        [plugins.apps.views.default.engine]
         type = "picker"
-        alias = "sys"
+        [plugins.apps.views.default.engine.config]
         items = "{{ config:test_items.items }}"
-        "#,
+        [plugins.sys.views.default]
+        alias = "sys"
+        [plugins.sys.views.default.engine]
+        type = "picker"
+        [plugins.sys.views.default.engine.config]
+        items = "{{ config:test_items.items }}"
+"#,
     )
     .expect("could not write route input config");
 
@@ -1022,20 +1068,24 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         sources = ["apps:default", "sys:default"]
-
         [plugins.apps.views.default]
-        type = "picker"
         alias = "app"
-        items = "{{ config:test_items.items }}"
-
-        [plugins.sys.views.default]
+        [plugins.apps.views.default.engine]
         type = "picker"
-        alias = "sys"
+        [plugins.apps.views.default.engine.config]
         items = "{{ config:test_items.items }}"
-        "#,
+        [plugins.sys.views.default]
+        alias = "sys"
+        [plugins.sys.views.default.engine]
+        type = "picker"
+        [plugins.sys.views.default.engine.config]
+        items = "{{ config:test_items.items }}"
+"#,
     )
     .expect("could not write route editing config");
 
@@ -1113,7 +1163,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
     fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
     fs::write(
         plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder]\ntype = \"picker\"\n",
+        "[plugin]\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
     )
     .expect("could not write test plugin manifest");
     fs::write(
@@ -1127,14 +1177,17 @@ fn view_alias_routes_to_the_configured_messages_picker() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
-
         [plugins.core.views.messages]
-        type = "picker"
         alias = "log"
+        [plugins.core.views.messages.engine]
+        type = "picker"
+        [plugins.core.views.messages.engine.config]
         items = '{{ script("scripts/items.sh", runtime:view.active) }}'
-        "#,
+"#,
     )
     .expect("could not write messages integration config");
 
@@ -1176,8 +1229,10 @@ fn duplicate_view_alias_reports_an_error_when_invoked() {
 name = "template"
 
 [views.default]
-type = "picker"
 alias = "temp"
+[views.default.engine]
+type = "picker"
+[views.default.engine.config]
 "#,
         )
         .expect("could not write conflicting plugin manifest");
@@ -1188,9 +1243,11 @@ alias = "temp"
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
-        "#,
+"#,
     )
     .expect("could not write conflicting-alias config");
 
@@ -1240,9 +1297,10 @@ fn navigation_without_query_uses_the_target_view_default() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.open]
         key = "enter"
         label = "Open"
@@ -1252,9 +1310,10 @@ fn navigation_without_query_uses_the_target_view_default() {
         target = "core:capture"
 
         [plugins.core.views.capture]
+        [plugins.core.views.capture.engine]
         type = "capture"
+        [plugins.core.views.capture.engine.config]
         output = "{{ this:query.text }}"
-
         [plugins.core.views.capture.query]
         type = "object"
         input_order = ["text"]
@@ -1306,10 +1365,11 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -1320,11 +1380,13 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         query = "capture-marker:{{ runtime:view.active.selected_item.value }}"
 
         [plugins.core.views.capture]
-        type = "capture"
         alias = "cap"
+        [plugins.core.views.capture.engine]
+        type = "capture"
+        [plugins.core.views.capture.engine.config]
         output = "{{ runtime:view.active.input }}"
         title = "Capture"
-        "#,
+"#,
     )
     .expect("could not write capture integration config");
 
@@ -1380,10 +1442,11 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
         items = "{{ config:test_items.items }}"
-
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -1394,11 +1457,13 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         query = '''printf 'embedded-marker:%s\n' '{{ runtime:view.active.selected_item.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
-        type = "embedded"
         alias = "emb"
+        [plugins.core.views.embedded.engine]
+        type = "embedded"
+        [plugins.core.views.embedded.engine.config]
         command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
         title = "Embedded"
-        "#,
+"#,
     )
     .expect("could not write embedded integration config");
 
@@ -1446,13 +1511,16 @@ fn failed_view_creation_returns_to_the_current_view() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
-
         [plugins.core.views.broken]
+        [plugins.core.views.broken.engine]
         type = "embedded"
+        [plugins.core.views.broken.engine.config]
         command = "{{ runtime:missing }}"
-        "#,
+"#,
     )
     .expect("could not write failed navigation integration config");
 
@@ -1496,14 +1564,17 @@ fn qualified_view_path_navigates_to_any_engine() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         show_prefix = true
-
         [plugins.core.views.embedded]
+        [plugins.core.views.embedded.engine]
         type = "embedded"
+        [plugins.core.views.embedded.engine.config]
         command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
         title = "Embedded"
-        "#,
+"#,
     )
     .expect("could not write qualified route integration config");
 

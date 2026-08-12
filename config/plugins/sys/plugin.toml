@@ -3,8 +3,12 @@ api = 1
 name = "system"
 
 [views.default]
-type = "picker"
 alias = "sys"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.run]
@@ -16,7 +20,9 @@ type = "navigate"
 target = "sys:output"
 query = "{{ runtime:view.active.selected_item.text }}"
 
-[views.output]
+[views.output.engine]
 type = "capture"
+
+[views.output.engine.config]
 output = '{{ script("scripts/run.sh", runtime:view.active.input) }}'
 title = "{{ runtime:view.active.ref }}"

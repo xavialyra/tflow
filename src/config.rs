@@ -63,15 +63,29 @@ pub(crate) struct PickerDefaults {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct View {
+pub struct EngineSpec {
     #[serde(rename = "type", default = "default_engine_type")]
     pub engine_type: String,
     #[serde(default)]
+    pub config: EngineOptions,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EngineOptions {
+    #[serde(default)]
     pub sources: Vec<ViewRef>,
     #[serde(default)]
-    pub alias: Option<String>,
-    #[serde(default)]
     pub items: Option<String>,
+    #[serde(flatten)]
+    pub fields: toml::Table,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct View {
+    pub engine: EngineSpec,
+    #[serde(default)]
+    pub alias: Option<String>,
     #[serde(default)]
     pub run_shell: Option<String>,
     #[serde(default)]
@@ -81,13 +95,23 @@ pub struct View {
     pub(crate) query: Option<toml::Table>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
-    #[serde(flatten)]
-    pub(crate) engine_config: toml::Table,
 }
 
 impl View {
+    pub(crate) fn selected_engine_type(&self) -> &str {
+        &self.engine.engine_type
+    }
+    pub(crate) fn selected_engine_config(&self) -> &toml::Table {
+        &self.engine.config.fields
+    }
+    pub(crate) fn selected_items(&self) -> Option<&str> {
+        self.engine.config.items.as_deref()
+    }
+    pub(crate) fn selected_sources(&self) -> &[ViewRef] {
+        &self.engine.config.sources
+    }
     pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {
-        self.engine_config.get(field)
+        self.selected_engine_config().get(field)
     }
 }
 
@@ -193,8 +217,9 @@ impl Config {
         merge_values(&mut merged, user_config);
         remove_disabled_plugins(&mut merged, &disabled_plugins);
 
-        let config_value =
+        let mut config_value =
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
+        normalize_engine_configs(&mut config_value);
         let raw: RawConfig = merged
             .try_into()
             .context("merged configuration does not match the picker schema")?;
@@ -328,10 +353,12 @@ impl Config {
             {
                 bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
             }
-            if !view.sources.is_empty() && !view.commands.is_empty() {
+            let sources = view.selected_sources();
+            let items = view.selected_items();
+            if !sources.is_empty() && !view.commands.is_empty() {
                 bail!("aggregate view {:?} cannot define commands", view_ref);
             }
-            if !view.sources.is_empty() && view.items.is_some() {
+            if !sources.is_empty() && items.is_some() {
                 bail!("aggregate view {:?} cannot define items", view_ref);
             }
             let engine = self.engine(view_ref)?;
@@ -347,14 +374,14 @@ impl Config {
                 )
                 .with_context(|| format!("view {:?} picker bindings", view_ref))?;
             }
-            if engine != ENGINE_PICKER && (!view.sources.is_empty() || view.items.is_some()) {
+            if engine != ENGINE_PICKER && (!sources.is_empty() || items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide picker items",
                     view_ref,
                     engine
                 );
             }
-            if let Some(items) = &view.items {
+            if let Some(items) = items {
                 Template::parse(items)
                     .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
             }
@@ -362,7 +389,7 @@ impl Config {
                 validate_script(shell, "run_shell", view_ref)?;
             }
 
-            for source_ref in &view.sources {
+            for source_ref in sources {
                 let source = self.views.get(source_ref).with_context(|| {
                     format!(
                         "view {:?} references missing source {:?}",
@@ -376,7 +403,7 @@ impl Config {
                         source_ref
                     );
                 }
-                if !source.sources.is_empty() {
+                if !source.selected_sources().is_empty() {
                     bail!(
                         "view {:?} cannot use aggregate view {:?} as a source",
                         view_ref,
@@ -463,7 +490,7 @@ impl Config {
             .views
             .get(view_ref)
             .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        Ok(view.engine_type.as_str())
+        Ok(view.selected_engine_type())
     }
 
     pub(crate) fn get(
@@ -487,10 +514,10 @@ impl Config {
                             format!("view {:?} is not configured", state.view_ref())
                         })?;
                         let mut values = serde_json::Map::new();
-                        if let Some(items) = &view.items {
-                            values.insert("items".to_string(), Value::String(items.clone()));
+                        if let Some(items) = view.selected_items() {
+                            values.insert("items".to_string(), Value::String(items.to_string()));
                         }
-                        for (name, value) in &view.engine_config {
+                        for (name, value) in view.selected_engine_config() {
                             values.insert(name.clone(), toml_to_json(value)?);
                         }
                         fallback = Value::Object(values);
@@ -551,10 +578,10 @@ impl Config {
             .views
             .get(view_ref)
             .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        if view.sources.is_empty() {
+        if view.selected_sources().is_empty() {
             return Ok(vec![(view_ref.to_string(), view)]);
         }
-        view.sources
+        view.selected_sources()
             .iter()
             .map(|source_ref| {
                 self.views
@@ -818,6 +845,38 @@ fn toml_to_json(value: &toml::Value) -> Result<Value> {
     serde_json::to_value(value).context("could not convert TOML to JSON")
 }
 
+fn normalize_engine_configs(config: &mut Value) {
+    let Some(plugins) = config.get_mut("plugins").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for plugin in plugins.values_mut() {
+        let Some(views) = plugin.get_mut("views").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for view in views.values_mut() {
+            let Some(view) = view.as_object_mut() else {
+                continue;
+            };
+            let Some(engine) = view.get("engine").cloned() else {
+                continue;
+            };
+            let Some(engine) = engine.as_object() else {
+                continue;
+            };
+            let Some(engine_type) = engine.get("type").cloned() else {
+                continue;
+            };
+            let Some(config) = engine.get("config").and_then(Value::as_object) else {
+                continue;
+            };
+            view.insert("type".to_string(), engine_type);
+            for (key, value) in config {
+                view.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
 fn validate_plugin_id(plugin_id: &str) -> Result<()> {
     if plugin_id.is_empty() || plugin_id.contains(':') || plugin_id.chars().any(char::is_whitespace)
     {
@@ -937,18 +996,25 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
+            [plugins.core.views.default.engine.config]
             sources = ["apps:main"]
             [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
             type = "picker"
-            "#,
+            [plugins.apps.views.main.engine.config]
+"#,
         );
         assert_eq!(config.default_view, "core:default");
         assert_eq!(
-            config.views["apps:main"].engine_type,
+            config.views["apps:main"].engine.engine_type,
             ENGINE_PICKER.to_string()
         );
-        assert_eq!(config.views["core:default"].sources, vec!["apps:main"]);
+        assert_eq!(
+            config.views["core:default"].engine.config.sources,
+            vec!["apps:main"]
+        );
     }
 
     #[test]
@@ -957,13 +1023,15 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
-            "#,
+            [plugins.core.views.default.engine.config]
+"#,
         );
         config.validate().unwrap();
         assert_eq!(config.engine("core:default").unwrap(), ENGINE_PICKER);
         assert_eq!(
-            config.view("core:default").unwrap().engine_type,
+            config.view("core:default").unwrap().engine.engine_type,
             ENGINE_PICKER
         );
     }
@@ -975,8 +1043,10 @@ mod tests {
             [viewtypes.picker.engine]
             type = "picker"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
-            "#,
+            [plugins.core.views.default.engine.config]
+"#,
         )
         .unwrap();
         let raw: RawConfig = value.try_into().unwrap();
@@ -990,10 +1060,12 @@ mod tests {
         let config = config(
             r#"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "capture"
+            [plugins.core.views.default.engine.config]
             output = "ok"
             titel = "typo"
-            "#,
+"#,
         );
         let error = config
             .validate()
@@ -1007,7 +1079,9 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
+            [plugins.core.views.default.engine.config]
             sources = ["apps:main"]
             [plugins.core.views.default.commands.open]
             key = "enter"
@@ -1017,8 +1091,10 @@ mod tests {
             [plugins.core.views.default.commands.open.payload]
             handler = ":"
             [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
             type = "picker"
-            "#,
+            [plugins.apps.views.main.engine.config]
+"#,
         );
         let error = config
             .validate()
@@ -1032,7 +1108,9 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
+            [plugins.core.views.default.engine.config]
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
@@ -1053,20 +1131,24 @@ mod tests {
         let config = config(
             r#"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
-
+            [plugins.core.views.default.engine.config]
             [plugins.package-a]
             name = "template"
             [plugins.package-a.views.default]
-            type = "picker"
             alias = "temp"
-
+            [plugins.package-a.views.default.engine]
+            type = "picker"
+            [plugins.package-a.views.default.engine.config]
             [plugins.package-b]
             name = "template"
             [plugins.package-b.views.default]
-            type = "picker"
             alias = "temp"
-            "#,
+            [plugins.package-b.views.default.engine]
+            type = "picker"
+            [plugins.package-b.views.default.engine.config]
+"#,
         );
 
         config.validate().unwrap();
@@ -1088,9 +1170,11 @@ mod tests {
             let config = config(&format!(
                 r#"
                 [plugins.core.views.default]
-                type = "picker"
                 alias = {alias:?}
-                "#
+                [plugins.core.views.default.engine]
+                type = "picker"
+                [plugins.core.views.default.engine.config]
+"#
             ));
             assert!(
                 config.validate().is_err(),
@@ -1140,10 +1224,11 @@ mod tests {
             name = "file test"
 
             [views.main]
-            type = "picker"
             alias = "file"
+            [views.main.engine]
+            type = "picker"
+            [views.main.engine.config]
             items = '{{ script("scripts/items.sh") }}'
-
             [views.main.commands.run]
             key = "enter"
             label = "Run"
@@ -1164,14 +1249,16 @@ mod tests {
         let default_source = r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
+            [plugins.core.views.default.engine.config]
             sources = ["filetest:main"]
-            "#;
+"#;
         fs::write(&config_path, default_source).unwrap();
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
-            config.views["filetest:main"].items.as_deref(),
+            config.views["filetest:main"].engine.config.items.as_deref(),
             Some("{{ script(\"scripts/items.sh\") }}")
         );
         let CommandAction::Run { payload } = &config.views["filetest:main"].commands["run"].action
@@ -1196,8 +1283,9 @@ mod tests {
             &config_path,
             r#"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
-
+            [plugins.core.views.default.engine.config]
             [aa.a]
             bb = 1
 
@@ -1221,16 +1309,20 @@ mod tests {
             r#"
             default_view = "core:default"
             [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
+            [plugins.core.views.default.engine.config]
             [plugins.base.views.main]
+            [plugins.base.views.main.engine]
             type = "picker"
+            [plugins.base.views.main.engine.config]
             items = "{{ runtime:view.active.items }}"
-            "#,
+"#,
         )
         .unwrap();
         let overlay: toml::Value = toml::from_str(
             r#"
-            [plugins.base.views.main]
+            [plugins.base.views.main.engine.config]
             items = "{{ config:items }}"
             "#,
         )
@@ -1239,7 +1331,7 @@ mod tests {
         let raw: RawConfig = base.try_into().unwrap();
         let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
         assert_eq!(
-            config.views["base:main"].items.as_deref(),
+            config.views["base:main"].engine.config.items.as_deref(),
             Some("{{ config:items }}")
         );
     }

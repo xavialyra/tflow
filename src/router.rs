@@ -82,7 +82,7 @@ impl Router {
                 view_ref: view_ref.clone(),
                 alias: view.alias.clone(),
                 plugin_name,
-                engine_type: view.engine_type.clone(),
+                engine_type: view.selected_engine_type().to_string(),
             });
         }
         for targets in aliases.values_mut() {
@@ -248,21 +248,21 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Defaults, ENGINE_PICKER, PluginMetadata, View};
+    use crate::config::{Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata, View};
     use serde_json::Value;
     use std::collections::BTreeMap;
 
     fn view(alias: Option<&str>) -> View {
         View {
-            engine_type: ENGINE_PICKER.to_string(),
-            sources: Vec::new(),
+            engine: EngineSpec {
+                engine_type: ENGINE_PICKER.to_string(),
+                config: EngineOptions::default(),
+            },
             alias: alias.map(str::to_string),
-            items: None,
             run_shell: None,
             cancel_exit_code: None,
             query: None,
             commands: BTreeMap::new(),
-            engine_config: toml::Table::new(),
         }
     }
 

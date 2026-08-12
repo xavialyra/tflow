@@ -3,10 +3,14 @@ api = 1
 name = "dmenu"
 
 [views.default]
-type = "picker"
 alias = "dmenu"
-items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
 cancel_exit_code = 1
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
+items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
 prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
 
@@ -22,7 +26,7 @@ accept-nth = '''{{ state("string", null) }}'''
 match-nth = '''{{ state("string", null) }}'''
 nth-delimiter = '''{{ state("string", null) }}'''
 
-[views.default.bindings]
+[views.default.engine.config.bindings]
 open_commands = []
 open_completion = []
 back = []

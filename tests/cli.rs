@@ -29,9 +29,10 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "capture"
+        [plugins.core.views.default.engine.config]
         output = "{{ this:query.message }}"
-
         [plugins.core.views.default.query]
         type = "object"
         message = '''{{ state("string", "") }}'''
@@ -71,10 +72,12 @@ fn check_rejects_removed_picker_fields() {
         default_view = "core:default"
 
         [plugins.core.views.default]
+        [plugins.core.views.default.engine]
         type = "picker"
+        [plugins.core.views.default.engine.config]
         items = "{{ config:test_items.items }}"
         max_rows = 0
-        "#,
+"#,
     )
     .unwrap();
 

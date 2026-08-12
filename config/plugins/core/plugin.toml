@@ -3,15 +3,25 @@ api = 1
 name = "core"
 
 [views.default]
-type = "picker"
 alias = "core"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 show_prefix = true
 sources = ["sys:default", "shell:menu", "trans:default", "apps:default"]
 
 [views.messages]
-type = "picker"
 alias = "log"
+
+[views.messages.engine]
+type = "picker"
+
+[views.messages.engine.config]
 items = '{{ script("scripts/items.sh", runtime:view.active) }}'
 
-[views.command]
+[views.command.engine]
 type = "picker"
+
+[views.command.engine.config]

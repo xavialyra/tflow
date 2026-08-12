@@ -3,8 +3,12 @@ api = 1
 name = "shell"
 
 [views.menu]
-type = "picker"
 alias = "shell"
+
+[views.menu.engine]
+type = "picker"
+
+[views.menu.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.menu.commands.open]
@@ -16,7 +20,9 @@ type = "navigate"
 target = "shell:default"
 query = "exec sh"
 
-[views.default]
+[views.default.engine]
 type = "embedded"
+
+[views.default.engine.config]
 command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
 title = "{{ runtime:view.active.ref }}"

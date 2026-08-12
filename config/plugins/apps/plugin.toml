@@ -3,8 +3,12 @@ api = 1
 name = "applications"
 
 [views.default]
-type = "picker"
 alias = "app"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
 [views.default.commands.open]

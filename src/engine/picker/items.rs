@@ -101,7 +101,7 @@ fn load_items_with_states(
 
     for (source_ref, view) in config.source_views(view_ref)? {
         let prefix = view.alias.clone().unwrap_or_else(|| source_ref.clone());
-        if view.items.is_none() {
+        if view.selected_items().is_none() {
             continue;
         }
 
@@ -193,7 +193,10 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, CommandAction, Defaults, ENGINE_PICKER, PluginMetadata, View};
+    use crate::config::{
+        Command, CommandAction, Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata,
+        View,
+    };
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
@@ -203,24 +206,31 @@ mod tests {
         views.insert(
             "core:default".to_string(),
             View {
-                engine_type: ENGINE_PICKER.to_string(),
-                sources: vec!["apps:main".to_string()],
+                engine: EngineSpec {
+                    engine_type: ENGINE_PICKER.to_string(),
+                    config: EngineOptions {
+                        sources: vec!["apps:main".to_string()],
+                        ..Default::default()
+                    },
+                },
                 alias: None,
-                items: None,
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
                 commands: BTreeMap::new(),
-                engine_config: toml::Table::new(),
             },
         );
         views.insert(
             "apps:main".to_string(),
             View {
-                engine_type: ENGINE_PICKER.to_string(),
-                sources: Vec::new(),
+                engine: EngineSpec {
+                    engine_type: ENGINE_PICKER.to_string(),
+                    config: EngineOptions {
+                        items: Some("{{ runtime:view.active.items }}".to_string()),
+                        ..Default::default()
+                    },
+                },
                 alias: Some("app".to_string()),
-                items: Some("{{ runtime:view.active.items }}".to_string()),
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
@@ -238,7 +248,6 @@ mod tests {
                         },
                     },
                 )]),
-                engine_config: toml::Table::new(),
             },
         );
         Config {
@@ -309,8 +318,13 @@ mod tests {
     #[test]
     fn item_expressions_require_json_arrays() {
         let mut config = test_config();
-        config.views.get_mut("apps:main").unwrap().items =
-            Some("{{ runtime:view.active.query }}".to_string());
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ runtime:view.active.query }}".to_string());
         let result = load_items(
             &config,
             "core:default",
@@ -356,8 +370,13 @@ mod tests {
         .unwrap();
 
         let mut config = test_config();
-        config.views.get_mut("apps:main").unwrap().items =
-            Some("{{ script(\"items.sh\", this:query) }}".to_string());
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ script(\"items.sh\", this:query) }}".to_string());
         config.config_value = serde_json::json!({
             "plugins": {
                 "core": {

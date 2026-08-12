@@ -31,11 +31,12 @@ impl EngineRegistry {
     pub(crate) fn validate_config(&self, name: &str, view: &View) -> Result<()> {
         let engine = self
             .engines
-            .get(view.engine_type.as_str())
+            .get(view.selected_engine_type())
             .with_context(|| {
                 format!(
                     "view {:?} uses unsupported engine {:?}",
-                    name, view.engine_type
+                    name,
+                    view.selected_engine_type()
                 )
             })?;
         engine.validate_config(name, view)
@@ -52,12 +53,12 @@ impl EngineRegistry {
 }
 
 pub(crate) fn validate_fields(name: &str, view: &View, allowed: &[&str]) -> Result<()> {
-    for (field, value) in &view.engine_config {
+    for (field, value) in view.selected_engine_config() {
         if !allowed.contains(&field.as_str()) {
             bail!(
                 "view {:?} using engine {:?} has unsupported field {:?}",
                 name,
-                view.engine_type,
+                view.selected_engine_type(),
                 field
             );
         }
@@ -73,7 +74,7 @@ pub(crate) fn require_field(name: &str, view: &View, field: &str) -> Result<()> 
         bail!(
             "view {:?} using engine {:?} requires field {:?}",
             name,
-            view.engine_type,
+            view.selected_engine_type(),
             field
         );
     }
@@ -137,18 +138,26 @@ mod tests {
         }
 
         let registry = EngineRegistry::new();
-        let embedded = view("type = 'embedded'\ncommand = 'sh'");
+        let embedded = view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh'");
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
-        let mixed_embedded =
-            view("type = 'embedded'\ncommand = 'sh {{ runtime:view.active.input }}'");
+        let mixed_embedded = view(
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ runtime:view.active.input }}'",
+        );
         assert!(
             registry
                 .validate_config("mixed-embedded", &mixed_embedded)
                 .is_err()
         );
 
-        let capture = view("type = 'capture'\noutput = 1");
+        let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());
+
+        let image = view("[engine]\ntype = 'image'\n[engine.config]\npath = 'cover.png'");
+        assert!(
+            registry
+                .validate_config("removed-image-engine", &image)
+                .is_err()
+        );
     }
 }

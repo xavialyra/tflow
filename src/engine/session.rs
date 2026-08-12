@@ -1266,7 +1266,7 @@ mod tests {
             r#"
             default_view = "core:default"
 
-            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
             type = "picker"
 
             [plugins.core.views.default.query]

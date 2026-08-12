@@ -3,8 +3,12 @@ api = 1
 name = "translation"
 
 [views.default]
-type = "picker"
 alias = "tr"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
 items = '''{{ script("scripts/items.sh", this:query) }}'''
 
 [views.default.query]
