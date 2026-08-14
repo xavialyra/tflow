@@ -78,6 +78,15 @@ impl Key {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedInput {
+    pub(crate) key: Option<Key>,
+    pub(crate) raw: Vec<u8>,
+}
+
+const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+
 #[derive(Default)]
 pub(crate) struct InputDecoder {
     pending: Vec<u8>,
@@ -85,27 +94,25 @@ pub(crate) struct InputDecoder {
 }
 
 impl InputDecoder {
-    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Key> {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<DecodedInput> {
         self.pending.extend_from_slice(bytes);
         self.parse()
     }
 
-    pub(crate) fn flush_due(&mut self) -> Vec<Key> {
+    pub(crate) fn flush_due(&mut self) -> Vec<DecodedInput> {
         if self
             .escape_since
             .is_some_and(|started| started.elapsed() >= Duration::from_millis(35))
+            && self.pending.as_slice() == b"\x1b"
         {
             self.escape_since = None;
-            if self.pending.first() == Some(&0x1b) {
-                self.pending.remove(0);
-                return vec![Key::Escape];
-            }
+            return vec![self.take(1, Some(Key::Escape))];
         }
         Vec::new()
     }
 
-    fn parse(&mut self) -> Vec<Key> {
-        let mut keys = Vec::new();
+    fn parse(&mut self) -> Vec<DecodedInput> {
+        let mut inputs = Vec::new();
         loop {
             let Some(&first) = self.pending.first() else {
                 self.escape_since = None;
@@ -117,73 +124,87 @@ impl InputDecoder {
                     self.escape_since.get_or_insert_with(Instant::now);
                     break;
                 }
-                if self.pending[1] != b'[' {
-                    if self.pending[1].is_ascii_graphic() {
-                        let character = (self.pending[1] as char).to_ascii_lowercase();
-                        self.pending.drain(..2);
-                        self.escape_since = None;
-                        keys.push(Key::Alt(character));
-                        continue;
-                    }
-                    self.pending.remove(0);
-                    keys.push(Key::Escape);
-                    self.escape_since = None;
+                self.escape_since = None;
+
+                if self.pending.starts_with(BRACKETED_PASTE_START) {
+                    let content = &self.pending[BRACKETED_PASTE_START.len()..];
+                    let Some(end) = content
+                        .windows(BRACKETED_PASTE_END.len())
+                        .position(|window| window == BRACKETED_PASTE_END)
+                    else {
+                        break;
+                    };
+                    let count = BRACKETED_PASTE_START.len() + end + BRACKETED_PASTE_END.len();
+                    inputs.push(self.take(count, None));
                     continue;
                 }
-                let Some(end) = self.pending[2..]
-                    .iter()
-                    .position(|byte| (0x40..=0x7e).contains(byte))
-                    .map(|position| position + 2)
-                else {
-                    if self.pending.len() > 16 {
-                        self.pending.remove(0);
-                        self.escape_since = None;
-                        keys.push(Key::Escape);
-                        continue;
-                    }
-                    self.escape_since.get_or_insert_with(Instant::now);
+                if BRACKETED_PASTE_START.starts_with(&self.pending) {
                     break;
-                };
-                let params = &self.pending[2..end];
-                let code = self.pending[end];
-                let key = match code {
-                    b'A' => Some(Key::Up),
-                    b'B' => Some(Key::Down),
-                    b'C' => Some(Key::Right),
-                    b'D' => Some(Key::Left),
-                    b'H' => Some(Key::Home),
-                    b'F' => Some(Key::End),
-                    b'Z' => Some(Key::BackTab),
-                    b'~' => match params
-                        .split(|byte| *byte == b';')
-                        .next()
-                        .and_then(|value| std::str::from_utf8(value).ok())
-                        .and_then(|value| value.parse::<u8>().ok())
-                    {
-                        Some(1 | 7) => Some(Key::Home),
-                        Some(3) => Some(Key::Delete),
-                        Some(4 | 8) => Some(Key::End),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                self.pending.drain(..=end);
-                self.escape_since = None;
-                if let Some(key) = key {
-                    keys.push(key);
                 }
+
+                if matches!(self.pending[1], b'[' | b'O') {
+                    let Some(end) = self.pending[2..]
+                        .iter()
+                        .position(|byte| (0x40..=0x7e).contains(byte))
+                        .map(|position| position + 2)
+                    else {
+                        break;
+                    };
+                    let params = &self.pending[2..end];
+                    let code = self.pending[end];
+                    let key = if self.pending[1] == b'O' {
+                        match code {
+                            b'A' => Some(Key::Up),
+                            b'B' => Some(Key::Down),
+                            b'C' => Some(Key::Right),
+                            b'D' => Some(Key::Left),
+                            b'H' => Some(Key::Home),
+                            b'F' => Some(Key::End),
+                            _ => None,
+                        }
+                    } else {
+                        match code {
+                            b'A' => Some(Key::Up),
+                            b'B' => Some(Key::Down),
+                            b'C' => Some(Key::Right),
+                            b'D' => Some(Key::Left),
+                            b'H' => Some(Key::Home),
+                            b'F' => Some(Key::End),
+                            b'Z' => Some(Key::BackTab),
+                            b'~' => match params
+                                .split(|byte| *byte == b';')
+                                .next()
+                                .and_then(|value| std::str::from_utf8(value).ok())
+                                .and_then(|value| value.parse::<u8>().ok())
+                            {
+                                Some(1 | 7) => Some(Key::Home),
+                                Some(3) => Some(Key::Delete),
+                                Some(4 | 8) => Some(Key::End),
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    };
+                    inputs.push(self.take(end + 1, key));
+                    continue;
+                }
+
+                if self.pending[1].is_ascii_graphic() {
+                    let character = (self.pending[1] as char).to_ascii_lowercase();
+                    inputs.push(self.take(2, Some(Key::Alt(character))));
+                    continue;
+                }
+                inputs.push(self.take(1, Some(Key::Escape)));
                 continue;
             }
 
             if let Some(key) = control_key(first) {
-                self.pending.remove(0);
-                keys.push(key);
+                inputs.push(self.take(1, Some(key)));
                 continue;
             }
 
             if first < 0x80 {
-                self.pending.remove(0);
-                keys.push(Key::Char(first as char));
+                inputs.push(self.take(1, Some(Key::Char(first as char))));
                 continue;
             }
 
@@ -191,19 +212,20 @@ impl InputDecoder {
             if self.pending.len() < width {
                 break;
             }
-            match std::str::from_utf8(&self.pending[..width]) {
-                Ok(text) => {
-                    if let Some(character) = text.chars().next() {
-                        keys.push(Key::Char(character));
-                    }
-                    self.pending.drain(..width);
-                }
-                Err(_) => {
-                    self.pending.remove(0);
-                }
-            }
+            let key = std::str::from_utf8(&self.pending[..width])
+                .ok()
+                .and_then(|text| text.chars().next())
+                .map(Key::Char);
+            inputs.push(self.take(if key.is_some() { width } else { 1 }, key));
         }
-        keys
+        inputs
+    }
+
+    fn take(&mut self, count: usize, key: Option<Key>) -> DecodedInput {
+        DecodedInput {
+            key,
+            raw: self.pending.drain(..count).collect(),
+        }
     }
 }
 
@@ -230,19 +252,26 @@ fn utf8_width(first: u8) -> usize {
 mod tests {
     use super::*;
 
+    fn decoded(key: Option<Key>, raw: &[u8]) -> DecodedInput {
+        DecodedInput {
+            key,
+            raw: raw.to_vec(),
+        }
+    }
+
     #[test]
-    fn decodes_ascii_and_controls() {
+    fn decodes_ascii_and_controls_without_losing_raw_bytes() {
         let mut decoder = InputDecoder::default();
         assert_eq!(
             decoder.feed(b"a\r\x01\x03\x0b\x15\x17"),
             vec![
-                Key::Char('a'),
-                Key::Enter,
-                Key::Ctrl('a'),
-                Key::Ctrl('c'),
-                Key::Ctrl('k'),
-                Key::Ctrl('u'),
-                Key::Ctrl('w'),
+                decoded(Some(Key::Char('a')), b"a"),
+                decoded(Some(Key::Enter), b"\r"),
+                decoded(Some(Key::Ctrl('a')), b"\x01"),
+                decoded(Some(Key::Ctrl('c')), b"\x03"),
+                decoded(Some(Key::Ctrl('k')), b"\x0b"),
+                decoded(Some(Key::Ctrl('u')), b"\x15"),
+                decoded(Some(Key::Ctrl('w')), b"\x17"),
             ]
         );
     }
@@ -252,16 +281,25 @@ mod tests {
         let mut decoder = InputDecoder::default();
         assert_eq!(
             decoder.feed(b"\x08\x0a\x0d"),
-            vec![Key::Backspace, Key::Enter, Key::Enter]
+            vec![
+                decoded(Some(Key::Backspace), b"\x08"),
+                decoded(Some(Key::Enter), b"\x0a"),
+                decoded(Some(Key::Enter), b"\x0d"),
+            ]
         );
     }
 
     #[test]
-    fn decodes_navigation_and_alt_keys() {
+    fn decodes_navigation_and_alt_keys_with_exact_sequences() {
         let mut decoder = InputDecoder::default();
         assert_eq!(
-            decoder.feed(b"\x1b[A\x1ba\x1bA"),
-            vec![Key::Up, Key::Alt('a'), Key::Alt('a')]
+            decoder.feed(b"\x1b[A\x1bOA\x1ba\x1bA"),
+            vec![
+                decoded(Some(Key::Up), b"\x1b[A"),
+                decoded(Some(Key::Up), b"\x1bOA"),
+                decoded(Some(Key::Alt('a')), b"\x1ba"),
+                decoded(Some(Key::Alt('a')), b"\x1bA"),
+            ]
         );
     }
 
@@ -271,13 +309,60 @@ mod tests {
         assert_eq!(
             decoder.feed(b"\t\x1b[C\x1b[D\x1b[H\x1b[F\x1b[3~\x1b[Z"),
             vec![
-                Key::Tab,
-                Key::Right,
-                Key::Left,
-                Key::Home,
-                Key::End,
-                Key::Delete,
-                Key::BackTab,
+                decoded(Some(Key::Tab), b"\t"),
+                decoded(Some(Key::Right), b"\x1b[C"),
+                decoded(Some(Key::Left), b"\x1b[D"),
+                decoded(Some(Key::Home), b"\x1b[H"),
+                decoded(Some(Key::End), b"\x1b[F"),
+                decoded(Some(Key::Delete), b"\x1b[3~"),
+                decoded(Some(Key::BackTab), b"\x1b[Z"),
+            ]
+        );
+    }
+
+    #[test]
+    fn emits_unknown_complete_csi_and_ss3_sequences_losslessly() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed(b"\x1b[?25"), Vec::new());
+        assert_eq!(
+            decoder.feed(b"h\x1bOP"),
+            vec![decoded(None, b"\x1b[?25h"), decoded(None, b"\x1bOP"),]
+        );
+    }
+
+    #[test]
+    fn emits_bracketed_paste_as_one_opaque_token_across_feeds() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed(b"\x1b[20"), Vec::new());
+        assert_eq!(decoder.feed(b"0~text\x03\r\x1b[A"), Vec::new());
+        assert_eq!(
+            decoder.feed(b"\x1b[201~z"),
+            vec![
+                decoded(None, b"\x1b[200~text\x03\r\x1b[A\x1b[201~"),
+                decoded(Some(Key::Char('z')), b"z"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_escape_timeout_preserves_raw_byte() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed(b"\x1b"), Vec::new());
+        decoder.escape_since = Some(Instant::now() - Duration::from_millis(36));
+        assert_eq!(
+            decoder.flush_due(),
+            vec![decoded(Some(Key::Escape), b"\x1b")]
+        );
+    }
+
+    #[test]
+    fn preserves_utf8_and_invalid_input_bytes() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(
+            decoder.feed(&[0xc3, 0xa9, 0xff]),
+            vec![
+                decoded(Some(Key::Char('\u{e9}')), &[0xc3, 0xa9]),
+                decoded(None, &[0xff]),
             ]
         );
     }
