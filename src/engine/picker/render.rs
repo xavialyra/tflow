@@ -8,7 +8,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
-use std::collections::BTreeMap;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
@@ -423,12 +422,20 @@ fn pad_left(text: &str, width: usize) -> String {
 
 impl PickerView {
     pub(crate) fn visible_commands(&self, config: &Config) -> Vec<(String, String)> {
-        let Some(owner) = self.command_owner() else {
-            return Vec::new();
+        let page_view = self
+            .command_page_view
+            .as_deref()
+            .unwrap_or_else(|| self.current_view_ref());
+        let owner = if self.command_view_active() {
+            self.command_view_owner()
+        } else {
+            self.selected_item_owner()
         };
-        let mut commands = BTreeMap::new();
-        command::add_view_commands(config, &mut commands, owner);
-        let mut commands = commands.into_iter().collect::<Vec<_>>();
+        let mut commands = command::collect_page_owner_commands(config, page_view, owner)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, value)| Some((key, value.get("label")?.as_str()?.to_string())))
+            .collect::<Vec<_>>();
         commands.sort_by(|left, right| command::compare_bindings(&left.0, &right.0));
         commands
     }

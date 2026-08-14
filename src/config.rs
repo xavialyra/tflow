@@ -43,6 +43,9 @@ pub(crate) struct ConfigReadContext<'a> {
     pub runtime: &'a Value,
     pub input: &'a Value,
     pub cancellation: Option<CancellationToken>,
+    /// When set, `this.input` / `this.raw_input` use this binding string
+    /// instead of rendering the owner query state (feed default binding).
+    pub binding_raw: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,10 +73,16 @@ pub struct EngineSpec {
     pub config: EngineOptions,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedSpec {
+    pub view: ViewRef,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EngineOptions {
     #[serde(default)]
-    pub sources: Vec<ViewRef>,
+    pub feeds: Vec<FeedSpec>,
     #[serde(default)]
     pub items: Option<String>,
     #[serde(flatten)]
@@ -107,8 +116,11 @@ impl View {
     pub(crate) fn selected_items(&self) -> Option<&str> {
         self.engine.config.items.as_deref()
     }
-    pub(crate) fn selected_sources(&self) -> &[ViewRef] {
-        &self.engine.config.sources
+    pub(crate) fn selected_feeds(&self) -> &[FeedSpec] {
+        &self.engine.config.feeds
+    }
+    pub(crate) fn is_feeds_page(&self) -> bool {
+        !self.selected_feeds().is_empty()
     }
     pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {
         self.selected_engine_config().get(field)
@@ -263,16 +275,16 @@ impl Config {
         self.state_registry.render_input(state)
     }
 
+    pub(crate) fn validate_query_state(&self, state: &StateInstance) -> Result<()> {
+        self.state_registry.validate_instance(state)
+    }
+
     pub(crate) fn update_query_input(
         &self,
         state: &mut StateInstance,
         source: &str,
     ) -> Result<bool> {
         self.state_registry.update_input(state, source)
-    }
-
-    pub(crate) fn has_plain_query(&self, state: &StateInstance) -> Result<bool> {
-        self.state_registry.has_plain_query(state)
     }
 
     fn view_config(&self, view_ref: &str) -> Result<&Value> {
@@ -357,13 +369,10 @@ impl Config {
             {
                 bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
             }
-            let sources = view.selected_sources();
+            let feeds = view.selected_feeds();
             let items = view.selected_items();
-            if !sources.is_empty() && !view.commands.is_empty() {
-                bail!("aggregate view {:?} cannot define commands", view_ref);
-            }
-            if !sources.is_empty() && items.is_some() {
-                bail!("aggregate view {:?} cannot define items", view_ref);
+            if !feeds.is_empty() && items.is_some() {
+                bail!("feeds view {:?} cannot define items", view_ref);
             }
             let engine = self.engine(view_ref)?;
             engines.validate_config(view_ref, view)?;
@@ -378,7 +387,7 @@ impl Config {
                 )
                 .with_context(|| format!("view {:?} picker bindings", view_ref))?;
             }
-            if engine != ENGINE_PICKER && (!sources.is_empty() || items.is_some()) {
+            if engine != ENGINE_PICKER && (!feeds.is_empty() || items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide picker items",
                     view_ref,
@@ -393,26 +402,35 @@ impl Config {
                 validate_script(shell, "run_shell", view_ref)?;
             }
 
-            for source_ref in sources {
-                let source = self.views.get(source_ref).with_context(|| {
-                    format!(
-                        "view {:?} references missing source {:?}",
-                        view_ref, source_ref
-                    )
-                })?;
-                if self.engine(source_ref)? != ENGINE_PICKER {
+            let mut seen_feeds = BTreeSet::new();
+            for feed in feeds {
+                let feed_ref = &feed.view;
+                if !seen_feeds.insert(feed_ref.clone()) {
                     bail!(
-                        "view {:?} source {:?} does not use the picker engine",
+                        "view {:?} lists feed {:?} more than once",
                         view_ref,
-                        source_ref
+                        feed_ref
                     );
                 }
-                if !source.selected_sources().is_empty() {
+                let feed_view = self.views.get(feed_ref).with_context(|| {
+                    format!("view {:?} references missing feed {:?}", view_ref, feed_ref)
+                })?;
+                if self.engine(feed_ref)? != ENGINE_PICKER {
                     bail!(
-                        "view {:?} cannot use aggregate view {:?} as a source",
+                        "view {:?} feed {:?} does not use the picker engine",
                         view_ref,
-                        source_ref
+                        feed_ref
                     );
+                }
+                if feed_view.is_feeds_page() {
+                    bail!(
+                        "view {:?} cannot use feeds view {:?} as a feed",
+                        view_ref,
+                        feed_ref
+                    );
+                }
+                if feed_view.selected_items().is_none() {
+                    bail!("view {:?} feed {:?} must define items", view_ref, feed_ref);
                 }
             }
 
@@ -531,7 +549,7 @@ impl Config {
                 };
                 (
                     raw,
-                    serde_json::json!({"query": self.query_value(state)?}),
+                    self.this_value(state, context.binding_raw)?,
                     self.plugin_root(state.view_ref())
                         .unwrap_or_else(|| Path::new(".")),
                 )
@@ -577,28 +595,62 @@ impl Config {
         self.plugin_roots.get(plugin).map(PathBuf::as_path)
     }
 
-    pub fn source_views<'a>(&'a self, view_ref: &str) -> Result<Vec<(String, &'a View)>> {
+    pub fn feed_views<'a>(&'a self, view_ref: &str) -> Result<Vec<(String, &'a View)>> {
         let view = self
             .views
             .get(view_ref)
             .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        if view.selected_sources().is_empty() {
+        let feeds = view.selected_feeds();
+        if feeds.is_empty() {
             return Ok(vec![(view_ref.to_string(), view)]);
         }
-        view.selected_sources()
+        feeds
             .iter()
-            .map(|source_ref| {
+            .map(|feed| {
                 self.views
-                    .get(source_ref)
-                    .map(|source| (source_ref.clone(), source))
+                    .get(&feed.view)
+                    .map(|source| (feed.view.clone(), source))
                     .with_context(|| {
                         format!(
-                            "view {:?} references missing source {:?}",
-                            view_ref, source_ref
+                            "view {:?} references missing feed {:?}",
+                            view_ref, feed.view
                         )
                     })
             })
             .collect()
+    }
+
+    pub(crate) fn this_value(
+        &self,
+        state: &StateInstance,
+        binding_raw: Option<&str>,
+    ) -> Result<Value> {
+        // Feed default binding must expose the coordinating page's committed
+        // raw string (including ""). Rendering the owner state would replace
+        // empty input with schema defaults and break this.raw_input == R.
+        let input = match binding_raw {
+            Some(raw) => raw.to_string(),
+            None => self.render_query_input(state)?,
+        };
+        Ok(serde_json::json!({
+            "ref": state.view_ref(),
+            "query": self.query_value(state)?,
+            "input": input,
+            "raw_input": input,
+            "state_revision": state.revision(),
+        }))
+    }
+
+    pub(crate) fn ephemeral_feed_state(
+        &self,
+        feed_ref: &str,
+        query_input: &str,
+    ) -> Result<StateInstance> {
+        let mut state = self.instantiate_state(feed_ref)?;
+        self.state_registry
+            .bind_feed_input(&mut state, query_input)?;
+        self.validate_query_state(&state)?;
+        Ok(state)
     }
 }
 
@@ -998,11 +1050,13 @@ mod tests {
             [plugins.core.views.default.engine]
             type = "picker"
             [plugins.core.views.default.engine.config]
-            sources = ["apps:main"]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "apps:main"
             [plugins.apps.views.main]
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
+            items = "[]"
 "#,
         );
         assert_eq!(config.default_view, "core:default");
@@ -1011,8 +1065,8 @@ mod tests {
             ENGINE_PICKER.to_string()
         );
         assert_eq!(
-            config.views["core:default"].engine.config.sources,
-            vec!["apps:main"]
+            config.views["core:default"].selected_feeds()[0].view,
+            "apps:main"
         );
     }
 
@@ -1073,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_views_cannot_define_commands() {
+    fn feeds_views_may_define_page_commands() {
         let config = config(
             r#"
             default_view = "core:default"
@@ -1081,7 +1135,8 @@ mod tests {
             [plugins.core.views.default.engine]
             type = "picker"
             [plugins.core.views.default.engine.config]
-            sources = ["apps:main"]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "apps:main"
             [plugins.core.views.default.commands.open]
             key = "enter"
             label = "Open"
@@ -1093,12 +1148,122 @@ mod tests {
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
+            items = "[]"
+"#,
+        );
+        config
+            .validate()
+            .expect("feeds pages may define page-level commands");
+    }
+
+    #[test]
+    fn nested_feeds_are_rejected() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "core:hub"
+            [plugins.core.views.hub]
+            [plugins.core.views.hub.engine]
+            type = "picker"
+            [plugins.core.views.hub.engine.config]
+            [[plugins.core.views.hub.engine.config.feeds]]
+            view = "apps:main"
+            [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            items = "[]"
 "#,
         );
         let error = config
             .validate()
-            .expect_err("aggregate commands should be rejected");
-        assert!(error.to_string().contains("aggregate view"));
+            .expect_err("nested feeds should be rejected");
+        assert!(error.to_string().contains("cannot use feeds view"));
+    }
+
+    #[test]
+    fn feed_unknown_fields_are_rejected() {
+        let value: Result<toml::Value, _> = toml::from_str(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "apps:main"
+            raw = "{{ this:input }}"
+            [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            items = "[]"
+"#,
+        );
+        let value = value.expect("toml should parse");
+        let error = value
+            .try_into::<RawConfig>()
+            .expect_err("unknown feed fields should be rejected");
+        assert!(
+            error.to_string().contains("unknown field") || error.to_string().contains("raw"),
+            "error={error}"
+        );
+    }
+
+    #[test]
+    fn feeds_views_cannot_define_items() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            items = "[]"
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "apps:main"
+            [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            items = "[]"
+"#,
+        );
+        let error = config
+            .validate()
+            .expect_err("feeds+items should be rejected");
+        assert!(error.to_string().contains("cannot define items"));
+    }
+
+    #[test]
+    fn legacy_sources_field_is_rejected() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            sources = ["apps:main"]
+            [plugins.apps.views.main]
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            items = "[]"
+"#,
+        );
+        let error = config
+            .validate()
+            .expect_err("legacy sources should be rejected");
+        assert!(
+            error.to_string().contains("unsupported field \"sources\""),
+            "error={error}"
+        );
     }
 
     #[test]
@@ -1251,7 +1416,8 @@ mod tests {
             [plugins.core.views.default.engine]
             type = "picker"
             [plugins.core.views.default.engine.config]
-            sources = ["filetest:main"]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "filetest:main"
 "#;
         fs::write(&config_path, default_source).unwrap();
 
@@ -1315,7 +1481,7 @@ mod tests {
             [plugins.base.views.main.engine]
             type = "picker"
             [plugins.base.views.main.engine.config]
-            items = "{{ runtime:view.active.items }}"
+            items = "{{ runtime:view.current.items }}"
 "#,
         )
         .unwrap();

@@ -154,28 +154,28 @@ mod tests {
     fn set_many_publishes_one_atomic_revision() {
         let mut store = RuntimeStore::new();
         store.replace(serde_json::json!({
-            "view": {"active": {"input": "old", "query": "old"}}
+            "view": {"current": {"input": "old", "query": "old"}}
         }));
         let revision = store.revision();
 
         assert_eq!(
             store
                 .set_many([
-                    ("/view/active/input", serde_json::json!("new")),
-                    ("/view/active/query", serde_json::json!("new")),
+                    ("/view/current/input", serde_json::json!("new")),
+                    ("/view/current/query", serde_json::json!("new")),
                 ])
                 .unwrap(),
             revision + 1
         );
-        assert_eq!(store.snapshot()["view"]["active"]["input"], "new");
-        assert_eq!(store.snapshot()["view"]["active"]["query"], "new");
+        assert_eq!(store.snapshot()["view"]["current"]["input"], "new");
+        assert_eq!(store.snapshot()["view"]["current"]["query"], "new");
 
         let committed = store.snapshot().clone();
         let revision = store.revision();
         assert!(
             store
                 .set_many([
-                    ("/view/active/input", serde_json::json!("partial")),
+                    ("/view/current/input", serde_json::json!("partial")),
                     ("/missing/value", serde_json::json!(true)),
                 ])
                 .is_err()

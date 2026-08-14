@@ -11,6 +11,7 @@ pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Valu
             runtime: &runtime,
             input: &context.config.input_value,
             cancellation: None,
+            binding_raw: None,
         },
         &[name],
     )

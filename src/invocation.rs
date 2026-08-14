@@ -136,6 +136,7 @@ pub(crate) fn finish(
                 runtime: &completion.runtime,
                 input: &config.input_value,
                 cancellation: None,
+                binding_raw: Some(&completion.binding_raw),
             },
             &[
                 "commands",

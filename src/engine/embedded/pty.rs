@@ -1,4 +1,5 @@
 use crate::embedded_terminal::EmbeddedTerminal;
+use crate::engine::process::MANAGED_ENVIRONMENT;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
 use std::ffi::CString;
@@ -54,6 +55,10 @@ pub fn run(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
+    let managed_environment_cstrings = MANAGED_ENVIRONMENT
+        .iter()
+        .map(|key| CString::new(*key).expect("managed environment key contains a NUL byte"))
+        .collect::<Vec<_>>();
 
     let (outer_columns, outer_rows) = terminal.size();
     let (columns, rows) = content_size(outer_columns, outer_rows);
@@ -73,6 +78,7 @@ pub fn run(
     if pid == 0 {
         exec_child(
             &command_cstrings,
+            &managed_environment_cstrings,
             &environment_cstrings,
             working_dir_cstring.as_ref(),
         );
@@ -91,6 +97,7 @@ pub fn run(
 
 fn exec_child(
     command: &[CString],
+    managed_environment: &[CString],
     environment: &[(CString, CString)],
     working_dir: Option<&CString>,
 ) -> ! {
@@ -99,9 +106,14 @@ fn exec_child(
     {
         unsafe { libc::_exit(127) };
     }
+    for key in managed_environment {
+        if unsafe { libc::unsetenv(key.as_ptr()) } != 0 {
+            unsafe { libc::_exit(127) };
+        }
+    }
     for (key, value) in environment {
-        unsafe {
-            libc::setenv(key.as_ptr(), value.as_ptr(), 1);
+        if unsafe { libc::setenv(key.as_ptr(), value.as_ptr(), 1) } != 0 {
+            unsafe { libc::_exit(127) };
         }
     }
 

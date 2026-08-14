@@ -18,11 +18,11 @@ type = "navigate"
 
 [views.default.commands.run.payload]
 target = "sys:output"
-query = "{{ runtime:view.active.selected_item.text }}"
+query = "{{ runtime:view.current.selected_item.text }}"
 
 [views.output.engine]
 type = "capture"
 
 [views.output.engine.config]
-output = '{{ script("scripts/run.sh", runtime:view.active.input) }}'
-title = "{{ runtime:view.active.ref }}"
+output = '{{ script("scripts/run.sh", this:query) }}'
+title = "{{ this:ref }}"

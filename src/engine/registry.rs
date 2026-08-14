@@ -142,7 +142,7 @@ mod tests {
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let mixed_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ runtime:view.active.input }}'",
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ runtime:view.current.input }}'",
         );
         assert!(
             registry

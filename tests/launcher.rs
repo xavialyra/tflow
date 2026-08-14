@@ -4,9 +4,9 @@ use std::fs;
 use std::io::Write;
 
 use support::{
-    spawn_launcher, spawn_launcher_with_args, temporary_root, wait_for_launcher_exit,
-    wait_for_nonempty_file, wait_for_process_exit, wait_for_ready, wait_for_text,
-    write_test_config,
+    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
+    wait_for_launcher_exit, wait_for_nonempty_file, wait_for_process_exit, wait_for_ready,
+    wait_for_text, write_test_config,
 };
 
 #[test]
@@ -125,7 +125,7 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         [plugins.core.views.direct.engine]
         type = "capture"
         [plugins.core.views.direct.engine.config]
-        output = "{{ runtime:view.active.input }}"
+        output = "{{ runtime:view.current.input }}"
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
@@ -213,6 +213,51 @@ fn explicit_embedded_view_runs_without_picker_intent() {
     assert_eq!(status, 0);
     assert!(
         String::from_utf8_lossy(&output).contains("direct-embedded"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_view_removes_stale_launcher_environment() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = "{{ config:test_items.items }}"
+        [plugins.core.views.direct]
+        [plugins.core.views.direct.engine]
+        type = "embedded"
+        [plugins.core.views.direct.engine.config]
+        command = ["sh", "-lc", "printf 'managed=%s|%s|%s|%s|%s\\n' \"${LAUNCHER_COMMAND-unset}\" \"${LAUNCHER_ITEM-unset}\" \"${LAUNCHER_QUERY-unset}\" \"${LAUNCHER_VIEW-unset}\" \"${LAUNCHER_PLUGIN_DIR-unset}\""]
+"#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(
+        &config,
+        &["core:direct"],
+        &[
+            ("LAUNCHER_COMMAND", "stale"),
+            ("LAUNCHER_ITEM", "stale"),
+            ("LAUNCHER_QUERY", "stale"),
+            ("LAUNCHER_VIEW", "stale"),
+            ("LAUNCHER_PLUGIN_DIR", "/tmp/stale"),
+        ],
+    );
+    let (status, output) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("managed=unset|unset|unset|unset|unset"),
         "output: {:?}",
         output
     );
@@ -408,7 +453,7 @@ fi
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = '{{ script("scripts/items.sh", runtime:view.active) }}'
+        items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
 "#,
     )
     .expect("could not write cancellation integration config");
@@ -551,7 +596,10 @@ fn command_picker_waits_for_the_committed_selection() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        sources = ["alpha:default", "beta:default"]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "alpha:default"
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "beta:default"
         [plugins.core.views.command]
         [plugins.core.views.command.engine]
         type = "picker"
@@ -834,8 +882,8 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         type = "navigate"
 
         [plugins.core.views.default.commands.inspect.payload]
-        target = "{{ runtime:view.active.selected_item.metadata.target }}"
-        query = "parent-value:{{ runtime:view.active.selected_item.value }}"
+        target = "{{ runtime:view.current.selected_item.metadata.target }}"
+        query = "{{ runtime:view.current.input }}|{{ runtime:session.input.params }}|{{ runtime:view.current.selected_item.value }}"
 
         [plugins.core.views.command]
         [plugins.core.views.command.engine]
@@ -845,7 +893,7 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         [plugins.core.views.capture.engine]
         type = "capture"
         [plugins.core.views.capture.engine.config]
-        output = "{{ runtime:view.active.input }}"
+        output = "{{ runtime:view.current.input }}"
         title = "Capture"
 "#,
     )
@@ -856,10 +904,48 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
     let _ = wait_for_text(&process.master, "Item");
     process
         .master
+        .write_all(b"Item")
+        .expect("could not write parent query");
+    process
+        .master
+        .flush()
+        .expect("could not flush parent query");
+    let _ = wait_for_text(&process.master, "Item");
+
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not navigate with direct command");
+    process
+        .master
+        .flush()
+        .expect("could not flush direct navigation");
+    let output = wait_for_text(&process.master, "Item|Item|value");
+    assert!(
+        String::from_utf8_lossy(&output).contains("Item|Item|value"),
+        "output: {:?}",
+        output
+    );
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not return from direct capture view");
+    process
+        .master
+        .flush()
+        .expect("could not flush direct capture return");
+    let _ = wait_for_text(&process.master, "Item");
+
+    process
+        .master
         .write_all(b"\x0b")
         .expect("could not open command picker");
     process.master.flush().expect("could not flush Ctrl-K");
     let _ = wait_for_text(&process.master, "Inspect");
+    process
+        .master
+        .write_all(b"ins")
+        .expect("could not filter command picker");
     process
         .master
         .write_all(b"\r")
@@ -868,9 +954,9 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
         .master
         .flush()
         .expect("could not flush command navigation");
-    let output = wait_for_text(&process.master, "parent-value:value");
+    let output = wait_for_text(&process.master, "Item|Item|value");
     assert!(
-        String::from_utf8_lossy(&output).contains("parent-value:value"),
+        String::from_utf8_lossy(&output).contains("Item|Item|value"),
         "output: {:?}",
         output
     );
@@ -878,11 +964,11 @@ fn command_picker_navigation_keeps_the_parent_item_context() {
     process
         .master
         .write_all(b"\r")
-        .expect("could not return from capture view");
+        .expect("could not return from command-picker capture view");
     process
         .master
         .flush()
-        .expect("could not flush capture return");
+        .expect("could not flush command-picker capture return");
     let _ = wait_for_text(&process.master, "Item");
     process
         .master
@@ -947,7 +1033,209 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 }
 
 #[test]
-fn aggregate_sources_own_independent_view_state() {
+fn ctrl_k_feed_complete_uses_original_item_state_and_binding() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/apps");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        show_prefix = true
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [plugins.core.views.default.commands.page]
+        key = "ctrl+r"
+        label = "Page Action"
+        type = "run"
+        [plugins.core.views.default.commands.page.payload]
+        handler = ":"
+        [plugins.core.views.command]
+        [plugins.core.views.command.engine]
+        type = "picker"
+        [plugins.core.views.command.engine.config]
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "apps"
+
+        [views.default]
+        [views.default.engine]
+        type = "picker"
+        [views.default.engine.config]
+        items = '{{ script("scripts/items.sh", this:query) }}'
+        [views.default.query]
+        type = "object"
+        input_order = ["text"]
+        text = { type = "string", default = "owner-default" }
+
+        [views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "complete"
+
+        [views.default.commands.accept.payload]
+        handler = "scripts/result.sh"
+
+        [views.default.commands.accept.payload.params]
+        options = "{{ this:query }}"
+        selected = "{{ runtime:view.current.selected_item }}"
+        page_ref = "{{ runtime:view.current.ref }}"
+        page_query = "{{ runtime:view.current.query }}"
+        session_params = "{{ runtime:session.input.params }}"
+        commands = "{{ runtime:view.current.command }}"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/items.sh"),
+        r#"#!/bin/sh
+text=$(cat | jq -r .text)
+jq -cn --arg text "$text" '[{label:("ROW:" + $text), value: $text}]'
+"#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/result.sh"),
+        r#"#!/bin/sh
+payload=$(cat)
+printf '%s' "$payload" | grep -q '"text":"typed-feed"' || exit 3
+printf '%s' "$payload" | grep -q '"value":"typed-feed"' || exit 3
+printf '%s' "$payload" | grep -q '"owner_view":"apps:default"' || exit 3
+printf '%s' "$payload" | grep -q 'owner_query\|feed_id\|source_view\|binding_raw' && exit 3
+printf '%s' "$payload" | grep -q '"page_ref":"core:default"' || exit 3
+printf '%s' "$payload" | grep -q '"page_query":"typed-feed"' || exit 3
+printf '%s' "$payload" | grep -q '"session_params":"typed-feed"' || exit 3
+printf '%s' "$payload" | grep -q '"label":"Page Action"' || exit 3
+printf '%s' "$payload" | grep -q '"label":"Accept"' || exit 3
+printf 'owner-complete-ok'
+exit 0
+"#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"typed-feed").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "ROW:typed-feed");
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Accept");
+    process.master.write_all(b"acc").unwrap();
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("owner-complete-ok"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn empty_feed_binding_is_shared_by_items_and_direct_complete() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/apps");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "apps"
+
+        [views.default]
+        [views.default.engine]
+        type = "picker"
+        [views.default.engine.config]
+        items = '{{ script("scripts/items.sh", this:$) }}'
+        [views.default.query]
+        type = "object"
+        input_order = ["text"]
+        text = { type = "string", default = "owner-default" }
+        [views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "complete"
+        [views.default.commands.accept.payload]
+        handler = "scripts/result.sh"
+        [views.default.commands.accept.payload.params]
+        raw = "{{ this:raw_input }}"
+        query = "{{ this:query }}"
+        selected = "{{ runtime:view.current.selected_item }}"
+        session_params = "{{ runtime:session.input.params }}"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/items.sh"),
+        r#"#!/bin/sh
+payload=$(cat)
+raw=$(printf '%s' "$payload" | jq -r .raw_input)
+text=$(printf '%s' "$payload" | jq -r .query.text)
+jq -cn --arg raw "$raw" --arg text "$text" '[{label:("RAW:" + $raw + "|TEXT:" + $text), value:$text}]'
+"#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/result.sh"),
+        r#"#!/bin/sh
+payload=$(cat)
+printf '%s' "$payload" | grep -q '"raw":""' || exit 4
+printf '%s' "$payload" | grep -q '"text":"owner-default"' || exit 4
+printf '%s' "$payload" | grep -q '"value":"owner-default"' || exit 4
+printf '%s' "$payload" | grep -q '"session_params":""' || exit 4
+printf 'empty-binding-ok'
+"#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "RAW:|TEXT:owner-default");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("empty-binding-ok"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn feeds_page_commands_remain_available_with_selected_owner_item() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -960,7 +1248,189 @@ fn aggregate_sources_own_independent_view_state() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        sources = ["apps:default"]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [plugins.core.views.default.commands.page]
+        key = "ctrl+r"
+        label = "Page"
+        type = "run"
+        [plugins.core.views.default.commands.page.payload]
+        handler = '''printf 'page-command\n' '''
+        exit = true
+
+        [plugins.apps.views.default]
+        [plugins.apps.views.default.engine]
+        type = "picker"
+        [plugins.apps.views.default.engine.config]
+        items = "{{ config:catalog.items }}"
+        [plugins.apps.views.default.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "run"
+        [plugins.apps.views.default.commands.open.payload]
+        handler = '''printf 'owner-command\n' '''
+        exit = true
+
+        [catalog]
+        items = [{label = "Row", value = "row"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Row");
+    process.master.write_all(b"\x12").unwrap(); // Ctrl-R
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("page-command"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctrl_k_lists_page_commands_and_uses_owner_conflict_priority() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [plugins.core.views.command]
+        [plugins.core.views.command.engine]
+        type = "picker"
+        [plugins.core.views.command.engine.config]
+        [plugins.core.views.default.commands.conflict]
+        key = "enter"
+        label = "Page Conflict"
+        type = "run"
+        [plugins.core.views.default.commands.conflict.payload]
+        handler = '''printf 'wrong-page-conflict\n' '''
+        exit = true
+        [plugins.core.views.default.commands.page]
+        key = "ctrl+r"
+        label = "Page Action"
+        type = "run"
+        [plugins.core.views.default.commands.page.payload]
+        handler = '''printf 'ctrl-k-page\n' '''
+        exit = true
+
+        [plugins.apps.views.default]
+        [plugins.apps.views.default.engine]
+        type = "picker"
+        [plugins.apps.views.default.engine.config]
+        items = "{{ config:catalog.items }}"
+        [plugins.apps.views.default.commands.open]
+        key = "enter"
+        label = "Owner Action"
+        type = "run"
+        [plugins.apps.views.default.commands.open.payload]
+        handler = '''printf 'owner-action\n' '''
+        exit = true
+
+        [catalog]
+        items = [{label = "Row", value = "row"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Row");
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_text(&process.master, "Page Action");
+    let screen = String::from_utf8_lossy(&screen);
+    assert!(screen.contains("Owner Action"), "screen: {screen}");
+    assert!(!screen.contains("Page Conflict"), "screen: {screen}");
+    process.master.write_all(b"\x1b[B\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("ctrl-k-page"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctrl_k_shows_page_commands_without_a_selected_item() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = "{{ config:catalog.items }}"
+        [plugins.core.views.default.commands.page]
+        key = "enter"
+        label = "Page Only"
+        type = "run"
+        [plugins.core.views.default.commands.page.payload]
+        handler = '''printf 'page-only-ok\n' '''
+        exit = true
+        [plugins.core.views.command]
+        [plugins.core.views.command.engine]
+        type = "picker"
+        [plugins.core.views.command.engine.config]
+        [catalog]
+        items = []
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "no matches");
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Page Only");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("page-only-ok"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn feed_owners_apply_independent_query_defaults() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        show_prefix = true
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
         [plugins.apps.views.default]
         [plugins.apps.views.default.engine]
         type = "picker"
@@ -1003,7 +1473,10 @@ fn route_input_escape_removes_the_route_tag() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        sources = ["apps:default", "sys:default"]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "sys:default"
         [plugins.apps.views.default]
         alias = "app"
         [plugins.apps.views.default.engine]
@@ -1044,7 +1517,7 @@ fn route_input_escape_removes_the_route_tag() {
         .master
         .flush()
         .expect("could not flush route escape");
-    let _ = wait_for_text(&process.master, "no matches)");
+    let _ = wait_for_text(&process.master, "Item");
     process
         .master
         .write_all(b"\x03")
@@ -1072,7 +1545,10 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        sources = ["apps:default", "sys:default"]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "sys:default"
         [plugins.apps.views.default]
         alias = "app"
         [plugins.apps.views.default.engine]
@@ -1186,7 +1662,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
         [plugins.core.views.messages.engine]
         type = "picker"
         [plugins.core.views.messages.engine.config]
-        items = '{{ script("scripts/items.sh", runtime:view.active) }}'
+        items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
 "#,
     )
     .expect("could not write messages integration config");
@@ -1377,14 +1853,14 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default.commands.run.payload]
         target = "core:capture"
-        query = "capture-marker:{{ runtime:view.active.selected_item.value }}"
+        query = "capture-marker:{{ runtime:view.current.selected_item.value }}"
 
         [plugins.core.views.capture]
         alias = "cap"
         [plugins.core.views.capture.engine]
         type = "capture"
         [plugins.core.views.capture.engine.config]
-        output = "{{ runtime:view.active.input }}"
+        output = "{{ runtime:view.current.input }}"
         title = "Capture"
 "#,
     )
@@ -1454,14 +1930,14 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default.commands.run.payload]
         target = "core:embedded"
-        query = '''printf 'embedded-marker:%s\n' '{{ runtime:view.active.selected_item.value }}'; exit 0'''
+        query = '''printf 'embedded-marker:%s\n' '{{ runtime:view.current.selected_item.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
         alias = "emb"
         [plugins.core.views.embedded.engine]
         type = "embedded"
         [plugins.core.views.embedded.engine.config]
-        command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
         title = "Embedded"
 "#,
     )
@@ -1572,7 +2048,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         [plugins.core.views.embedded.engine]
         type = "embedded"
         [plugins.core.views.embedded.engine.config]
-        command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
+        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
         title = "Embedded"
 "#,
     )

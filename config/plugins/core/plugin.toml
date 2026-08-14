@@ -10,7 +10,18 @@ type = "picker"
 
 [views.default.engine.config]
 show_prefix = true
-sources = ["sys:default", "shell:menu", "trans:default", "apps:default"]
+
+[[views.default.engine.config.feeds]]
+view = "sys:default"
+
+[[views.default.engine.config.feeds]]
+view = "shell:menu"
+
+[[views.default.engine.config.feeds]]
+view = "trans:default"
+
+[[views.default.engine.config.feeds]]
+view = "apps:default"
 
 [views.messages]
 alias = "log"
@@ -19,7 +30,7 @@ alias = "log"
 type = "picker"
 
 [views.messages.engine.config]
-items = '{{ script("scripts/items.sh", runtime:view.active) }}'
+items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
 
 [views.command.engine]
 type = "picker"

@@ -5,10 +5,20 @@ use crate::engine::{TaskHandle, TaskScheduler};
 use crate::state::StateInstance;
 use crate::text::sanitize_text;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FeedId(pub(crate) String);
+
+#[derive(Debug, Clone)]
+pub(crate) struct FeedContext {
+    pub(crate) owner_view: String,
+    pub(crate) state: StateInstance,
+    pub(crate) binding_raw: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
@@ -21,31 +31,42 @@ struct ItemValue {
     metadata: Value,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub(crate) struct Item {
     pub(crate) prefix: String,
     pub(crate) text: String,
     pub(crate) value: Option<String>,
     pub(crate) metadata: Value,
+    /// Stable provenance only; the response-level context owns state and raw binding.
     pub(crate) source_view: String,
+    pub(crate) feed_id: FeedId,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ItemsResult {
     pub(crate) items: Vec<Item>,
+    pub(crate) contexts: BTreeMap<FeedId, FeedContext>,
     pub(crate) errors: Vec<String>,
 }
 
 pub(crate) struct ItemsRequest {
     pub(crate) view: String,
+    /// Complete request identity prevents accepting a result for an older state snapshot.
+    pub(crate) generation: u64,
+    /// Chrome raw buffer used for stale-result matching.
     pub(crate) input: String,
-    pub(crate) query: String,
-    pub(crate) source_states: BTreeMap<String, StateInstance>,
+    /// Coordinating page committed input used as the feed binding raw.
+    pub(crate) binding_raw: String,
+    /// Coordinating page state for single-source pickers; ignored for feeds pages.
+    pub(crate) page_state: StateInstance,
 }
 
 pub(crate) struct ItemsResponse {
     pub(crate) view: String,
+    pub(crate) generation: u64,
     pub(crate) input: String,
+    pub(crate) binding_raw: String,
+    pub(crate) state_revision: u64,
     pub(crate) query: String,
     pub(crate) result: std::result::Result<ItemsResult, String>,
 }
@@ -70,65 +91,87 @@ pub(crate) fn submit_items_task(
         request,
         "picker-items".to_string(),
         move |request, runtime_value, cancellation| {
-            let result = load_items_with_states(
+            let result = load_items_for_page(
                 &config,
                 &request.view,
-                &request.source_states,
-                &request.query,
+                &request.page_state,
+                &request.binding_raw,
                 &runtime_value,
                 &cancellation,
             )
             .map_err(|error| error.to_string());
             ItemsResponse {
                 view: request.view,
+                generation: request.generation,
                 input: request.input,
-                query: request.query,
+                binding_raw: request.binding_raw.clone(),
+                state_revision: request.page_state.revision(),
+                query: request.binding_raw,
                 result,
             }
         },
     )
 }
 
-fn load_items_with_states(
+fn load_items_for_page(
     config: &Config,
     view_ref: &str,
-    source_states: &BTreeMap<String, StateInstance>,
-    query: &str,
+    page_state: &StateInstance,
+    binding_raw: &str,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let mut result = ItemsResult::default();
 
-    for (source_ref, view) in config.source_views(view_ref)? {
-        let prefix = view.alias.clone().unwrap_or_else(|| source_ref.clone());
+    for (owner_ref, view) in config.feed_views(view_ref)? {
+        let prefix = view.alias.clone().unwrap_or_else(|| owner_ref.clone());
         if view.selected_items().is_none() {
             continue;
         }
 
-        let mut state = source_states
-            .get(&source_ref)
-            .cloned()
-            .unwrap_or_else(|| StateInstance::empty(&source_ref));
-        if config.has_plain_query(&state)? {
-            config.update_query_input(&mut state, query)?;
+        // Each provider gets exactly one typed state and one raw binding snapshot.
+        let (state, this_binding_raw) = if owner_ref == page_state.view_ref() {
+            (page_state.clone(), Some(binding_raw))
+        } else {
+            match config.ephemeral_feed_state(&owner_ref, binding_raw) {
+                Ok(state) => (state, Some(binding_raw)),
+                Err(error) => {
+                    result.errors.push(format!("{}: {}", owner_ref, error));
+                    continue;
+                }
+            }
+        };
+        if let Err(error) = config.validate_query_state(&state) {
+            result.errors.push(format!("{}: {}", owner_ref, error));
+            continue;
         }
+        let feed_id = FeedId(owner_ref.clone());
+        result.contexts.insert(
+            feed_id.clone(),
+            FeedContext {
+                owner_view: owner_ref.clone(),
+                state: state.clone(),
+                binding_raw: binding_raw.to_string(),
+            },
+        );
         let value = match config.get(
             ConfigReadContext {
                 scope: ConfigScope::View(&state),
                 runtime,
                 input: &config.input_value,
                 cancellation: Some(cancellation.clone()),
+                binding_raw: this_binding_raw,
             },
             &["items"],
         ) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(error) => {
-                result.errors.push(format!("{}: {}", source_ref, error));
+                result.errors.push(format!("{}: {}", owner_ref, error));
                 continue;
             }
         };
-        append_items(&mut result, &source_ref, &prefix, value);
+        append_items(&mut result, &owner_ref, &feed_id, &prefix, value);
     }
 
     Ok(result)
@@ -141,17 +184,17 @@ fn load_items(
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
-    load_items_with_states(
-        config,
-        view_ref,
-        &BTreeMap::new(),
-        "",
-        runtime,
-        cancellation,
-    )
+    let page_state = config.instantiate_state(view_ref)?;
+    load_items_for_page(config, view_ref, &page_state, "", runtime, cancellation)
 }
 
-fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value: Value) {
+fn append_items(
+    result: &mut ItemsResult,
+    source_ref: &str,
+    feed_id: &FeedId,
+    prefix: &str,
+    value: Value,
+) {
     let Some(items) = value.as_array() else {
         result.errors.push(format!(
             "{}: items expression must return a JSON array",
@@ -185,6 +228,7 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
             value: parsed.value,
             metadata: parsed.metadata,
             source_view: source_ref.to_string(),
+            feed_id: feed_id.clone(),
         });
     }
     result.items.extend(parsed_items);
@@ -194,8 +238,8 @@ fn append_items(result: &mut ItemsResult, source_ref: &str, prefix: &str, value:
 mod tests {
     use super::*;
     use crate::config::{
-        Command, CommandAction, Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata,
-        View,
+        Command, CommandAction, Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, FeedSpec,
+        PluginMetadata, View,
     };
     use std::collections::BTreeMap;
     use std::env;
@@ -209,7 +253,9 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        sources: vec!["apps:main".to_string()],
+                        feeds: vec![FeedSpec {
+                            view: "apps:main".to_string(),
+                        }],
                         ..Default::default()
                     },
                 },
@@ -226,7 +272,7 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ runtime:view.active.items }}".to_string()),
+                        items: Some("{{ runtime:view.current.items }}".to_string()),
                         ..Default::default()
                     },
                 },
@@ -295,7 +341,7 @@ mod tests {
             "core:default",
             &serde_json::json!({
                 "view": {
-                    "active": {
+                    "current": {
                         "items": [{"label": "Second"}, {"label": "First"}]
                     }
                 }
@@ -313,6 +359,13 @@ mod tests {
         );
         assert_eq!(result.items[0].source_view, "apps:main");
         assert_eq!(result.items[0].prefix, "app");
+        assert_eq!(result.contexts.len(), 1, "one context per feed response");
+        assert!(
+            result
+                .items
+                .iter()
+                .all(|item| item.feed_id == FeedId("apps:main".to_string()))
+        );
     }
 
     #[test]
@@ -324,12 +377,12 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ runtime:view.active.query }}".to_string());
+            .items = Some("{{ runtime:view.current.query }}".to_string());
         let result = load_items(
             &config,
             "core:default",
             &serde_json::json!({
-                "view": {"active": {"query": "not-an-array"}}
+                "view": {"current": {"query": "not-an-array"}}
             }),
             &CancellationToken::new(),
         )
@@ -345,7 +398,7 @@ mod tests {
             "core:default",
             &serde_json::json!({
                 "view": {
-                    "active": {
+                    "current": {
                         "items": [{"label": "Valid"}, {"value": "missing-label"}]
                     }
                 }
@@ -381,7 +434,7 @@ mod tests {
             "plugins": {
                 "core": {
                     "views": {
-                        "default": {"type": "picker", "sources": ["apps:main"]}
+                        "default": {"type": "picker", "feeds": [{"view": "apps:main"}]}
                     }
                 },
                 "apps": {
@@ -397,11 +450,11 @@ mod tests {
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
-        let state = config.instantiate_state("apps:main").unwrap();
-        let result = load_items_with_states(
+        let page_state = config.instantiate_state("core:default").unwrap();
+        let result = load_items_for_page(
             &config,
             "core:default",
-            &BTreeMap::from([("apps:main".to_string(), state)]),
+            &page_state,
             "fire",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -415,6 +468,360 @@ mod tests {
             result.errors
         );
         assert_eq!(result.items[0].text, "fire");
+        assert_eq!(result.contexts.len(), 1);
+        let context = &result.contexts[&result.items[0].feed_id];
+        assert_eq!(context.binding_raw, "fire");
+        assert_eq!(config.query_value(&context.state).unwrap(), "fire");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn feed_this_raw_input_keeps_empty_binding() {
+        let root = env::temp_dir().join(format!("tui-launcher-items-raw-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.sh"),
+            concat!(
+                "payload=$(cat)\n",
+                "raw=$(printf '%s' \"$payload\" | jq -r .raw)\n",
+                "text=$(printf '%s' \"$payload\" | jq -r .text)\n",
+                "jq -cn --arg raw \"$raw\" --arg text \"$text\" \
+",
+                "  '[{label:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
+            ),
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some(
+            "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}"
+                .to_string(),
+        );
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "query": {
+                                "type": "object",
+                                "input_order": ["text"],
+                                "text": {"type": "string", "default": "source-default"}
+                            },
+                            "items": "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.plugin_roots.insert("apps".to_string(), root.clone());
+        let page_state = config.instantiate_state("core:default").unwrap();
+        let result = load_items_for_page(
+            &config,
+            "core:default",
+            &page_state,
+            "",
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.items[0].text, "RAW:|TEXT:source-default",
+            "errors={:?}",
+            result.errors
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn required_feed_failure_does_not_block_a_later_defaulted_feed() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-items-required-isolation-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        let invalid_provider_marker = root.join("invalid-provider-ran");
+        fs::write(
+            root.join("invalid-items.sh"),
+            "printf 'ran\\n' > invalid-provider-ran\nprintf '[]\\n'\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("items.sh"),
+            concat!(
+                "payload=$(cat)\n",
+                "raw=$(printf '%s' \"$payload\" | jq -r .raw_input)\n",
+                "text=$(printf '%s' \"$payload\" | jq -r .query.text)\n",
+                "jq -cn --arg raw \"$raw\" --arg text \"$text\" ",
+                "'[{label:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
+            ),
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config.views.insert(
+            "sys:main".to_string(),
+            View {
+                engine: EngineSpec {
+                    engine_type: ENGINE_PICKER.to_string(),
+                    config: EngineOptions {
+                        items: Some("{{ script(\"items.sh\", this:$) }}".to_string()),
+                        ..Default::default()
+                    },
+                },
+                alias: Some("sys".to_string()),
+                run_shell: None,
+                cancel_exit_code: None,
+                query: None,
+                commands: BTreeMap::new(),
+            },
+        );
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ script(\"invalid-items.sh\") }}".to_string());
+        config
+            .views
+            .get_mut("core:default")
+            .unwrap()
+            .engine
+            .config
+            .feeds = vec![
+            FeedSpec {
+                view: "apps:main".to_string(),
+            },
+            FeedSpec {
+                view: "sys:main".to_string(),
+            },
+        ];
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "query": {
+                                "type": "object",
+                                "input_order": [],
+                                "token": {"type": "string"}
+                            },
+                            "items": "{{ script(\"invalid-items.sh\") }}"
+                        }
+                    }
+                },
+                "sys": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "query": {
+                                "type": "object",
+                                "input_order": ["text"],
+                                "text": {"type": "string", "default": "later-default"}
+                            },
+                            "items": "{{ script(\"items.sh\", this:$) }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.plugin_roots.insert("apps".to_string(), root.clone());
+        config.plugin_roots.insert("sys".to_string(), root.clone());
+        let page_state = config.instantiate_state("core:default").unwrap();
+        let result = load_items_for_page(
+            &config,
+            "core:default",
+            &page_state,
+            "",
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.items.len(), 1, "errors={:?}", result.errors);
+        assert_eq!(result.items[0].text, "RAW:|TEXT:later-default");
+        assert_eq!(result.items[0].source_view, "sys:main");
+        assert_eq!(result.contexts.len(), 1);
+        assert!(
+            result
+                .contexts
+                .contains_key(&FeedId("sys:main".to_string()))
+        );
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("apps:main"));
+        assert!(result.errors[0].contains("--token is required"));
+        assert!(
+            !invalid_provider_marker.exists(),
+            "invalid feed provider ran before state validation"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nonempty_binding_does_not_run_a_feed_without_ordered_fields() {
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ runtime:provider_should_not_run }}".to_string());
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "query": {
+                                "type": "object",
+                                "input_order": [],
+                                "token": {"type": "string", "default": "fixed"}
+                            },
+                            "items": "{{ runtime:provider_should_not_run }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        let page_state = config.instantiate_state("core:default").unwrap();
+
+        let result = load_items_for_page(
+            &config,
+            "core:default",
+            &page_state,
+            "needle",
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(result.items.is_empty());
+        assert!(result.contexts.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("input_order is empty"));
+        assert!(!result.errors[0].contains("provider_should_not_run"));
+    }
+
+    #[test]
+    fn feeds_merge_items_in_config_order() {
+        let mut config = test_config();
+        config.views.insert(
+            "sys:main".to_string(),
+            View {
+                engine: EngineSpec {
+                    engine_type: ENGINE_PICKER.to_string(),
+                    config: EngineOptions {
+                        items: Some("{{ runtime:sys_items }}".to_string()),
+                        ..Default::default()
+                    },
+                },
+                alias: Some("sys".to_string()),
+                run_shell: None,
+                cancel_exit_code: None,
+                query: None,
+                commands: BTreeMap::new(),
+            },
+        );
+        config
+            .views
+            .get_mut("core:default")
+            .unwrap()
+            .engine
+            .config
+            .feeds = vec![
+            FeedSpec {
+                view: "apps:main".to_string(),
+            },
+            FeedSpec {
+                view: "sys:main".to_string(),
+            },
+        ];
+        let result = load_items(
+            &config,
+            "core:default",
+            &serde_json::json!({
+                "view": {"current": {"items": [{"label": "AppItem"}]}},
+                "sys_items": [{"label": "SysItem"}]
+            }),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| (item.text.as_str(), item.source_view.as_str()))
+                .collect::<Vec<_>>(),
+            [("AppItem", "apps:main"), ("SysItem", "sys:main")]
+        );
+    }
+
+    #[test]
+    fn feed_object_defaults_apply_with_empty_input() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-items-defaults-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.sh"),
+            "jq -cn --arg label \"$(cat | jq -r .text)\" '[{label:(\"VALUE:\" + $label)}]'\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ script(\"items.sh\", this:query) }}".to_string());
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "query": {
+                                "type": "object",
+                                "input_order": ["text"],
+                                "text": {"type": "string", "default": "source-default"}
+                            },
+                            "items": "{{ script(\"items.sh\", this:query) }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.plugin_roots.insert("apps".to_string(), root.clone());
+        let page_state = config.instantiate_state("core:default").unwrap();
+        let result = load_items_for_page(
+            &config,
+            "core:default",
+            &page_state,
+            "",
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(result.items[0].text, "VALUE:source-default");
         fs::remove_dir_all(root).unwrap();
     }
 }

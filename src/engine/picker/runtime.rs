@@ -11,23 +11,24 @@ impl PickerView {
     ) -> Result<()> {
         let frame = self.current();
         let owner = self.command_owner().map(str::to_string);
-        let commands = owner
+        let page_view = self
+            .command_page_view
             .as_deref()
-            .and_then(|owner| config.view(owner).map(|view| (owner, view)))
-            .map(|(owner, view)| {
-                view.commands
-                    .iter()
-                    .map(|(id, command)| command::runtime_command_value(owner, id, command))
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.current_view_ref());
+        let command_owner = if self.command_view_active() {
+            self.command_view_owner()
+        } else {
+            self.selected_item_owner()
+        };
+        let commands = command::collect_page_owner_commands(config, page_view, command_owner)?
+            .into_values()
+            .collect::<Vec<_>>();
         let items = frame
             .items
             .iter()
             .map(runtime_item_value)
             .collect::<Vec<_>>();
-        let selected_item = if frame.command_owner.is_some() {
+        let selected_item = if self.command_view_active() {
             self.command_parent_item().map(runtime_item_value)
         } else {
             frame.items.get(frame.selected).map(runtime_item_value)
@@ -35,20 +36,75 @@ impl PickerView {
         let log_file = self
             .log_file()
             .map(|path| path.to_string_lossy().to_string());
-        runtime.set_many([
-            ("/view/active/log_file", serde_json::json!(log_file)),
-            (
-                "/view/active/selected_index",
-                serde_json::json!(frame.selected),
-            ),
-            (
-                "/view/active/selected_item",
-                serde_json::json!(selected_item),
-            ),
-            ("/view/active/items", serde_json::json!(items)),
-            ("/view/active/command", serde_json::json!(commands)),
-            ("/view/active/command_owner", serde_json::json!(owner)),
-        ])?;
+        let base = runtime
+            .snapshot()
+            .pointer("/view/current")
+            .cloned()
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "ref": frame.view,
+                    "input": frame.query,
+                    "raw_input": frame.query,
+                    "query": frame.query,
+                })
+            });
+        let mut current = serde_json::Map::new();
+        current.insert(
+            "ref".to_string(),
+            base.get("ref")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(frame.view)),
+        );
+        current.insert(
+            "input".to_string(),
+            base.get("input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(frame.query)),
+        );
+        current.insert(
+            "raw_input".to_string(),
+            base.get("raw_input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(frame.query)),
+        );
+        current.insert(
+            "query".to_string(),
+            base.get("query")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(frame.query)),
+        );
+        if let Some(value) = base.get("state_revision").filter(|value| !value.is_null()) {
+            current.insert("state_revision".to_string(), value.clone());
+        }
+        if let Some(value) = base.get("request").filter(|value| !value.is_null()) {
+            current.insert("request".to_string(), value.clone());
+        }
+        current.insert(
+            "selected_index".to_string(),
+            serde_json::json!(frame.selected),
+        );
+        // Keep null so templates like selected_item resolve instead of missing.
+        current.insert(
+            "selected_item".to_string(),
+            selected_item.unwrap_or(serde_json::Value::Null),
+        );
+        current.insert("items".to_string(), serde_json::json!(items));
+        current.insert("command".to_string(), serde_json::json!(commands));
+        current.insert(
+            "command_owner".to_string(),
+            match owner {
+                Some(owner) => serde_json::Value::String(owner),
+                None => serde_json::Value::Null,
+            },
+        );
+        current.insert(
+            "log_file".to_string(),
+            match log_file {
+                Some(path) => serde_json::Value::String(path),
+                None => serde_json::Value::Null,
+            },
+        );
+        runtime.set_many([("/view/current", serde_json::Value::Object(current))])?;
         Ok(())
     }
 }
@@ -59,6 +115,31 @@ fn runtime_item_value(item: &Item) -> serde_json::Value {
         "text": item.text,
         "value": item.value,
         "metadata": item.metadata,
-        "source_view": item.source_view,
+        "owner_view": item.source_view,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::picker::items::FeedId;
+
+    #[test]
+    fn public_item_provenance_excludes_internal_feed_context() {
+        let value = runtime_item_value(&Item {
+            prefix: "app".to_string(),
+            text: "Terminal".to_string(),
+            value: Some("terminal".to_string()),
+            metadata: serde_json::json!({"kind": "app"}),
+            source_view: "apps:default".to_string(),
+            feed_id: FeedId("apps:default".to_string()),
+        });
+        assert_eq!(value["owner_view"], "apps:default");
+        assert!(value.get("feed_id").is_none());
+        assert!(value.get("state").is_none());
+        assert!(value.get("binding_raw").is_none());
+        assert!(value.get("query").is_none());
+        assert!(value.get("owner_query").is_none());
+        assert!(value.get("source_view").is_none());
+    }
 }

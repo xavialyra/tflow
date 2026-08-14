@@ -475,7 +475,12 @@ impl PickerPreview {
 }
 
 fn item_value(item: &Item) -> Value {
-    serde_json::json!({"text": item.text, "value": item.value, "metadata": item.metadata, "source_view": item.source_view})
+    serde_json::json!({
+        "text": item.text,
+        "value": item.value,
+        "metadata": item.metadata,
+        "owner_view": item.source_view,
+    })
 }
 
 fn block_areas(area: Rect, blocks: &[PreviewBlockConfig]) -> Vec<Rect> {

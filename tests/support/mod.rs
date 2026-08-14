@@ -127,6 +127,14 @@ pub fn spawn_launcher(config: &Path) -> LauncherProcess {
 }
 
 pub fn spawn_launcher_with_args(config: &Path, extra_args: &[&str]) -> LauncherProcess {
+    spawn_launcher_with_args_and_env(config, extra_args, &[])
+}
+
+pub fn spawn_launcher_with_args_and_env(
+    config: &Path,
+    extra_args: &[&str],
+    environment: &[(&str, &str)],
+) -> LauncherProcess {
     let window = libc::winsize {
         ws_row: 24,
         ws_col: 80,
@@ -150,6 +158,13 @@ pub fn spawn_launcher_with_args(config: &Path, extra_args: &[&str]) -> LauncherP
         let log_name = CString::new("TUI_LAUNCHER_LOG_FILE").unwrap();
         unsafe {
             libc::setenv(log_name.as_ptr(), log_path.as_ptr(), 1);
+        }
+        for (key, value) in environment {
+            let key = CString::new(*key).expect("environment key contains a NUL byte");
+            let value = CString::new(*value).expect("environment value contains a NUL byte");
+            if unsafe { libc::setenv(key.as_ptr(), value.as_ptr(), 1) } != 0 {
+                unsafe { libc::_exit(127) };
+            }
         }
         let config =
             CString::new(config.as_os_str().as_bytes()).expect("config path contains a NUL byte");

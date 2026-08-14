@@ -1,5 +1,7 @@
 use super::PendingAction;
-use super::items::{Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task};
+use super::items::{
+    FeedContext, FeedId, Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task,
+};
 use super::keymap::PickerKeymap;
 use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
@@ -10,9 +12,9 @@ use crate::engine::api::{
 };
 use crate::engine::command::{self, CommandAction};
 use crate::engine::{
-    CommandInvocation, CompletionRequest, EngineHost, InputRefreshPolicy, NavigationMode,
-    NavigationRequest, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance, ViewOutput,
-    ViewOutputItem,
+    CommandInvocation, CommandPickerContext, CommandPickerItem, CommandPickerOwnerContext,
+    CompletionRequest, EngineHost, InputRefreshPolicy, NavigationMode, NavigationRequest,
+    TaskCompletion, TaskScheduler, ViewEffect, ViewInstance, ViewOutput, ViewOutputItem,
 };
 use crate::input::Key;
 use crate::router::{Router, ViewCandidate};
@@ -51,6 +53,7 @@ pub(crate) struct PickerFrame {
     pub(crate) retry_requested: bool,
     pub(crate) requested_input: String,
     pub(crate) results_input: String,
+    pub(crate) results_valid: bool,
     pub(crate) items_pending: bool,
     pub(crate) pending_action: Option<PendingAction>,
     pub(crate) pending_selection: isize,
@@ -68,6 +71,7 @@ impl PickerFrame {
             retry_requested: false,
             requested_input: String::new(),
             results_input: String::new(),
+            results_valid: false,
             items_pending: false,
             pending_action: None,
             pending_selection: 0,
@@ -82,7 +86,15 @@ pub(crate) struct PickerView {
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
-    pub(super) source_states: BTreeMap<String, crate::state::StateInstance>,
+    requested_binding_raw: String,
+    requested_state_revision: u64,
+    requested_page_state: Option<crate::state::StateInstance>,
+    request_generation: u64,
+    pub(super) feed_contexts: BTreeMap<FeedId, FeedContext>,
+    pub(super) command_page_view: Option<String>,
+    pub(super) command_page_state: Option<crate::state::StateInstance>,
+    pub(super) command_page_binding_raw: Option<String>,
+    command_page_runtime: Option<serde_json::Value>,
     options: PickerOptions,
     log_file: Option<PathBuf>,
     started: bool,
@@ -110,7 +122,15 @@ impl PickerView {
             config: Arc::clone(&config),
             items_task: None,
             requested_view: String::new(),
-            source_states: BTreeMap::new(),
+            requested_binding_raw: String::new(),
+            requested_state_revision: 0,
+            requested_page_state: None,
+            request_generation: 0,
+            feed_contexts: BTreeMap::new(),
+            command_page_view: None,
+            command_page_state: None,
+            command_page_binding_raw: None,
+            command_page_runtime: None,
             options,
             log_file: None,
             started: false,
@@ -126,12 +146,35 @@ impl PickerView {
     pub(super) fn with_context(
         mut self,
         log_file: Option<PathBuf>,
-        command_owner: Option<String>,
-        parent_item: Option<Item>,
+        command_context: Option<CommandPickerContext>,
     ) -> Self {
         self.log_file = log_file;
-        self.frame.command_owner = command_owner;
-        self.parent_item = parent_item;
+        let Some(context) = command_context else {
+            return self;
+        };
+        self.command_page_view = Some(context.page_view);
+        self.command_page_state = Some(context.page_state);
+        self.command_page_binding_raw = Some(context.page_binding_raw);
+        self.command_page_runtime = Some(context.page_runtime);
+        if let Some(owner) = context.owner {
+            self.frame.command_owner = Some(owner.view_ref.clone());
+            self.feed_contexts.insert(
+                FeedId(owner.view_ref.clone()),
+                FeedContext {
+                    owner_view: owner.view_ref,
+                    state: owner.state,
+                    binding_raw: owner.binding_raw,
+                },
+            );
+        }
+        self.parent_item = context.parent_item.map(|item| Item {
+            prefix: item.prefix,
+            text: item.text,
+            value: item.value,
+            metadata: item.metadata,
+            feed_id: FeedId(item.source_view.clone()),
+            source_view: item.source_view,
+        });
         self
     }
 
@@ -148,6 +191,7 @@ impl PickerView {
     }
 
     pub(crate) fn schedule_retry(&mut self) {
+        self.frame.results_valid = false;
         if self.frame.input_pending {
             self.frame.retry_requested = false;
             return;
@@ -158,14 +202,15 @@ impl PickerView {
     }
 
     pub(crate) fn results_current(&self, input: &str) -> bool {
-        !self.frame.input_pending
+        self.frame.results_valid
+            && !self.frame.input_pending
             && !self.frame.retry_requested
             && !self.frame.items_pending
             && self.frame.results_input == input
     }
 
     pub(crate) fn command_view_active(&self) -> bool {
-        self.frame.command_owner.is_some()
+        self.command_page_view.is_some()
     }
 
     pub(crate) fn current_view_ref(&self) -> &str {
@@ -177,13 +222,31 @@ impl PickerView {
     }
 
     pub(crate) fn command_owner(&self) -> Option<&str> {
-        self.frame.command_owner.as_deref().or_else(|| {
-            self.frame
-                .items
-                .get(self.frame.selected)
-                .map(|item| item.source_view.as_str())
-                .or(Some(self.frame.view.as_str()))
-        })
+        if self.command_view_active() {
+            return self
+                .frame
+                .command_owner
+                .as_deref()
+                .or(self.command_page_view.as_deref());
+        }
+        self.selected_item_owner()
+            .or(Some(self.frame.view.as_str()))
+    }
+
+    pub(super) fn command_view_owner(&self) -> Option<&str> {
+        self.frame.command_owner.as_deref()
+    }
+
+    pub(super) fn command_page_runtime(&self) -> Option<&serde_json::Value> {
+        self.command_page_runtime.as_ref()
+    }
+
+    /// Owner of the selected list row, if any (feed owner or single-source page).
+    pub(crate) fn selected_item_owner(&self) -> Option<&str> {
+        self.frame
+            .items
+            .get(self.frame.selected)
+            .map(|item| item.source_view.as_str())
     }
 
     pub(crate) fn command_parent_item(&self) -> Option<&Item> {
@@ -235,41 +298,48 @@ impl PickerView {
             return Ok(None);
         }
         self.frame.input_pending = false;
-        if self.frame.command_owner.is_some() {
+        if self.command_view_active() {
             self.refresh_command_view(host)?;
             return Ok(None);
         }
 
         let current_view = self.frame.view.clone();
         let current_input = host.input.raw.clone();
-        let query = host.input.params.clone();
+        // Committed params are the feed default binding raw (successful parse).
+        let binding_raw = host.input.params.clone();
         self.publish_runtime(host.config, host.runtime)?;
-        let source_states = self.source_states(host)?;
-        self.request_items(&current_view, &current_input, &query, source_states);
+        self.request_items(
+            &current_view,
+            &current_input,
+            &binding_raw,
+            host.state.clone(),
+        );
         Ok(None)
     }
 
     fn refresh_command_view(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
         let input = host.input.raw.clone();
-        let owner_name = self.frame.command_owner.clone().unwrap_or_default();
-        self.publish_runtime(host.config, host.runtime)?;
-        let commands = host
-            .runtime
-            .snapshot()
-            .pointer("/view/active/command")
-            .and_then(serde_json::Value::as_array)
-            .context("runtime command list must be an array")?;
+        let page_view = self
+            .command_page_view
+            .as_deref()
+            .context("command picker has no page")?;
+        let commands = command::collect_page_owner_commands(
+            host.config,
+            page_view,
+            self.frame.command_owner.as_deref(),
+        )?;
         let mut items = commands
-            .iter()
-            .filter_map(|command| {
-                let key = command.get("key")?.as_str()?.to_string();
+            .into_iter()
+            .filter_map(|(key, command)| {
+                let source_view = command.get("owner")?.as_str()?.to_string();
                 let text = sanitize_text(command.get("label")?.as_str()?);
                 (!text.is_empty()).then(|| Item {
                     prefix: "cmd".to_string(),
                     text,
                     value: Some(key),
-                    metadata: command.clone(),
-                    source_view: owner_name.clone(),
+                    metadata: command,
+                    feed_id: FeedId(source_view.clone()),
+                    source_view,
                 })
             })
             .filter(|item| matches_query(&item.text, &input))
@@ -288,45 +358,35 @@ impl PickerView {
         self.frame.query = input.clone();
         self.frame.requested_input = input.clone();
         self.frame.results_input = input;
+        self.frame.results_valid = true;
         self.frame.items_pending = false;
         self.frame.input_pending = false;
         self.frame.retry_requested = false;
         Ok(())
     }
 
-    fn source_states(
-        &mut self,
-        host: &EngineHost<'_>,
-    ) -> Result<BTreeMap<String, crate::state::StateInstance>> {
-        let mut states = BTreeMap::new();
-        for (source_ref, _) in host.config.source_views(self.current_view_ref())? {
-            if source_ref == host.state.view_ref() {
-                states.insert(source_ref, host.state.clone());
-                continue;
-            }
-            let state = self
-                .source_states
-                .entry(source_ref.clone())
-                .or_insert(host.config.instantiate_state(&source_ref)?);
-            states.insert(source_ref, state.clone());
-        }
-        Ok(states)
-    }
-
     fn request_items(
         &mut self,
         view: &str,
         input: &str,
-        query: &str,
-        source_states: BTreeMap<String, crate::state::StateInstance>,
+        binding_raw: &str,
+        page_state: crate::state::StateInstance,
     ) {
+        let state_revision = page_state.revision();
         if self.frame.items_pending
             && self.requested_view == view
             && self.frame.requested_input == input
+            && self.requested_binding_raw == binding_raw
+            && self.requested_state_revision == state_revision
+            && self.requested_page_state.as_ref() == Some(&page_state)
         {
             return;
         }
+        self.request_generation = self.request_generation.wrapping_add(1);
         self.requested_view = view.to_string();
+        self.requested_binding_raw = binding_raw.to_string();
+        self.requested_state_revision = state_revision;
+        self.requested_page_state = Some(page_state.clone());
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
         self.frame.retry_requested = false;
@@ -335,11 +395,22 @@ impl PickerView {
             &self.config,
             ItemsRequest {
                 view: view.to_string(),
+                generation: self.request_generation,
                 input: input.to_string(),
-                query: query.to_string(),
-                source_states,
+                binding_raw: binding_raw.to_string(),
+                page_state,
             },
         ));
+    }
+
+    fn invalidate_items_for_committed_input(&mut self) {
+        self.items_task.take();
+        self.frame.input_pending = true;
+        self.frame.retry_requested = false;
+        self.frame.results_valid = false;
+        self.frame.items_pending = false;
+        self.frame.pending_action = None;
+        self.frame.pending_selection = 0;
     }
 
     fn collect_items(&mut self, input: &str) -> Vec<ItemsEvent> {
@@ -355,6 +426,7 @@ impl PickerView {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.frame.items_pending = false;
+                self.frame.results_valid = false;
                 self.frame.pending_action = None;
                 self.frame.pending_selection = 0;
                 events.push(ItemsEvent {
@@ -380,7 +452,12 @@ impl PickerView {
                 return events;
             }
         };
-        if response.view != self.frame.view || response.input != input {
+        if response.view != self.frame.view
+            || response.input != input
+            || response.generation != self.request_generation
+            || response.binding_raw != self.requested_binding_raw
+            || response.state_revision != self.requested_state_revision
+        {
             self.frame.items_pending = false;
             self.schedule_retry();
             return events;
@@ -392,8 +469,10 @@ impl PickerView {
                 let errors = result.errors;
                 self.frame.items_pending = false;
                 self.frame.query = response.query;
+                self.feed_contexts = result.contexts;
                 self.frame.items = result.items;
                 self.frame.results_input = response.input;
+                self.frame.results_valid = true;
                 self.frame.selected = self
                     .frame
                     .selected
@@ -406,8 +485,10 @@ impl PickerView {
             Err(error) => {
                 self.frame.items_pending = false;
                 self.frame.query = response.query;
+                self.feed_contexts.clear();
                 self.frame.items.clear();
                 self.frame.results_input = response.input;
+                self.frame.results_valid = true;
                 self.frame.selected = 0;
                 self.frame.pending_selection = 0;
                 self.frame.pending_action = None;
@@ -428,21 +509,32 @@ impl PickerView {
     fn open_command_view(&self, host: &EngineHost<'_>) -> Result<ViewEffect> {
         let command_view_ref = host.config.command_view.clone();
         host.config.command_view()?;
-        let parent_item = self.frame.items.get(self.frame.selected).cloned();
-        let command_owner = parent_item.as_ref().map(|item| item.source_view.clone());
-        let owner_state = command_owner
-            .as_deref()
-            .and_then(|owner| self.source_states.get(owner))
-            .unwrap_or(host.state)
-            .clone();
-        let context = serde_json::json!({
-            "command_owner": command_owner,
-            "parent_item": parent_item,
+        let parent_item = self.frame.items.get(self.frame.selected);
+        let owner = parent_item
+            .and_then(|item| self.feed_contexts.get(&item.feed_id))
+            .filter(|context| context.owner_view != self.frame.view)
+            .map(|context| CommandPickerOwnerContext {
+                view_ref: context.owner_view.clone(),
+                state: context.state.clone(),
+                binding_raw: context.binding_raw.clone(),
+            });
+        let parent_item = parent_item.map(|item| CommandPickerItem {
+            prefix: item.prefix.clone(),
+            text: item.text.clone(),
+            value: item.value.clone(),
+            metadata: item.metadata.clone(),
+            source_view: item.source_view.clone(),
         });
+        let context = CommandPickerContext {
+            page_view: self.frame.view.clone(),
+            page_state: host.state.clone(),
+            page_binding_raw: self.frame.query.clone(),
+            page_runtime: host.runtime.snapshot().clone(),
+            owner,
+            parent_item,
+        };
         Ok(ViewEffect::Navigate {
-            request: NavigationRequest::new(command_view_ref, "")
-                .with_context(context)
-                .with_owner_state(owner_state),
+            request: NavigationRequest::new(command_view_ref, "").with_command_picker(context),
             mode: NavigationMode::Push,
         })
     }
@@ -459,6 +551,7 @@ impl PickerView {
             self.request_current(host)?;
             return Ok(None);
         }
+        self.publish_runtime(host.config, host.runtime)?;
         self.open_command_view(host).map(Some)
     }
 
@@ -514,12 +607,14 @@ impl PickerView {
                     },
                 }))
             }
-            CommandAction::Complete { invocation, state } => Ok(self.complete_selection(
-                &host.input.raw.clone(),
+            CommandAction::Complete {
                 invocation,
                 state,
-                host.runtime.snapshot().clone(),
-            )),
+                binding_raw,
+            } => {
+                let runtime = self.command_evaluation_runtime(host.runtime.snapshot());
+                Ok(self.complete_selection(invocation, state, binding_raw, runtime))
+            }
             CommandAction::Execute {
                 invocation,
                 prepared,
@@ -630,30 +725,32 @@ impl PickerView {
 
     fn complete_selection(
         &mut self,
-        input: &str,
         invocation: CommandInvocation,
         state: crate::state::StateInstance,
+        binding_raw: String,
         runtime: serde_json::Value,
     ) -> Option<ViewEffect> {
-        let item = self
-            .frame
-            .items
-            .get(self.frame.selected)
-            .map(|item| ViewOutputItem {
-                text: item.text.clone(),
-                value: item.value.clone(),
-                metadata: item.metadata.clone(),
-                source_view: item.source_view.clone(),
-            });
-        if item.is_some() || !input.is_empty() {
+        let selected = if self.command_view_active() {
+            self.command_parent_item()
+        } else {
+            self.frame.items.get(self.frame.selected)
+        };
+        let item = selected.map(|item| ViewOutputItem {
+            text: item.text.clone(),
+            value: item.value.clone(),
+            metadata: item.metadata.clone(),
+            source_view: item.source_view.clone(),
+        });
+        if item.is_some() || !binding_raw.is_empty() {
             return Some(ViewEffect::Complete(CompletionRequest {
                 source_view: invocation.source_view,
                 command_id: invocation.id,
                 state,
+                binding_raw: binding_raw.clone(),
                 runtime,
                 output: ViewOutput::Selected {
                     item,
-                    input: input.to_string(),
+                    input: binding_raw,
                 },
             }));
         }
@@ -703,16 +800,14 @@ impl ViewInstance for PickerView {
         self.frame.items_pending = false;
         self.frame.pending_action = None;
         self.frame.pending_selection = 0;
-        if self.frame.results_input != input {
+        if !self.results_current(&input) {
             self.request_current(host)?;
         }
         Ok(())
     }
 
     fn input_committed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
-        self.frame.input_pending = true;
-        self.frame.pending_action = None;
-        self.frame.pending_selection = 0;
+        self.invalidate_items_for_committed_input();
         Ok(())
     }
 
@@ -826,13 +921,13 @@ impl ViewInstance for PickerView {
             }
             Some(super::keymap::PickerAction::TogglePreview)
                 if self.resolve_command(host.config, key).is_some()
-                    && self.current().command_owner.is_none() =>
+                    && !self.command_view_active() =>
             {
                 LauncherAction::Activate
             }
             Some(super::keymap::PickerAction::TogglePreview) => return None,
             None if self.resolve_command(host.config, key).is_some()
-                && self.current().command_owner.is_none() =>
+                && !self.command_view_active() =>
             {
                 LauncherAction::Activate
             }
@@ -910,7 +1005,7 @@ impl ViewInstance for PickerView {
             .as_deref()
             .map(crate::chrome::ChromePresentation::with_input_prefix)
             .unwrap_or_default();
-        if self.frame.command_owner.is_none()
+        if !self.command_view_active()
             && self.frame.view != host.config.command_view
             && let Some(end) = self
                 .router
@@ -1004,7 +1099,10 @@ mod tests {
             "picker-items".to_string(),
             |_, _, _| ItemsResponse {
                 view: "core:default".to_string(),
+                generation: 0,
                 input: String::new(),
+                binding_raw: String::new(),
+                state_revision: 0,
                 query: String::new(),
                 result: Err("items provider failed".to_string()),
             },
@@ -1023,6 +1121,123 @@ mod tests {
         assert_eq!(events[0].failure.as_deref(), Some("items provider failed"));
         assert!(events[0].pending_action.is_none());
         assert!(picker.frame.pending_action.is_none());
+    }
+
+    #[test]
+    fn state_identity_advances_generation_when_view_and_raw_input_match() {
+        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let runtime = RuntimeStore::new();
+        let tasks = TaskScheduler::new(runtime.handle());
+        let mut picker = PickerView::new(
+            "core:default",
+            tasks,
+            Arc::clone(&config),
+            false,
+            PickerKeymap::from_values(None, None).unwrap(),
+            PickerOptions {
+                show_prefix: false,
+                input_prefix: None,
+                preview: None,
+            },
+        );
+        let mut first = config.instantiate_state("core:default").unwrap();
+        let mut second = config.instantiate_state("core:default").unwrap();
+        config.update_query_input(&mut first, "first").unwrap();
+        config.update_query_input(&mut second, "second").unwrap();
+        assert_eq!(first.revision(), second.revision());
+
+        picker.request_items("core:default", "same", "same", first);
+        let first_generation = picker.request_generation;
+        picker.request_items("core:default", "same", "same", second);
+
+        assert_eq!(picker.request_generation, first_generation + 1);
+    }
+
+    #[test]
+    fn input_round_trip_waits_for_ready_and_requests_the_latest_snapshot() {
+        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let mut runtime = RuntimeStore::new();
+        runtime.replace(serde_json::json!({
+            "view": {"current": {"ref": "core:default"}},
+            "session": {"input": {"raw": "A", "params": "A"}}
+        }));
+        let tasks = TaskScheduler::new(runtime.handle());
+        let mut picker = PickerView::new(
+            "core:default",
+            tasks,
+            Arc::clone(&config),
+            false,
+            PickerKeymap::from_values(None, None).unwrap(),
+            PickerOptions {
+                show_prefix: false,
+                input_prefix: None,
+                preview: None,
+            },
+        );
+        let mut state = config.instantiate_state("core:default").unwrap();
+        config.update_query_input(&mut state, "A").unwrap();
+        picker.frame.results_input = "A".to_string();
+        picker.frame.results_valid = true;
+        picker.request_items("core:default", "A", "A", state.clone());
+        let first_generation = picker.request_generation;
+        let mut runtime_log = crate::runtime_log::RuntimeLog::disabled();
+        let mut active_error = None;
+        let mut active_error_deadline = None;
+
+        config.update_query_input(&mut state, "AB").unwrap();
+        let mut input = InputBuffer::new("AB");
+        {
+            let mut host = EngineHost {
+                config: &config,
+                input: &input,
+                state: &state,
+                runtime: &mut runtime,
+                runtime_log: &mut runtime_log,
+                active_error: &mut active_error,
+                active_error_deadline: &mut active_error_deadline,
+            };
+            picker.input_committed(&mut host).unwrap();
+        }
+
+        config.update_query_input(&mut state, "A").unwrap();
+        input = InputBuffer::new("A");
+        {
+            let mut host = EngineHost {
+                config: &config,
+                input: &input,
+                state: &state,
+                runtime: &mut runtime,
+                runtime_log: &mut runtime_log,
+                active_error: &mut active_error,
+                active_error_deadline: &mut active_error_deadline,
+            };
+            picker.input_committed(&mut host).unwrap();
+        }
+
+        assert_eq!(state.revision(), 3);
+        assert_eq!(picker.request_generation, first_generation);
+        assert!(picker.items_task.is_none());
+        assert!(picker.frame.input_pending);
+        assert!(!picker.frame.retry_requested);
+        assert!(!picker.frame.results_valid);
+
+        let effect = {
+            let mut host = EngineHost {
+                config: &config,
+                input: &input,
+                state: &state,
+                runtime: &mut runtime,
+                runtime_log: &mut runtime_log,
+                active_error: &mut active_error,
+                active_error_deadline: &mut active_error_deadline,
+            };
+            picker.input_ready(&mut host).unwrap()
+        };
+
+        assert!(matches!(effect, ViewEffect::Continue));
+        assert_eq!(picker.request_generation, first_generation + 1);
+        assert_eq!(picker.requested_state_revision, state.revision());
+        assert_eq!(picker.requested_page_state.as_ref(), Some(&state));
     }
 
     #[test]

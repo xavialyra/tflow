@@ -41,13 +41,38 @@ impl InputSeed {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandPickerItem {
+    pub(crate) prefix: String,
+    pub(crate) text: String,
+    pub(crate) value: Option<String>,
+    pub(crate) metadata: Value,
+    pub(crate) source_view: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandPickerOwnerContext {
+    pub(crate) view_ref: String,
+    pub(crate) state: StateInstance,
+    pub(crate) binding_raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandPickerContext {
+    pub(crate) page_view: String,
+    pub(crate) page_state: StateInstance,
+    pub(crate) page_binding_raw: String,
+    pub(crate) page_runtime: Value,
+    pub(crate) owner: Option<CommandPickerOwnerContext>,
+    pub(crate) parent_item: Option<CommandPickerItem>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
     pub(crate) query: Option<Value>,
     pub(crate) route_child: bool,
-    pub(crate) context: Value,
-    pub(crate) owner_state: Option<crate::state::StateInstance>,
+    pub(crate) command_picker: Option<Box<CommandPickerContext>>,
 }
 
 impl NavigationRequest {
@@ -57,8 +82,7 @@ impl NavigationRequest {
             input: Some(InputSeed::new(input)),
             query: None,
             route_child: false,
-            context: Value::Null,
-            owner_state: None,
+            command_picker: None,
         }
     }
 
@@ -68,8 +92,7 @@ impl NavigationRequest {
             input: None,
             query: None,
             route_child: false,
-            context: Value::Null,
-            owner_state: None,
+            command_picker: None,
         }
     }
 
@@ -84,8 +107,7 @@ impl NavigationRequest {
             input: Some(InputSeed::routed(raw, params, cursor)),
             query: None,
             route_child: true,
-            context: Value::Null,
-            owner_state: None,
+            command_picker: None,
         }
     }
 
@@ -95,13 +117,8 @@ impl NavigationRequest {
         self
     }
 
-    pub(crate) fn with_context(mut self, context: Value) -> Self {
-        self.context = context;
-        self
-    }
-
-    pub(crate) fn with_owner_state(mut self, state: crate::state::StateInstance) -> Self {
-        self.owner_state = Some(state);
+    pub(crate) fn with_command_picker(mut self, context: CommandPickerContext) -> Self {
+        self.command_picker = Some(Box::new(context));
         self
     }
 }
@@ -207,6 +224,7 @@ pub(crate) struct CompletionRequest {
     pub(crate) source_view: String,
     pub(crate) command_id: String,
     pub(crate) state: StateInstance,
+    pub(crate) binding_raw: String,
     pub(crate) runtime: Value,
     pub(crate) output: ViewOutput,
 }

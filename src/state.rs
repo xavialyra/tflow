@@ -363,6 +363,19 @@ impl StateRegistry {
         Ok(true)
     }
 
+    pub(crate) fn bind_feed_input(&self, state: &mut StateInstance, source: &str) -> Result<bool> {
+        if source.is_empty() {
+            return Ok(false);
+        }
+        if !self.implicit_plain(state) {
+            let schema = &self.schema_for(&state.view_ref, state)?.query;
+            if !schema.plain && schema.input_order.is_empty() {
+                bail!("non-empty feed binding cannot be parsed because query input_order is empty");
+            }
+        }
+        self.update_input(state, source)
+    }
+
     pub(crate) fn update_value(&self, state: &mut StateInstance, value: &Value) -> Result<bool> {
         if value.is_null() {
             return Ok(false);
@@ -431,8 +444,21 @@ impl StateRegistry {
             .into())
     }
 
-    pub(crate) fn has_plain_query(&self, state: &StateInstance) -> Result<bool> {
-        Ok(self.implicit_plain(state) || self.schema_for(&state.view_ref, state)?.query.plain)
+    pub(crate) fn validate_instance(&self, state: &StateInstance) -> Result<()> {
+        if self.implicit_plain(state) {
+            return Ok(());
+        }
+        let schema = &self.schema_for(&state.view_ref, state)?.query;
+        if schema.plain {
+            return Ok(());
+        }
+        validate_required(schema, &state.values)?;
+        for (name, field) in &schema.fields {
+            field
+                .validate(state.values.get(name).unwrap_or(&field.default))
+                .with_context(|| format!("invalid query parameter {:?}", name))?;
+        }
+        Ok(())
     }
 
     fn implicit_plain(&self, state: &StateInstance) -> bool {
@@ -471,18 +497,6 @@ impl StateInstance {
 
     pub(crate) fn view_ref(&self) -> &str {
         &self.view_ref
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub(crate) fn empty(view_ref: impl Into<String>) -> Self {
-        Self {
-            view_ref: view_ref.into(),
-            values: BTreeMap::new(),
-            revision: 0,
-        }
     }
 }
 
@@ -685,5 +699,42 @@ mod tests {
         let mut state = registry.instantiate("core:default").unwrap();
         registry.update_input(&mut state, "needle").unwrap();
         assert_eq!(registry.query_value(&state).unwrap(), "needle");
+    }
+
+    #[test]
+    fn instance_validation_checks_required_fields_outside_input_order() {
+        let registry = StateRegistry::compile(&serde_json::json!({
+            "plugins": {"apps": {"views": {"default": {"query": {
+                "type": "object",
+                "input_order": [],
+                "token": {"type": "string"}
+            }}}}}
+        }))
+        .unwrap();
+        let state = registry.instantiate("apps:default").unwrap();
+        let error = registry
+            .validate_instance(&state)
+            .expect_err("missing required field must be rejected");
+        assert!(error.to_string().contains("--token is required"));
+    }
+
+    #[test]
+    fn feed_binding_rejects_nonempty_input_without_ordered_fields() {
+        let registry = StateRegistry::compile(&serde_json::json!({
+            "plugins": {"apps": {"views": {"default": {"query": {
+                "type": "object",
+                "input_order": [],
+                "token": {"type": "string", "default": "fixed"}
+            }}}}}
+        }))
+        .unwrap();
+        let mut state = registry.instantiate("apps:default").unwrap();
+
+        let error = registry
+            .bind_feed_input(&mut state, "needle")
+            .expect_err("non-empty binding needs an ordered query field");
+
+        assert!(error.to_string().contains("input_order is empty"));
+        assert_eq!(registry.query_value(&state).unwrap()["token"], "fixed");
     }
 }

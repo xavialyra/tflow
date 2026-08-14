@@ -83,7 +83,7 @@ The TUI input controller uses `input_order`, so the same query can be edited as 
 
 When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. A `complete` command may explicitly declare a result handler and a JSON `params` object. After the session ends and the terminal is restored, the launcher evaluates that object against the completion-time View state and runtime snapshot, writes it to the handler's stdin, and uses the handler's raw stdout, stderr, and exit status as the invocation result.
 
-Each stack entry owns an independent committed query instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Aggregate pickers create independent source View query scopes for their item providers. Scripts receive the typed query only when an expression explicitly passes `this:query`.
+Each stack entry owns an independent committed query instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Feeds pickers evaluate each owner view with an ephemeral query scope derived from the page's committed params binding. Scripts receive the typed query only when an expression explicitly passes `this:query`.
 
 ## dmenu plugin
 
@@ -162,8 +162,8 @@ handler = "scripts/result.sh"
 [views.default.commands.accept.payload.params]
 options = "{{ this:query }}"
 stdin = "{{ input:stdin }}"
-selected = "{{ runtime:view.active.selected_item }}"
-typed = "{{ runtime:view.active.input }}"
+selected = "{{ runtime:view.current.selected_item }}"
+typed = "{{ runtime:view.current.input }}"
 ```
 
 ## Views and plugins
@@ -191,14 +191,14 @@ items = '{{ script("scripts/items.sh", this:query) }}'
 type = "capture"
 
 [views.result.engine.config]
-output = "{{ runtime:view.active.input }}"
+output = "{{ runtime:view.current.input }}"
 title = "Result"
 
 [views.shell.engine]
 type = "embedded"
 
 [views.shell.engine.config]
-command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
 title = "Shell"
 ```
 
@@ -297,19 +297,22 @@ default_view = "core:default"
 open_commands = ["ctrl+k"]
 ```
 
-The `core` plugin can aggregate picker views from several plugin packages:
+The `core` plugin can fan in picker views from several plugin packages as feeds:
 
 ```toml
 [views.default.engine]
 type = "picker"
 
-[views.default.engine.config]
-sources = ["sys:default", "apps:default"]
+[[views.default.engine.config.feeds]]
+view = "sys:default"
+
+[[views.default.engine.config.feeds]]
+view = "apps:default"
 ```
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
 
-A view with `sources` displays the results of those picker views. Aggregate views cannot define commands or items. A source view keeps its own `items` expression and remains the owner of the resulting item commands.
+A feeds picker merges the `items` of those owner views. It cannot define its own `items`. A feed is a stateless item provider: every refresh parses the page's committed params string through each owner's query schema, evaluates that owner once, and keeps one response-level state/binding snapshot for all items returned by that feed. Empty committed input stays empty as `this:raw_input` while the owner's typed `this:query` retains schema defaults. A non-empty binding requires at least one field in an object owner's `input_order`; otherwise that owner reports an error without evaluating its item provider. The page query may use any supported schema; the product contract is that its committed params string is independently parsed by every feed owner. Feed state is never installed as a persistent View instance, and its `state_revision` is only evaluation metadata for that refresh, not a persistent revision across refreshes. Any picker may declare `feeds`, not only the home view.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -329,25 +332,25 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:default terminal` and `app terminal` targets the same View when `apps:default` owns `alias = "app"`. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) for the selected item's source view; selecting a command replaces that temporary command view with its navigation target.
+Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:default terminal` and `app terminal` targets the same View when `apps:default` owns `alias = "app"`. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) with the union of the selected feed owner's commands and the parent page commands; owner commands win key conflicts. With no selected item, page commands remain available. The temporary picker retains typed page/owner snapshots and the original parent item, and navigation replaces that picker with its target.
 
 ## Expressions
 
 Expressions use `{{ ... }}` and are evaluated by the engine that consumes them:
 
 ```toml
-items = "{{ runtime:view.active.items }}"
-commands = "{{ runtime:view.active.command }}"
-label = "query: {{ runtime:view.active.query }}"
+items = "{{ runtime:view.current.items }}"
+commands = "{{ runtime:view.current.command }}"
+label = "query: {{ runtime:view.current.query }}"
 ```
 
 References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's committed query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a typed object for `query.type = "object"`; `config:` never receives a query overlay.
 
 ```toml
-items = '{{ path(runtime:view.active, "$.items") }}'
+items = '{{ path(runtime:view.current, "$.items") }}'
 request = '{{ script("scripts/query.sh", {query = this:query, input = input:$}) }}'
 selected = '{{ path(script("scripts/query.sh"), "$.items") }}'
-handler = "{{ config:commands.script }} --query {{ runtime:view.active.query }}"
+handler = "{{ config:commands.script }} --query {{ runtime:view.current.query }}"
 ```
 
 The built-in expression methods are `path` and `script`. `path(value, jsonpath)` applies a JSONPath expression to any JSON value; no match returns `null`, one match keeps its value type, and multiple matches return an array. `script(target, input, max_output_bytes)` runs a plugin-relative shell script, writes the optional JSON input to stdin, and parses the output as JSON. The script owns the input shape; the expression only chooses which JSON value to pass. Script output defaults to a 1 MiB limit; trusted data-source plugins may use the optional third argument to raise it as high as 64 MiB. Script input/output remain bounded and execution has a timeout. A complete placeholder keeps the returned JSON type. A mixed template must produce a string; arrays and objects cannot be implicitly interpolated into it. Methods are invoked only when the engine requests evaluation, so dynamic results can depend on the current runtime state and engine lifecycle.
@@ -381,7 +384,7 @@ handler = "scripts/result.sh"
 
 [views.main.commands.accept.payload.params]
 query = "{{ this:query }}"
-selected = "{{ runtime:view.active.selected_item }}"
+selected = "{{ runtime:view.current.selected_item }}"
 stdin = "{{ input:stdin }}"
 ```
 
@@ -396,20 +399,25 @@ label = "Inspect"
 type = "navigate"
 
 [views.main.commands.inspect.payload]
-target = "{{ runtime:view.active.selected_item.metadata.target }}"
-query = "{{ runtime:view.active.selected_item.value }}"
+target = "{{ runtime:view.current.selected_item.metadata.target }}"
+query = "{{ runtime:view.current.selected_item.value }}"
 ```
 
 The target owns its behavior. A capture view evaluates `output` relative to its plugin and requires a string result. An embedded view evaluates `command` to a non-empty argv array, so it can host arbitrary PTY processes:
 
 ```toml
-[views.shell]
+[views.shell.engine]
 type = "embedded"
-command = ["sh", "-lc", "{{ runtime:view.active.input }}"]
 
-[views.btop]
+[views.shell.engine.config]
+command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+
+[views.btop.engine]
 type = "embedded"
+
+[views.btop.engine.config]
 command = ["btop"]
+
 title = "System monitor"
 ```
 
@@ -458,12 +466,12 @@ text = { type = "string", default = "" }
 `script(target, input, max_output_bytes)` receives the optional input as JSON on stdin. The expression chooses the input value; the script owns its input shape, and the optional output limit uses bytes. For a structured request:
 
 ```toml
-items = '{{ script("scripts/items.sh", runtime:view.active.request) }}'
+items = '{{ script("scripts/items.sh", this:$) }}'
 ```
 
-The picker runtime exposes stack-top metadata under `runtime:view.active`, including the route-aware `input`, `query`, and `raw_input` strings. Session input is also published under `runtime:session.input`. `this:query` belongs to the expression-owning View instance, so an implicit string query is scoped to each source while a declared object query retains its typed parameters. A source script can receive that query value, selected runtime metadata, stdin artifacts, or any explicitly constructed JSON value. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
+The picker runtime exposes stack-top UI metadata under `runtime:view.current`, including `input`, `query`, `raw_input`, `selected_item`, and `items`. Session input is also published under `runtime:session.input`. Public picker items contain `prefix`, `text`, `value`, `metadata`, and one provenance field, `owner_view`; internal feed IDs, state, binding, and query snapshots are never exposed. `this` is the expression-owning definition context (`ref`, `query`, `input`, `raw_input`, `state_revision`) and does not include selection. Feed owner scripts typically take `this:query` or `this:$`. Selection belongs in complete/navigate params as `runtime:view.current.selected_item`. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
 
-A root picker view evaluates the `items` expression of each view in `engine.config.sources`. Each result shows its source view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
+A feeds picker evaluates the `items` expression of each owner in `engine.config.feeds`. Each result shows its owner view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
 
 ```text
 Terminal       app
@@ -471,28 +479,23 @@ System monitor sys
 Package details apps:detail
 ```
 
-Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Both aliases and canonical `plugin:view` references become routes only after a whitespace separator, so `app` and `core:messages` alone remain ordinary query text. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace at the end of its selector tag, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Source commands remain owned by the source view.
+Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Both aliases and canonical `plugin:view` references become routes only after a whitespace separator, so `app` and `core:messages` alone remain ordinary query text. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace at the end of its selector tag, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Feed owner commands remain owned by the owner view.
 
 ## Command environment
 
 Command scripts receive:
 
-- `LAUNCHER_ITEM`;
-- `LAUNCHER_VALUE`;
-- `LAUNCHER_METADATA`;
-- `LAUNCHER_PLUGIN` (the plugin directory ID);
-- `LAUNCHER_PLUGIN_DIR` when the command belongs to a file-backed plugin;
-- `LAUNCHER_VIEW`;
-- `LAUNCHER_VIEW_REF`;
-- `LAUNCHER_COMMAND`;
-- `LAUNCHER_QUERY`;
-- `LAUNCHER_LOG_FILE`.
+- `LAUNCHER_ITEM`, `LAUNCHER_VALUE`, and `LAUNCHER_METADATA` from the selected item;
+- `LAUNCHER_ITEM_VIEW_REF` and `LAUNCHER_ITEM_PLUGIN` from the selected item's feed owner (empty when no item is selected);
+- `LAUNCHER_PLUGIN`, `LAUNCHER_PLUGIN_DIR`, and `LAUNCHER_VIEW_REF` from the command owner;
+- `LAUNCHER_VIEW` and `LAUNCHER_QUERY` from the parent page and its committed binding;
+- `LAUNCHER_COMMAND` and `LAUNCHER_LOG_FILE`.
 
-Command `shell` selects the command interpreter. When omitted, the source view's `run_shell` is used, then `sh`. File-backed local commands run with the plugin directory as their working directory, so relative paths and `LAUNCHER_PLUGIN_DIR` are stable.
+Command `shell` selects the command interpreter. When omitted, the command owner's `run_shell` is used, then `sh`. File-backed commands run in the command owner's plugin directory. Direct shortcuts and Ctrl-K use the same snapshots: owner commands evaluate against the selected feed context, while page commands evaluate against page state. Navigate and complete payloads see the same committed binding through `this:raw_input`; Ctrl-K complete returns the original parent item, not the command-list row.
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
 
-Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Source prefixes are hidden by default; aggregate Views may set `engine.config.show_prefix = true` to identify each source. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Owner prefixes are hidden by default; feeds pickers may set `engine.config.show_prefix = true` to identify each owner. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 
@@ -529,13 +532,13 @@ The default bindings are:
 - `Ctrl-C` / `Ctrl-D`: quit;
 - `Ctrl-U`: clear the query;
 - `Ctrl-W`: delete the previous word;
-- `Ctrl-K`: open the command picker view for the selected item's source view.
+- `Ctrl-K`: open the owner-priority union of selected feed owner and parent page commands.
 - `Ctrl-P`: show or hide the preview in a picker View that configures one.
 
 View completion searches every configured View by alias, canonical reference, and plugin name. `Enter` accepts the highlighted candidate and navigates to its canonical reference. The completion list uses the same fixed marker column, `▌` selection marker, bold selected text, and scrollbar gutter as picker items.
 
 Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The input line keeps the cursor visible and scrolls long input around it without a prompt marker; non-focus views display their canonical view prefix and muted query text. The divider is a plain horizontal rule. The footer follows the content directly and uses a Rose Pine Dawn surface background inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
-When additional view commands do not fit, `Ctrl-K commands` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view.
+When additional commands do not fit, `Ctrl-K` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view. Commands with the same normalized key are displayed and executed using the same owner-first, page-fallback rule.
 
-Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. Older results are discarded when a newer view/query request exists. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
+Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. A request generation plus complete view/raw binding/state identity prevents results from an older snapshot from being accepted, even when the visible input text is unchanged. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.

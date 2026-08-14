@@ -80,7 +80,7 @@ fn completion_handler_receives_explicit_params_and_controls_raw_output_and_statu
         [views.default.commands.accept.payload.params]
         options = "{{ this:query }}"
         stdin = "{{ input:stdin }}"
-        selected = "{{ runtime:view.active.selected_item }}"
+        selected = "{{ runtime:view.current.selected_item }}"
         "#,
     )
     .unwrap();
@@ -160,7 +160,7 @@ fn completion_handler_belongs_to_the_completing_command() {
         handler = "scripts/result.sh"
 
         [views.child.commands.accept.payload.params]
-        selected = "{{ runtime:view.active.selected_item }}"
+        selected = "{{ runtime:view.current.selected_item }}"
         "#,
     )
     .unwrap();

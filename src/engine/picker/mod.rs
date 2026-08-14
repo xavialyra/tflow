@@ -53,6 +53,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["defaults", "picker", "bindings"],
         )?;
@@ -62,6 +63,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["bindings"],
         )?;
@@ -71,6 +73,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["prompt"],
         )?;
@@ -80,6 +83,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["show_prefix"],
         )?;
@@ -89,6 +93,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["layout"],
         )?;
@@ -98,6 +103,7 @@ impl Engine for PickerEngine {
                 runtime: &runtime,
                 input: &context.config.input_value,
                 cancellation: None,
+                binding_raw: None,
             },
             &["preview"],
         )?;
@@ -109,21 +115,12 @@ impl Engine for PickerEngine {
                 .map(|prompt| sanitize_terminal_text(&prompt)),
             preview: self::preview::parse(layout, preview)?,
         };
-        let command_owner = context
+        let command_context = context
             .request
-            .context
-            .get("command_owner")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let parent_item = context
-            .request
-            .context
-            .get("parent_item")
-            .cloned()
-            .filter(|value| !value.is_null())
-            .map(serde_json::from_value)
-            .transpose()?;
-        let mut picker = PickerView::new(
+            .command_picker
+            .clone()
+            .map(|context| *context);
+        let picker = PickerView::new(
             &context.request.view_ref,
             context.tasks.clone(),
             Arc::new(context.config.clone()),
@@ -131,14 +128,7 @@ impl Engine for PickerEngine {
             keymap,
             options,
         )
-        .with_context(
-            context.log_file.map(PathBuf::from),
-            command_owner.clone(),
-            parent_item,
-        );
-        if let (Some(owner), Some(state)) = (command_owner, context.request.owner_state.clone()) {
-            picker.source_states.insert(owner, state);
-        }
+        .with_context(context.log_file.map(PathBuf::from), command_context);
         Ok(Box::new(picker))
     }
 }

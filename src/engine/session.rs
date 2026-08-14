@@ -1050,12 +1050,12 @@ fn publish_active_input(
     state: &StateInstance,
 ) -> Result<()> {
     runtime.set_many([
-        ("/view/active/state_revision", json!(state.revision())),
-        ("/view/active/input", json!(input.params)),
-        ("/view/active/raw_input", json!(input.raw)),
-        ("/view/active/query", json!(input.params)),
+        ("/view/current/state_revision", json!(state.revision())),
+        ("/view/current/input", json!(input.params)),
+        ("/view/current/raw_input", json!(input.raw)),
+        ("/view/current/query", json!(input.params)),
         (
-            "/view/active/request",
+            "/view/current/request",
             json!({
                 "input": input.params,
                 "raw_input": input.raw,
@@ -1080,7 +1080,7 @@ fn publish_location(
         (
             "/view",
             json!({
-                "active": {
+                "current": {
                     "ref": view_ref,
                     "state_revision": state.revision(),
                     "input": input.params,
@@ -1304,7 +1304,7 @@ mod tests {
                 .unwrap(),
             "2"
         );
-        assert_eq!(session.runtime.snapshot()["view"]["active"]["input"], "2");
+        assert_eq!(session.runtime.snapshot()["view"]["current"]["input"], "2");
 
         session.views.last_mut().unwrap().input.raw = "bad".to_string();
         session.views.last_mut().unwrap().input.cursor = 3;
@@ -1316,9 +1316,9 @@ mod tests {
         assert!(entry.input.rejected);
         assert_eq!(entry.state.revision(), committed_revision);
         assert_eq!(config.render_query_input(&entry.state).unwrap(), "2");
-        assert_eq!(session.runtime.snapshot()["view"]["active"]["input"], "2");
+        assert_eq!(session.runtime.snapshot()["view"]["current"]["input"], "2");
         assert_eq!(
-            session.runtime.snapshot()["view"]["active"]["raw_input"],
+            session.runtime.snapshot()["view"]["current"]["raw_input"],
             "2"
         );
 
@@ -1342,6 +1342,6 @@ mod tests {
             runtime.snapshot()["invocation_marker"]["items"],
             json!([1, 2])
         );
-        assert_eq!(runtime.snapshot()["view"]["active"]["query"], "query");
+        assert_eq!(runtime.snapshot()["view"]["current"]["query"], "query");
     }
 }
