@@ -245,6 +245,8 @@ size = 5
 
 Supported preview block types are `image`, `text`, and `separator`. A separator renders a horizontal line, needs no `source`, and occupies one row by default; use `size` to reserve more rows. An image path is resolved relative to the selected item's source plugin; image decoding runs in a cancellable background task. When the terminal is too small to satisfy both pane minimums, the preview hides and the picker list uses the full content area.
 
+Configuration fields accept native TOML values directly, including arrays and tables. Use `{{ ... }}` only when a value must be computed from a reference or method call; consumers receive the evaluated JSON value without distinguishing static configuration from expressions. For example, a static picker can declare `items = [{ label = "Open shell" }]`, while a dynamic picker can declare `items = '{{ script("scripts/items.sh") }}'`.
+
 Expression syntax is validated when configuration is loaded and expressions are evaluated only when the consuming engine asks for a value. `config:path` and `runtime:path` are reference expressions; `path(...)` and `script(...)` are expression methods resolved by the consuming engine. A complete expression preserves its value type, while a mixed expression is a string template. Focus and lifecycle behavior belong to the engine and are not configurable View fields.
 
 `exit` is not a view. A local command with `exit = true` returns an exit event after its script finishes.

@@ -197,7 +197,7 @@ fn append_items(
 ) {
     let Some(items) = value.as_array() else {
         result.errors.push(format!(
-            "{}: items expression must return a JSON array",
+            "{}: items must evaluate to a JSON array",
             source_ref
         ));
         return;
@@ -272,7 +272,7 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ runtime:view.current.items }}".to_string()),
+                        items: Some("{{ runtime:view.current.items }}".into()),
                         ..Default::default()
                     },
                 },
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn item_expressions_require_json_arrays() {
+    fn evaluated_items_require_json_arrays() {
         let mut config = test_config();
         config
             .views
@@ -377,7 +377,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ runtime:view.current.query }}".to_string());
+            .items = Some("{{ runtime:view.current.query }}".into());
         let result = load_items(
             &config,
             "core:default",
@@ -388,7 +388,7 @@ mod tests {
         )
         .unwrap();
         assert!(result.items.is_empty());
-        assert!(result.errors[0].contains("must return a JSON array"));
+        assert!(result.errors[0].contains("must evaluate to a JSON array"));
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"items.sh\", this:query) }}".to_string());
+            .items = Some("{{ script(\"items.sh\", this:query) }}".into());
         config.config_value = serde_json::json!({
             "plugins": {
                 "core": {
@@ -501,8 +501,7 @@ mod tests {
             .engine
             .config
             .items = Some(
-            "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}"
-                .to_string(),
+            "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}".into(),
         );
         config.config_value = serde_json::json!({
             "plugins": {
@@ -574,7 +573,7 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ script(\"items.sh\", this:$) }}".to_string()),
+                        items: Some("{{ script(\"items.sh\", this:$) }}".into()),
                         ..Default::default()
                     },
                 },
@@ -591,7 +590,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"invalid-items.sh\") }}".to_string());
+            .items = Some("{{ script(\"invalid-items.sh\") }}".into());
         config
             .views
             .get_mut("core:default")
@@ -678,7 +677,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ runtime:provider_should_not_run }}".to_string());
+            .items = Some("{{ runtime:provider_should_not_run }}".into());
         config.config_value = serde_json::json!({
             "plugins": {
                 "apps": {
@@ -725,7 +724,7 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ runtime:sys_items }}".to_string()),
+                        items: Some("{{ runtime:sys_items }}".into()),
                         ..Default::default()
                     },
                 },
@@ -791,7 +790,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"items.sh\", this:query) }}".to_string());
+            .items = Some("{{ script(\"items.sh\", this:query) }}".into());
         config.config_value = serde_json::json!({
             "plugins": {
                 "apps": {

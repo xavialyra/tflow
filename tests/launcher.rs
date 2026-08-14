@@ -67,6 +67,59 @@ fn loads_items_from_an_expression() {
 }
 
 #[test]
+fn loads_items_from_a_native_toml_array() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{ label = "Static item", value = "static-value" }]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = '''printf 'static-marker:%s\\n' "$LAUNCHER_VALUE"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write static items config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process
+        .master
+        .write_all(b"\r")
+        .expect("could not write launcher Enter key");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher Enter key");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("static-marker:static-value"),
+        "launcher output did not contain static marker: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).expect("could not remove static items config");
+}
+
+#[test]
 fn explicit_capture_view_receives_typed_query_state() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1016,7 +1069,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         record["metadata"]["message"]
             .as_str()
             .unwrap()
-            .contains("items expression must return a JSON array")
+            .contains("items must evaluate to a JSON array")
     );
 
     process

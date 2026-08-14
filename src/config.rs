@@ -84,7 +84,7 @@ pub struct EngineOptions {
     #[serde(default)]
     pub feeds: Vec<FeedSpec>,
     #[serde(default)]
-    pub items: Option<String>,
+    pub items: Option<toml::Value>,
     #[serde(flatten)]
     pub fields: toml::Table,
 }
@@ -113,8 +113,8 @@ impl View {
     pub(crate) fn selected_engine_config(&self) -> &toml::Table {
         &self.engine.config.fields
     }
-    pub(crate) fn selected_items(&self) -> Option<&str> {
-        self.engine.config.items.as_deref()
+    pub(crate) fn selected_items(&self) -> Option<&toml::Value> {
+        self.engine.config.items.as_ref()
     }
     pub(crate) fn selected_feeds(&self) -> &[FeedSpec] {
         &self.engine.config.feeds
@@ -395,8 +395,9 @@ impl Config {
                 );
             }
             if let Some(items) = items {
-                Template::parse(items)
-                    .with_context(|| format!("view {:?} has invalid items expression", view_ref))?;
+                validate_templates(items).with_context(|| {
+                    format!("view {:?} has invalid items configuration", view_ref)
+                })?;
             }
             if let Some(shell) = &view.run_shell {
                 validate_script(shell, "run_shell", view_ref)?;
@@ -537,7 +538,7 @@ impl Config {
                         })?;
                         let mut values = serde_json::Map::new();
                         if let Some(items) = view.selected_items() {
-                            values.insert("items".to_string(), Value::String(items.to_string()));
+                            values.insert("items".to_string(), toml_to_json(items)?);
                         }
                         for (name, value) in view.selected_engine_config() {
                             values.insert(name.clone(), toml_to_json(value)?);
@@ -1423,7 +1424,12 @@ mod tests {
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
-            config.views["filetest:main"].engine.config.items.as_deref(),
+            config.views["filetest:main"]
+                .engine
+                .config
+                .items
+                .as_ref()
+                .and_then(toml::Value::as_str),
             Some("{{ script(\"scripts/items.sh\") }}")
         );
         let CommandAction::Run { payload } = &config.views["filetest:main"].commands["run"].action
@@ -1496,7 +1502,12 @@ mod tests {
         let raw: RawConfig = base.try_into().unwrap();
         let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
         assert_eq!(
-            config.views["base:main"].engine.config.items.as_deref(),
+            config.views["base:main"]
+                .engine
+                .config
+                .items
+                .as_ref()
+                .and_then(toml::Value::as_str),
             Some("{{ config:items }}")
         );
     }

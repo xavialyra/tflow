@@ -9,7 +9,7 @@ alias = "shell"
 type = "picker"
 
 [views.menu.engine.config]
-items = '{{ script("scripts/items.sh", this:query) }}'
+items = [{ label = "Open shell" }]
 
 [views.menu.commands.open]
 key = "enter"
