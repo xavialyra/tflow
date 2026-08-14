@@ -68,9 +68,9 @@ pub fn run_dmenu(extra_args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
 }
 
 pub fn run_dmenu_steps(extra_args: &[&str], input: &[u8], key_steps: &[&[u8]]) -> RunResult {
-    let config = project_config();
-    let config = config.to_str().expect("project config path is not UTF-8");
-    let mut args = vec!["--config", config, "dmenu:default"];
+    let config = fixture_config();
+    let config = config.to_str().expect("fixture config path is not UTF-8");
+    let mut args = vec!["--config", config, "dmenu:main"];
     args.extend_from_slice(extra_args);
     run_invocation_steps(&args, input, key_steps)
 }
@@ -517,8 +517,8 @@ pub fn binary_path() -> PathBuf {
         .expect("CARGO_BIN_EXE_tui-launcher is not set")
 }
 
-pub fn project_config() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/config.toml")
+pub fn fixture_config() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml")
 }
 
 pub fn temporary_root() -> PathBuf {

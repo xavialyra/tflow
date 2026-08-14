@@ -2,19 +2,19 @@
 api = 1
 name = "applications"
 
-[views.default]
+[views.main]
 alias = "app"
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
-[views.default.commands.open]
+[views.main.commands.open]
 key = "enter"
 label = "Open"
 type = "run"
 
-[views.default.commands.open.payload]
+[views.main.commands.open.payload]
 handler = { file = "scripts/open.sh" }

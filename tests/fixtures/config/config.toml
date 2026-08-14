@@ -1,3 +1,4 @@
+# Development and integration-test fixture; not a distributed default configuration.
 default_view = "core:default"
 command_view = "core:command"
 

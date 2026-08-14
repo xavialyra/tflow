@@ -1071,13 +1071,12 @@ mod tests {
     use super::*;
     use crate::engine::RuntimeStore;
     use crate::router::ViewCandidate;
-    use std::path::Path;
     use std::thread;
     use std::time::Duration;
 
     #[test]
     fn failed_item_refresh_discards_pending_actions() {
-        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let config = Arc::new(crate::config::load_test_fixture().unwrap());
         let runtime = RuntimeStore::new();
         let tasks = TaskScheduler::new(runtime.handle());
         let mut picker = PickerView::new(
@@ -1125,7 +1124,7 @@ mod tests {
 
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {
-        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let config = Arc::new(crate::config::load_test_fixture().unwrap());
         let runtime = RuntimeStore::new();
         let tasks = TaskScheduler::new(runtime.handle());
         let mut picker = PickerView::new(
@@ -1155,7 +1154,7 @@ mod tests {
 
     #[test]
     fn input_round_trip_waits_for_ready_and_requests_the_latest_snapshot() {
-        let config = Arc::new(Config::load(Path::new("config/config.toml")).unwrap());
+        let config = Arc::new(crate::config::load_test_fixture().unwrap());
         let mut runtime = RuntimeStore::new();
         runtime.replace(serde_json::json!({
             "view": {"current": {"ref": "core:default"}},

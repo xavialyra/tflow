@@ -2,19 +2,19 @@
 api = 1
 name = "dmenu"
 
-[views.default]
+[views.main]
 alias = "dmenu"
 cancel_exit_code = 1
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
 prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
 
-[views.default.query]
+[views.main.query]
 type = "object"
 input_order = ["initial"]
 prompt = { type = "string", nullable = true }
@@ -26,21 +26,21 @@ accept-nth = { type = "string", nullable = true }
 match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
-[views.default.engine.config.bindings]
+[views.main.engine.config.bindings]
 open_commands = []
 open_completion = []
 back = []
 exit = ["escape", "ctrl+c", "ctrl+d"]
 
-[views.default.commands.accept]
+[views.main.commands.accept]
 key = "enter"
 label = "Accept"
 type = "complete"
 
-[views.default.commands.accept.payload]
+[views.main.commands.accept.payload]
 handler = "scripts/result.sh"
 
-[views.default.commands.accept.payload.params]
+[views.main.commands.accept.payload.params]
 options = "{{ this:query }}"
 stdin = "{{ input:stdin }}"
 selected = "{{ runtime:view.current.selected_item }}"

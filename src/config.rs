@@ -655,6 +655,12 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn load_test_fixture() -> Result<Config> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml");
+    Config::load(&path)
+}
+
 fn package_id(view_ref: &str) -> &str {
     view_ref
         .split_once(':')

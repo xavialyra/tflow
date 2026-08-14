@@ -17,12 +17,12 @@ label = "Open shell"
 type = "navigate"
 
 [views.menu.commands.open.payload]
-target = "shell:default"
+target = "shell:main"
 query = "exec sh"
 
-[views.default.engine]
+[views.main.engine]
 type = "embedded"
 
-[views.default.engine.config]
+[views.main.engine.config]
 command = ["sh", "-lc", "{{ this:input }}"]
 title = "{{ this:ref }}"

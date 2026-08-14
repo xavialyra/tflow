@@ -2,7 +2,7 @@ mod support;
 
 use std::fmt::Write as _;
 use support::{
-    project_config, run_dmenu, run_dmenu_steps, run_tty_invocation_with_redirected_stdout,
+    fixture_config, run_dmenu, run_dmenu_steps, run_tty_invocation_with_redirected_stdout,
 };
 
 #[test]
@@ -15,11 +15,11 @@ fn accepts_a_selected_line_without_terminal_bytes_on_stdout() {
 
 #[test]
 fn tty_stdin_is_an_empty_candidate_source_for_free_text_input() {
-    let config = project_config();
+    let config = fixture_config();
     let config = config.to_str().unwrap();
 
     let result = run_tty_invocation_with_redirected_stdout(
-        &["--config", config, "dmenu:default"],
+        &["--config", config, "dmenu:main"],
         b"typed value\r",
     );
 

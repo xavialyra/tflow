@@ -31,7 +31,7 @@ The configuration path is selected in this order:
 3. `$XDG_CONFIG_HOME/tui-launcher/config.toml`;
 4. `$HOME/.config/tui-launcher/config.toml`.
 
-The repository includes `mise.toml` for project-local development. It pins Rust 1.97.1 with the default profile, adds the debug and release target directories to `PATH`, and points `TUI_LAUNCHER_CONFIG` at the checked-in project configuration:
+The repository includes `mise.toml` for project-local development. It pins Rust 1.97.1 with the default profile, adds the debug and release target directories to `PATH`, and points `TUI_LAUNCHER_CONFIG` at `tests/fixtures/config/config.toml`. This configuration is a development and test fixture; it is not installed and is intentionally separate from any default plugin set distributed with the launcher later:
 
 ```bash
 mise install
@@ -57,13 +57,13 @@ Pass a canonical reference or unique alias to start any configured View directly
 ```bash
 tui-launcher core:messages
 tui-launcher core:default
-tui-launcher --config ./config/config.toml dmenu:default
+tui-launcher --config ./tests/fixtures/config/config.toml dmenu:main
 ```
 
 Global options must precede the View. Every argument after the View must use an explicit key declared by that View's fixed `query` table. CLI positional arguments, unknown keys, repeated keys, missing required states, and type mismatches are rejected before the terminal opens.
 
 ```toml
-[views.default.query]
+[views.main.query]
 type = "object"
 input_order = ["source", "target", "text"]
 source = { type = "string", nullable = true }
@@ -87,28 +87,28 @@ Each stack entry owns an independent committed query instance; push creates defa
 
 ## dmenu plugin
 
-The bundled `dmenu:default` View is an ordinary picker plus plugin scripts. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed query fields below `views.default.query`; its items script reads `this:query` and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
+The development fixture's `dmenu:main` View is an ordinary picker plus plugin scripts. It is a reference plugin used by integration tests, not a bundled default. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed query fields below `views.main.query`; its items script reads `this:query` and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
 
 ```bash
 printf '%s\n' 'Option 1' 'Option 2' 'Option 3' |
-  tui-launcher dmenu:default
+  tui-launcher dmenu:main
 
 printf '1\tFirst\n2\tSecond\n' |
-  tui-launcher dmenu:default --with-nth=2
+  tui-launcher dmenu:main --with-nth=2
 
 ps aux |
-  tui-launcher dmenu:default \
+  tui-launcher dmenu:main \
     --with-nth=2,11 \
     --nth-delimiter=whitespace
 
 # NUL-delimited records also use NUL-terminated output.
 printf 'one\0two\0three\0' |
-  tui-launcher dmenu:default --dmenu0
+  tui-launcher dmenu:main --dmenu0
 
-find . -name '*.rs' | tui-launcher dmenu:default --prompt="> "
+find . -name '*.rs' | tui-launcher dmenu:main --prompt="> "
 ```
 
-The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:default` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--prompt=TEXT`, `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
+The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:main` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--prompt=TEXT`, `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
 
 The View itself uses only generic configuration:
 
@@ -117,14 +117,14 @@ The View itself uses only generic configuration:
 api = 1
 name = "dmenu"
 
-[views.default]
+[views.main]
 alias = "dmenu"
 cancel_exit_code = 1
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '''{{ script("scripts/items.sh", {
   input = input:$,
   query = this:query
@@ -132,9 +132,9 @@ items = '''{{ script("scripts/items.sh", {
 prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
 
-[views.default.engine.config.bindings]
+[views.main.engine.config.bindings]
 
-[views.default.query]
+[views.main.query]
 type = "object"
 input_order = ["initial"]
 prompt = { type = "string", nullable = true }
@@ -151,15 +151,15 @@ open_completion = []
 back = []
 exit = ["escape", "ctrl+c", "ctrl+d"]
 
-[views.default.commands.accept]
+[views.main.commands.accept]
 key = "enter"
 label = "Accept"
 type = "complete"
 
-[views.default.commands.accept.payload]
+[views.main.commands.accept.payload]
 handler = "scripts/result.sh"
 
-[views.default.commands.accept.payload.params]
+[views.main.commands.accept.payload.params]
 options = "{{ this:query }}"
 stdin = "{{ input:stdin }}"
 selected = "{{ runtime:view.current.selected_item }}"
@@ -172,7 +172,7 @@ A plugin contains one or more views. The plugin directory name is its unique ID,
 
 ```text
 core:default
-apps:default
+apps:main
 apps:detail
 ```
 
@@ -202,7 +202,7 @@ command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
 title = "Shell"
 ```
 
-The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Picker image preview paths may be absolute, use `~` or `~/` for the current user's home directory, or be relative to the selected item's source plugin directory. Image previews use Kitty, Sixel, or iTerm2 when the active terminal reports support and otherwise render a Unicode half-block fallback. Navigation supplies a view path and may provide an input string; when it does, the target engine decides what that input means. For example, `shell:default ls` enters `shell:default` with `ls` as its input.
+The built-in engines are `picker`, `capture`, and `embedded`. Every configured path is a view: picker renders searchable items, capture renders a string result, and embedded hosts a PTY process. Picker image preview paths may be absolute, use `~` or `~/` for the current user's home directory, or be relative to the selected item's source plugin directory. Image previews use Kitty, Sixel, or iTerm2 when the active terminal reports support and otherwise render a Unicode half-block fallback. Navigation supplies a view path and may provide an input string; when it does, the target engine decides what that input means. For example, `shell:main ls` enters `shell:main` with `ls` as its input.
 
 A picker can reserve a `preview` pane beside its item list. The layout is a two-pane horizontal or vertical split with one `items` slot and one `preview` slot. Preview blocks read JSON Pointer values from the selected item, including its `metadata`:
 
@@ -270,21 +270,21 @@ Every manifest defines its metadata in `[plugin]`. `name` is descriptive metadat
 api = 1
 name = "applications"
 
-[views.default]
+[views.main]
 alias = "app"
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
-[views.default.commands.open]
+[views.main.commands.open]
 key = "enter"
 label = "Open"
 type = "run"
 
-[views.default.commands.open.payload]
+[views.main.commands.open.payload]
 handler = { file = "scripts/open.sh" }
 ```
 
@@ -306,10 +306,10 @@ The `core` plugin can fan in picker views from several plugin packages as feeds:
 type = "picker"
 
 [[views.default.engine.config.feeds]]
-view = "sys:default"
+view = "sys:main"
 
 [[views.default.engine.config.feeds]]
-view = "apps:default"
+view = "apps:main"
 ```
 
 This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
@@ -325,7 +325,7 @@ label = "Apps"
 type = "navigate"
 
 [views.main.commands.apps.payload]
-target = "apps:default"
+target = "apps:main"
 ```
 
 The runtime keeps a view stack. Opening `apps:main` from `core:default` produces:
@@ -334,7 +334,7 @@ The runtime keeps a view stack. Opening `apps:main` from `core:default` produces
 [core:default, apps:main]
 ```
 
-Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:default terminal` and `app terminal` targets the same View when `apps:default` owns `alias = "app"`. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) with the union of the selected feed owner's commands and the parent page commands; owner commands win key conflicts. With no selected item, page commands remain available. The temporary picker retains typed page/owner snapshots and the original parent item, and navigation replaces that picker with its target.
+Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:main terminal` and `app terminal` targets the same View when `apps:main` owns `alias = "app"`. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) with the union of the selected feed owner's commands and the parent page commands; owner commands win key conflicts. With no selected item, page commands remain available. The temporary picker retains typed page/owner snapshots and the original parent item, and navigation replaces that picker with its target.
 
 ## Expressions
 

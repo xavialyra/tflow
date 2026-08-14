@@ -12,16 +12,13 @@ type = "picker"
 show_prefix = true
 
 [[views.default.engine.config.feeds]]
-view = "sys:default"
+view = "sys:main"
 
 [[views.default.engine.config.feeds]]
 view = "shell:menu"
 
 [[views.default.engine.config.feeds]]
-view = "trans:default"
-
-[[views.default.engine.config.feeds]]
-view = "apps:default"
+view = "apps:main"
 
 [views.messages]
 alias = "log"

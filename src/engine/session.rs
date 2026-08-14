@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     fn routed_navigation_preserves_the_active_cursor() {
-        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let config = crate::config::load_test_fixture().unwrap();
         let mut session = AppSession::new(
             &config,
             crate::runtime_log::RuntimeLog::disabled(),
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[test]
     fn returning_from_routed_view_removes_the_route_tag() {
-        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let config = crate::config::load_test_fixture().unwrap();
         let mut session = AppSession::new(
             &config,
             crate::runtime_log::RuntimeLog::disabled(),
@@ -1208,7 +1208,7 @@ mod tests {
 
     #[test]
     fn edited_back_commits_before_activation_without_restoring_stale_input() {
-        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let config = crate::config::load_test_fixture().unwrap();
         let mut session = AppSession::new(
             &config,
             crate::runtime_log::RuntimeLog::disabled(),
@@ -1333,7 +1333,7 @@ mod tests {
             .set("/invocation_marker", json!({"items": [1, 2]}))
             .unwrap();
 
-        let config = Config::load(std::path::Path::new("config/config.toml")).unwrap();
+        let config = crate::config::load_test_fixture().unwrap();
         let state = config.instantiate_state("core:default").unwrap();
         let input = InputBuffer::new("query");
         publish_location(&mut runtime, "core:default", &input, &state).unwrap();

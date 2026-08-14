@@ -2,20 +2,20 @@ mod support;
 
 use std::process::Command;
 
-use support::{binary_path, project_config, temporary_root, write_test_config};
+use support::{binary_path, fixture_config, temporary_root, write_test_config};
 
 #[test]
-fn check_loads_the_project_configuration() {
+fn check_loads_the_fixture_configuration() {
     let output = Command::new(binary_path())
         .args(["--check", "--config"])
-        .arg(project_config())
+        .arg(fixture_config())
         .output()
         .expect("could not run tui-launcher --check");
 
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("configuration is valid: {}\n", project_config().display())
+        format!("configuration is valid: {}\n", fixture_config().display())
     );
 }
 

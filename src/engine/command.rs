@@ -277,11 +277,10 @@ pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
 mod tests {
     use super::*;
     use crate::config::{Command, CommandAction as ConfigCommandAction, RunPayload};
-    use std::path::Path;
 
     #[test]
     fn page_command_uses_command_owner_process_context_and_item_provenance() {
-        let mut config = Config::load(Path::new("config/config.toml")).unwrap();
+        let mut config = crate::config::load_test_fixture().unwrap();
         config.views.get_mut("core:default").unwrap().run_shell = Some("bash".to_string());
         let state = config.instantiate_state("core:default").unwrap();
         let invocation = CommandInvocation {
@@ -312,7 +311,7 @@ mod tests {
                     text: "Terminal",
                     value: Some("terminal.desktop"),
                     metadata: &metadata,
-                    source_view: "apps:default",
+                    source_view: "apps:main",
                 }),
                 log_file: None,
             },
@@ -331,7 +330,7 @@ mod tests {
         assert_eq!(environment["LAUNCHER_VIEW"], "core:default");
         assert_eq!(environment["LAUNCHER_VIEW_REF"], "core:default");
         assert_eq!(environment["LAUNCHER_QUERY"], "committed page query");
-        assert_eq!(environment["LAUNCHER_ITEM_VIEW_REF"], "apps:default");
+        assert_eq!(environment["LAUNCHER_ITEM_VIEW_REF"], "apps:main");
         assert_eq!(environment["LAUNCHER_ITEM_PLUGIN"], "apps");
         assert_eq!(environment["LAUNCHER_VALUE"], "terminal.desktop");
     }

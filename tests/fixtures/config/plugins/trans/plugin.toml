@@ -2,16 +2,16 @@
 api = 1
 name = "translation"
 
-[views.default]
+[views.main]
 alias = "tr"
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '''{{ script("scripts/items.sh", this:query) }}'''
 
-[views.default.query]
+[views.main.query]
 type = "object"
 input_order = ["source", "target", "text"]
 source = { type = "string", nullable = true }

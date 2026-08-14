@@ -2,21 +2,21 @@
 api = 1
 name = "system"
 
-[views.default]
+[views.main]
 alias = "sys"
 
-[views.default.engine]
+[views.main.engine]
 type = "picker"
 
-[views.default.engine.config]
+[views.main.engine.config]
 items = '{{ script("scripts/items.sh", this:query) }}'
 
-[views.default.commands.run]
+[views.main.commands.run]
 key = "enter"
 label = "Run"
 type = "navigate"
 
-[views.default.commands.run.payload]
+[views.main.commands.run.payload]
 target = "sys:output"
 query = "{{ runtime:view.current.selected_item.text }}"
 
