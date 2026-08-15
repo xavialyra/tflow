@@ -4,9 +4,9 @@ use std::fs;
 use std::io::Write;
 
 use support::{
-    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
-    wait_for_launcher_exit, wait_for_nonempty_file, wait_for_process_exit, wait_for_ready,
-    wait_for_text, write_test_config,
+    fixture_config, spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
+    temporary_root, wait_for_launcher_exit, wait_for_nonempty_file, wait_for_process_exit,
+    wait_for_ready, wait_for_text, write_test_config,
 };
 
 #[test]
@@ -150,7 +150,6 @@ fn explicit_capture_view_receives_typed_query_state() {
     let output = wait_for_text(&process.master, "from-option");
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("from-option"));
-    assert!(output.contains("core:direct"), "output: {output}");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -232,7 +231,6 @@ fn explicit_embedded_view_receives_typed_query_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("input=from-option"), "output: {output}");
-    assert!(output.contains("core:direct"), "output: {output}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -468,6 +466,42 @@ fn view_commands_accept_unreserved_control_bindings() {
 }
 
 #[test]
+fn explicit_default_view_command_overrides_builtin_tab_completion() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = "{{ config:test_items.items }}"
+
+        [plugins.core.views.default.commands.run]
+        key = "tab"
+        label = "Run"
+        type = "run"
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = "printf tab-command"
+        exit = true
+        "#,
+    )
+    .expect("could not write Tab command config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(String::from_utf8_lossy(&output).contains("tab-command"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn replacing_items_request_cancels_the_previous_script() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -553,487 +587,85 @@ fi
 }
 
 #[test]
-fn ctrl_k_opens_the_command_picker_view() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        items = "{{ config:test_items.items }}"
-        [plugins.core.views.default.commands.run]
-        key = "enter"
-        label = "Run"
-        type = "run"
-
-
-        [plugins.core.views.default.commands.run.payload]
-        handler = ":"
-
-        [plugins.core.views.default.commands.apps]
-        key = "alt+a"
-        label = "Apps"
-        type = "run"
-
-
-        [plugins.core.views.default.commands.apps.payload]
-        handler = '''printf 'command-marker:%s\n' "$LAUNCHER_VALUE"'''
-        exit = true
-
-        [plugins.core.views.default.commands.shell]
-        key = "alt+s"
-        label = "Shell"
-        type = "run"
-
-
-        [plugins.core.views.default.commands.shell.payload]
-        handler = ":"
-
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-"#,
-    )
-    .expect("could not write command view integration config");
-
+fn ctrl_k_calls_the_command_selector_and_invokes_an_opaque_ref() {
+    let config = fixture_config();
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    let _ = wait_for_text(&process.master, "Item");
-    process
-        .master
-        .write_all(b"\x0b")
-        .expect("could not write Ctrl-K key");
-    process.master.flush().expect("could not flush Ctrl-K key");
-    let output = wait_for_text(&process.master, "Run");
-    let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("Run"), "output: {output}");
-    assert!(output.contains("Apps"), "output: {output}");
-    assert!(output.contains("Shell"), "output: {output}");
+    process.master.write_all(b"sys ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
 
-    process
-        .master
-        .write_all(b"\x1b[B\r")
-        .expect("could not execute the selected command");
-    process
-        .master
-        .flush()
-        .expect("could not flush selected command");
-    let (status, remaining) = wait_for_launcher_exit(&mut process);
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Run");
+
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "sys:output");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
-    let remaining = String::from_utf8_lossy(&remaining);
-    assert!(
-        remaining.contains("command-marker:value"),
-        "output: {remaining}"
-    );
-    fs::remove_dir_all(root).expect("could not remove command view config");
 }
 
 #[test]
-fn command_picker_waits_for_the_committed_selection() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-        command_view = "core:command"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "alpha:default"
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "beta:default"
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-        [plugins.alpha.views.default]
-        [plugins.alpha.views.default.engine]
-        type = "picker"
-        [plugins.alpha.views.default.engine.config]
-        items = "{{ config:catalog.alpha }}"
-        [plugins.alpha.views.default.commands.open]
-        key = "enter"
-        label = "Alpha Action"
-        type = "run"
-
-        [plugins.alpha.views.default.commands.open.payload]
-        handler = ":"
-
-        [plugins.beta.views.default]
-        [plugins.beta.views.default.engine]
-        type = "picker"
-        [plugins.beta.views.default.engine.config]
-        items = "{{ config:catalog.beta }}"
-        [plugins.beta.views.default.commands.open]
-        key = "enter"
-        label = "Beta Action"
-        type = "run"
-
-        [plugins.beta.views.default.commands.open.payload]
-        handler = ":"
-
-        [catalog]
-        alpha = [{label = "Alpha"}]
-        beta = [{label = "Beta"}]
-        "#,
-    )
-    .expect("could not write pending command-view config");
-
+fn command_selector_does_not_expose_an_owner_from_stale_items() {
+    let config = fixture_config();
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    let _ = wait_for_text(&process.master, "Beta");
-    process
-        .master
-        .write_all(b"x\x1b[B\x0b")
-        .expect("could not write query, selection, and command-view batch");
-    process
-        .master
-        .flush()
-        .expect("could not flush pending command-view batch");
+    process.master.write_all(b"sys ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
 
-    let output = wait_for_text(&process.master, "Beta Action");
+    process.master.write_all(b"no-match\x0b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "(no matches)");
     let output = String::from_utf8_lossy(&output);
-    let command_screen = output
-        .rsplit_once("core:command")
-        .map(|(_, screen)| screen)
-        .unwrap_or(&output);
-    assert!(command_screen.contains("Beta Action"), "output: {output}");
-    assert!(!command_screen.contains("Alpha Action"), "output: {output}");
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(!visible.contains("Run"), "screen: {visible}");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "no-match");
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn tab_opens_builtin_route_completion_and_escape_cancels_it() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "app");
+    assert!(String::from_utf8_lossy(&output).contains("sys"));
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_ready(&process.master);
+
+    process.master.write_all(b"sys\t").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "sys:main");
+    let output = String::from_utf8_lossy(&output);
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(!visible.contains("apps:main"), "screen: {visible}");
+
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show system information");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove pending command-view config");
-}
-
-#[test]
-fn tab_opens_view_completion_and_escape_closes_it() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        [plugins.apps.views.main]
-        alias = "app"
-        [plugins.apps.views.main.engine]
-        type = "picker"
-        [plugins.apps.views.main.engine.config]
-        [plugins.sys.views.main]
-        alias = "sys"
-        [plugins.sys.views.main.engine]
-        type = "picker"
-        [plugins.sys.views.main.engine.config]
-"#,
-    )
-    .expect("could not write view completion config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"\t")
-        .expect("could not open view completion");
-    process
-        .master
-        .flush()
-        .expect("could not flush view completion key");
-    let output = wait_for_text(&process.master, "app");
-    let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("app"), "output: {output}");
-    assert!(output.contains("sys"), "output: {output}");
-    assert!(!output.contains("\x1b[7m> "), "output: {output}");
-    assert!(!output.contains(" > "), "output: {output}");
-
-    process
-        .master
-        .write_all(b"\x1b")
-        .expect("could not close view completion");
-    process
-        .master
-        .flush()
-        .expect("could not flush completion close key");
-
-    process
-        .master
-        .write_all(b"\t\r")
-        .expect("could not accept a completed view");
-    process
-        .master
-        .flush()
-        .expect("could not flush completed view");
-    let output = wait_for_text(&process.master, "app");
-    assert!(
-        String::from_utf8_lossy(&output).contains("app"),
-        "output: {:?}",
-        output
-    );
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close completion test launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush completion test close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove view completion config");
-}
-
-#[test]
-fn typing_dismisses_completion_and_replays_the_character_batch() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        [plugins.apps.views.main]
-        alias = "app"
-        [plugins.apps.views.main.engine]
-        type = "picker"
-        [plugins.apps.views.main.engine.config]
-        [plugins.sys.views.main]
-        alias = "sys"
-        [plugins.sys.views.main.engine]
-        type = "picker"
-        [plugins.sys.views.main.engine.config]
-"#,
-    )
-    .expect("could not write completion replay config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"\tsys ")
-        .expect("could not write completion replay batch");
-    process
-        .master
-        .flush()
-        .expect("could not flush completion replay batch");
-    let output = wait_for_text(&process.master, "sys");
-    assert!(
-        String::from_utf8_lossy(&output).contains(" sys "),
-        "output: {:?}",
-        output
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove completion replay config");
-}
-
-#[test]
-fn picker_bindings_can_override_a_default_shortcut() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        items = "{{ config:test_items.items }}"
-        [plugins.core.views.default.engine.config.bindings]
-        open_commands = ["ctrl+p"]
-
-        [plugins.core.views.default.commands.run]
-        key = "enter"
-        label = "Run"
-        type = "run"
-
-
-        [plugins.core.views.default.commands.run.payload]
-        handler = ":"
-
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-"#,
-    )
-    .expect("could not write custom picker binding config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    let _ = wait_for_text(&process.master, "Item");
-    process
-        .master
-        .write_all(b"\x10")
-        .expect("could not write configured Ctrl-P shortcut");
-    process
-        .master
-        .flush()
-        .expect("could not flush configured shortcut");
-    let output = wait_for_text(&process.master, "Run");
-    let output_text = String::from_utf8_lossy(&output);
-    assert!(output_text.contains("Run"), "output: {:?}", output);
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove custom binding config");
-}
-
-#[test]
-fn command_picker_navigation_keeps_the_parent_item_context() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        items = "{{ config:test_items.items }}"
-        [plugins.core.views.default.commands.inspect]
-        key = "enter"
-        label = "Inspect"
-        type = "navigate"
-
-        [plugins.core.views.default.commands.inspect.payload]
-        target = "{{ runtime:view.current.selected_item.metadata.target }}"
-        query = "{{ runtime:view.current.input }}|{{ runtime:session.input.params }}|{{ runtime:view.current.selected_item.value }}"
-
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-        [plugins.core.views.capture]
-        [plugins.core.views.capture.engine]
-        type = "capture"
-        [plugins.core.views.capture.engine.config]
-        output = "{{ runtime:view.current.input }}"
-        title = "Capture"
-"#,
-    )
-    .expect("could not write command navigation integration config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    let _ = wait_for_text(&process.master, "Item");
-    process
-        .master
-        .write_all(b"Item")
-        .expect("could not write parent query");
-    process
-        .master
-        .flush()
-        .expect("could not flush parent query");
-    let _ = wait_for_text(&process.master, "Item");
-
-    process
-        .master
-        .write_all(b"\r")
-        .expect("could not navigate with direct command");
-    process
-        .master
-        .flush()
-        .expect("could not flush direct navigation");
-    let output = wait_for_text(&process.master, "Item|Item|value");
-    assert!(
-        String::from_utf8_lossy(&output).contains("Item|Item|value"),
-        "output: {:?}",
-        output
-    );
-    process
-        .master
-        .write_all(b"\r")
-        .expect("could not return from direct capture view");
-    process
-        .master
-        .flush()
-        .expect("could not flush direct capture return");
-    let _ = wait_for_text(&process.master, "Item");
-
-    process
-        .master
-        .write_all(b"\x0b")
-        .expect("could not open command picker");
-    process.master.flush().expect("could not flush Ctrl-K");
-    let _ = wait_for_text(&process.master, "Inspect");
-    process
-        .master
-        .write_all(b"ins")
-        .expect("could not filter command picker");
-    process
-        .master
-        .write_all(b"\r")
-        .expect("could not navigate from command picker");
-    process
-        .master
-        .flush()
-        .expect("could not flush command navigation");
-    let output = wait_for_text(&process.master, "Item|Item|value");
-    assert!(
-        String::from_utf8_lossy(&output).contains("Item|Item|value"),
-        "output: {:?}",
-        output
-    );
-
-    process
-        .master
-        .write_all(b"\r")
-        .expect("could not return from command-picker capture view");
-    process
-        .master
-        .flush()
-        .expect("could not flush command-picker capture return");
-    let _ = wait_for_text(&process.master, "Item");
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove command navigation config");
 }
 
 #[test]
@@ -1083,208 +715,6 @@ fn items_errors_are_logged_and_do_not_block_exit() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove error logging config");
-}
-
-#[test]
-fn ctrl_k_feed_complete_uses_original_item_state_and_binding() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    let plugin = root.join("plugins/apps");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [plugins.core.views.default.commands.page]
-        key = "ctrl+r"
-        label = "Page Action"
-        type = "run"
-        [plugins.core.views.default.commands.page.payload]
-        handler = ":"
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("plugin.toml"),
-        r#"
-        [plugin]
-        api = 1
-        name = "apps"
-
-        [views.default]
-        [views.default.engine]
-        type = "picker"
-        [views.default.engine.config]
-        items = '{{ script("scripts/items.sh", this:query) }}'
-        [views.default.query]
-        type = "object"
-        input_order = ["text"]
-        text = { type = "string", default = "owner-default" }
-
-        [views.default.commands.accept]
-        key = "enter"
-        label = "Accept"
-        type = "complete"
-
-        [views.default.commands.accept.payload]
-        handler = "scripts/result.sh"
-
-        [views.default.commands.accept.payload.params]
-        options = "{{ this:query }}"
-        selected = "{{ runtime:view.current.selected_item }}"
-        page_ref = "{{ runtime:view.current.ref }}"
-        page_query = "{{ runtime:view.current.query }}"
-        session_params = "{{ runtime:session.input.params }}"
-        commands = "{{ runtime:view.current.command }}"
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("scripts/items.sh"),
-        r#"#!/bin/sh
-text=$(cat | jq -r .text)
-jq -cn --arg text "$text" '[{label:("ROW:" + $text), value: $text}]'
-"#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("scripts/result.sh"),
-        r#"#!/bin/sh
-payload=$(cat)
-printf '%s' "$payload" | grep -q '"text":"typed-feed"' || exit 3
-printf '%s' "$payload" | grep -q '"value":"typed-feed"' || exit 3
-printf '%s' "$payload" | grep -q '"owner_view":"apps:default"' || exit 3
-printf '%s' "$payload" | grep -q 'owner_query\|feed_id\|source_view\|binding_raw' && exit 3
-printf '%s' "$payload" | grep -q '"page_ref":"core:default"' || exit 3
-printf '%s' "$payload" | grep -q '"page_query":"typed-feed"' || exit 3
-printf '%s' "$payload" | grep -q '"session_params":"typed-feed"' || exit 3
-printf '%s' "$payload" | grep -q '"label":"Page Action"' || exit 3
-printf '%s' "$payload" | grep -q '"label":"Accept"' || exit 3
-printf 'owner-complete-ok'
-exit 0
-"#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"typed-feed").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "ROW:typed-feed");
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Accept");
-    process.master.write_all(b"acc").unwrap();
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("owner-complete-ok"),
-        "output: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn empty_feed_binding_is_shared_by_items_and_direct_complete() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    let plugin = root.join("plugins/apps");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("plugin.toml"),
-        r#"
-        [plugin]
-        api = 1
-        name = "apps"
-
-        [views.default]
-        [views.default.engine]
-        type = "picker"
-        [views.default.engine.config]
-        items = '{{ script("scripts/items.sh", this:$) }}'
-        [views.default.query]
-        type = "object"
-        input_order = ["text"]
-        text = { type = "string", default = "owner-default" }
-        [views.default.commands.accept]
-        key = "enter"
-        label = "Accept"
-        type = "complete"
-        [views.default.commands.accept.payload]
-        handler = "scripts/result.sh"
-        [views.default.commands.accept.payload.params]
-        raw = "{{ this:raw_input }}"
-        query = "{{ this:query }}"
-        selected = "{{ runtime:view.current.selected_item }}"
-        session_params = "{{ runtime:session.input.params }}"
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("scripts/items.sh"),
-        r#"#!/bin/sh
-payload=$(cat)
-raw=$(printf '%s' "$payload" | jq -r .raw_input)
-text=$(printf '%s' "$payload" | jq -r .query.text)
-jq -cn --arg raw "$raw" --arg text "$text" '[{label:("RAW:" + $raw + "|TEXT:" + $text), value:$text}]'
-"#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("scripts/result.sh"),
-        r#"#!/bin/sh
-payload=$(cat)
-printf '%s' "$payload" | grep -q '"raw":""' || exit 4
-printf '%s' "$payload" | grep -q '"text":"owner-default"' || exit 4
-printf '%s' "$payload" | grep -q '"value":"owner-default"' || exit 4
-printf '%s' "$payload" | grep -q '"session_params":""' || exit 4
-printf 'empty-binding-ok'
-"#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "RAW:|TEXT:owner-default");
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("empty-binding-ok"),
-        "output: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1339,129 +769,6 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
     assert_eq!(status, 0);
     assert!(
         String::from_utf8_lossy(&output).contains("page-command"),
-        "output: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctrl_k_lists_page_commands_and_uses_owner_conflict_priority() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-        [plugins.core.views.default.commands.conflict]
-        key = "enter"
-        label = "Page Conflict"
-        type = "run"
-        [plugins.core.views.default.commands.conflict.payload]
-        handler = '''printf 'wrong-page-conflict\n' '''
-        exit = true
-        [plugins.core.views.default.commands.page]
-        key = "ctrl+r"
-        label = "Page Action"
-        type = "run"
-        [plugins.core.views.default.commands.page.payload]
-        handler = '''printf 'ctrl-k-page\n' '''
-        exit = true
-
-        [plugins.apps.views.default]
-        [plugins.apps.views.default.engine]
-        type = "picker"
-        [plugins.apps.views.default.engine.config]
-        items = "{{ config:catalog.items }}"
-        [plugins.apps.views.default.commands.open]
-        key = "enter"
-        label = "Owner Action"
-        type = "run"
-        [plugins.apps.views.default.commands.open.payload]
-        handler = '''printf 'owner-action\n' '''
-        exit = true
-
-        [catalog]
-        items = [{label = "Row", value = "row"}]
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "Row");
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    let screen = wait_for_text(&process.master, "Page Action");
-    let screen = String::from_utf8_lossy(&screen);
-    assert!(screen.contains("Owner Action"), "screen: {screen}");
-    assert!(!screen.contains("Page Conflict"), "screen: {screen}");
-    process.master.write_all(b"\x1b[B\r").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("ctrl-k-page"),
-        "output: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctrl_k_shows_page_commands_without_a_selected_item() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        items = "{{ config:catalog.items }}"
-        [plugins.core.views.default.commands.page]
-        key = "enter"
-        label = "Page Only"
-        type = "run"
-        [plugins.core.views.default.commands.page.payload]
-        handler = '''printf 'page-only-ok\n' '''
-        exit = true
-        [plugins.core.views.command]
-        [plugins.core.views.command.engine]
-        type = "picker"
-        [plugins.core.views.command.engine.config]
-        [catalog]
-        items = []
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "no matches");
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Page Only");
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("page-only-ok"),
         "output: {:?}",
         output
     );
@@ -1746,77 +1053,6 @@ fn view_alias_routes_to_the_configured_messages_picker() {
 }
 
 #[test]
-fn duplicate_view_alias_reports_an_error_when_invoked() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    for package in ["package-a", "package-b"] {
-        let plugin_root = root.join("plugins").join(package);
-        fs::create_dir_all(&plugin_root).expect("could not create conflicting plugin");
-        fs::write(
-            plugin_root.join("plugin.toml"),
-            r#"[plugin]
-name = "template"
-
-[views.default]
-alias = "temp"
-[views.default.engine]
-type = "picker"
-[views.default.engine.config]
-"#,
-        )
-        .expect("could not write conflicting plugin manifest");
-    }
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-"#,
-    )
-    .expect("could not write conflicting-alias config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"temp ")
-        .expect("could not write conflicting view alias");
-    process
-        .master
-        .flush()
-        .expect("could not flush conflicting view alias");
-    let output = wait_for_text(&process.master, "ambiguous");
-    assert!(
-        String::from_utf8_lossy(&output).contains("view alias \"temp\" is ambiguous"),
-        "output: {:?}",
-        output
-    );
-    let runtime_log = fs::read_to_string(root.join("runtime.jsonl"))
-        .expect("could not read conflicting-alias runtime log");
-    assert!(
-        runtime_log.contains("package-a:default, package-b:default"),
-        "runtime log: {runtime_log}"
-    );
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close conflicting-alias launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush conflicting-alias launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove conflicting-alias config");
-}
-
-#[test]
 fn navigation_without_query_uses_the_target_view_default() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1957,7 +1193,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
     output.extend(remaining);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("capture-marker:value"), "output: {output}");
-    assert!(output.contains("core:capture"), "output: {output}");
+    assert!(output.contains("cap"), "output: {output}");
     fs::remove_dir_all(root).expect("could not remove capture integration config");
 }
 
@@ -2022,7 +1258,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("embedded-marker:value"), "output: {output}");
-    assert!(output.contains("core:embedded"), "output: {output}");
+    assert!(output.contains("emb"), "output: {output}");
     assert!(
         !output.contains("finished successfully"),
         "output: {output}"

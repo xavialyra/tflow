@@ -206,7 +206,7 @@ enum PreviewBlockState {
     Empty,
     Text(String),
     Image {
-        protocol: Option<StatefulProtocol>,
+        protocol: Option<Box<StatefulProtocol>>,
         error: Option<String>,
     },
 }
@@ -424,8 +424,9 @@ impl PickerPreview {
                         {
                             match response.result {
                                 Ok(image) => {
-                                    *protocol =
-                                        Some(terminal.image_picker().new_resize_protocol(image))
+                                    *protocol = Some(Box::new(
+                                        terminal.image_picker().new_resize_protocol(image),
+                                    ))
                                 }
                                 Err(message) => *error = Some(message),
                             }
@@ -461,7 +462,9 @@ impl PickerPreview {
                 PreviewBlockState::Image {
                     protocol: Some(protocol),
                     ..
-                } => frame.render_stateful_widget(StatefulImage::default(), area, protocol),
+                } => {
+                    frame.render_stateful_widget(StatefulImage::default(), area, protocol.as_mut())
+                }
                 PreviewBlockState::Image {
                     error: Some(error), ..
                 } => frame.render_widget(

@@ -1,12 +1,11 @@
 use crate::cancellation::CancellationToken;
 use anyhow::{Context, Result, anyhow};
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,90 +36,151 @@ pub(crate) fn run_bounded_command_with_stdin(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = process.spawn().context("could not spawn bounded command")?;
-    let stdout_reader = child
+    let mut stdout_reader = child
         .stdout
         .take()
         .context("bounded command has no stdout pipe")?;
-    let stderr_reader = child
+    let mut stderr_reader = child
         .stderr
         .take()
         .context("bounded command has no stderr pipe")?;
-    let stdin_writer = if let Some(input) = stdin {
-        let mut child_stdin = child
-            .stdin
-            .take()
-            .context("bounded command has no stdin pipe")?;
-        let input = input.to_vec();
-        Some(thread::spawn(move || child_stdin.write_all(&input)))
-    } else {
-        None
-    };
-    let stdout_exceeded = Arc::new(AtomicBool::new(false));
-    let stderr_exceeded = Arc::new(AtomicBool::new(false));
-    let stdout_thread = spawn_limited_reader(stdout_reader, stdout_limit, &stdout_exceeded);
-    let stderr_thread = spawn_limited_reader(stderr_reader, stderr_limit, &stderr_exceeded);
+    let mut stdin_writer = child.stdin.take();
+    for fd in [
+        stdout_reader.as_raw_fd(),
+        stderr_reader.as_raw_fd(),
+        stdin_writer.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(-1),
+    ] {
+        if fd >= 0
+            && let Err(error) = set_nonblocking(fd)
+        {
+            terminate_child(&mut child);
+            return Err(error);
+        }
+    }
+
+    let input = stdin.unwrap_or_default();
+    let mut input_offset = 0;
+    let mut stdout = Vec::with_capacity(stdout_limit.min(8192));
+    let mut stderr = Vec::with_capacity(stderr_limit.min(8192));
+    let mut stdout_eof = false;
+    let mut stderr_eof = false;
+    let mut status = None;
+    let mut group_cleaned = false;
     let deadline = Instant::now() + timeout;
 
-    let process_result: Result<std::process::ExitStatus> = loop {
+    loop {
         if cancellation.is_cancelled() {
             terminate_child(&mut child);
-            break Err(anyhow!("bounded command cancelled"));
+            return Err(anyhow!("bounded command cancelled"));
         }
-        if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
+        if Instant::now() >= deadline {
             terminate_child(&mut child);
-            break Err(anyhow!("bounded command output exceeded configured limits"));
+            return Err(anyhow!("bounded command timed out after {:?}", timeout));
         }
 
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => {}
+        stdout_eof |= match drain_pipe(&mut stdout_reader, &mut stdout, stdout_limit, "stdout") {
+            Ok(eof) => eof,
             Err(error) => {
                 terminate_child(&mut child);
-                break Err(anyhow!(error).context("could not inspect bounded command"));
+                return Err(error);
+            }
+        };
+        stderr_eof |= match drain_pipe(&mut stderr_reader, &mut stderr, stderr_limit, "stderr") {
+            Ok(eof) => eof,
+            Err(error) => {
+                terminate_child(&mut child);
+                return Err(error);
+            }
+        };
+
+        if let Some(writer) = stdin_writer.as_mut() {
+            match writer.write(&input[input_offset..]) {
+                Ok(0) => {}
+                Ok(count) => input_offset += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    terminate_child(&mut child);
+                    return Err(error).context("could not write bounded command input");
+                }
+            }
+            if input_offset == input.len() {
+                stdin_writer = None;
             }
         }
 
-        if Instant::now() >= deadline {
-            terminate_child(&mut child);
-            break Err(anyhow!("bounded command timed out after {:?}", timeout));
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exit_status)) => status = Some(exit_status),
+                Ok(None) => {}
+                Err(error) => {
+                    terminate_child(&mut child);
+                    return Err(anyhow!(error).context("could not inspect bounded command"));
+                }
+            }
+        }
+        if status.is_some() && !group_cleaned {
+            terminate_process_group(child.id());
+            group_cleaned = true;
+        }
+        if let Some(status) = status
+            && stdout_eof
+            && stderr_eof
+            && stdin_writer.is_none()
+        {
+            return Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            });
         }
         thread::sleep(PROCESS_POLL_INTERVAL);
-    };
-
-    let stdout = join_reader(stdout_thread, "stdout")?;
-    let stderr = join_reader(stderr_thread, "stderr")?;
-    let stdin_result = stdin_writer
-        .map(|writer| {
-            writer
-                .join()
-                .map_err(|_| anyhow!("bounded command stdin writer panicked"))?
-                .context("could not write bounded command input")
-        })
-        .transpose();
-    if stdout_exceeded.load(Ordering::Relaxed) || stderr_exceeded.load(Ordering::Relaxed) {
-        return Err(anyhow!("bounded command output exceeded configured limits"));
     }
-    let status = process_result?;
-    stdin_result?;
-    Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
 }
 
-fn spawn_limited_reader<R>(
-    reader: R,
+fn set_nonblocking(fd: libc::c_int) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error()).context("could not inspect bounded command pipe");
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error()).context("could not configure bounded command pipe");
+    }
+    Ok(())
+}
+
+fn drain_pipe(
+    reader: &mut impl Read,
+    output: &mut Vec<u8>,
     limit: usize,
-    exceeded: &Arc<AtomicBool>,
-) -> thread::JoinHandle<io::Result<Vec<u8>>>
-where
-    R: Read + Send + 'static,
-{
-    let exceeded = Arc::clone(exceeded);
-    thread::spawn(move || read_limited(reader, limit, &exceeded))
+    stream: &str,
+) -> Result<bool> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(count) => {
+                let remaining = limit.saturating_sub(output.len());
+                output.extend_from_slice(&buffer[..count.min(remaining)]);
+                if count > remaining {
+                    return Err(anyhow!(
+                        "bounded command output exceeded configured limits ({} limit: {} bytes)",
+                        stream,
+                        limit
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not read bounded command {}", stream));
+            }
+        }
+    }
 }
 
+#[cfg(test)]
 fn read_limited(mut reader: impl Read, limit: usize, exceeded: &AtomicBool) -> io::Result<Vec<u8>> {
     let mut output = Vec::with_capacity(limit.min(8192));
     let mut buffer = [0_u8; 8192];
@@ -138,11 +198,8 @@ fn read_limited(mut reader: impl Read, limit: usize, exceeded: &AtomicBool) -> i
     Ok(output)
 }
 
-fn join_reader(reader: thread::JoinHandle<io::Result<Vec<u8>>>, stream: &str) -> Result<Vec<u8>> {
-    reader
-        .join()
-        .map_err(|_| anyhow!("bounded command {} reader panicked", stream))?
-        .with_context(|| format!("could not read bounded command {}", stream))
+fn terminate_process_group(pid: u32) {
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
 }
 
 fn terminate_child(child: &mut Child) {
@@ -163,6 +220,42 @@ mod tests {
         let output = read_limited(&b"abcdef"[..], 3, &exceeded).unwrap();
         assert_eq!(output, b"abc");
         assert!(exceeded.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn reaped_leader_does_not_leave_pipe_holding_descendants() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & exit 0"]);
+        let started = Instant::now();
+        let output = run_bounded_command_with_stdin(
+            command,
+            None,
+            Duration::from_secs(1),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn detached_pipe_holding_descendant_is_still_bounded_by_the_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "setsid sh -c 'sleep 1' & exit 0"]);
+        let started = Instant::now();
+        let error = run_bounded_command_with_stdin(
+            command,
+            None,
+            Duration::from_millis(100),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .expect_err("detached pipe holder should keep the command incomplete");
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

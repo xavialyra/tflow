@@ -21,8 +21,8 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub default_view: ViewRef,
-    pub command_view: ViewRef,
+    pub default_view: Option<ViewRef>,
+    pub(crate) chrome: ChromeConfig,
     pub views: BTreeMap<ViewRef, View>,
     pub plugins: BTreeMap<String, PluginMetadata>,
     pub(crate) defaults: Defaults,
@@ -127,6 +127,22 @@ impl View {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandScope {
+    View,
+    #[default]
+    Selection,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandRequirement {
+    Input,
+    #[default]
+    Items,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
@@ -136,9 +152,18 @@ pub enum CommandAction {
     Navigate {
         payload: NavigatePayload,
     },
-    Complete {
+    Call {
+        payload: CallPayload,
+    },
+    Return {
         #[serde(default)]
-        payload: Option<CompletePayload>,
+        payload: ReturnPayload,
+    },
+    EditInput {
+        payload: EditInputPayload,
+    },
+    Invoke {
+        payload: InvokePayload,
     },
 }
 
@@ -162,26 +187,104 @@ pub struct NavigatePayload {
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CompletePayload {
-    pub handler: String,
+pub struct CallPayload {
+    pub target: toml::Value,
+    #[serde(default)]
+    pub query: Option<toml::Value>,
+    #[serde(default)]
+    pub args: Option<toml::Value>,
+    #[serde(default)]
+    pub then: Option<Box<CommandAction>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReturnPayload {
+    #[serde(default)]
+    pub value: Option<toml::Value>,
+    #[serde(default)]
+    pub handler: Option<String>,
     #[serde(default)]
     pub params: toml::Table,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditInputPayload {
+    pub value: toml::Value,
+    #[serde(default)]
+    pub cursor: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvokePayload {
+    pub command: toml::Value,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ChromeBindingVisibility {
+    #[default]
+    Always,
+    Overflow,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChromeConfig {
+    #[serde(default)]
+    pub(crate) footer: ChromeRegionConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChromeRegionConfig {
+    #[serde(default)]
+    pub(crate) bindings: BTreeMap<String, ChromeBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ChromeBinding {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) visibility: ChromeBindingVisibility,
+    #[serde(flatten)]
+    pub(crate) action: CommandAction,
+}
+
+impl ChromeBinding {
+    pub(crate) fn as_command(&self) -> Command {
+        Command {
+            key: self.key.clone(),
+            label: self.label.clone(),
+            scope: CommandScope::View,
+            requires: CommandRequirement::Input,
+            action: self.action.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Command {
     pub key: String,
     pub label: String,
+    #[serde(default)]
+    pub scope: CommandScope,
+    #[serde(default)]
+    pub requires: CommandRequirement,
     #[serde(flatten)]
     pub action: CommandAction,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
-    #[serde(default = "default_view_name")]
-    default_view: String,
-    #[serde(default = "default_command_view_name")]
-    command_view: String,
+    #[serde(default)]
+    default_view: Option<String>,
+    #[serde(default)]
+    chrome: ChromeConfig,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
@@ -317,10 +420,11 @@ impl Config {
             }
             plugins.insert(package_id, metadata);
         }
+        expand_feed_patterns(&mut views)?;
 
         Ok(Self {
             default_view: raw.default_view,
-            command_view: raw.command_view,
+            chrome: raw.chrome,
             views,
             plugins,
             defaults: raw.defaults,
@@ -342,7 +446,9 @@ impl Config {
         &self,
         engines: &crate::engine::EngineRegistry,
     ) -> Result<()> {
-        self.engine(&self.default_view)?;
+        if let Some(default_view) = &self.default_view {
+            self.engine(default_view)?;
+        }
 
         let default_picker_bindings = self
             .defaults
@@ -360,14 +466,54 @@ impl Config {
             }
         }
 
+        let mut footer_keys = BTreeMap::new();
+        let mut footer_overflow = 0;
+        for (id, binding) in &self.chrome.footer.bindings {
+            if !matches!(binding.action, CommandAction::Call { .. }) {
+                bail!("chrome footer binding {id:?} must use a call action");
+            }
+            let key = normalize_key(&binding.key)?;
+            if let Some(previous) = footer_keys.insert(key.clone(), id) {
+                bail!(
+                    "chrome footer bindings {:?} and {:?} both use key {:?}",
+                    previous,
+                    id,
+                    key
+                );
+            }
+            if binding.visibility == ChromeBindingVisibility::Overflow {
+                footer_overflow += 1;
+            }
+            validate_command_action(
+                self.default_view.as_deref().unwrap_or("<root>"),
+                &format!("chrome:footer:{id}"),
+                &binding.action,
+                &self.views,
+                0,
+            )?;
+        }
+        if footer_overflow > 1 {
+            bail!("chrome footer can define at most one overflow binding");
+        }
+
+        let mut aliases = BTreeMap::<&str, &str>::new();
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
-            if let Some(alias) = &view.alias
-                && (alias.trim().is_empty()
+            if let Some(alias) = &view.alias {
+                if alias.trim().is_empty()
                     || alias.contains(':')
-                    || alias.chars().any(char::is_whitespace))
-            {
-                bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
+                    || alias.chars().any(char::is_whitespace)
+                {
+                    bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
+                }
+                if let Some(previous) = aliases.insert(alias, view_ref) {
+                    bail!(
+                        "view alias {:?} is assigned to both {:?} and {:?}",
+                        alias,
+                        previous,
+                        view_ref
+                    );
+                }
             }
             let feeds = view.selected_feeds();
             let items = view.selected_items();
@@ -449,33 +595,7 @@ impl Config {
                 if keys.insert(key.clone(), command_id).is_some() {
                     bail!("view {:?} has duplicate command key {:?}", view_ref, key);
                 }
-                match &command.action {
-                    CommandAction::Run { payload } => {
-                        validate_script(
-                            &payload.handler,
-                            "command handler",
-                            &format!("{}:{}", view_ref, command_id),
-                        )?;
-                    }
-                    CommandAction::Navigate { payload } => {
-                        validate_navigation_payload(view_ref, command_id, payload, &self.views)?;
-                    }
-                    CommandAction::Complete { payload } => {
-                        if let Some(payload) = payload {
-                            validate_result_handler(
-                                &payload.handler,
-                                &format!("{}:{}", view_ref, command_id),
-                            )?;
-                            validate_templates(&toml::Value::Table(payload.params.clone()))
-                                .with_context(|| {
-                                    format!(
-                                        "view {:?} command {:?} has invalid completion params",
-                                        view_ref, command_id
-                                    )
-                                })?;
-                        }
-                    }
-                }
+                validate_command_action(view_ref, command_id, &command.action, &self.views, 0)?;
             }
         }
 
@@ -520,6 +640,16 @@ impl Config {
         &self,
         context: ConfigReadContext<'_>,
         path: &[&str],
+    ) -> Result<Option<Value>> {
+        self.get_with_references(context, path, None, None)
+    }
+
+    pub(crate) fn get_with_references(
+        &self,
+        context: ConfigReadContext<'_>,
+        path: &[&str],
+        request: Option<&Value>,
+        returned: Option<&Value>,
     ) -> Result<Option<Value>> {
         let fallback;
         let (raw, this, script_root) = match context.scope {
@@ -567,6 +697,8 @@ impl Config {
             this: &this,
             runtime: context.runtime,
             input: context.input,
+            request,
+            returned,
         };
         let cancellation = context.cancellation.unwrap_or_else(CancellationToken::new);
         let mut methods = ExpressionMethods::with_cancellation(script_root, cancellation);
@@ -577,18 +709,41 @@ impl Config {
         evaluate_json_value(value, &mut evaluator).map(Some)
     }
 
-    pub fn command_view(&self) -> Result<&View> {
-        let view = self
-            .views
-            .get(&self.command_view)
-            .with_context(|| format!("command view {:?} is not defined", self.command_view))?;
-        if self.engine(&self.command_view)? != ENGINE_PICKER {
-            bail!(
-                "command view {:?} must use the picker engine",
-                self.command_view
-            );
-        }
-        Ok(view)
+    pub(crate) fn evaluate_value(
+        &self,
+        context: ConfigReadContext<'_>,
+        value: &toml::Value,
+        request: Option<&Value>,
+        returned: Option<&Value>,
+    ) -> Result<Value> {
+        let this;
+        let script_root = match context.scope {
+            ConfigScope::Root => {
+                this = Value::Null;
+                Path::new(".")
+            }
+            ConfigScope::View(state) => {
+                this = self.this_value(state, context.binding_raw)?;
+                self.plugin_root(state.view_ref())
+                    .unwrap_or_else(|| Path::new("."))
+            }
+        };
+        let value = toml_to_json(value)?;
+        let references = TreeReferences {
+            config: &self.config_value,
+            this: &this,
+            runtime: context.runtime,
+            input: context.input,
+            request,
+            returned,
+        };
+        let cancellation = context.cancellation.unwrap_or_else(CancellationToken::new);
+        let mut methods = ExpressionMethods::with_cancellation(script_root, cancellation);
+        let mut evaluator = EvalContext {
+            references: &references,
+            methods: &mut methods,
+        };
+        evaluate_json_value(&value, &mut evaluator)
     }
 
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
@@ -666,6 +821,51 @@ fn package_id(view_ref: &str) -> &str {
         .split_once(':')
         .map(|(package, _)| package)
         .unwrap_or(view_ref)
+}
+
+fn expand_feed_patterns(views: &mut BTreeMap<ViewRef, View>) -> Result<()> {
+    let view_refs = views.keys().cloned().collect::<Vec<_>>();
+    let picker_views = views
+        .iter()
+        .filter(|(_, view)| view.selected_engine_type() == ENGINE_PICKER)
+        .map(|(view_ref, _)| view_ref.clone())
+        .collect::<BTreeSet<_>>();
+    for (owner_ref, owner) in views.iter_mut() {
+        let mut expanded = Vec::new();
+        for feed in &owner.engine.config.feeds {
+            if let Some(view_name) = feed.view.strip_prefix("*:") {
+                if view_name.is_empty() || view_name.contains(':') {
+                    bail!(
+                        "view {:?} has invalid feed pattern {:?}; expected *:view",
+                        owner_ref,
+                        feed.view
+                    );
+                }
+                for candidate in &view_refs {
+                    if candidate != owner_ref
+                        && candidate
+                            .split_once(':')
+                            .is_some_and(|(_, name)| name == view_name)
+                        && picker_views.contains(candidate)
+                    {
+                        expanded.push(FeedSpec {
+                            view: candidate.clone(),
+                        });
+                    }
+                }
+            } else if feed.view.contains('*') {
+                bail!(
+                    "view {:?} has invalid feed pattern {:?}; only *:view is supported",
+                    owner_ref,
+                    feed.view
+                );
+            } else {
+                expanded.push(feed.clone());
+            }
+        }
+        owner.engine.config.feeds = expanded;
+    }
+    Ok(())
 }
 
 fn qualify_view_ref(plugin: &str, view: &str) -> Result<ViewRef> {
@@ -955,26 +1155,100 @@ fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_navigation_payload(
+fn validate_command_action(
     view_ref: &str,
     command_id: &str,
-    payload: &NavigatePayload,
+    action: &CommandAction,
+    views: &BTreeMap<ViewRef, View>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 16 {
+        bail!(
+            "view {:?} command {:?} action nesting exceeds 16 levels",
+            view_ref,
+            command_id
+        );
+    }
+    let owner = format!("{}:{}", view_ref, command_id);
+    match action {
+        CommandAction::Run { payload } => {
+            validate_script(&payload.handler, "command handler", &owner)?;
+        }
+        CommandAction::Navigate { payload } => {
+            validate_target(view_ref, command_id, "navigation", &payload.target, views)?;
+            if let Some(query) = &payload.query {
+                validate_templates(query)?;
+            }
+        }
+        CommandAction::Call { payload } => {
+            validate_target(view_ref, command_id, "call", &payload.target, views)?;
+            for value in [&payload.query, &payload.args].into_iter().flatten() {
+                validate_templates(value)?;
+            }
+            if let Some(then) = &payload.then {
+                validate_command_action(view_ref, command_id, then, views, depth + 1)?;
+            }
+        }
+        CommandAction::Return { payload } => {
+            if depth > 0 && (payload.handler.is_some() || !payload.params.is_empty()) {
+                bail!(
+                    "view {:?} command {:?} continuation return cannot define handler or params",
+                    view_ref,
+                    command_id
+                );
+            }
+            if payload.handler.is_none() && !payload.params.is_empty() {
+                bail!(
+                    "view {:?} command {:?} return params require a handler",
+                    view_ref,
+                    command_id
+                );
+            }
+            if let Some(value) = &payload.value {
+                validate_templates(value)?;
+            }
+            if let Some(handler) = &payload.handler {
+                validate_result_handler(handler, &owner)?;
+            }
+            validate_templates(&toml::Value::Table(payload.params.clone())).with_context(|| {
+                format!(
+                    "view {:?} command {:?} has invalid return params",
+                    view_ref, command_id
+                )
+            })?;
+        }
+        CommandAction::EditInput { payload } => {
+            validate_templates(&payload.value)?;
+            if let Some(cursor) = &payload.cursor {
+                validate_templates(cursor)?;
+            }
+        }
+        CommandAction::Invoke { payload } => validate_templates(&payload.command)?,
+    }
+    Ok(())
+}
+
+fn validate_target(
+    view_ref: &str,
+    command_id: &str,
+    kind: &str,
+    target: &toml::Value,
     views: &BTreeMap<ViewRef, View>,
 ) -> Result<()> {
-    validate_templates(&payload.target).with_context(|| {
+    validate_templates(target).with_context(|| {
         format!(
-            "view {:?} command {:?} has invalid navigation payload",
-            view_ref, command_id
+            "view {:?} command {:?} has invalid {} payload",
+            view_ref, command_id, kind
         )
     })?;
-    if let Some(query) = &payload.query {
-        validate_templates(query)?;
-    }
-    let target = &payload.target;
     let target = target
         .as_str()
-        .context("navigation input target must be a string or expression")?;
-    if !target.contains("{{") && !views.contains_key(target) {
+        .with_context(|| format!("{} target must be a string or expression", kind))?;
+    let configured = views.contains_key(target)
+        || views
+            .values()
+            .any(|view| view.alias.as_deref() == Some(target));
+    if !target.contains("{{") && !configured {
         bail!(
             "view {:?} command {:?} references missing view {:?}",
             view_ref,
@@ -1029,14 +1303,6 @@ fn default_plugin_api() -> u32 {
     1
 }
 
-fn default_view_name() -> String {
-    "core:default".to_string()
-}
-
-fn default_command_view_name() -> String {
-    "core:command".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,7 +1332,7 @@ mod tests {
             items = "[]"
 "#,
         );
-        assert_eq!(config.default_view, "core:default");
+        assert_eq!(config.default_view.as_deref(), Some("core:default"));
         assert_eq!(
             config.views["apps:main"].engine.engine_type,
             ENGINE_PICKER.to_string()
@@ -1298,7 +1564,106 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_plugin_names_and_view_aliases_are_allowed() {
+    fn static_command_targets_accept_view_aliases() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [plugins.core.views.default.commands.navigate]
+            key = "enter"
+            label = "Navigate"
+            type = "navigate"
+            [plugins.core.views.default.commands.navigate.payload]
+            target = "app"
+            [plugins.core.views.default.commands.call]
+            key = "ctrl+a"
+            label = "Call"
+            type = "call"
+            [plugins.core.views.default.commands.call.payload]
+            target = "app"
+            [plugins.apps.views.main]
+            alias = "app"
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            "#,
+        );
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn continuation_return_rejects_root_only_adapter_fields() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [plugins.core.views.default.commands.open]
+            key = "enter"
+            label = "Open"
+            type = "call"
+            [plugins.core.views.default.commands.open.payload]
+            target = "forms:main"
+            [plugins.core.views.default.commands.open.payload.then]
+            type = "return"
+            [plugins.core.views.default.commands.open.payload.then.payload]
+            value = "{{ return:output.value }}"
+            handler = "scripts/result.sh"
+            params = { result = "{{ return:$ }}" }
+            [plugins.forms.views.main]
+            [plugins.forms.views.main.engine]
+            type = "picker"
+            [plugins.forms.views.main.engine.config]
+            "#,
+        );
+
+        let error = config
+            .validate()
+            .expect_err("continuation return adapters should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("continuation return cannot define handler or params")
+        );
+    }
+
+    #[test]
+    fn return_params_require_a_handler() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [plugins.core.views.default.commands.accept]
+            key = "enter"
+            label = "Accept"
+            type = "return"
+            [plugins.core.views.default.commands.accept.payload]
+            value = "accepted"
+            params = { ignored = true }
+            "#,
+        );
+
+        let error = config
+            .validate()
+            .expect_err("return params without a handler should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("return params require a handler")
+        );
+    }
+
+    #[test]
+    fn duplicate_plugin_names_are_allowed() {
         let config = config(
             r#"
             [plugins.core.views.default]
@@ -1308,14 +1673,14 @@ mod tests {
             [plugins.package-a]
             name = "template"
             [plugins.package-a.views.default]
-            alias = "temp"
+            alias = "temp-a"
             [plugins.package-a.views.default.engine]
             type = "picker"
             [plugins.package-a.views.default.engine.config]
             [plugins.package-b]
             name = "template"
             [plugins.package-b.views.default]
-            alias = "temp"
+            alias = "temp-b"
             [plugins.package-b.views.default.engine]
             type = "picker"
             [plugins.package-b.views.default.engine.config]
@@ -1325,13 +1690,77 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.plugins["package-a"].name, "template");
         assert_eq!(config.plugins["package-b"].name, "template");
-        assert_eq!(
-            config.views["package-a:default"].alias.as_deref(),
-            Some("temp")
+    }
+
+    #[test]
+    fn wildcard_feeds_expand_to_matching_picker_views() {
+        let config = config(
+            r#"
+            default_view = "core:default"
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "*:main"
+            [[plugins.core.views.default.engine.config.feeds]]
+            view = "*:default"
+            [plugins.apps.views.main.engine]
+            type = "picker"
+            [plugins.apps.views.main.engine.config]
+            items = "[]"
+            [plugins.apps.views.default.engine]
+            type = "picker"
+            [plugins.apps.views.default.engine.config]
+            items = "[]"
+            [plugins.sys.views.main.engine]
+            type = "picker"
+            [plugins.sys.views.main.engine.config]
+            items = "[]"
+            [plugins.shell.views.main.engine]
+            type = "embedded"
+            [plugins.shell.views.main.engine.config]
+            command = ["sh"]
+            title = "shell"
+"#,
         );
-        assert_eq!(
-            config.views["package-b:default"].alias.as_deref(),
-            Some("temp")
+        let feeds = config
+            .feed_views("core:default")
+            .unwrap()
+            .into_iter()
+            .map(|(view_ref, _)| view_ref)
+            .collect::<Vec<_>>();
+        assert_eq!(feeds, ["apps:main", "sys:main", "apps:default"]);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn duplicate_view_aliases_are_rejected() {
+        let config = config(
+            r#"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            [plugins.package-a.views.default]
+            alias = "temp"
+            [plugins.package-a.views.default.engine]
+            type = "picker"
+            [plugins.package-a.views.default.engine.config]
+            [plugins.package-b.views.default]
+            alias = "temp"
+            [plugins.package-b.views.default.engine]
+            type = "picker"
+            [plugins.package-b.views.default.engine.config]
+"#,
+        );
+
+        let error = config
+            .validate()
+            .expect_err("duplicate aliases should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("view alias \"temp\" is assigned to both")
         );
     }
 

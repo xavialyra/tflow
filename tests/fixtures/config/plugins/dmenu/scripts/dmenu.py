@@ -267,7 +267,7 @@ def result_mode(context):
     selected = context.get("selected")
     typed = context.get("typed", "")
     if not isinstance(options, dict):
-        raise DmenuError("dmenu completion options must be an object")
+        raise DmenuError("dmenu result options must be an object")
     if selected is not None and not isinstance(selected, dict):
         raise DmenuError("dmenu selected item must be an object or null")
 

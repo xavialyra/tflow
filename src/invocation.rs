@@ -84,7 +84,7 @@ pub(crate) fn finish(
     root_view: &str,
     outcome: SessionOutcome,
 ) -> Result<InvocationResult> {
-    let SessionOutcome::Completed(completion) = outcome else {
+    let SessionOutcome::Completed(returned) = outcome else {
         let exit_code = config
             .view(root_view)
             .with_context(|| format!("invocation root view {:?} is not configured", root_view))?
@@ -97,56 +97,58 @@ pub(crate) fn finish(
             exit_code,
         });
     };
-    let completion = *completion;
+    let returned = *returned;
+    let Some(adapter) = returned.adapter.as_ref() else {
+        return Ok(default_result(returned.output));
+    };
     let command = config
-        .view(&completion.source_view)
+        .view(&adapter.command.view)
+        .and_then(|view| view.commands.get(&adapter.command.id))
         .with_context(|| {
             format!(
-                "completion view {:?} is not configured",
-                completion.source_view
-            )
-        })?
-        .commands
-        .get(&completion.command_id)
-        .with_context(|| {
-            format!(
-                "completion command {:?} is not configured for view {:?}",
-                completion.command_id, completion.source_view
+                "return command {:?} is not configured for view {:?}",
+                adapter.command.id, adapter.command.view
             )
         })?;
-    let crate::config::CommandAction::Complete { payload } = &command.action else {
+    let crate::config::CommandAction::Return { payload } = &command.action else {
         anyhow::bail!(
-            "completion command {:?} for view {:?} is not a complete command",
-            completion.command_id,
-            completion.source_view
+            "command {:?} for view {:?} is no longer a return command",
+            adapter.command.id,
+            adapter.command.view
         );
     };
-    let Some(payload) = payload else {
-        return Ok(default_result(completion.output));
+    let Some(handler_config) = payload.handler.as_deref() else {
+        return Ok(default_result(returned.output));
     };
-    let handler_config = &payload.handler;
     let plugin_root = config
-        .plugin_root(&completion.source_view)
+        .plugin_root(&adapter.command.view)
         .unwrap_or_else(|| Path::new("."));
     let handler = resolve_handler(plugin_root, handler_config)?;
-    let params = config
-        .get(
-            ConfigReadContext {
-                scope: ConfigScope::View(&completion.state),
-                runtime: &completion.runtime,
-                input: &config.input_value,
-                cancellation: None,
-                binding_raw: Some(&completion.binding_raw),
-            },
-            &[
-                "commands",
-                completion.command_id.as_str(),
-                "payload",
-                "params",
-            ],
-        )?
-        .unwrap_or_else(|| serde_json::json!({}));
-    let input = serde_json::to_vec(&params).context("could not serialize completion params")?;
+    let owner = if adapter.context.page.view_ref == adapter.command.view {
+        &adapter.context.page
+    } else {
+        &adapter
+            .context
+            .selection
+            .as_ref()
+            .filter(|selection| selection.owner.view_ref == adapter.command.view)
+            .context("return command owner is not available in its adapter context")?
+            .owner
+    };
+    let returned_value = crate::engine::command::return_value(&returned);
+    let params = config.evaluate_value(
+        ConfigReadContext {
+            scope: ConfigScope::View(&owner.state),
+            runtime: &adapter.context.runtime,
+            input: &config.input_value,
+            cancellation: None,
+            binding_raw: Some(&owner.binding_raw),
+        },
+        &toml::Value::Table(payload.params.clone()),
+        adapter.context.request.as_ref(),
+        Some(&returned_value),
+    )?;
+    let input = serde_json::to_vec(&params).context("could not serialize return params")?;
     let mut command = Command::new("sh");
     command.arg(&handler).current_dir(plugin_root);
     let output = run_bounded_command_with_stdin(
@@ -174,11 +176,18 @@ impl Drop for InputArtifact {
 }
 
 fn default_result(output: ViewOutput) -> InvocationResult {
-    let ViewOutput::Selected { item, input } = output;
-    let mut stdout = item
-        .and_then(|item| item.value)
-        .unwrap_or(input)
-        .into_bytes();
+    let mut stdout = match output {
+        ViewOutput::Selected { item, input } => item
+            .and_then(|item| item.value)
+            .unwrap_or(input)
+            .into_bytes(),
+        ViewOutput::Value {
+            value: Value::String(value),
+        } => value.into_bytes(),
+        ViewOutput::Value { value } => {
+            serde_json::to_vec(&value).expect("serde_json::Value serialization cannot fail")
+        }
+    };
     stdout.push(b'\n');
     InvocationResult {
         stdout,

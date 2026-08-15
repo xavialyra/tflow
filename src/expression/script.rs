@@ -157,6 +157,8 @@ mod tests {
             this: &Value::Null,
             runtime: &runtime,
             input: &input,
+            request: None,
+            returned: None,
         };
         let mut methods = ExpressionMethods::new(script_root);
         let mut context = EvalContext {
@@ -226,6 +228,8 @@ mod tests {
                 this: &Value::Null,
                 runtime: &runtime,
                 input: &input,
+                request: None,
+                returned: None,
             };
             let mut methods = ExpressionMethods::with_cancellation(&worker_root, worker_token);
             let mut context = EvalContext {

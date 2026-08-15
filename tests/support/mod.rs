@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -50,7 +51,11 @@ pub struct RunResult {
     pub stdout: Vec<u8>,
 }
 
+static DMENU_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 const TEST_CONFIG: &str = r#"
+default_view = "core:default"
+
 [test_items]
 items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#;
@@ -63,16 +68,30 @@ pub fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {
     fs::write(path, with_test_config(source))
 }
 
+fn lock_dmenu_tests() -> MutexGuard<'static, ()> {
+    DMENU_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn run_dmenu(extra_args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
     run_dmenu_steps(extra_args, input, &[keys])
 }
 
 pub fn run_dmenu_steps(extra_args: &[&str], input: &[u8], key_steps: &[&[u8]]) -> RunResult {
+    let _guard = lock_dmenu_tests();
     let config = fixture_config();
     let config = config.to_str().expect("fixture config path is not UTF-8");
     let mut args = vec!["--config", config, "dmenu:main"];
     args.extend_from_slice(extra_args);
     run_invocation_steps(&args, input, key_steps)
+}
+
+pub fn run_tty_dmenu(keys: &[u8]) -> RunResult {
+    let _guard = lock_dmenu_tests();
+    let config = fixture_config();
+    let config = config.to_str().expect("fixture config path is not UTF-8");
+    run_tty_invocation_with_redirected_stdout(&["--config", config, "dmenu:main"], keys)
 }
 
 pub fn run_invocation(args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
@@ -149,10 +168,14 @@ pub fn spawn_launcher_with_args_and_env(
     if pid == 0 {
         let binary = CString::new(binary_path().as_os_str().as_bytes())
             .expect("binary path contains a NUL byte");
-        let log_path = config
-            .parent()
-            .expect("test config has no parent")
-            .join("runtime.jsonl");
+        let log_path = if config == fixture_config() {
+            PathBuf::from("/dev/null")
+        } else {
+            config
+                .parent()
+                .expect("test config has no parent")
+                .join("runtime.jsonl")
+        };
         let log_path = CString::new(log_path.as_os_str().as_bytes())
             .expect("test log path contains a NUL byte");
         let log_name = CString::new("TUI_LAUNCHER_LOG_FILE").unwrap();
@@ -284,6 +307,11 @@ fn spawn_tty_with_redirected_stdout(args: &[&str]) -> DmenuProcess {
 }
 
 fn exec_binary(args: &[&str]) -> ! {
+    let log_name = CString::new("TUI_LAUNCHER_LOG_FILE").unwrap();
+    let log_path = CString::new("/dev/null").unwrap();
+    if unsafe { libc::setenv(log_name.as_ptr(), log_path.as_ptr(), 1) } != 0 {
+        unsafe { libc::_exit(127) };
+    }
     let binary = binary_path();
     let mut command = Vec::with_capacity(args.len() + 1);
     command.push(

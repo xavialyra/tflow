@@ -11,6 +11,7 @@ pub struct ExpressionMethods<'a> {
 }
 
 impl<'a> ExpressionMethods<'a> {
+    #[cfg(test)]
     pub fn new(script_root: &'a Path) -> Self {
         Self::with_cancellation(script_root, CancellationToken::new())
     }
@@ -53,6 +54,8 @@ mod tests {
             this: &Value::Null,
             runtime: &runtime,
             input: &input,
+            request: None,
+            returned: None,
         };
         let mut methods = ExpressionMethods::new(Path::new("."));
         let mut context = EvalContext {

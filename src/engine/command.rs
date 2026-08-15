@@ -1,141 +1,287 @@
 use crate::config::{
-    Command, CommandAction as ConfigCommandAction, Config, ConfigReadContext, ConfigScope,
-    normalize_key,
+    Command, CommandAction, CommandScope, Config, ConfigReadContext, ConfigScope, NavigatePayload,
+    RunPayload, normalize_key,
 };
-use crate::engine::{CommandInvocation, PreparedProcess};
+use crate::engine::{
+    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
+    CommandOwnerContext, CommandRef, NavigationRequest, PreparedProcess, ReturnAdapter, ViewOutput,
+    ViewReturn,
+};
 use crate::input::Key;
-use crate::state::StateInstance;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::Path;
 
-pub(crate) enum CommandAction {
-    Navigate {
-        target: String,
-        query: Option<Value>,
+pub(crate) enum PreparedAction {
+    Navigate(NavigationRequest),
+    Call(CallRequest),
+    Return(ViewReturn),
+    EditInput {
+        value: String,
+        cursor: usize,
     },
+    Invoke(CommandExecution),
     Execute {
         invocation: CommandInvocation,
         prepared: PreparedProcess,
         exit: bool,
     },
-    Complete {
-        invocation: CommandInvocation,
-        state: StateInstance,
-        binding_raw: String,
-    },
-}
-
-pub(crate) struct CommandItem<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) value: Option<&'a str>,
-    pub(crate) metadata: &'a Value,
-    pub(crate) source_view: &'a str,
-}
-
-pub(crate) struct CommandContext<'a> {
-    pub(crate) active_view: &'a str,
-    pub(crate) state: &'a StateInstance,
-    pub(crate) binding_raw: &'a str,
-    pub(crate) runtime: &'a Value,
-    pub(crate) item: Option<CommandItem<'a>>,
-    pub(crate) log_file: Option<&'a Path>,
 }
 
 pub(crate) fn prepare_command_action(
     config: &Config,
+    execution: CommandExecution,
+) -> Result<PreparedAction> {
+    let action = execution.invocation.command.action.clone();
+    prepare_action(
+        config,
+        &action,
+        execution.invocation,
+        execution.context,
+        None,
+        true,
+    )
+}
+
+pub(crate) fn prepare_continuation(
+    config: &Config,
+    action: &CommandAction,
+    origin: CommandOrigin,
+    context: CommandContext,
+    returned: &Value,
+) -> Result<PreparedAction> {
+    let command = match &origin {
+        CommandOrigin::View(reference) => config
+            .view(&reference.view)
+            .and_then(|view| view.commands.get(&reference.id))
+            .cloned(),
+        CommandOrigin::ChromeFooter { binding, .. } => config
+            .chrome
+            .footer
+            .bindings
+            .get(binding)
+            .map(|binding| binding.as_command()),
+    }
+    .with_context(|| {
+        format!(
+            "continuation origin {:?} is no longer configured",
+            origin.id()
+        )
+    })?;
+    prepare_action(
+        config,
+        action,
+        CommandInvocation::from_origin(origin, command),
+        context,
+        Some(returned),
+        false,
+    )
+}
+
+fn prepare_action(
+    config: &Config,
+    action: &CommandAction,
     invocation: CommandInvocation,
-    context: CommandContext<'_>,
-) -> Result<CommandAction> {
-    match invocation.command.action.clone() {
-        ConfigCommandAction::Complete { .. } => Ok(CommandAction::Complete {
-            invocation,
-            state: context.state.clone(),
-            binding_raw: context.binding_raw.to_string(),
-        }),
-        ConfigCommandAction::Navigate { .. } => {
-            let request = config
-                .get(
-                    ConfigReadContext {
-                        scope: ConfigScope::View(context.state),
-                        runtime: context.runtime,
-                        input: &config.input_value,
-                        cancellation: None,
-                        binding_raw: Some(context.binding_raw),
-                    },
-                    &["commands", invocation.id.as_str(), "payload"],
-                )?
-                .context("navigation command input is not configured")?;
-            let target = request
-                .get("target")
-                .and_then(Value::as_str)
-                .context("navigation input target must evaluate to a string")?;
-            let target = config.resolve_view(target)?;
-            let query = match request.get("query") {
-                None | Some(Value::Null) => None,
-                Some(value) => Some(value.clone()),
-            };
-            Ok(CommandAction::Navigate { target, query })
-        }
-        ConfigCommandAction::Run { payload } => {
-            let exit = payload.exit;
-            let prepared = prepare_run_command(
-                config,
-                context.active_view,
-                context.binding_raw,
-                &invocation,
-                context.item,
-                context.log_file,
-            )?;
-            Ok(CommandAction::Execute {
+    context: CommandContext,
+    returned: Option<&Value>,
+    root_adapter: bool,
+) -> Result<PreparedAction> {
+    let owner = command_owner(&context, invocation.source_view())?;
+    match action {
+        CommandAction::Run { payload } => {
+            let prepared = prepare_run_command(config, payload, &invocation, &context, owner)?;
+            Ok(PreparedAction::Execute {
                 invocation,
                 prepared,
-                exit,
+                exit: payload.exit,
             })
+        }
+        CommandAction::Navigate { payload } => {
+            let (target, query) = evaluate_target(config, payload, &context, owner, returned)?;
+            let request = match query {
+                Some(query) => NavigationRequest::new(target, "").with_query(query),
+                None => NavigationRequest::with_defaults(target),
+            };
+            Ok(PreparedAction::Navigate(request))
+        }
+        CommandAction::Call { payload } => {
+            let target = evaluate_value(config, &payload.target, &context, owner, returned)?
+                .as_str()
+                .context("call target must evaluate to a string")?
+                .to_string();
+            let target = config.resolve_view(&target)?;
+            let query = payload
+                .query
+                .as_ref()
+                .map(|value| evaluate_value(config, value, &context, owner, returned))
+                .transpose()?;
+            let args = payload
+                .args
+                .as_ref()
+                .map(|value| evaluate_value(config, value, &context, owner, returned))
+                .transpose()?
+                .unwrap_or(Value::Null);
+            let request = match query {
+                Some(query) => NavigationRequest::new(target, "").with_query(query),
+                None => NavigationRequest::with_defaults(target),
+            }
+            .with_args(args);
+            Ok(PreparedAction::Call(CallRequest {
+                request,
+                origin: invocation.origin(),
+                context,
+                then: payload.then.clone(),
+            }))
+        }
+        CommandAction::Return { payload } => {
+            let output = match &payload.value {
+                Some(value) => ViewOutput::Value {
+                    value: evaluate_value(config, value, &context, owner, returned)?,
+                },
+                None => context.output.clone().context(
+                    "return command has no engine output; configure payload.value explicitly",
+                )?,
+            };
+            let adapter = if root_adapter {
+                Some(ReturnAdapter {
+                    command: invocation
+                        .view_reference()
+                        .context("return action cannot originate from chrome")?
+                        .clone(),
+                    context: context.clone(),
+                })
+            } else {
+                None
+            };
+            Ok(PreparedAction::Return(ViewReturn {
+                source_view: invocation.source_view().to_string(),
+                output,
+                adapter,
+            }))
+        }
+        CommandAction::EditInput { payload } => {
+            let value = evaluate_value(config, &payload.value, &context, owner, returned)?
+                .as_str()
+                .context("edit-input value must evaluate to a string")?
+                .to_string();
+            let cursor = match &payload.cursor {
+                Some(cursor) => evaluate_value(config, cursor, &context, owner, returned)?
+                    .as_u64()
+                    .context("edit-input cursor must evaluate to a non-negative integer")?
+                    .try_into()
+                    .context("edit-input cursor does not fit in usize")?,
+                None => value.len(),
+            };
+            if cursor > value.len() || !value.is_char_boundary(cursor) {
+                bail!("edit-input cursor {cursor} is not a UTF-8 boundary in the new value");
+            }
+            Ok(PreparedAction::EditInput { value, cursor })
+        }
+        CommandAction::Invoke { payload } => {
+            let value = evaluate_value(config, &payload.command, &context, owner, returned)?;
+            let reference: CommandRef = serde_json::from_value(value)
+                .context("invoke command must evaluate to {view, id}")?;
+            let invocation = resolve_visible_command(config, &context, &reference)?;
+            Ok(PreparedAction::Invoke(CommandExecution {
+                invocation,
+                context,
+            }))
         }
     }
 }
 
+fn command_owner<'a>(
+    context: &'a CommandContext,
+    source_view: &str,
+) -> Result<&'a CommandOwnerContext> {
+    if context.page.view_ref == source_view {
+        return Ok(&context.page);
+    }
+    context
+        .selection
+        .as_ref()
+        .filter(|selection| selection.owner.view_ref == source_view)
+        .map(|selection| &selection.owner)
+        .with_context(|| {
+            format!(
+                "command owner {:?} is not the active page or selected item owner",
+                source_view
+            )
+        })
+}
+
+fn evaluate_target(
+    config: &Config,
+    payload: &NavigatePayload,
+    context: &CommandContext,
+    owner: &CommandOwnerContext,
+    returned: Option<&Value>,
+) -> Result<(String, Option<Value>)> {
+    let target = evaluate_value(config, &payload.target, context, owner, returned)?
+        .as_str()
+        .context("navigation target must evaluate to a string")?
+        .to_string();
+    let target = config.resolve_view(&target)?;
+    let query = payload
+        .query
+        .as_ref()
+        .map(|value| evaluate_value(config, value, context, owner, returned))
+        .transpose()?;
+    Ok((target, query))
+}
+
+fn evaluate_value(
+    config: &Config,
+    value: &toml::Value,
+    context: &CommandContext,
+    owner: &CommandOwnerContext,
+    returned: Option<&Value>,
+) -> Result<Value> {
+    config.evaluate_value(
+        ConfigReadContext {
+            scope: ConfigScope::View(&owner.state),
+            runtime: &context.runtime,
+            input: &config.input_value,
+            cancellation: None,
+            binding_raw: Some(&owner.binding_raw),
+        },
+        value,
+        context.request.as_ref(),
+        returned,
+    )
+}
+
 fn prepare_run_command(
     config: &Config,
-    active_view: &str,
-    binding_raw: &str,
+    payload: &RunPayload,
     invocation: &CommandInvocation,
-    item: Option<CommandItem<'_>>,
-    log_file: Option<&Path>,
+    context: &CommandContext,
+    owner: &CommandOwnerContext,
 ) -> Result<PreparedProcess> {
     let view = config
-        .view(&invocation.source_view)
-        .with_context(|| format!("view {:?} disappeared", invocation.source_view))?;
-    let ConfigCommandAction::Run { payload } = &invocation.command.action else {
-        anyhow::bail!("command is not a run action");
-    };
+        .view(invocation.source_view())
+        .with_context(|| format!("view {:?} disappeared", invocation.source_view()))?;
     let shell = payload
         .shell
         .as_deref()
         .or(view.run_shell.as_deref())
         .unwrap_or("sh");
+    let item = context.selection.as_ref().map(|selection| &selection.item);
     let value = item
-        .as_ref()
-        .and_then(|item| item.value)
-        .or_else(|| item.as_ref().map(|item| item.text))
+        .and_then(|item| item.value.as_deref())
+        .or_else(|| item.map(|item| item.text.as_str()))
         .unwrap_or("");
     let metadata = item
-        .as_ref()
-        .map(|item| serde_json::to_string(item.metadata))
+        .map(|item| serde_json::to_string(&item.metadata))
         .transpose()
         .context("could not serialize selected item metadata")?
         .unwrap_or_else(|| Value::Null.to_string());
-    let item_text = item
-        .as_ref()
-        .map(|item| item.text.to_string())
-        .unwrap_or_default();
-    let item_view = item.as_ref().map(|item| item.source_view);
+    let item_text = item.map(|item| item.text.clone()).unwrap_or_default();
+    let item_view = item.map(|item| item.source_view.as_str());
     let item_plugin = item_view.map(package_id).unwrap_or("");
-    let command_view = invocation.source_view.as_str();
+    let source_view = invocation.source_view();
     let plugin_root = config
-        .plugin_root(command_view)
+        .plugin_root(source_view)
         .map(|path| path.to_path_buf());
     let mut environment = vec![
         ("LAUNCHER_ITEM".to_string(), item_text),
@@ -143,17 +289,17 @@ fn prepare_run_command(
         ("LAUNCHER_METADATA".to_string(), metadata),
         (
             "LAUNCHER_PLUGIN".to_string(),
-            package_id(command_view).to_string(),
+            package_id(source_view).to_string(),
         ),
-        ("LAUNCHER_VIEW".to_string(), active_view.to_string()),
-        ("LAUNCHER_VIEW_REF".to_string(), command_view.to_string()),
+        ("LAUNCHER_VIEW".to_string(), context.page.view_ref.clone()),
+        ("LAUNCHER_VIEW_REF".to_string(), source_view.to_string()),
         (
             "LAUNCHER_ITEM_VIEW_REF".to_string(),
             item_view.unwrap_or("").to_string(),
         ),
         ("LAUNCHER_ITEM_PLUGIN".to_string(), item_plugin.to_string()),
-        ("LAUNCHER_COMMAND".to_string(), invocation.id.clone()),
-        ("LAUNCHER_QUERY".to_string(), binding_raw.to_string()),
+        ("LAUNCHER_COMMAND".to_string(), invocation.id().to_string()),
+        ("LAUNCHER_QUERY".to_string(), owner.binding_raw.clone()),
     ];
     if let Some(root) = &plugin_root {
         environment.push((
@@ -161,11 +307,18 @@ fn prepare_run_command(
             root.to_string_lossy().to_string(),
         ));
     }
-    if let Some(path) = log_file {
+    if let Some(path) = context.log_file.as_deref() {
         environment.push((
             "LAUNCHER_LOG_FILE".to_string(),
             path.to_string_lossy().to_string(),
         ));
+    }
+    if let Some(path) = config
+        .input_value
+        .pointer("/stdin/path")
+        .and_then(Value::as_str)
+    {
+        environment.push(("LAUNCHER_STDIN_FILE".to_string(), path.to_string()));
     }
     Ok(PreparedProcess {
         argv: vec![
@@ -186,22 +339,26 @@ fn package_id(view_ref: &str) -> &str {
         .unwrap_or(view_ref)
 }
 
-pub(super) fn find_command(
+pub(crate) fn find_command(
     config: &Config,
     view_ref: &str,
     key: &str,
 ) -> Option<CommandInvocation> {
     let view = config.view(view_ref)?;
     view.commands.iter().find_map(|(id, command)| {
-        (normalize_key(&command.key).ok().as_deref() == Some(key)).then(|| CommandInvocation {
-            id: id.clone(),
-            source_view: view_ref.to_string(),
-            command: command.clone(),
+        (normalize_key(&command.key).ok().as_deref() == Some(key)).then(|| {
+            CommandInvocation::view(
+                CommandRef {
+                    view: view_ref.to_string(),
+                    id: id.clone(),
+                },
+                command.clone(),
+            )
         })
     })
 }
 
-pub(super) fn find_command_for_key(
+pub(crate) fn find_command_for_key(
     config: &Config,
     view_ref: &str,
     key: Key,
@@ -209,42 +366,27 @@ pub(super) fn find_command_for_key(
     find_command(config, view_ref, &key.binding_name()?)
 }
 
-/// Resolve a key against views in priority order (first match wins).
-pub(super) fn find_command_for_key_on_views<'a>(
-    config: &Config,
-    views: impl IntoIterator<Item = &'a str>,
-    key: Key,
-) -> Option<CommandInvocation> {
-    let key_name = key.binding_name()?;
-    for view_ref in views {
-        if let Some(command) = find_command(config, view_ref, &key_name) {
-            return Some(command);
-        }
-    }
-    None
-}
-
-/// Collect page commands, then overwrite normalized-key conflicts with owner commands.
-/// The returned values are the same public command objects used by runtime and Ctrl-K.
-pub(super) fn collect_page_owner_commands(
+pub(crate) fn collect_page_owner_commands(
     config: &Config,
     page_view: &str,
     owner_view: Option<&str>,
 ) -> Result<BTreeMap<String, Value>> {
     let mut commands = BTreeMap::new();
-    let Some(page) = config.view(page_view) else {
-        return Ok(commands);
-    };
-    for (id, command) in &page.commands {
-        let key = normalize_key(&command.key)
-            .with_context(|| format!("invalid command key for {page_view}/{id}"))?;
-        commands.insert(key, runtime_command_value(page_view, id, command)?);
+    if let Some(page) = config.view(page_view) {
+        for (id, command) in &page.commands {
+            let key = normalize_key(&command.key)
+                .with_context(|| format!("invalid command key for {page_view}/{id}"))?;
+            commands.insert(key, runtime_command_value(page_view, id, command)?);
+        }
     }
     if let Some(owner_view) = owner_view.filter(|owner| *owner != page_view) {
         let Some(owner) = config.view(owner_view) else {
             return Ok(commands);
         };
         for (id, command) in &owner.commands {
+            if command.scope != CommandScope::Selection {
+                continue;
+            }
             let key = normalize_key(&command.key)
                 .with_context(|| format!("invalid command key for {owner_view}/{id}"))?;
             commands.insert(key, runtime_command_value(owner_view, id, command)?);
@@ -253,7 +395,43 @@ pub(super) fn collect_page_owner_commands(
     Ok(commands)
 }
 
-pub(super) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
+pub(crate) fn resolve_visible_command(
+    config: &Config,
+    context: &CommandContext,
+    reference: &CommandRef,
+) -> Result<CommandInvocation> {
+    let owner = context
+        .selection
+        .as_ref()
+        .map(|selection| selection.owner.view_ref.as_str());
+    let visible = collect_page_owner_commands(config, &context.page.view_ref, owner)?;
+    let is_visible = visible.values().any(|value| {
+        value.get("ref").is_some_and(|value| {
+            value.get("view").and_then(Value::as_str) == Some(reference.view.as_str())
+                && value.get("id").and_then(Value::as_str) == Some(reference.id.as_str())
+        })
+    });
+    if !is_visible {
+        bail!(
+            "command {}/{} is not available in the restored View context",
+            reference.view,
+            reference.id
+        );
+    }
+    let command = config
+        .view(&reference.view)
+        .and_then(|view| view.commands.get(&reference.id))
+        .cloned()
+        .with_context(|| {
+            format!(
+                "command {:?} is not configured for view {:?}",
+                reference.id, reference.view
+            )
+        })?;
+    Ok(CommandInvocation::view(reference.clone(), command))
+}
+
+pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
     match (left == "enter", right == "enter") {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
@@ -261,77 +439,203 @@ pub(super) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
-pub(super) fn runtime_command_value(owner: &str, id: &str, command: &Command) -> Result<Value> {
+pub(crate) fn runtime_command_value(owner: &str, id: &str, command: &Command) -> Result<Value> {
     let key = normalize_key(&command.key)
         .with_context(|| format!("invalid command key for {owner}/{id}"))?;
     Ok(json!({
-        "id": format!("{owner}/{id}"),
+        "ref": {"view": owner, "id": id},
         "owner": owner,
         "key": key,
         "label": command.label,
-        "action": command.action,
     }))
+}
+
+pub(crate) fn return_value(returned: &ViewReturn) -> Value {
+    json!({
+        "source": returned.source_view,
+        "output": returned.output,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Command, CommandAction as ConfigCommandAction, RunPayload};
 
     #[test]
-    fn page_command_uses_command_owner_process_context_and_item_provenance() {
-        let mut config = crate::config::load_test_fixture().unwrap();
-        config.views.get_mut("core:default").unwrap().run_shell = Some("bash".to_string());
-        let state = config.instantiate_state("core:default").unwrap();
-        let invocation = CommandInvocation {
-            id: "page".to_string(),
-            source_view: "core:default".to_string(),
-            command: Command {
-                key: "ctrl+r".to_string(),
-                label: "Page".to_string(),
-                action: ConfigCommandAction::Run {
-                    payload: RunPayload {
-                        handler: ":".to_string(),
+    fn run_command_preserves_runtime_log_environment() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                state: config.instantiate_state("core:default").unwrap(),
+                binding_raw: String::new(),
+            },
+            selection: None,
+            runtime: serde_json::json!({}),
+            request: None,
+            output: None,
+            log_file: Some(std::path::PathBuf::from("/tmp/tui-launcher-runtime.jsonl")),
+        };
+        let invocation = CommandInvocation::view(
+            CommandRef {
+                view: "core:default".to_string(),
+                id: "run".to_string(),
+            },
+            Command {
+                key: "enter".to_string(),
+                label: "Run".to_string(),
+                scope: CommandScope::View,
+                requires: crate::config::CommandRequirement::Input,
+                action: CommandAction::Run {
+                    payload: crate::config::RunPayload {
+                        handler: "printf '%s' \"$LAUNCHER_LOG_FILE\"".to_string(),
                         shell: None,
                         exit: false,
                     },
                 },
             },
-        };
-        let metadata = serde_json::json!({"kind": "app"});
-        let action = prepare_command_action(
+        );
+        let prepared = prepare_command_action(
             &config,
-            invocation,
-            CommandContext {
-                active_view: "core:default",
-                state: &state,
-                binding_raw: "committed page query",
-                runtime: &Value::Null,
-                item: Some(CommandItem {
-                    text: "Terminal",
-                    value: Some("terminal.desktop"),
-                    metadata: &metadata,
-                    source_view: "apps:main",
-                }),
-                log_file: None,
+            CommandExecution {
+                invocation,
+                context,
             },
         )
         .unwrap();
-        let CommandAction::Execute { prepared, .. } = action else {
-            panic!("expected prepared run command");
+        let PreparedAction::Execute { prepared, .. } = prepared else {
+            panic!("run action was not prepared for execution");
         };
-        let environment = prepared.environment.into_iter().collect::<BTreeMap<_, _>>();
-        assert_eq!(prepared.argv[0], "bash");
         assert_eq!(
-            prepared.current_dir.as_deref(),
-            config.plugin_root("core:default")
+            prepared
+                .environment
+                .iter()
+                .find(|(key, _)| key == "LAUNCHER_LOG_FILE")
+                .map(|(_, value)| value.as_str()),
+            Some("/tmp/tui-launcher-runtime.jsonl")
         );
-        assert_eq!(environment["LAUNCHER_PLUGIN"], "core");
-        assert_eq!(environment["LAUNCHER_VIEW"], "core:default");
-        assert_eq!(environment["LAUNCHER_VIEW_REF"], "core:default");
-        assert_eq!(environment["LAUNCHER_QUERY"], "committed page query");
-        assert_eq!(environment["LAUNCHER_ITEM_VIEW_REF"], "apps:main");
-        assert_eq!(environment["LAUNCHER_ITEM_PLUGIN"], "apps");
-        assert_eq!(environment["LAUNCHER_VALUE"], "terminal.desktop");
+    }
+
+    #[test]
+    fn edit_input_rejects_a_cursor_between_utf8_code_units() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                state: config.instantiate_state("core:default").unwrap(),
+                binding_raw: String::new(),
+            },
+            selection: None,
+            runtime: serde_json::json!({}),
+            request: None,
+            output: None,
+            log_file: None,
+        };
+        let action = CommandAction::EditInput {
+            payload: crate::config::EditInputPayload {
+                value: toml::Value::String("\u{e9}".to_string()),
+                cursor: Some(toml::Value::Integer(1)),
+            },
+        };
+        assert!(
+            prepare_continuation(
+                &config,
+                &action,
+                CommandOrigin::View(CommandRef {
+                    view: "core:default".to_string(),
+                    id: "views".to_string(),
+                }),
+                context,
+                &serde_json::json!({}),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn view_command_ids_cannot_be_misclassified_as_chrome_origins() {
+        let mut config = crate::config::load_test_fixture().unwrap();
+        config
+            .views
+            .get_mut("core:default")
+            .unwrap()
+            .commands
+            .insert(
+                "__chrome_footer_local".to_string(),
+                Command {
+                    key: "ctrl+l".to_string(),
+                    label: "Local".to_string(),
+                    scope: CommandScope::View,
+                    requires: crate::config::CommandRequirement::Input,
+                    action: CommandAction::Return {
+                        payload: crate::config::ReturnPayload::default(),
+                    },
+                },
+            );
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                state: config.instantiate_state("core:default").unwrap(),
+                binding_raw: String::new(),
+            },
+            selection: None,
+            runtime: serde_json::json!({}),
+            request: None,
+            output: None,
+            log_file: None,
+        };
+        let action = CommandAction::EditInput {
+            payload: crate::config::EditInputPayload {
+                value: toml::Value::String("restored".to_string()),
+                cursor: None,
+            },
+        };
+
+        let prepared = prepare_continuation(
+            &config,
+            &action,
+            CommandOrigin::View(CommandRef {
+                view: "core:default".to_string(),
+                id: "__chrome_footer_local".to_string(),
+            }),
+            context,
+            &serde_json::Value::Null,
+        )
+        .unwrap();
+        assert!(matches!(
+            prepared,
+            PreparedAction::EditInput { value, cursor }
+                if value == "restored" && cursor == "restored".len()
+        ));
+    }
+
+    #[test]
+    fn opaque_command_refs_are_strict_and_revalidated_against_the_restored_context() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                state: config.instantiate_state("core:default").unwrap(),
+                binding_raw: String::new(),
+            },
+            selection: None,
+            runtime: serde_json::json!({}),
+            request: None,
+            output: None,
+            log_file: None,
+        };
+        let forged = CommandRef {
+            view: "sys:main".to_string(),
+            id: "run".to_string(),
+        };
+        assert!(resolve_visible_command(&config, &context, &forged).is_err());
+        assert!(
+            serde_json::from_value::<CommandRef>(serde_json::json!({
+                "view": "core:default",
+                "id": "views",
+                "action": "run"
+            }))
+            .is_err()
+        );
     }
 }

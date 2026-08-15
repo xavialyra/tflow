@@ -25,7 +25,11 @@ use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "A dmenu-style TUI workflow launcher")]
+#[command(
+    author,
+    version,
+    about = "A generic TUI workflow host for View-based CLI plugins"
+)]
 struct Args {
     /// Path to a TOML configuration file.
     #[arg(short, long)]
@@ -66,7 +70,10 @@ fn main() -> Result<()> {
     let explicit_view = args.view.is_some();
     let root_view = match args.view {
         Some(selector) => config.resolve_view(&selector)?,
-        None => config.default_view.clone(),
+        None => config
+            .default_view
+            .clone()
+            .context("no default_view configured; specify a View on the command line")?,
     };
     let state = config.bind_invocation_state(&root_view, &args.view_options)?;
     let input = invocation::InputArtifact::capture()?;

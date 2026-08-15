@@ -4,7 +4,7 @@ use crate::engine::api::CommandInvocation;
 use crate::engine::runtime::RuntimeStore;
 use crate::runtime_log::{LogLevel, LogRecord, RuntimeLog};
 use crate::state::StateInstance;
-use std::path::Path;
+use serde_json::Value;
 use std::time::{Duration, Instant};
 
 pub(crate) const ERROR_DISPLAY_DURATION: Duration = Duration::from_secs(5);
@@ -13,6 +13,7 @@ pub(crate) struct EngineHost<'a> {
     pub(crate) config: &'a Config,
     pub(crate) input: &'a InputBuffer,
     pub(crate) state: &'a StateInstance,
+    pub(crate) request: &'a Option<Value>,
     pub(crate) runtime: &'a mut RuntimeStore,
     pub(crate) runtime_log: &'a mut RuntimeLog,
     pub(crate) active_error: &'a mut Option<LogRecord>,
@@ -20,12 +21,12 @@ pub(crate) struct EngineHost<'a> {
 }
 
 impl<'a> EngineHost<'a> {
-    pub(crate) fn log_file(&self) -> Option<&Path> {
-        self.runtime_log.path()
-    }
-
     pub(crate) fn record_error(&mut self, invocation: &CommandInvocation, message: &str) {
-        self.record_error_message(Some(&invocation.source_view), Some(&invocation.id), message);
+        self.record_error_message(
+            Some(invocation.source_view()),
+            Some(invocation.id()),
+            message,
+        );
     }
 
     pub(crate) fn record_error_message(
@@ -51,8 +52,8 @@ impl<'a> EngineHost<'a> {
             self.clear_error();
             self.runtime_log.record(
                 LogLevel::Info,
-                Some(&invocation.source_view),
-                Some(&invocation.id),
+                Some(invocation.source_view()),
+                Some(invocation.id()),
                 status,
             );
         } else {

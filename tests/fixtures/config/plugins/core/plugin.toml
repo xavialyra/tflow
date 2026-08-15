@@ -2,9 +2,6 @@
 api = 1
 name = "core"
 
-[views.default]
-alias = "core"
-
 [views.default.engine]
 type = "picker"
 
@@ -12,13 +9,7 @@ type = "picker"
 show_prefix = true
 
 [[views.default.engine.config.feeds]]
-view = "sys:main"
-
-[[views.default.engine.config.feeds]]
-view = "shell:menu"
-
-[[views.default.engine.config.feeds]]
-view = "apps:main"
+view = "*:main"
 
 [views.messages]
 alias = "log"
@@ -28,8 +19,3 @@ type = "picker"
 
 [views.messages.engine.config]
 items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
-
-[views.command.engine]
-type = "picker"
-
-[views.command.engine.config]

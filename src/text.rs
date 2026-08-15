@@ -1,10 +1,3 @@
-pub(crate) fn matches_query(text: &str, query: &str) -> bool {
-    let folded = text.to_lowercase();
-    query
-        .split_whitespace()
-        .all(|token| folded.contains(&token.to_lowercase()))
-}
-
 pub(crate) fn sanitize_text(text: &str) -> String {
     sanitize_terminal_text(text).trim().to_string()
 }
@@ -64,12 +57,6 @@ pub(crate) fn sanitize_terminal_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn matches_all_query_tokens() {
-        assert!(matches_query("Restart API service", "api start"));
-        assert!(!matches_query("Restart API service", "api database"));
-    }
 
     #[test]
     fn terminal_sanitizer_preserves_printable_spacing() {

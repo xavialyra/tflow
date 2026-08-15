@@ -11,13 +11,11 @@ type = "picker"
 
 [views.main.engine.config]
 items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
-prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
 
 [views.main.query]
 type = "object"
 input_order = ["initial"]
-prompt = { type = "string", nullable = true }
 initial = { type = "string", default = "" }
 dmenu0 = { type = "boolean", default = false }
 index = { type = "boolean", default = false }
@@ -27,15 +25,13 @@ match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
 [views.main.engine.config.bindings]
-open_commands = []
-open_completion = []
 back = []
 exit = ["escape", "ctrl+c", "ctrl+d"]
 
 [views.main.commands.accept]
 key = "enter"
 label = "Accept"
-type = "complete"
+type = "return"
 
 [views.main.commands.accept.payload]
 handler = "scripts/result.sh"

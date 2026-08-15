@@ -150,6 +150,14 @@ mod tests {
                 .is_err()
         );
 
+        let bound_embedded = view(
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'escape'\nlabel = 'Cancel'\ntype = 'return'",
+        );
+        let error = registry
+            .validate_config("bound-embedded", &bound_embedded)
+            .expect_err("embedded View commands should be rejected");
+        assert!(error.to_string().contains("cannot define View commands"));
+
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());
 

@@ -13,6 +13,7 @@ pub(crate) struct EngineChrome {
     pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) commands: Vec<(String, String)>,
+    pub(crate) overflow_command: Option<(String, String)>,
     pub(crate) presentation: ChromePresentation,
 }
 
@@ -31,46 +32,17 @@ impl FooterContent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InputPrefix {
-    text: String,
-    removable: bool,
-}
-
-impl InputPrefix {
-    pub(crate) fn context(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            removable: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ChromePresentation {
     layout: ChromeLayout,
-    input_prompt: Option<String>,
-    input_context_prefix: Option<InputPrefix>,
     input_muted: bool,
     recognized_input_prefix_end: Option<usize>,
     footer: Option<FooterContent>,
 }
 
 impl ChromePresentation {
-    pub(crate) fn with_input_prefix(prefix: &str) -> Self {
-        Self {
-            input_prompt: Some(prefix.to_string()),
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn with_recognized_input_prefix(mut self, end: usize) -> Self {
         self.recognized_input_prefix_end = Some(end);
-        self
-    }
-
-    pub(crate) fn with_input_context_prefix(mut self, prefix: InputPrefix) -> Self {
-        self.input_context_prefix = Some(prefix);
         self
     }
 
@@ -222,11 +194,6 @@ impl InputBuffer {
         self.raw.clear();
         self.cursor = 0;
         true
-    }
-
-    pub(crate) fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
-        self.raw.replace_range(start..end, replacement);
-        self.cursor = start + replacement.len();
     }
 }
 
@@ -544,13 +511,12 @@ impl ChromeFrame {
         engine: EngineChrome,
         error: Option<&str>,
     ) -> Self {
-        Self::compose_with_cursor(width, route, true, input, input.len(), engine, error)
+        Self::compose_with_cursor(width, Some(route), input, input.len(), engine, error)
     }
 
     pub(crate) fn compose_with_cursor(
         width: usize,
-        route: &RouteDisplay,
-        show_route_label: bool,
+        route: Option<&RouteDisplay>,
         input: &str,
         input_cursor: usize,
         engine: EngineChrome,
@@ -560,12 +526,11 @@ impl ChromeFrame {
             title,
             status,
             commands,
+            overflow_command,
             presentation,
         } = engine;
         let ChromePresentation {
             layout,
-            input_prompt,
-            input_context_prefix,
             input_muted,
             recognized_input_prefix_end,
             footer,
@@ -583,24 +548,22 @@ impl ChromeFrame {
                 title.as_deref(),
                 status.as_deref().unwrap_or(""),
                 &commands,
+                overflow_command.as_ref(),
             )
         };
-        let prompt = input_prompt.unwrap_or_else(|| " ".repeat(layout.input.padding.left));
-        let (input_prefix, input_prefix_highlight) = match input_context_prefix {
-            Some(context) => {
-                debug_assert!(!context.removable);
-                let start = prompt.len();
-                let highlighted = context.text.trim_end_matches(char::is_whitespace);
-                let end = start.saturating_add(highlighted.len());
+        let left_padding = " ".repeat(layout.input.padding.left);
+        let (input_prefix, input_prefix_highlight) = match route {
+            Some(route) => {
+                let route_label = route.label();
+                let start = left_padding.len();
+                let end = start.saturating_add(route_label.len());
                 (
-                    format!("{}{}", prompt, context.text),
+                    format!("{}{} ", left_padding, route_label),
                     (start < end).then_some((start, end)),
                 )
             }
-            None => (prompt, None),
+            None => (left_padding, None),
         };
-        let _ = show_route_label;
-        let _ = route;
         Self::compose_with_layout(
             width,
             layout,
@@ -833,12 +796,43 @@ fn footer_line(
     title: Option<&str>,
     status: &str,
     commands: &[(String, String)],
+    overflow_command: Option<&(String, String)>,
 ) -> FooterContent {
     if width == 0 {
         return FooterContent::default();
     }
     let left = footer_label(title, status);
-    let right = command_footer(commands);
+    let mut visible_commands = commands.to_vec();
+    let complete = command_footer(commands);
+    let separator_width = 2;
+    let complete_separator = if !left.is_empty() && !complete.text.is_empty() {
+        separator_width
+    } else {
+        0
+    };
+    let complete_width = UnicodeWidthStr::width(left.as_str())
+        + complete_separator
+        + UnicodeWidthStr::width(complete.text.as_str());
+    if complete_width > width
+        && let Some(overflow_command) = overflow_command
+    {
+        visible_commands.clear();
+        visible_commands.push(overflow_command.clone());
+        for command in commands {
+            let mut candidate = visible_commands.clone();
+            candidate.insert(candidate.len() - 1, command.clone());
+            let right = command_footer(&candidate);
+            let candidate_separator = if left.is_empty() { 0 } else { separator_width };
+            let needed = UnicodeWidthStr::width(left.as_str())
+                + candidate_separator
+                + UnicodeWidthStr::width(right.text.as_str());
+            if needed > width {
+                break;
+            }
+            visible_commands = candidate;
+        }
+    }
+    let right = command_footer(&visible_commands);
     if right.text.is_empty() {
         return FooterContent::plain(clip(&left, width));
     }
@@ -961,6 +955,10 @@ fn display_binding(key: &str) -> String {
     }
     key.strip_prefix("alt+")
         .map(|character| format!("Alt-{}", character.to_ascii_uppercase()))
+        .or_else(|| {
+            key.strip_prefix("ctrl+")
+                .map(|character| format!("Ctrl-{}", character.to_ascii_uppercase()))
+        })
         .unwrap_or_else(|| key.to_string())
 }
 
@@ -1047,7 +1045,7 @@ mod tests {
         assert_eq!(frame.divider, "─".repeat(78));
         assert_eq!(UnicodeWidthStr::width(frame.divider.as_str()), 78);
         assert_eq!(frame.input, "terminal");
-        assert_eq!(frame.input_line(), "terminal");
+        assert_eq!(frame.input_line(), "app terminal");
         assert!(frame.footer.starts_with("12 results"));
         assert!(frame.footer.ends_with("Enter Open"));
         assert!(!frame.footer.ends_with("| Enter Open"));
@@ -1057,26 +1055,18 @@ mod tests {
     }
 
     #[test]
-    fn input_context_prefix_is_rendered_separately_from_query_input() {
+    fn router_alias_is_rendered_separately_from_query_input() {
         let frame = ChromeFrame::compose_with_cursor(
             80,
-            &route(),
-            false,
+            Some(&route()),
             "query",
             5,
-            EngineChrome {
-                presentation: ChromePresentation::default()
-                    .with_input_context_prefix(InputPrefix::context("apps:default ")),
-                ..EngineChrome::default()
-            },
+            EngineChrome::default(),
             None,
         );
 
-        assert_eq!(frame.input_line(), "apps:default query");
-        assert_eq!(
-            frame.input_prefix_highlight,
-            Some((0, "apps:default".len()))
-        );
+        assert_eq!(frame.input_line(), "app query");
+        assert_eq!(frame.input_prefix_highlight, Some((0, "app".len())));
         assert_eq!(frame.input, "query");
     }
 
@@ -1087,14 +1077,11 @@ mod tests {
 
         let frame = ChromeFrame::compose_with_cursor(
             80,
-            &route(),
-            false,
+            Some(&route()),
             "Show date",
             "Show date".len(),
             EngineChrome {
-                presentation: ChromePresentation::default()
-                    .with_input_context_prefix(InputPrefix::context("sys:output "))
-                    .with_unfocused_input(),
+                presentation: ChromePresentation::default().with_unfocused_input(),
                 ..EngineChrome::default()
             },
             None,
@@ -1104,7 +1091,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         let input_start = ChromeLayout::default().viewport_padding.left;
-        let separator = input_start + UnicodeWidthStr::width("sys:output");
+        let separator = input_start + UnicodeWidthStr::width("app");
         let query_start = separator + 1;
         let tag = buffer.cell((input_start as u16, 1)).unwrap().style();
         let separator = buffer.cell((separator as u16, 1)).unwrap().style();
@@ -1116,30 +1103,6 @@ mod tests {
         assert_eq!(separator.bg, Some(Color::Reset));
         assert_eq!(query.fg, Some(Color::Rgb(152, 147, 165)));
         assert_eq!(query.bg, Some(Color::Reset));
-    }
-
-    #[test]
-    fn input_prefix_keeps_the_default_layout_and_footer_alignment() {
-        let frame = ChromeFrame::compose_with_cursor(
-            80,
-            &route(),
-            false,
-            "query",
-            5,
-            EngineChrome {
-                status: Some("2 results".to_string()),
-                commands: vec![("enter".to_string(), "accept".to_string())],
-                presentation: ChromePresentation::with_input_prefix("> "),
-                ..EngineChrome::default()
-            },
-            None,
-        );
-
-        assert_eq!(frame.layout, ChromeLayout::default());
-        assert_eq!(frame.input_line(), "> query");
-        assert!(frame.footer.starts_with("2 results"));
-        assert!(frame.footer.ends_with("Enter accept"));
-        assert_eq!(frame.divider, "─".repeat(78));
     }
 
     #[test]
@@ -1194,17 +1157,31 @@ mod tests {
     }
 
     #[test]
-    fn compose_hides_route_label_when_requested() {
+    fn child_input_shows_the_route_label() {
         let frame = ChromeFrame::compose_with_cursor(
             80,
-            &route(),
-            false,
+            Some(&route()),
             "",
             0,
             EngineChrome::default(),
             None,
         );
+        assert_eq!(frame.input_line(), "app ");
         assert_eq!(frame.divider, "─".repeat(78));
+    }
+
+    #[test]
+    fn root_input_hides_the_route_label() {
+        let frame = ChromeFrame::compose_with_cursor(
+            80,
+            None,
+            "query",
+            "query".len(),
+            EngineChrome::default(),
+            None,
+        );
+        assert_eq!(frame.input_line(), "query");
+        assert_eq!(frame.input_prefix_highlight, None);
     }
 
     #[test]
@@ -1219,6 +1196,40 @@ mod tests {
         input.move_home();
         input.delete_forward();
         assert_eq!(input.raw, "c");
+    }
+
+    #[test]
+    fn footer_only_shows_the_overflow_binding_when_commands_do_not_fit() {
+        let wide = ChromeFrame::compose(
+            80,
+            &route(),
+            "",
+            EngineChrome {
+                status: Some("1 result".to_string()),
+                commands: vec![("enter".to_string(), "Open".to_string())],
+                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+        assert!(!wide.footer.contains("Ctrl-K"));
+
+        let narrow = ChromeFrame::compose(
+            32,
+            &route(),
+            "",
+            EngineChrome {
+                status: Some("1 result".to_string()),
+                commands: vec![
+                    ("enter".to_string(), "Open".to_string()),
+                    ("ctrl+p".to_string(), "Preview".to_string()),
+                ],
+                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
+                ..EngineChrome::default()
+            },
+            None,
+        );
+        assert!(narrow.footer.contains("Ctrl-K"));
     }
 
     #[test]

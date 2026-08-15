@@ -59,6 +59,7 @@ pub(crate) struct ItemsRequest {
     pub(crate) binding_raw: String,
     /// Coordinating page state for single-source pickers; ignored for feeds pages.
     pub(crate) page_state: StateInstance,
+    pub(crate) request: Option<Value>,
 }
 
 pub(crate) struct ItemsResponse {
@@ -96,6 +97,7 @@ pub(crate) fn submit_items_task(
                 &request.view,
                 &request.page_state,
                 &request.binding_raw,
+                request.request.as_ref(),
                 &runtime_value,
                 &cancellation,
             )
@@ -118,6 +120,7 @@ fn load_items_for_page(
     view_ref: &str,
     page_state: &StateInstance,
     binding_raw: &str,
+    request: Option<&Value>,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
@@ -154,7 +157,7 @@ fn load_items_for_page(
                 binding_raw: binding_raw.to_string(),
             },
         );
-        let value = match config.get(
+        let value = match config.get_with_references(
             ConfigReadContext {
                 scope: ConfigScope::View(&state),
                 runtime,
@@ -163,6 +166,8 @@ fn load_items_for_page(
                 binding_raw: this_binding_raw,
             },
             &["items"],
+            request,
+            None,
         ) {
             Ok(Some(value)) => value,
             Ok(None) => continue,
@@ -185,7 +190,15 @@ fn load_items(
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let page_state = config.instantiate_state(view_ref)?;
-    load_items_for_page(config, view_ref, &page_state, "", runtime, cancellation)
+    load_items_for_page(
+        config,
+        view_ref,
+        &page_state,
+        "",
+        None,
+        runtime,
+        cancellation,
+    )
 }
 
 fn append_items(
@@ -285,6 +298,8 @@ mod tests {
                     Command {
                         key: "enter".to_string(),
                         label: "Open".to_string(),
+                        scope: crate::config::CommandScope::Selection,
+                        requires: crate::config::CommandRequirement::Items,
                         action: CommandAction::Run {
                             payload: crate::config::RunPayload {
                                 handler: ":".to_string(),
@@ -297,8 +312,8 @@ mod tests {
             },
         );
         Config {
-            default_view: "core:default".to_string(),
-            command_view: "core:command".to_string(),
+            default_view: Some("core:default".to_string()),
+            chrome: crate::config::ChromeConfig::default(),
             views,
             plugins: BTreeMap::from([
                 (
@@ -366,6 +381,67 @@ mod tests {
                 .iter()
                 .all(|item| item.feed_id == FeedId("apps:main".to_string()))
         );
+    }
+
+    #[test]
+    fn called_picker_items_can_read_request_args() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let state = config.instantiate_state("selectors:commands").unwrap();
+        let request = serde_json::json!({
+            "args": {
+                "commands": [{
+                    "ref": {"view": "apps:main", "id": "open"},
+                    "owner": "apps:main",
+                    "key": "enter",
+                    "label": "Open",
+                }],
+            }
+        });
+        let result = load_items_for_page(
+            &config,
+            "selectors:commands",
+            &state,
+            "open",
+            Some(&request),
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert!(result.items.iter().any(|item| item.metadata["command"]
+            == serde_json::json!({"view": "apps:main", "id": "open"})));
+    }
+
+    #[test]
+    fn called_feed_providers_receive_the_page_request_args() {
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ request:args.items }}".into());
+        let state = config.instantiate_state("core:default").unwrap();
+        let request = serde_json::json!({
+            "args": {"items": [{"label": "Delegated"}]}
+        });
+
+        let result = load_items_for_page(
+            &config,
+            "core:default",
+            &state,
+            "",
+            Some(&request),
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].text, "Delegated");
+        assert_eq!(result.items[0].source_view, "apps:main");
     }
 
     #[test]
@@ -456,6 +532,7 @@ mod tests {
             "core:default",
             &page_state,
             "fire",
+            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -528,6 +605,7 @@ mod tests {
             "core:default",
             &page_state,
             "",
+            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -644,6 +722,7 @@ mod tests {
             "core:default",
             &page_state,
             "",
+            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -703,6 +782,7 @@ mod tests {
             "core:default",
             &page_state,
             "needle",
+            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -816,6 +896,7 @@ mod tests {
             "core:default",
             &page_state,
             "",
+            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )

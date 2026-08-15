@@ -4,23 +4,20 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RouteResolution {
     NotMatched,
-    Current {
-        query: String,
-    },
-    Navigate {
-        target: ViewRef,
-        query: String,
-    },
-    Ambiguous {
-        alias: String,
-        targets: Vec<ViewRef>,
-    },
+    Current { query: String },
+    Navigate { target: ViewRef, query: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RouteDisplay {
     pub(crate) view_ref: ViewRef,
     pub(crate) alias: Option<String>,
+}
+
+impl RouteDisplay {
+    pub(crate) fn label(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.view_ref)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,16 +32,12 @@ impl ViewCandidate {
     pub(crate) fn primary_label(&self) -> &str {
         self.alias.as_deref().unwrap_or(&self.view_ref)
     }
-
-    pub(crate) fn secondary_label(&self) -> &str {
-        &self.view_ref
-    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Router {
     views: BTreeSet<ViewRef>,
-    aliases: BTreeMap<String, Vec<ViewRef>>,
+    aliases: BTreeMap<String, ViewRef>,
     display: BTreeMap<ViewRef, RouteDisplay>,
     candidates: Vec<ViewCandidate>,
 }
@@ -52,7 +45,7 @@ pub(crate) struct Router {
 impl Router {
     pub(crate) fn new(config: &Config) -> Self {
         let views = config.views.keys().cloned().collect::<BTreeSet<_>>();
-        let mut aliases = BTreeMap::<String, Vec<ViewRef>>::new();
+        let mut aliases = BTreeMap::<String, ViewRef>::new();
         let mut display = BTreeMap::new();
         let mut candidates = Vec::with_capacity(config.views.len());
         for (view_ref, view) in &config.views {
@@ -66,10 +59,7 @@ impl Router {
                 .map(|metadata| metadata.name.clone())
                 .unwrap_or_else(|| plugin.to_string());
             if let Some(alias) = &view.alias {
-                aliases
-                    .entry(alias.clone())
-                    .or_default()
-                    .push(view_ref.clone());
+                aliases.insert(alias.clone(), view_ref.clone());
             }
             display.insert(
                 view_ref.clone(),
@@ -85,10 +75,6 @@ impl Router {
                 engine_type: view.selected_engine_type().to_string(),
             });
         }
-        for targets in aliases.values_mut() {
-            targets.sort();
-            targets.dedup();
-        }
         candidates.sort_by(|left, right| left.view_ref.cmp(&right.view_ref));
         Self {
             views,
@@ -98,11 +84,12 @@ impl Router {
         }
     }
 
-    pub(crate) fn complete_views(&self, query: &str) -> Vec<ViewCandidate> {
+    pub(crate) fn complete_views(&self, query: &str, current_view_ref: &str) -> Vec<ViewCandidate> {
         let query = query.trim().to_lowercase();
         let mut matches = self
             .candidates
             .iter()
+            .filter(|candidate| candidate.view_ref != current_view_ref)
             .filter_map(|candidate| {
                 view_match_score(candidate, &query).map(|score| (score, candidate.clone()))
             })
@@ -126,30 +113,27 @@ impl Router {
             return RouteResolution::NotMatched;
         }
 
-        let targets = if selector.contains(':') {
+        let target = if selector.contains(':') {
             if !valid_view_ref(selector) || !self.views.contains(selector) {
                 return RouteResolution::NotMatched;
             }
-            vec![selector.to_string()]
+            selector
         } else {
-            let Some(targets) = self.aliases.get(selector) else {
+            let Some(target) = self.aliases.get(selector) else {
                 return RouteResolution::NotMatched;
             };
-            targets.clone()
+            target
         };
 
-        match targets.as_slice() {
-            [target] if target == current_view_ref => RouteResolution::Current {
+        if target == current_view_ref {
+            RouteResolution::Current {
                 query: query.to_string(),
-            },
-            [target] => RouteResolution::Navigate {
-                target: target.clone(),
+            }
+        } else {
+            RouteResolution::Navigate {
+                target: target.to_string(),
                 query: query.to_string(),
-            },
-            _ => RouteResolution::Ambiguous {
-                alias: selector.to_string(),
-                targets,
-            },
+            }
         }
     }
 
@@ -163,22 +147,8 @@ impl Router {
             RouteResolution::Current { .. } | RouteResolution::Navigate { .. } => {
                 Some(selector.len())
             }
-            RouteResolution::NotMatched | RouteResolution::Ambiguous { .. } => None,
+            RouteResolution::NotMatched => None,
         }
-    }
-
-    pub(crate) fn recognized_prefix_tag_end(
-        &self,
-        current_view_ref: &str,
-        input: &str,
-    ) -> Option<usize> {
-        let prefix_end = self.recognized_prefix_end(current_view_ref, input)?;
-        let separator_end = input[prefix_end..]
-            .char_indices()
-            .find(|(_, character)| !character.is_whitespace())
-            .map(|(offset, _)| prefix_end.saturating_add(offset))
-            .unwrap_or(input.len());
-        (separator_end > prefix_end).then_some(separator_end)
     }
 
     pub(crate) fn display(&self, view_ref: &str) -> RouteDisplay {
@@ -192,9 +162,9 @@ impl Router {
     }
 }
 
-fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<(u8, usize)> {
+fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<u8> {
     if query.is_empty() {
-        return Some((10, 0));
+        return Some(10);
     }
 
     let alias = candidate
@@ -212,7 +182,7 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<(u8, usize
         return None;
     }
 
-    let score = if alias == query {
+    Some(if alias == query {
         0
     } else if view_ref == query {
         1
@@ -228,8 +198,7 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<(u8, usize
         6
     } else {
         7
-    };
-    Some((score, query.len()))
+    })
 }
 
 fn split_selector(input: &str) -> Option<(&str, &str)> {
@@ -268,8 +237,8 @@ mod tests {
 
     fn config() -> Config {
         Config {
-            default_view: "core:default".to_string(),
-            command_view: "core:command".to_string(),
+            default_view: Some("core:default".to_string()),
+            chrome: crate::config::ChromeConfig::default(),
             views: BTreeMap::from([
                 ("core:default".to_string(), view(None)),
                 ("package-a:default".to_string(), view(Some("temp"))),
@@ -339,16 +308,24 @@ mod tests {
     }
 
     #[test]
-    fn recognized_prefix_tag_includes_the_separator() {
+    fn completion_searches_aliases_references_and_plugin_names() {
         let router = Router::new(&config());
         assert_eq!(
-            router.recognized_prefix_tag_end("core:default", "temp  query"),
-            Some("temp  ".len())
+            router.complete_views("det", "core:default")[0].view_ref,
+            "package-a:view2"
         );
         assert_eq!(
-            router.recognized_prefix_tag_end("core:default", "unknown query"),
-            None
+            router.complete_views("package-a:", "core:default")[0].view_ref,
+            "package-a:default"
         );
+        assert_eq!(router.complete_views("template", "core:default").len(), 2);
+        assert_eq!(
+            router.complete_views("temp", "core:default")[0]
+                .alias
+                .as_deref(),
+            Some("temp")
+        );
+        assert!(router.complete_views("core", "core:default").is_empty());
     }
 
     #[test]
@@ -361,25 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_aliases_are_ambiguous_only_when_used() {
-        let mut config = config();
-        config
-            .views
-            .insert("package-b:default".to_string(), view(Some("temp")));
-        let router = Router::new(&config);
-        assert_eq!(
-            router.resolve("core:default", "temp query"),
-            RouteResolution::Ambiguous {
-                alias: "temp".to_string(),
-                targets: vec![
-                    "package-a:default".to_string(),
-                    "package-b:default".to_string(),
-                ],
-            }
-        );
-    }
-
-    #[test]
     fn display_contains_the_optional_alias() {
         let router = Router::new(&config());
         let aliased = router.display("package-a:default");
@@ -388,30 +346,5 @@ mod tests {
         let canonical = router.display("core:default");
         assert_eq!(canonical.view_ref, "core:default");
         assert_eq!(canonical.alias, None);
-    }
-
-    #[test]
-    fn completes_all_views_by_alias_and_reference() {
-        let router = Router::new(&config());
-        let matches = router.complete_views("det");
-        assert_eq!(
-            matches
-                .iter()
-                .map(|candidate| candidate.view_ref.as_str())
-                .collect::<Vec<_>>(),
-            vec!["package-a:view2"]
-        );
-        assert_eq!(
-            router.complete_views("package-a:")[0].view_ref,
-            "package-a:default"
-        );
-    }
-
-    #[test]
-    fn completion_prefers_exact_aliases() {
-        let router = Router::new(&config());
-        let matches = router.complete_views("temp");
-        assert_eq!(matches[0].alias.as_deref(), Some("temp"));
-        assert_eq!(matches[0].view_ref, "package-a:default");
     }
 }

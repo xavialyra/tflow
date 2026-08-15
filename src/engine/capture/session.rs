@@ -1,30 +1,24 @@
-use crate::input::{InputDecoder, Key};
-use crate::terminal::Terminal;
 use crate::text::sanitize_text;
-use anyhow::Result;
 
 pub(crate) struct CaptureSession {
     title: String,
+    output: String,
     lines: Vec<String>,
     status: String,
-    decoder: InputDecoder,
 }
 
 impl CaptureSession {
     pub(crate) fn new(title: &str, output: &str, status: &str) -> Self {
         Self {
             title: title.to_string(),
+            output: output.to_string(),
             lines: capture_lines(output),
             status: status.to_string(),
-            decoder: InputDecoder::default(),
         }
     }
 
-    pub(crate) fn return_requested(&mut self, terminal: &Terminal) -> Result<bool> {
-        let bytes = terminal.read_input(80)?;
-        let mut keys = self.decoder.feed(&bytes);
-        keys.extend(self.decoder.flush_due());
-        Ok(keys.iter().any(is_return_key))
+    pub(crate) fn output(&self) -> &str {
+        &self.output
     }
 
     pub(crate) fn title(&self) -> &str {
@@ -48,17 +42,9 @@ fn capture_lines(output: &str) -> Vec<String> {
     }
 }
 
-fn is_return_key(key: &Key) -> bool {
-    matches!(
-        key,
-        Key::Ctrl(_) | Key::Escape | Key::Enter | Key::Char(_) | Key::Alt(_)
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{capture_lines, is_return_key};
-    use crate::input::Key;
+    use super::capture_lines;
 
     #[test]
     fn capture_lines_keeps_a_visible_line_for_empty_output() {
@@ -68,11 +54,5 @@ mod tests {
     #[test]
     fn capture_lines_sanitizes_each_output_line() {
         assert_eq!(capture_lines("one\x1b[31mtwo\x1b[0m"), vec!["onetwo"]);
-    }
-
-    #[test]
-    fn every_control_key_returns_from_capture() {
-        assert!(is_return_key(&Key::Ctrl('a')));
-        assert!(is_return_key(&Key::Ctrl('z')));
     }
 }

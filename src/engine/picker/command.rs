@@ -1,117 +1,142 @@
 use super::{Item, PickerView};
-use crate::config::Config;
-use crate::engine::CommandInvocation;
-use crate::engine::command::{self, CommandAction, CommandContext, CommandItem};
+use crate::config::{CommandRequirement, CommandScope, Config};
+use crate::engine::command;
+use crate::engine::{
+    CommandContext, CommandExecution, CommandInvocation, CommandOwnerContext,
+    CommandSelectionContext, EngineHost, ViewOutput, ViewOutputItem,
+};
 use crate::input::Key;
 use anyhow::{Context, Result};
-use serde_json::Value;
-use std::path::Path;
 
 impl PickerView {
-    pub(crate) fn resolve_command(&self, config: &Config, key: Key) -> Option<CommandInvocation> {
-        let frame = self.current();
-        if self.command_view_active() {
-            let item = frame.items.get(frame.selected)?;
-            let binding = item.value.as_deref()?;
-            return command::find_command(config, &item.source_view, binding);
-        }
-        // Owner commands win on key conflicts; page-level commands remain available.
-        let owner = self.selected_item_owner();
-        let page = self.current_view_ref();
-        match (owner, page) {
-            (Some(owner), page) if owner != page => {
-                command::find_command_for_key_on_views(config, [owner, page], key)
-            }
-            (Some(owner), _) => command::find_command_for_key(config, owner, key),
-            (None, page) => command::find_command_for_key(config, page, key),
-        }
-    }
-
-    pub(crate) fn prepare_command_action(
+    pub(crate) fn resolve_command(
         &self,
         config: &Config,
-        active_state: &crate::state::StateInstance,
-        runtime: &Value,
         key: Key,
-        log_file: Option<&Path>,
-    ) -> Result<Option<CommandAction>> {
-        let Some(invocation) = self.resolve_command(config, key) else {
+        input: &str,
+    ) -> Option<CommandInvocation> {
+        let page = self.current_view_ref();
+        let page_command = command::find_command_for_key(config, page, key);
+        let owner = self
+            .results_current(input)
+            .then(|| self.selected_item_owner())
+            .flatten()
+            .filter(|owner| *owner != page);
+        let owner_command = owner
+            .and_then(|owner| command::find_command_for_key(config, owner, key))
+            .filter(|invocation| invocation.command.scope == CommandScope::Selection);
+        owner_command.or(page_command)
+    }
+
+    pub(crate) fn command_requires_items(&self, config: &Config, key: Key, input: &str) -> bool {
+        if let Some(invocation) = self.resolve_command(config, key, input) {
+            return invocation.command.requires == CommandRequirement::Items;
+        }
+        if self.results_current(input) {
+            return false;
+        }
+        let requires_items = |owner: &str| {
+            command::find_command_for_key(config, owner, key).is_some_and(|invocation| {
+                invocation.command.scope == CommandScope::Selection
+                    && invocation.command.requires == CommandRequirement::Items
+            })
+        };
+        if self
+            .selected_item_owner()
+            .filter(|owner| *owner != self.current_view_ref())
+            .is_some_and(requires_items)
+        {
+            return true;
+        }
+        config
+            .feed_views(self.current_view_ref())
+            .unwrap_or_default()
+            .into_iter()
+            .any(|(owner, _)| requires_items(&owner))
+    }
+
+    pub(crate) fn prepare_command_execution(
+        &self,
+        host: &EngineHost<'_>,
+        key: Key,
+    ) -> Result<Option<CommandExecution>> {
+        let Some(invocation) = self.resolve_command(host.config, key, &host.input.raw) else {
             return Ok(None);
         };
-        let item = self.command_item();
-        let page_view = self
-            .command_page_view
-            .as_deref()
-            .unwrap_or_else(|| self.current_view_ref());
-        let page_state = self.command_page_state.as_ref().unwrap_or(active_state);
-        let page_binding_raw = self
-            .command_page_binding_raw
-            .as_deref()
-            .unwrap_or(&self.current().query);
-        let (state, binding_raw) = if invocation.source_view == page_view {
-            (page_state, page_binding_raw)
+        let context = self.command_context(host)?;
+        command::resolve_visible_command(
+            host.config,
+            &context,
+            invocation
+                .view_reference()
+                .expect("picker command invocation has a footer origin"),
+        )?;
+        Ok(Some(CommandExecution {
+            invocation,
+            context,
+        }))
+    }
+
+    pub(crate) fn command_context(&self, host: &EngineHost<'_>) -> Result<CommandContext> {
+        let page = CommandOwnerContext {
+            view_ref: self.current_view_ref().to_string(),
+            state: host.state.clone(),
+            binding_raw: self.current().query.clone(),
+        };
+        let selection = self
+            .results_current(&host.input.raw)
+            .then(|| self.current().items.get(self.current().selected))
+            .flatten()
+            .map(|item| self.selection_context(item, &page))
+            .transpose()?;
+        let output_item = selection.as_ref().map(|selection| selection.item.clone());
+        let output =
+            (output_item.is_some() || !page.binding_raw.is_empty()).then(|| ViewOutput::Selected {
+                item: output_item,
+                input: page.binding_raw.clone(),
+            });
+        Ok(CommandContext {
+            page,
+            selection,
+            runtime: host.runtime.snapshot().clone(),
+            request: host.request.clone(),
+            output,
+            log_file: host.runtime_log.path().map(std::path::Path::to_path_buf),
+        })
+    }
+
+    fn selection_context(
+        &self,
+        item: &Item,
+        page: &CommandOwnerContext,
+    ) -> Result<CommandSelectionContext> {
+        let owner = if item.source_view == page.view_ref {
+            page.clone()
         } else {
-            let context = item
-                .and_then(|item| self.feed_contexts.get(&item.feed_id))
-                .filter(|context| context.owner_view == invocation.source_view)
+            let context = self
+                .feed_contexts
+                .get(&item.feed_id)
+                .filter(|context| context.owner_view == item.source_view)
                 .with_context(|| {
                     format!(
-                        "command owner {:?} has no matching feed context",
-                        invocation.source_view
+                        "selected item owner {:?} has no matching feed context",
+                        item.source_view
                     )
                 })?;
-            (&context.state, context.binding_raw.as_str())
+            CommandOwnerContext {
+                view_ref: context.owner_view.clone(),
+                state: context.state.clone(),
+                binding_raw: context.binding_raw.clone(),
+            }
         };
-        let evaluation_runtime = self.command_evaluation_runtime(runtime);
-        command::prepare_command_action(
-            config,
-            invocation,
-            CommandContext {
-                active_view: page_view,
-                state,
-                binding_raw,
-                runtime: &evaluation_runtime,
-                item: item.map(command_item),
-                log_file,
+        Ok(CommandSelectionContext {
+            owner,
+            item: ViewOutputItem {
+                text: item.text.clone(),
+                value: item.value.clone(),
+                metadata: item.metadata.clone(),
+                source_view: item.source_view.clone(),
             },
-        )
-        .map(Some)
-    }
-
-    fn command_item(&self) -> Option<&Item> {
-        if self.command_view_active() {
-            self.command_parent_item()
-        } else {
-            self.current().items.get(self.current().selected)
-        }
-    }
-
-    pub(crate) fn command_evaluation_runtime(&self, runtime: &Value) -> Value {
-        let Some(parent_runtime) = self.command_page_runtime() else {
-            return runtime.clone();
-        };
-        let mut overlay = runtime.clone();
-        if let (Some(current), Some(view)) = (
-            parent_runtime.pointer("/view/current"),
-            overlay.get_mut("view").and_then(Value::as_object_mut),
-        ) {
-            view.insert("current".to_string(), current.clone());
-        }
-        if let (Some(input), Some(session)) = (
-            parent_runtime.pointer("/session/input"),
-            overlay.get_mut("session").and_then(Value::as_object_mut),
-        ) {
-            session.insert("input".to_string(), input.clone());
-        }
-        overlay
-    }
-}
-
-fn command_item(item: &Item) -> CommandItem<'_> {
-    CommandItem {
-        text: &item.text,
-        value: item.value.as_deref(),
-        metadata: &item.metadata,
-        source_view: &item.source_view,
+        })
     }
 }

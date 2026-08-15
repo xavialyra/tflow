@@ -1,6 +1,6 @@
 mod api;
 mod capture;
-mod command;
+pub(crate) mod command;
 mod embedded;
 mod evaluate;
 mod host;
@@ -13,9 +13,11 @@ mod session;
 mod task;
 
 pub(crate) use api::{
-    CommandInvocation, CommandPickerContext, CommandPickerItem, CommandPickerOwnerContext,
-    CompletionRequest, Engine, InputFocus, InputRefreshPolicy, InputSeed, NavigationMode,
-    NavigationRequest, ViewContext, ViewEffect, ViewInstance, ViewOutput, ViewOutputItem,
+    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
+    CommandOwnerContext, CommandRef, CommandSelectionContext, EmbeddedResultConfig,
+    EmbeddedResultFormat, Engine, InputFocus, InputRefreshPolicy, InputSeed, NavigationMode,
+    NavigationRequest, ReturnAdapter, ViewContext, ViewEffect, ViewInstance, ViewOutput,
+    ViewOutputItem, ViewReturn,
 };
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;

@@ -1,0 +1,23 @@
+[plugin]
+api = 1
+name = "selectors"
+
+[views.commands]
+alias = "commands"
+
+[views.commands.engine]
+type = "picker"
+
+[views.commands.engine.config]
+items = '{{ script("scripts/commands.sh", {commands = request:args.commands, query = this:query}) }}'
+show_prefix = true
+
+[views.commands.commands.accept]
+key = "enter"
+label = "Select"
+scope = "selection"
+requires = "items"
+type = "return"
+
+[views.commands.commands.accept.payload]
+value = "{{ runtime:view.current.selected_item.metadata.command }}"

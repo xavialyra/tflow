@@ -5,7 +5,8 @@ use serde_json::Value;
 
 pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Value>> {
     let runtime = context.runtime.read();
-    context.config.get(
+    let request = context.request.reference_value();
+    context.config.get_with_references(
         ConfigReadContext {
             scope: ConfigScope::View(context.state),
             runtime: &runtime,
@@ -14,6 +15,8 @@ pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Valu
             binding_raw: None,
         },
         &[name],
+        request.as_ref(),
+        None,
     )
 }
 

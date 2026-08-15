@@ -8,19 +8,16 @@ impl PickerView {
         &self,
         config: &Config,
         runtime: &mut RuntimeStore,
+        input: &str,
     ) -> Result<()> {
         let frame = self.current();
-        let owner = self.command_owner().map(str::to_string);
-        let page_view = self
-            .command_page_view
-            .as_deref()
-            .unwrap_or_else(|| self.current_view_ref());
-        let command_owner = if self.command_view_active() {
-            self.command_view_owner()
-        } else {
-            self.selected_item_owner()
-        };
-        let commands = command::collect_page_owner_commands(config, page_view, command_owner)?
+        let selected_owner = self
+            .results_current(input)
+            .then(|| self.selected_item_owner())
+            .flatten();
+        let owner = selected_owner.or(Some(self.current_view_ref()));
+        let page_view = self.current_view_ref();
+        let commands = command::collect_page_owner_commands(config, page_view, selected_owner)?
             .into_values()
             .collect::<Vec<_>>();
         let items = frame
@@ -28,11 +25,11 @@ impl PickerView {
             .iter()
             .map(runtime_item_value)
             .collect::<Vec<_>>();
-        let selected_item = if self.command_view_active() {
-            self.command_parent_item().map(runtime_item_value)
-        } else {
-            frame.items.get(frame.selected).map(runtime_item_value)
-        };
+        let selected_item = self
+            .results_current(input)
+            .then(|| frame.items.get(frame.selected))
+            .flatten()
+            .map(runtime_item_value);
         let log_file = self
             .log_file()
             .map(|path| path.to_string_lossy().to_string());
@@ -93,7 +90,7 @@ impl PickerView {
         current.insert(
             "command_owner".to_string(),
             match owner {
-                Some(owner) => serde_json::Value::String(owner),
+                Some(owner) => serde_json::Value::String(owner.to_string()),
                 None => serde_json::Value::Null,
             },
         );

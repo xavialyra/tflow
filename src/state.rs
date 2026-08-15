@@ -253,7 +253,7 @@ impl StateRegistry {
                 .with_context(|| format!("invalid query parameter --{}", name))?;
             state.values.insert(name.to_string(), value);
         }
-        validate_required(&schema, &state.values)?;
+        validate_required(schema, &state.values)?;
         if !assigned.is_empty() {
             state.revision = state.revision.wrapping_add(1);
         }

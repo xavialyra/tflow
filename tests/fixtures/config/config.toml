@@ -1,10 +1,23 @@
 # Development and integration-test fixture; not a distributed default configuration.
 default_view = "core:default"
-command_view = "core:command"
+[chrome.footer.bindings.commands]
+key = "ctrl+k"
+label = "Commands"
+visibility = "overflow"
+type = "call"
+
+[chrome.footer.bindings.commands.payload]
+target = "selectors:commands"
+args = { commands = "{{ runtime:view.current.command }}" }
+
+[chrome.footer.bindings.commands.payload.then]
+type = "invoke"
+
+[chrome.footer.bindings.commands.payload.then.payload]
+command = "{{ return:output.value }}"
 
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
-open_commands = ["ctrl+k"]
 toggle_preview = ["ctrl+p"]
 back = ["escape"]
 select_previous = ["up"]

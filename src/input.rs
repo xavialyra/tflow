@@ -99,6 +99,11 @@ impl InputDecoder {
         self.parse()
     }
 
+    pub(crate) fn take_pending_raw(&mut self) -> Vec<u8> {
+        self.escape_since = None;
+        std::mem::take(&mut self.pending)
+    }
+
     pub(crate) fn flush_due(&mut self) -> Vec<DecodedInput> {
         if self
             .escape_since
@@ -352,6 +357,18 @@ mod tests {
         assert_eq!(
             decoder.flush_due(),
             vec![decoded(Some(Key::Escape), b"\x1b")]
+        );
+    }
+
+    #[test]
+    fn pending_raw_bytes_can_be_transferred_between_input_consumers() {
+        let mut decoder = InputDecoder::default();
+        assert_eq!(decoder.feed(&[0xc3]), Vec::new());
+        assert_eq!(decoder.take_pending_raw(), vec![0xc3]);
+        assert!(decoder.take_pending_raw().is_empty());
+        assert_eq!(
+            decoder.feed(b"a"),
+            vec![decoded(Some(Key::Char('a')), b"a")]
         );
     }
 

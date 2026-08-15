@@ -60,6 +60,8 @@ pub struct TreeReferences<'a> {
     pub this: &'a Value,
     pub runtime: &'a Value,
     pub input: &'a Value,
+    pub request: Option<&'a Value>,
+    pub returned: Option<&'a Value>,
 }
 
 impl ReferenceResolver for TreeReferences<'_> {
@@ -69,6 +71,12 @@ impl ReferenceResolver for TreeReferences<'_> {
             "this" => self.this,
             "runtime" => self.runtime,
             "input" => self.input,
+            "request" => self
+                .request
+                .ok_or_else(|| anyhow::anyhow!("request references are not available here"))?,
+            "return" => self
+                .returned
+                .ok_or_else(|| anyhow::anyhow!("return references are not available here"))?,
             _ => bail!("unknown reference namespace {:?}", namespace),
         };
         lookup_path(root, path)
@@ -104,6 +112,7 @@ impl Template {
         matches!(self.parts.as_slice(), [TemplatePart::Expr(_)])
     }
 
+    #[cfg(test)]
     pub fn evaluate_value(&self, context: &mut EvalContext<'_>) -> Result<Value> {
         if let [TemplatePart::Expr(expression)] = self.parts.as_slice() {
             return evaluate_expression(expression, context, &mut BTreeSet::new());
@@ -697,6 +706,8 @@ mod tests {
             this: empty,
             runtime,
             input: empty,
+            request: None,
+            returned: None,
         }));
         EvalContext {
             references,
@@ -753,6 +764,8 @@ mod tests {
             this: &this,
             runtime: &runtime,
             input: &input,
+            request: None,
+            returned: None,
         };
         let mut methods = TestMethods;
         let mut evaluation = EvalContext {
@@ -778,6 +791,8 @@ mod tests {
             this: &Value::Null,
             runtime: &runtime,
             input: &input,
+            request: None,
+            returned: None,
         };
         let mut methods = TestMethods;
         let mut evaluation = EvalContext {

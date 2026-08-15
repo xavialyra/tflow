@@ -17,6 +17,7 @@ pub(crate) const MANAGED_ENVIRONMENT: &[&str] = &[
     "LAUNCHER_VIEW_REF",
 ];
 
+#[derive(Clone)]
 pub(crate) struct PreparedProcess {
     pub(crate) argv: Vec<String>,
     pub(crate) environment: Vec<(String, String)>,

@@ -11,7 +11,6 @@ use self::session::PickerOptions;
 pub(crate) use self::session::PickerView;
 use super::{Engine, ViewContext, ViewInstance, validate_fields};
 use crate::config::{ConfigReadContext, ConfigScope, ENGINE_PICKER, View};
-use crate::text::sanitize_terminal_text;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -22,7 +21,6 @@ pub(crate) use items::Item;
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PendingAction {
     Activate(crate::input::Key),
-    OpenCommandView,
 }
 
 pub(crate) struct PickerEngine;
@@ -36,9 +34,8 @@ impl Engine for PickerEngine {
         validate_fields(
             name,
             view,
-            &["bindings", "prompt", "show_prefix", "layout", "preview"],
+            &["bindings", "show_prefix", "layout", "preview"],
         )?;
-        validate_static_string(view.engine_field("prompt"), "prompt")?;
         validate_static_bool(view.engine_field("show_prefix"), "show_prefix")?;
         validate_static_table(view.engine_field("layout"), "layout")?;
         validate_static_table(view.engine_field("preview"), "preview")?;
@@ -57,78 +54,41 @@ impl Engine for PickerEngine {
             },
             &["defaults", "picker", "bindings"],
         )?;
-        let view_bindings = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: None,
-                binding_raw: None,
-            },
-            &["bindings"],
-        )?;
-        let prompt = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: None,
-                binding_raw: None,
-            },
-            &["prompt"],
-        )?;
-        let show_prefix = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: None,
-                binding_raw: None,
-            },
-            &["show_prefix"],
-        )?;
-        let layout = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: None,
-                binding_raw: None,
-            },
-            &["layout"],
-        )?;
-        let preview = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: None,
-                binding_raw: None,
-            },
-            &["preview"],
-        )?;
+        let request = context.request.reference_value();
+        let get_view_field = |path: &[&str]| {
+            context.config.get_with_references(
+                ConfigReadContext {
+                    scope: ConfigScope::View(context.state),
+                    runtime: &runtime,
+                    input: &context.config.input_value,
+                    cancellation: None,
+                    binding_raw: None,
+                },
+                path,
+                request.as_ref(),
+                None,
+            )
+        };
+        let view_bindings = get_view_field(&["bindings"])?;
+        let show_prefix = get_view_field(&["show_prefix"])?;
+        let layout = get_view_field(&["layout"])?;
+        let preview = get_view_field(&["preview"])?;
         drop(runtime);
         let keymap = PickerKeymap::from_values(default_bindings, view_bindings)?;
         let options = PickerOptions {
             show_prefix: parse_bool(show_prefix, "show_prefix", false)?,
-            input_prefix: parse_optional_string(prompt, "prompt")?
-                .map(|prompt| sanitize_terminal_text(&prompt)),
             preview: self::preview::parse(layout, preview)?,
         };
-        let command_context = context
-            .request
-            .command_picker
-            .clone()
-            .map(|context| *context);
         let picker = PickerView::new(
             &context.request.view_ref,
             context.tasks.clone(),
             Arc::new(context.config.clone()),
             context.request.route_child,
+            context.request.reference_value(),
             keymap,
             options,
         )
-        .with_context(context.log_file.map(PathBuf::from), command_context);
+        .with_log_file(context.log_file.map(PathBuf::from));
         Ok(Box::new(picker))
     }
 }
@@ -139,13 +99,6 @@ pub(crate) fn validate_bindings(defaults: Option<&Value>, view: Option<&Value>) 
 
 fn is_dynamic(value: &toml::Value) -> bool {
     value.as_str().is_some_and(|source| source.contains("{{"))
-}
-
-fn validate_static_string(value: Option<&toml::Value>, name: &str) -> Result<()> {
-    match value {
-        None | Some(toml::Value::String(_)) => Ok(()),
-        Some(_) => bail!("picker field {:?} must be a string or expression", name),
-    }
 }
 
 fn validate_static_table(value: Option<&toml::Value>, name: &str) -> Result<()> {
@@ -175,17 +128,6 @@ fn parse_bool(value: Option<Value>, name: &str, default: bool) -> Result<bool> {
         })
         .transpose()
         .map(|value| value.unwrap_or(default))
-}
-
-fn parse_optional_string(value: Option<Value>, name: &str) -> Result<Option<String>> {
-    let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok(None);
-    };
-    value
-        .as_str()
-        .map(str::to_string)
-        .with_context(|| format!("picker field {:?} must evaluate to a string or null", name))
-        .map(Some)
 }
 
 #[cfg(test)]

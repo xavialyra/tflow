@@ -1,6 +1,6 @@
 # tui-launcher
 
-`tui-launcher` is a small dmenu-style TUI workflow launcher. It evaluates runtime-driven picker items and command scripts, keeps named views in a view stack, and exposes view-owned commands for the current selection.
+`tui-launcher` is a small TUI workflow host. It evaluates runtime-driven Views and command scripts, maintains navigation and call stacks, and exposes View-owned commands through a common dispatch model.
 
 The launcher has two configuration concepts:
 
@@ -81,13 +81,13 @@ tui-launcher tr --source=en --target=zh --text="hello world" --tags=formal,short
 
 The TUI input controller uses `input_order`, so the same query can be edited as `en zh 'hello world'`; it validates the complete line and commits all ordered fields atomically. Query schema metadata such as `type` and `input_order` is not included in `this:query`.
 
-When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. A `complete` command may explicitly declare a result handler and a JSON `params` object. After the session ends and the terminal is restored, the launcher evaluates that object against the completion-time View state and runtime snapshot, writes it to the handler's stdin, and uses the handler's raw stdout, stderr, and exit status as the invocation result.
+When stdin is not a TTY, the launcher captures it unchanged in a private temporary file and opens `/dev/tty` for interaction. `input:stdin.path`, `input:stdin.length`, and `input:stdin.is_tty` describe that immutable input to every engine and script. A root `return` command may declare a result handler and a JSON `params` object. After the session ends and the terminal is restored, the launcher evaluates that object against the returning View state and runtime snapshot, writes it to the handler's stdin, and uses the handler's raw stdout, stderr, and exit status as the invocation result.
 
 Each stack entry owns an independent committed query instance; push creates defaults, pop restores the parent values, and expression tasks capture the active instance snapshot when submitted. Feeds pickers evaluate each owner view with an ephemeral query scope derived from the page's committed params binding. Scripts receive the typed query only when an expression explicitly passes `this:query`.
 
 ## dmenu plugin
 
-The development fixture's `dmenu:main` View is an ordinary picker plus plugin scripts. It is a reference plugin used by integration tests, not a bundled default. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or completion mode. The View declares typed query fields below `views.main.query`; its items script reads `this:query` and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its completion command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
+The development fixture's `dmenu:main` View is an ordinary picker plus plugin scripts. It is a reference plugin used by integration tests, not a bundled default. Core contains no dmenu CLI branch, parameter schema, record parser, filtering rule, or result mode. The View declares typed query fields below `views.main.query`; its items script reads `this:query` and `input:stdin.path`, performs source filtering, and returns standard picker items. TTY stdin is an empty candidate source, so direct invocation can accept free text. Its `return` command explicitly passes the selected item, typed input, option state, and stdin descriptor to the result script, which maps them back to the original bytes. These scripts require `python3`.
 
 ```bash
 printf '%s\n' 'Option 1' 'Option 2' 'Option 3' |
@@ -105,10 +105,10 @@ ps aux |
 printf 'one\0two\0three\0' |
   tui-launcher dmenu:main --dmenu0
 
-find . -name '*.rs' | tui-launcher dmenu:main --prompt="> "
+find . -name '*.rs' | tui-launcher dmenu:main
 ```
 
-The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:main` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--prompt=TEXT`, `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
+The generic invocation syntax replaces the former core `--dmenu` switch and `argv[0] == dmenu` handling. Invoke `dmenu:main` explicitly (or its `dmenu` View alias), and use `=`/`:=` forms rather than spaced option values. The plugin accepts `--initial=TEXT`, `--dmenu0`, `--index`, `--with-nth=N|FMT`, `--accept-nth=N|FMT`, `--match-nth=N|FMT`, and `--nth-delimiter=CHARACTER`. Use `--nth-delimiter=whitespace` for runs of spaces or tabs. Field ranges use `{N..M}` and `{N..}`; a field format of `0` disables that projection. Rofi metadata following a NUL separator in newline records is exposed as item metadata but is not written with the selected record.
 
 The View itself uses only generic configuration:
 
@@ -129,15 +129,11 @@ items = '''{{ script("scripts/items.sh", {
   input = input:$,
   query = this:query
 }, 67108864) }}'''
-prompt = '''{{ this:query.prompt }}'''
 show_prefix = false
-
-[views.main.engine.config.bindings]
 
 [views.main.query]
 type = "object"
 input_order = ["initial"]
-prompt = { type = "string", nullable = true }
 initial = { type = "string", default = "" }
 dmenu0 = { type = "boolean", default = false }
 index = { type = "boolean", default = false }
@@ -146,15 +142,14 @@ accept-nth = { type = "string", nullable = true }
 match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
-open_commands = []
-open_completion = []
+[views.main.engine.config.bindings]
 back = []
 exit = ["escape", "ctrl+c", "ctrl+d"]
 
 [views.main.commands.accept]
 key = "enter"
 label = "Accept"
-type = "complete"
+type = "return"
 
 [views.main.commands.accept.payload]
 handler = "scripts/result.sh"
@@ -288,33 +283,29 @@ type = "run"
 handler = { file = "scripts/open.sh" }
 ```
 
-Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate names and aliases are accepted; a duplicate alias becomes an error only when it is used, at which point the picker displays the canonical conflicting views and stays on the current view. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
+Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate plugin names are accepted, but each View alias must be globally unique; duplicate aliases are rejected when the configuration is loaded. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
 
-The root config file selects the default views and can define shared picker binding defaults:
+The root config may select an explicit default View and can define shared picker binding defaults:
 
 ```toml
-default_view = "core:default"
+# Optional when every invocation names a View explicitly.
+default_view = "custom:home"
 
 [defaults.picker.bindings]
-open_commands = ["ctrl+k"]
+exit = ["ctrl+c", "ctrl+d"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]
+activate = ["enter"]
 ```
 
-The `core` plugin can fan in picker views from several plugin packages as feeds:
+When `default_view` is omitted, the launcher requires a View on the command line, for example `tui-launcher apps:main` or its configured alias. A configured `default_view` is always an ordinary View and may aggregate plugin Views through explicit feeds or a wildcard feed pattern.
 
-```toml
-[views.default.engine]
-type = "picker"
+A feed entry such as `view = "*:main"` is expanded while configuration is loaded to all configured picker Views whose local name is `main`; `view = "*:default"` follows the same rule for `default`. The supported form is `*:<view-name>`, not a hard-coded `main` name. Non-picker Views are ignored, matching order is deterministic, and no match is valid. This lets a plugin become part of a configured home View by providing a conventional View name without requiring edits to the user's root configuration.
 
-[[views.default.engine.config.feeds]]
-view = "sys:main"
+Explicit feeds remain available for configured pickers that need curated owners or ordering independent of the convention. A feeds picker merges the `items` of its configured owner views. It cannot define its own `items`. A feed is a stateless item provider: every refresh parses the page's committed params string through each owner's query schema, evaluates that owner once, and keeps one response-level state/binding snapshot for all items returned by that feed. Empty committed input stays empty as `this:raw_input` while the owner's typed `this:query` retains schema defaults. A non-empty binding requires at least one field in an object owner's `input_order`; otherwise that owner reports an error without evaluating its item provider. The page query may use any supported schema; the product contract is that its committed params string is independently parsed by every feed owner. Feed state is never installed as a persistent View instance, and its `state_revision` is only evaluation metadata for that refresh, not a persistent revision across refreshes. Any picker may declare `feeds`, not only the home view.
 
-[[views.default.engine.config.feeds]]
-view = "apps:main"
-```
-
-This table belongs in `plugins/core/plugin.toml`, not in the root `config.toml`.
-
-A feeds picker merges the `items` of those owner views. It cannot define its own `items`. A feed is a stateless item provider: every refresh parses the page's committed params string through each owner's query schema, evaluates that owner once, and keeps one response-level state/binding snapshot for all items returned by that feed. Empty committed input stays empty as `this:raw_input` while the owner's typed `this:query` retains schema defaults. A non-empty binding requires at least one field in an object owner's `input_order`; otherwise that owner reports an error without evaluating its item provider. The page query may use any supported schema; the product contract is that its committed params string is independently parsed by every feed owner. Feed state is never installed as a persistent View instance, and its `state_revision` is only evaluation metadata for that refresh, not a persistent revision across refreshes. Any picker may declare `feeds`, not only the home view.
+Configured plugins are trusted code: their scripts run with the launcher's user permissions and are not sandboxed from one another. When a called picker delegates item evaluation to feeds, each feed owner receives the same `request:args` as the page. Wildcard feeds therefore opt all matching providers into that request contract; do not load an untrusted plugin or pass secrets under the assumption that request namespaces are a security boundary.
 
 Commands can open another concrete view. The command belongs in the owning plugin manifest:
 
@@ -328,13 +319,15 @@ type = "navigate"
 target = "apps:main"
 ```
 
-The runtime keeps a view stack. Opening `apps:main` from `core:default` produces:
+The runtime keeps a View stack. With `default_view = "core:default"`, opening `apps:main` produces:
 
 ```text
 [core:default, apps:main]
 ```
 
-Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:main terminal` and `app terminal` targets the same View when `apps:main` owns `alias = "app"`. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` view. `Esc` returns to the parent view when the active engine assigns it that behavior. Capture and embedded views are normal children in the same view stack. `Ctrl-K` opens the configured command picker view (default: `core:command`) with the union of the selected feed owner's commands and the parent page commands; owner commands win key conflicts. With no selected item, page commands remain available. The temporary picker retains typed page/owner snapshots and the original parent item, and navigation replaces that picker with its target.
+Inside the session input bar, a canonical reference or unique alias enters a configured View through the normal view stack. For example, typing `apps:main terminal` and `app terminal` targets the same View when `apps:main` owns `alias = "app"`. After routing away from the root, chrome displays the active View's alias (or its canonical reference when no alias exists) as a non-editable prefix, while the routed View edits only `terminal`. The root stack entry has no prefix, regardless of whether that View is the configured default or an explicitly invoked View. CLI invocation remains keyed and does not use these positional route strings. A bare plugin ID is ordinary query text and is not expanded to a `default` View. `Esc`, or Backspace on an empty routed query, returns to the parent when the active engine assigns that behavior. Capture and embedded Views are normal children in the same stack.
+
+A temporary selector is also just a View, opened by a `call` command. The first callee entry owns a call boundary; `push` can add descendants and `replace` transfers the boundary. `return` removes the complete callee branch, restores the caller's input, state, selection, and runtime context, then evaluates the optional continuation. Back from the first callee cancels the call without running the continuation. A `return` with no caller completes the external invocation.
 
 ## Expressions
 
@@ -346,7 +339,9 @@ commands = "{{ runtime:view.current.command }}"
 label = "query: {{ runtime:view.current.query }}"
 ```
 
-References use four namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, and `input:` for the immutable stdin descriptor. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's committed query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a typed object for `query.type = "object"`; `config:` never receives a query overlay.
+References use six namespaces: `config:` for static merged configuration, `this:` for the View instance that owns the expression, `runtime:` for mutable session/engine metadata, `input:` for the immutable stdin descriptor, `request:` for the current call request, and `return:` for a continuation's temporary result. `$` or an empty path refers to a complete namespace root. `this:query` is the current View instance's committed query value: an editable string when no query schema is declared (or when `query.type = "string"`), and a typed object for `query.type = "object"`; `config:` never receives a query overlay.
+
+A callee reads caller-supplied data below `request:args`; `request:` is unavailable at roots and in ordinary navigation entries. A continuation sees `return:source` and `return:output`; picker output has `type = "selected"`, `item`, and `input`, while explicit and embedded values have `type = "value"` and `value`. During continuation evaluation, `this:` and `runtime:` already refer to the restored caller. `return:` is unavailable outside that evaluation, and neither temporary namespace is written into persistent runtime state.
 
 ```toml
 items = '{{ path(runtime:view.current, "$.items") }}'
@@ -359,7 +354,11 @@ The built-in expression methods are `path` and `script`. `path(value, jsonpath)`
 
 ## View commands
 
-Commands belong to a concrete view. `Enter` is not a special data-source action; it is an ordinary command binding:
+Commands belong to a concrete picker or capture View. Embedded Views currently reject View commands so PTY input and process completion remain independent from the generic command dispatcher. Each command declares `key`, `label`, `scope`, `requires`, and one tagged action. `scope` is `selection` by default; commands contributed by a feed owner are visible only with that scope. `scope = "view"` is appropriate for page-level tools. `requires` is `items` by default, which makes a picker wait for the matching item result before dispatch; `requires = "input"` dispatches as soon as the committed input is ready.
+
+The action types are `run`, `navigate`, `call`, `return`, `edit-input`, and `invoke`. Action-specific fields belong to `payload`, and unknown or mismatched fields are rejected.
+
+A `run` action executes in its owning plugin context. With `exit = true`, it exits the launcher after the handler finishes:
 
 ```toml
 [views.main.commands.open]
@@ -368,31 +367,11 @@ label = "Open"
 type = "run"
 
 [views.main.commands.open.payload]
-handler = '''
-gio launch "$LAUNCHER_VALUE"
-'''
+handler = '''gio launch "$LAUNCHER_VALUE"'''
+exit = true
 ```
 
-A command has one tagged action: `type = "run"`, `type = "navigate"`, or `type = "complete"`. Every action-specific field belongs to its `payload` table. Navigate payload values are evaluated when the action is read. Completion returns the current selected item (or non-empty input when there is no item) to the invocation host; an empty selection and empty input keep the View open. A complete command without a payload writes the selected value, or the typed input, followed by a newline. With a plugin-relative handler, the evaluated `payload.params` object is written to its stdin after the terminal is restored.
-
-```toml
-[views.main.commands.accept]
-key = "enter"
-label = "Accept"
-type = "complete"
-
-[views.main.commands.accept.payload]
-handler = "scripts/result.sh"
-
-[views.main.commands.accept.payload.params]
-query = "{{ this:query }}"
-selected = "{{ runtime:view.current.selected_item }}"
-stdin = "{{ input:stdin }}"
-```
-
-The handler receives exactly that JSON object on stdin. Its raw stdout and stderr are forwarded, and its exit code becomes the launcher exit code. Handler stdout is limited to 16 MiB and stderr to 64 KiB, with a 10-second timeout. A View may set `cancel_exit_code` to control the exit code when its root invocation is cancelled.
-
-Navigation reads one automatically evaluated request object. `target` may be a literal or an expression. `query` may be a string, which is parsed by the target View's query schema, or an object, which is validated directly and completed with defaults. Omitting `query`, or evaluating it to `null`, keeps the target View's query defaults, while an explicit empty string clears its editable query:
+A `navigate` action pushes a View without creating a return boundary. `target` may be a canonical View reference, a unique View alias, or an expression returning either form. `query` may be a string, which the target schema parses, or a directly validated object. Omitting `query` keeps the target defaults; an explicit empty string clears editable input.
 
 ```toml
 [views.main.commands.inspect]
@@ -405,42 +384,51 @@ target = "{{ runtime:view.current.selected_item.metadata.target }}"
 query = "{{ runtime:view.current.selected_item.value }}"
 ```
 
-The target owns its behavior. A capture view evaluates `output` relative to its plugin and requires a string result. An embedded view evaluates `command` to a non-empty argv array, so it can host arbitrary PTY processes:
+A `call` action opens any engine as a callee by canonical reference or unique alias and may provide `query`, arbitrary JSON `args`, and one recursive `then` action. Selectors therefore need no kernel support. The global Ctrl-K footer binding calls an ordinary command selector with the current command catalog:
 
 ```toml
-[views.shell.engine]
-type = "embedded"
+[chrome.footer.bindings.commands]
+key = "ctrl+k"
+label = "Commands"
+visibility = "overflow"
+type = "call"
 
-[views.shell.engine.config]
-command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
-
-[views.btop.engine]
-type = "embedded"
-
-[views.btop.engine.config]
-command = ["btop"]
-
-title = "System monitor"
+[chrome.footer.bindings.commands.payload]
+target = "selectors:commands"
+args = { commands = "{{ runtime:view.current.command }}" }
 ```
 
-The action type determines valid fields. A run command with `exit = true` transfers the terminal to its handler and exits the launcher after it finishes:
+A `return` action unwinds the nearest call, or completes the invocation at the root. `payload.value` returns any evaluated JSON value. Without it, the action uses output prepared by the picker or capture engine. A direct root return can add a plugin-relative `handler` and evaluated `params`; `params` require a handler, and a Return nested under `call.payload.then` cannot define either field because continuations do not install root result adapters. After terminal restoration, the handler receives that JSON on stdin and controls raw stdout, stderr, and exit status. Handler stdout is limited to 16 MiB, stderr to 64 KiB, and runtime to 10 seconds. `cancel_exit_code` controls cancellation of a root invocation.
+
+An `invoke` action evaluates an opaque `{"view":"...","id":"..."}` reference, then revalidates that command against the restored page and selected owner before dispatching it. A command selector can consume `runtime:view.current.command`, return an entry's `ref`, and use this continuation:
 
 ```toml
-[views.main.commands.connect]
-key = "enter"
-label = "Connect"
-type = "run"
+[chrome.footer.bindings.commands.payload.then]
+type = "invoke"
 
-[views.main.commands.connect.payload]
-handler = '''
-exec ssh "$LAUNCHER_VALUE"
-'''
-exit = true
+[chrome.footer.bindings.commands.payload.then.payload]
+command = "{{ return:output.value }}"
 ```
 
-The footer is assembled from the current view commands and, when an item is selected, the commands of the item's source view. Item JSON does not contain command definitions.
+`edit-input` replaces the restored View's complete UTF-8 buffer. Its optional byte `cursor` must be on a character boundary; omitting it places the cursor at the end. The footer is assembled from current page commands and, when an item is selected, selection-scoped commands from the item's source View. Item JSON does not contain command definitions.
 
-View commands use the same named-key, Ctrl, and Alt binding syntax as picker actions. Plain characters edit the session input, which may update the ordered query states and trigger a new items evaluation. Picker actions take priority when a physical key is assigned to both; override or disable that picker action in the View's `bindings` before assigning the key to a View command.
+View commands use the same named-key, Ctrl, and Alt syntax as picker bindings. A picker semantic action wins when the same physical key is assigned to both, so disable or rebind that picker action before using the key as a View command. An explicit View command wins over the built-in default-View Tab behavior and a same-key chrome footer binding. Capture resolves bound View commands before applying its default Back behavior.
+
+### Embedded results
+
+An embedded View normally connects child stdin, stdout, and stderr to its PTY. Adding `engine.config.result` changes stdout into a dedicated bounded result pipe while stdin and stderr remain on the PTY. The CLI must render its terminal UI to stderr in this mode. When the child exits successfully, the parsed result automatically returns from the View; no Return key or launcher-specific live PTY protocol is exposed.
+
+```toml
+[views.form.engine]
+type = "embedded"
+
+[views.form.engine.config]
+command = ["./form-cli"]
+escape-cancels = false
+result = { format = "json", required = true, max_bytes = 1048576 }
+```
+
+Embedded input is byte-preserving PTY input, including UTF-8, unknown escape sequences, and bracketed paste. `escape-cancels` defaults to `true`: a timed-out bare `Esc` terminates the child and cancels the View, while Alt and complete terminal escape sequences pass through. Set `escape-cancels = false` for programs such as nvim that own `Esc`; in that mode every input byte is written to the PTY immediately and the launcher exposes no cancel key. `Ctrl-C` is also ordinary child input rather than a launcher command. Chrome footer bindings and the command selector are disabled while the PTY is active. With `result` configured, a zero exit parses stdout as `text` or `json` and produces a Return. Text removes one trailing newline and its optional carriage return; JSON preserves its native type. An empty result is an error unless `required = false`, in which case the value is `null`. The default result limit is 1 MiB and the maximum is 16 MiB. Without `result`, any child exit returns to the previous View without running a call continuation; a nonzero exit also cancels a result-producing call.
 
 ## Picker items
 
@@ -471,7 +459,7 @@ text = { type = "string", default = "" }
 items = '{{ script("scripts/items.sh", this:$) }}'
 ```
 
-The picker runtime exposes stack-top UI metadata under `runtime:view.current`, including `input`, `query`, `raw_input`, `selected_item`, and `items`. Session input is also published under `runtime:session.input`. Public picker items contain `prefix`, `text`, `value`, `metadata`, and one provenance field, `owner_view`; internal feed IDs, state, binding, and query snapshots are never exposed. `this` is the expression-owning definition context (`ref`, `query`, `input`, `raw_input`, `state_revision`) and does not include selection. Feed owner scripts typically take `this:query` or `this:$`. Selection belongs in complete/navigate params as `runtime:view.current.selected_item`. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
+The session publishes stack-top metadata under `runtime:view.current` and input under `runtime:session.input`. `runtime:session.views` is the public View catalog; `runtime:view.current.command` is the current command catalog, with each entry carrying an opaque `ref`, owner, normalized key, and label. The catalog is empty for embedded Views. Picker adds `selected_item`, `items`, and the selected feed owner's visible commands. Public picker items contain `prefix`, `text`, `value`, `metadata`, and one provenance field, `owner_view`; internal feed IDs, state, binding, and query snapshots are never exposed. `this` is the expression-owning definition context (`ref`, `query`, `input`, `raw_input`, `state_revision`) and does not include selection. Feed owner scripts typically take `this:query` or `this:$`. Selection belongs in command payloads as `runtime:view.current.selected_item`. Script output is parsed as one JSON document and must be an array for an `items` expression. The returned array is authoritative: its order is preserved, and the picker does not sort or filter valid items. Search, filtering, and sorting belong to the expression or plugin script.
 
 A feeds picker evaluates the `items` expression of each owner in `engine.config.feeds`. Each result shows its owner view's alias, or its canonical reference when no alias is configured, in a right-aligned trailing column:
 
@@ -481,7 +469,7 @@ System monitor sys
 Package details apps:detail
 ```
 
-Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Both aliases and canonical `plugin:view` references become routes only after a whitespace separator, so `app` and `core:messages` alone remain ordinary query text. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace at the end of its selector tag, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Feed owner commands remain owned by the owner view.
+Typing `app terminal` enters the view owning alias `app` with `terminal` as its query, while `core:messages timeout` uses an exact canonical reference. Both aliases and canonical `plugin:view` references become routes only after a whitespace separator, so `app` and `core:messages` alone remain ordinary query text. The input bar belongs to the session chrome: a recognized route selector is transient routing state, while the target engine receives only the query. `Esc` from a routed child, or Backspace on its empty query, returns to the parent with an empty input buffer so a stale query cannot filter the parent view. Feed owner commands remain owned by the owner view.
 
 ## Command environment
 
@@ -493,11 +481,11 @@ Command scripts receive:
 - `LAUNCHER_VIEW` and `LAUNCHER_QUERY` from the parent page and its committed binding;
 - `LAUNCHER_COMMAND` and `LAUNCHER_LOG_FILE`.
 
-Command `shell` selects the command interpreter. When omitted, the command owner's `run_shell` is used, then `sh`. File-backed commands run in the command owner's plugin directory. Direct shortcuts and Ctrl-K use the same snapshots: owner commands evaluate against the selected feed context, while page commands evaluate against page state. Navigate and complete payloads see the same committed binding through `this:raw_input`; Ctrl-K complete returns the original parent item, not the command-list row.
+Command `shell` selects the command interpreter. When omitted, the command owner's `run_shell` is used, then `sh`. File-backed commands run in the command owner's plugin directory. Owner commands evaluate against the selected feed context, while page commands evaluate against page state. Direct bindings and selector-returned `CommandRef` values are dispatched from the same snapshots and validation path. Navigate, call, return, edit-input, and invoke expressions see the command owner's committed binding through `this:raw_input`.
 
-An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; use the command's `input` expression to pass the target parameter explicitly.
+An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR` and `LAUNCHER_LOG_FILE`. Navigation does not implicitly carry source item metadata; evaluate the target `query` or call `args` explicitly when it is needed.
 
-Picker engine configs accept `bindings`, `prompt`, and `show_prefix`. `prompt` changes the input prefix. Owner prefixes are hidden by default; feeds pickers may set `engine.config.show_prefix = true` to identify each owner. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `complete` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker engine configs accept `bindings` and `show_prefix`. Owner prefixes are hidden by default; feeds pickers may set `engine.config.show_prefix = true` to identify each owner. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `return` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 
@@ -505,42 +493,31 @@ Picker shortcuts are semantic engine bindings. Root defaults apply to every pick
 
 ```toml
 [defaults.picker.bindings]
-open_commands = ["ctrl+k"]
-toggle_preview = ["ctrl+p"]
-clear_input = ["ctrl+u"]
 exit = ["ctrl+c", "ctrl+d"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]
+delete_backward = ["backspace"]
+clear_input = ["ctrl+u"]
+delete_word = ["ctrl+w"]
+activate = ["enter"]
+toggle_preview = ["ctrl+p"]
 ```
 
-A View can override only the actions it needs; omitted actions inherit the root or built-in defaults, while an empty array disables an action:
+A View can override only the actions it needs; omitted actions inherit root or built-in defaults, while an empty array disables an action:
 
 ```toml
 [views.main.engine.config.bindings]
-open_commands = ["ctrl+k"]
 delete_word = []
+activate = ["enter"]
 ```
 
-Available actions are `exit`, `open_commands`, `open_completion`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, `activate`, and `toggle_preview`. `toggle_preview` only affects picker Views that configure a preview; other picker Views ignore it. Bindings accept `enter`, `tab`, `backtab`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. The arrow, Home/End, and Delete keys edit the input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
+Available picker actions are `exit`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, `activate`, and `toggle_preview`. Bindings accept `enter`, `tab`, `backtab`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. Arrow, Home/End, and Delete edit input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
 
-The default bindings are:
+Tab opens the Router's built-in visual route completion only in the normal launcher's root View while its input is focused. The overlay excludes the current default View and searches the remaining configured aliases, canonical View references, and plugin names; Tab/Down and Shift-Tab/Up move through candidates, Enter inserts the selected canonical View reference into the input, and Esc closes the overlay. It is route grammar UI rather than a View command: it creates no Call boundary, is not rendered as an input hint, is unavailable to directly invoked Views and child Views, and is never published in `runtime:view.current.command`. Engine semantic bindings and explicit View commands retain priority over the built-in Tab behavior. Session chrome separately defines global footer bindings under `chrome.footer.bindings`; the fixture uses Ctrl-K to call the ordinary `selectors:commands` View with `runtime:view.current.command`, then invokes the returned strict `CommandRef`. Footer bindings are unavailable while an embedded PTY is active.
 
-- `Enter`: execute the current view's Enter command;
-- `Tab`: open View completion; while it is open, `Tab` cycles candidates;
-- `Alt+<character>` or another unreserved configured key: execute a view command;
-- `Up` / `Down`: move through results, or move through View completion candidates;
-- `Left` / `Right`: move the input cursor;
-- `Home` / `End`: move the input cursor to the beginning or end;
-- `Esc`: close View completion when it is open; otherwise clear the query, then return to the parent view or quit at the root;
-- `Backspace` / `Delete`: delete before or after the cursor;
-- `Ctrl-C` / `Ctrl-D`: quit;
-- `Ctrl-U`: clear the query;
-- `Ctrl-W`: delete the previous word;
-- `Ctrl-K`: open the owner-priority union of selected feed owner and parent page commands.
-- `Ctrl-P`: show or hide the preview in a picker View that configures one.
+For picker Views, semantic engine bindings take priority over View commands on the same key. Embedded Views reserve only timed-out bare `Esc` for cancellation and otherwise forward input to the PTY. Capture Views check View commands before applying their default other-key Back behavior.
 
-View completion searches every configured View by alias, canonical reference, and plugin name. `Enter` accepts the highlighted candidate and navigates to its canonical reference. The completion list uses the same fixed marker column, `▌` selection marker, bold selected text, and scrollbar gutter as picker items.
+Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses a Rose Pine Dawn surface background inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
-Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The input line keeps the cursor visible and scrolls long input around it without a prompt marker; non-focus views display their canonical view prefix and muted query text. The divider is a plain horizontal rule. The footer follows the content directly and uses a Rose Pine Dawn surface background inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
-
-When additional commands do not fit, `Ctrl-K` navigates to the command picker view; `Up` / `Down` select a command, `Enter` runs it, and `Esc` returns to the previous view. Commands with the same normalized key are displayed and executed using the same owner-first, page-fallback rule.
-
-Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. A request generation plus complete view/raw binding/state identity prevents results from an older snapshot from being accepted, even when the visible input text is unchanged. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. If `Enter` is pressed while item evaluation is pending, it waits for the matching result before executing the view command.
+Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. A request generation plus full View/raw binding/state identity prevents results from an older snapshot from being accepted, even when the visible input text is unchanged. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. A command with `requires = "items"` waits for the matching result; `requires = "input"` does not.

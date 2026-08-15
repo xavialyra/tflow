@@ -7,8 +7,6 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum PickerAction {
     Exit,
-    OpenCommands,
-    OpenCompletion,
     Back,
     SelectPrevious,
     SelectNext,
@@ -20,10 +18,8 @@ pub(super) enum PickerAction {
 }
 
 impl PickerAction {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 9] = [
         Self::Exit,
-        Self::OpenCommands,
-        Self::OpenCompletion,
         Self::Back,
         Self::SelectPrevious,
         Self::SelectNext,
@@ -37,8 +33,6 @@ impl PickerAction {
     fn name(self) -> &'static str {
         match self {
             Self::Exit => "exit",
-            Self::OpenCommands => "open_commands",
-            Self::OpenCompletion => "open_completion",
             Self::Back => "back",
             Self::SelectPrevious => "select_previous",
             Self::SelectNext => "select_next",
@@ -174,9 +168,6 @@ fn default_bindings() -> HashMap<Key, PickerAction> {
     [
         (Key::Ctrl('c'), PickerAction::Exit),
         (Key::Ctrl('d'), PickerAction::Exit),
-        (Key::Ctrl('k'), PickerAction::OpenCommands),
-        (Key::Tab, PickerAction::OpenCompletion),
-        (Key::BackTab, PickerAction::OpenCompletion),
         (Key::Escape, PickerAction::Back),
         (Key::Up, PickerAction::SelectPrevious),
         (Key::Down, PickerAction::SelectNext),
@@ -197,30 +188,29 @@ mod tests {
     #[test]
     fn partial_overrides_replace_one_action_and_keep_other_defaults() {
         let keymap = PickerKeymap::from_value(Some(json!({
-            "open_commands": ["ctrl+p"]
+            "select_next": ["ctrl+n"]
         })))
         .unwrap();
         assert_eq!(
-            keymap.action(Key::Ctrl('p')),
-            Some(PickerAction::OpenCommands)
+            keymap.action(Key::Ctrl('n')),
+            Some(PickerAction::SelectNext)
         );
-        assert_eq!(keymap.action(Key::Ctrl('k')), None);
+        assert_eq!(keymap.action(Key::Down), None);
         assert_eq!(keymap.action(Key::Ctrl('c')), Some(PickerAction::Exit));
     }
 
     #[test]
     fn view_overrides_are_applied_after_root_defaults() {
         let keymap = PickerKeymap::from_values(
-            Some(json!({"open_commands": ["ctrl+p"]})),
-            Some(json!({"open_commands": ["ctrl+o"]})),
+            Some(json!({"select_next": ["ctrl+n"]})),
+            Some(json!({"select_next": ["ctrl+o"]})),
         )
         .unwrap();
         assert_eq!(
             keymap.action(Key::Ctrl('o')),
-            Some(PickerAction::OpenCommands)
+            Some(PickerAction::SelectNext)
         );
-        assert_eq!(keymap.action(Key::Ctrl('p')), None);
-        assert_eq!(keymap.action(Key::Ctrl('k')), None);
+        assert_eq!(keymap.action(Key::Ctrl('n')), None);
     }
 
     #[test]
@@ -242,9 +232,9 @@ mod tests {
     #[test]
     fn conflicting_bindings_are_rejected() {
         let error = PickerKeymap::from_value(Some(json!({
-            "exit": ["ctrl+k"]
+            "exit": ["ctrl+j"]
         })))
-        .expect_err("default command binding should conflict");
+        .expect_err("default activate binding should conflict");
         assert!(error.to_string().contains("both"));
     }
 
