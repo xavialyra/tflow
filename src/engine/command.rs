@@ -462,8 +462,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_command_preserves_runtime_log_environment() {
-        let config = crate::config::load_test_fixture().unwrap();
+    fn run_command_preserves_optional_launcher_environment() {
+        let mut config = crate::config::load_test_fixture().unwrap();
+        config.input_value = serde_json::json!({
+            "stdin": {"path": "/tmp/tui-launcher-captured-stdin"}
+        });
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
@@ -513,6 +516,14 @@ mod tests {
                 .find(|(key, _)| key == "LAUNCHER_LOG_FILE")
                 .map(|(_, value)| value.as_str()),
             Some("/tmp/tui-launcher-runtime.jsonl")
+        );
+        assert_eq!(
+            prepared
+                .environment
+                .iter()
+                .find(|(key, _)| key == "LAUNCHER_STDIN_FILE")
+                .map(|(_, value)| value.as_str()),
+            Some("/tmp/tui-launcher-captured-stdin")
         );
     }
 

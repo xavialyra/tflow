@@ -38,6 +38,45 @@ fn redirected_stdout_contains_only_the_default_return_result() {
 }
 
 #[test]
+fn requires_input_return_uses_the_latest_committed_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = []
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        scope = "view"
+        requires = "input"
+        type = "return"
+
+        [plugins.core.views.default.commands.accept.payload]
+        value = "{{ this:raw_input }}"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result = run_tty_invocation_with_redirected_stdout(
+        &["--config", config, "core:default"],
+        b"latest\r",
+    );
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"latest\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn called_picker_fields_and_commands_can_read_request_args() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -160,6 +199,41 @@ fn capture_view_commands_use_the_same_return_dispatcher() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"captured value\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn failed_capture_is_not_available_as_implicit_return_output() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "capture"
+
+        [plugins.core.views.default.engine.config]
+        output = "{{ runtime:missing }}"
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        scope = "view"
+        requires = "input"
+        type = "return"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\r");
+
+    assert_eq!(result.status, 1);
+    assert!(result.stdout.is_empty());
     fs::remove_dir_all(root).unwrap();
 }
 

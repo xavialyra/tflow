@@ -479,7 +479,7 @@ Command scripts receive:
 - `LAUNCHER_ITEM_VIEW_REF` and `LAUNCHER_ITEM_PLUGIN` from the selected item's feed owner (empty when no item is selected);
 - `LAUNCHER_PLUGIN`, `LAUNCHER_PLUGIN_DIR`, and `LAUNCHER_VIEW_REF` from the command owner;
 - `LAUNCHER_VIEW` and `LAUNCHER_QUERY` from the parent page and its committed binding;
-- `LAUNCHER_COMMAND` and `LAUNCHER_LOG_FILE`.
+- `LAUNCHER_COMMAND`, `LAUNCHER_LOG_FILE`, and optional `LAUNCHER_STDIN_FILE` when invocation stdin was captured to a file.
 
 Command `shell` selects the command interpreter. When omitted, the command owner's `run_shell` is used, then `sh`. File-backed commands run in the command owner's plugin directory. Owner commands evaluate against the selected feed context, while page commands evaluate against page state. Direct bindings and selector-returned `CommandRef` values are dispatched from the same snapshots and validation path. Navigate, call, return, edit-input, and invoke expressions see the command owner's committed binding through `this:raw_input`.
 

@@ -123,7 +123,7 @@ impl ViewInstance for CaptureView {
     }
 
     fn view_command_output(&self) -> Option<ViewOutput> {
-        Some(ViewOutput::Value {
+        self.success.then(|| ViewOutput::Value {
             value: serde_json::Value::String(self.session.output().to_string()),
         })
     }

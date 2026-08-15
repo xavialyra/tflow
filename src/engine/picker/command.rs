@@ -81,7 +81,7 @@ impl PickerView {
         let page = CommandOwnerContext {
             view_ref: self.current_view_ref().to_string(),
             state: host.state.clone(),
-            binding_raw: self.current().query.clone(),
+            binding_raw: host.input.params.clone(),
         };
         let selection = self
             .results_current(&host.input.raw)
