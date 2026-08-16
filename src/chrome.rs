@@ -1305,12 +1305,9 @@ mod tests {
         use std::path::Path;
 
         let config_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config");
-        let spec = crate::theme::ThemeRef::Named {
-            name: "contrast".to_string(),
-        };
         let theme = crate::theme::load(
             &config_root.join("config.toml"),
-            Some(&spec),
+            Some("contrast"),
             &crate::theme::ThemeLoadOptions::default(),
         )
         .unwrap();

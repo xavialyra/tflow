@@ -4,7 +4,7 @@ use crate::expression::{
 };
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
-use crate::theme::{ResolvedTheme, ThemeLoadOptions, ThemeRef};
+use crate::theme::{ResolvedTheme, ThemeLoadOptions};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -285,13 +285,6 @@ pub(crate) struct LoadedApp {
     pub(crate) theme: ResolvedTheme,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AppearanceConfig {
-    #[serde(default)]
-    theme: Option<ThemeRef>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
     #[serde(default)]
@@ -299,7 +292,7 @@ struct RawConfig {
     #[serde(default)]
     chrome: ChromeConfig,
     #[serde(default)]
-    appearance: AppearanceConfig,
+    theme: Option<String>,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
@@ -321,23 +314,6 @@ struct PluginHeader {
     #[serde(default = "default_plugin_api")]
     api: u32,
     name: String,
-}
-
-fn remove_theme_from_workflow_config(value: &mut toml::Value) {
-    let Some(table) = value.as_table_mut() else {
-        return;
-    };
-    let remove_appearance = table
-        .get_mut("appearance")
-        .and_then(toml::Value::as_table_mut)
-        .map(|appearance| {
-            appearance.remove("theme");
-            appearance.is_empty()
-        })
-        .unwrap_or(false);
-    if remove_appearance {
-        table.remove("appearance");
-    }
 }
 
 impl Config {
@@ -382,20 +358,16 @@ impl Config {
         merge_values(&mut merged, user_config);
         remove_disabled_plugins(&mut merged, &disabled_plugins);
 
-        if merged.get("theme").is_some() {
-            bail!(
-                "merged configuration from {} does not match the launcher schema: unknown field `theme`",
-                user_path.display()
-            );
-        }
         let raw: RawConfig = merged.clone().try_into().with_context(|| {
             format!(
                 "merged configuration from {} does not match the launcher schema",
                 user_path.display()
             )
         })?;
-        let theme = crate::theme::load(user_path, raw.appearance.theme.as_ref(), options)?;
-        remove_theme_from_workflow_config(&mut merged);
+        let theme = crate::theme::load(user_path, raw.theme.as_deref(), options)?;
+        if let Some(table) = merged.as_table_mut() {
+            table.remove("theme");
+        }
         let mut config_value =
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         normalize_engine_configs(&mut config_value);
@@ -1973,7 +1945,7 @@ mod tests {
     }
 
     #[test]
-    fn appearance_theme_is_not_exposed_in_the_workflow_config_tree() {
+    fn root_theme_is_not_exposed_in_the_workflow_config_tree() {
         let root =
             env::temp_dir().join(format!("tui-launcher-config-theme-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
@@ -1982,9 +1954,7 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-            [appearance.theme]
-            source = "file"
-            path = "./theme.toml"
+            theme = "work"
 
             [plugins.core.views.default]
             [plugins.core.views.default.engine]
@@ -1992,14 +1962,15 @@ mod tests {
             "#,
         )
         .unwrap();
+        fs::create_dir_all(root.join("themes")).unwrap();
         fs::write(
-            root.join("theme.toml"),
+            root.join("themes/work.toml"),
             "[tokens.accent]\nforeground = \"green\"\n",
         )
         .unwrap();
 
         let loaded = Config::load_app(&config_path, &ThemeLoadOptions::default()).unwrap();
-        assert!(loaded.config.config_value.get("appearance").is_none());
+        assert!(loaded.config.config_value.get("theme").is_none());
         assert_eq!(loaded.theme.accent.fg, Some(Color::Green));
         fs::remove_dir_all(root).unwrap();
     }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy)]
@@ -162,7 +162,6 @@ impl ResolvedTheme {
 pub(crate) enum ThemeRef {
     Builtin { name: String },
     Named { name: String },
-    File { path: PathBuf },
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -369,7 +368,7 @@ pub(crate) fn cli_named_theme(name: String) -> ThemeRef {
 
 pub(crate) fn load(
     config_path: &Path,
-    configured: Option<&ThemeRef>,
+    configured: Option<&str>,
     options: &ThemeLoadOptions,
 ) -> Result<ResolvedTheme> {
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -377,7 +376,9 @@ pub(crate) fn load(
     let mut theme = if let Some(selector) = options.selector.as_ref() {
         loader.resolve_reference(selector)?
     } else if let Some(configured) = configured {
-        loader.resolve_reference(configured)?
+        loader.resolve_reference(&ThemeRef::Named {
+            name: configured.to_string(),
+        })?
     } else {
         ResolvedTheme::terminal()
     };
@@ -403,14 +404,6 @@ impl ThemeLoader<'_> {
             }
             ThemeRef::Named { name } => {
                 let path = self.config_dir.join("themes").join(format!("{name}.toml"));
-                self.load_file(&path)
-            }
-            ThemeRef::File { path } => {
-                let path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    self.config_dir.join(path)
-                };
                 self.load_file(&path)
             }
         }
@@ -525,6 +518,7 @@ mod tests {
     use super::*;
     use std::{
         env,
+        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -632,20 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn configured_file_refs_are_relative_to_the_config_directory() {
+    fn configured_named_refs_are_relative_to_the_config_directory() {
         let root = temporary_root();
+        fs::create_dir_all(root.join("themes")).unwrap();
         fs::write(
-            root.join("local.toml"),
+            root.join("themes/work.toml"),
             "[tokens.accent]\nforeground = \"blue\"\n",
         )
         .unwrap();
-        let reference = ThemeRef::File {
-            path: PathBuf::from("./local.toml"),
-        };
 
         let theme = load(
             &root.join("config.toml"),
-            Some(&reference),
+            Some("work"),
             &ThemeLoadOptions::default(),
         )
         .unwrap();
@@ -664,13 +656,9 @@ mod tests {
             "[tokens.accent]\nforeground = \"yellow\"\n\n[tokens.muted]\nforeground = \"gray\"\n",
         )
         .unwrap();
-        let reference = ThemeRef::Named {
-            name: "work".to_string(),
-        };
-
         let theme = load(
             &root.join("config.toml"),
-            Some(&reference),
+            Some("work"),
             &ThemeLoadOptions::default(),
         )
         .unwrap();
@@ -682,9 +670,7 @@ mod tests {
 
     #[test]
     fn cli_selector_replaces_configured_ref_and_applies_typed_overrides() {
-        let configured = ThemeRef::Named {
-            name: "missing-root-theme".to_string(),
-        };
+        let configured = "missing-root-theme";
         let options = ThemeLoadOptions {
             selector: Some(ThemeRef::Builtin {
                 name: "terminal".to_string(),
@@ -695,7 +681,7 @@ mod tests {
             ],
         };
 
-        let theme = load(Path::new("config.toml"), Some(&configured), &options).unwrap();
+        let theme = load(Path::new("config.toml"), Some(configured), &options).unwrap();
 
         assert_eq!(theme.accent.fg, Some(Color::Green));
         assert!(!theme.highlight.add_modifier.contains(Modifier::BOLD));

@@ -7,7 +7,7 @@ foreground = "cyan"
 bold = true
 
 [tokens.muted]
-foreground = "gray"
+foreground = "#696969"
 
 [tokens.border]
 foreground = "magenta"
@@ -22,8 +22,8 @@ background = "terminal"
 bold = true
 
 [tokens.highlight]
-foreground = "black"
-background = "yellow"
+foreground = "terminal"
+background = "white"
 bold = true
 
 [tokens.selected]

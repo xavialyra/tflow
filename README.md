@@ -56,15 +56,13 @@ mise exec -- cargo run -- --check
 
 The built-in `terminal` theme is used when no theme is configured. It uses the terminal's default foreground and background for ordinary content, and ANSI cyan with `bold` for accents, highlights, and selected items. It does not query or modify terminal colors with OSC sequences. The embedded PTY keeps the child process's own ANSI and RGB styles.
 
-A root configuration selects a theme with an explicitly tagged reference:
+A root configuration selects a named theme from the sibling `themes/` directory:
 
 ```toml
-[appearance.theme]
-source = "named"
-name = "work"
+theme = "work"
 ```
 
-Use `source = "builtin"` for the built-in theme or `source = "file"` for a file relative to the configuration directory. Named themes use `source = "named"` and are loaded from the sibling `themes/` directory. Every theme token uses the same table shape; strings are not shorthand for foreground colors:
+This loads `themes/work.toml`. The built-in `terminal` theme is used when `theme` is omitted. Every theme token uses the same table shape:
 
 ```toml
 # themes/work.toml
@@ -104,7 +102,7 @@ tui-launcher \
   apps:main
 ```
 
-A built-in or named theme does not access the current directory. A configuration `source = "file"` path is relative to the configuration directory. Global options must precede the View selector.
+Themes are resolved relative to the configuration directory. Global options must precede the View selector.
 
 ## Direct View invocation
 

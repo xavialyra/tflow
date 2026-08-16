@@ -54,10 +54,7 @@ pub struct RunResult {
 static DMENU_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const TEST_CONFIG: &str = r#"
-default_view = "core:default"
-
-[test_items]
-items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+test_items = {items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]}
 "#;
 
 fn with_test_config(source: &str) -> String {

@@ -261,9 +261,7 @@ fn check_loads_a_named_theme_from_the_config_directory() {
     write_test_config(
         &config,
         r#"
-        [appearance.theme]
-        source = "named"
-        name = "work"
+        theme = "work"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -289,7 +287,7 @@ fn check_loads_a_named_theme_from_the_config_directory() {
 }
 
 #[test]
-fn check_rejects_an_inline_theme() {
+fn check_rejects_an_inline_theme_value() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -315,7 +313,7 @@ fn check_rejects_an_inline_theme() {
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("unknown field `theme`"),
+        String::from_utf8_lossy(&output.stderr).contains("expected a string"),
         "stderr: {:?}",
         output.stderr
     );
@@ -391,9 +389,7 @@ fn cli_theme_replaces_the_root_configuration() {
     write_test_config(
         &config,
         r#"
-        [appearance.theme]
-        source = "named"
-        name = "missing-root-theme"
+        theme = "missing-root-theme"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -414,15 +410,13 @@ fn cli_theme_replaces_the_root_configuration() {
 }
 
 #[test]
-fn theme_ref_unknown_fields_report_the_field_and_config_path() {
+fn missing_named_theme_reports_the_theme_path() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
         &config,
         r#"
-        [appearance.theme]
-        source = "named"
-        nmae = "work"
+        theme = "work"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -439,9 +433,13 @@ fn theme_ref_unknown_fields_report_the_field_and_config_path() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());
-    assert!(stderr.contains("nmae"), "stderr: {:?}", output.stderr);
     assert!(
-        stderr.contains(&config.display().to_string()),
+        stderr.contains("could not resolve theme"),
+        "stderr: {:?}",
+        output.stderr
+    );
+    assert!(
+        stderr.contains("themes/work.toml"),
         "stderr: {:?}",
         output.stderr
     );
