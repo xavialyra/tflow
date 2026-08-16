@@ -1,11 +1,11 @@
 use super::Item;
 use crate::engine::{TaskCompletion, TaskHandle, TaskScheduler};
 use crate::terminal::Terminal;
+use crate::theme::Theme;
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, ImageReader};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_image::{StatefulImage, protocol::StatefulProtocol};
 use serde::Deserialize;
@@ -296,7 +296,13 @@ impl PickerPreview {
         self.visible = !self.visible;
     }
 
-    pub(super) fn render_separator(&self, frame: &mut Frame, items: Rect, preview: Rect) {
+    pub(super) fn render_separator(
+        &self,
+        frame: &mut Frame,
+        items: Rect,
+        preview: Rect,
+        theme: &Theme,
+    ) {
         let area = match self.config.layout.direction {
             Direction::Horizontal => Rect::new(
                 items.x.saturating_add(items.width),
@@ -323,9 +329,7 @@ impl PickerPreview {
             Direction::Vertical => Borders::TOP,
         };
         frame.render_widget(
-            Block::new()
-                .borders(borders)
-                .border_style(Style::default().fg(Color::Gray)),
+            Block::new().borders(borders).border_style(theme.border),
             area,
         );
     }
@@ -441,14 +445,14 @@ impl PickerPreview {
         }
     }
 
-    pub(super) fn render(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let areas = block_areas(area, &self.config.blocks);
         for ((block, state), area) in self.config.blocks.iter().zip(&mut self.blocks).zip(areas) {
             if matches!(&block.kind, PreviewBlockKind::Separator) {
                 frame.render_widget(
                     Block::new()
                         .borders(Borders::TOP)
-                        .border_style(Style::default().fg(Color::Gray)),
+                        .border_style(theme.border),
                     area,
                 );
                 continue;
@@ -456,7 +460,9 @@ impl PickerPreview {
             match state {
                 PreviewBlockState::Empty => {}
                 PreviewBlockState::Text(text) => frame.render_widget(
-                    Paragraph::new(text.as_str()).wrap(Wrap { trim: false }),
+                    Paragraph::new(text.as_str())
+                        .style(theme.base)
+                        .wrap(Wrap { trim: false }),
                     area,
                 ),
                 PreviewBlockState::Image {
@@ -468,7 +474,9 @@ impl PickerPreview {
                 PreviewBlockState::Image {
                     error: Some(error), ..
                 } => frame.render_widget(
-                    Paragraph::new(error.as_str()).wrap(Wrap { trim: false }),
+                    Paragraph::new(error.as_str())
+                        .style(theme.base)
+                        .wrap(Wrap { trim: false }),
                     area,
                 ),
                 PreviewBlockState::Image { .. } => {}

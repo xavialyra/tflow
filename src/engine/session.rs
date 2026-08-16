@@ -11,10 +11,10 @@ use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use crate::text::sanitize_terminal_text;
+use crate::theme::ResolvedTheme;
 use anyhow::{Context, Result};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use serde_json::{Value, json};
@@ -60,6 +60,7 @@ struct RouteCompletion {
 
 pub(crate) struct AppSession<'a> {
     config: &'a Config,
+    theme: ResolvedTheme,
     engines: EngineRegistry,
     views: Vec<ViewEntry>,
     tasks: TaskScheduler,
@@ -112,8 +113,18 @@ fn prepared_action_effect(action: crate::engine::command::PreparedAction) -> Vie
 }
 
 impl<'a> AppSession<'a> {
+    #[allow(dead_code)]
     pub(crate) fn new(
         config: &'a Config,
+        runtime_log: RuntimeLog,
+        engines: EngineRegistry,
+    ) -> Result<Self> {
+        Self::new_with_theme(config, ResolvedTheme::terminal(), runtime_log, engines)
+    }
+
+    pub(crate) fn new_with_theme(
+        config: &'a Config,
+        theme: ResolvedTheme,
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
     ) -> Result<Self> {
@@ -148,6 +159,7 @@ impl<'a> AppSession<'a> {
         let root = engines.create_view(root_context)?;
         Ok(Self {
             config,
+            theme,
             engines,
             views: vec![ViewEntry {
                 view_ref,
@@ -173,8 +185,25 @@ impl<'a> AppSession<'a> {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn single_root(
         config: &'a Config,
+        runtime_log: RuntimeLog,
+        engines: EngineRegistry,
+        view_ref: &str,
+    ) -> Result<Self> {
+        Self::single_root_with_theme(
+            config,
+            ResolvedTheme::terminal(),
+            runtime_log,
+            engines,
+            view_ref,
+        )
+    }
+
+    pub(crate) fn single_root_with_theme(
+        config: &'a Config,
+        theme: ResolvedTheme,
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
         view_ref: &str,
@@ -205,6 +234,7 @@ impl<'a> AppSession<'a> {
         })?;
         Ok(Self {
             config,
+            theme,
             engines,
             views: vec![ViewEntry {
                 view_ref: view_ref.to_string(),
@@ -321,6 +351,7 @@ impl<'a> AppSession<'a> {
                 .context("session has no active view")?;
             let mut host = EngineHost {
                 config: self.config,
+                theme: self.theme,
                 input: &mut entry.input,
                 state: &mut entry.state,
                 request: &entry.request,
@@ -343,6 +374,7 @@ impl<'a> AppSession<'a> {
             let input_timeout = entry.input_deadline.map(input_timeout_until);
             let host = EngineHost {
                 config: self.config,
+                theme: self.theme,
                 input: &mut entry.input,
                 state: &mut entry.state,
                 request: &entry.request,
@@ -407,6 +439,7 @@ impl<'a> AppSession<'a> {
                         .context("session has no active view")?;
                     let host = EngineHost {
                         config: self.config,
+                        theme: self.theme,
                         input: &mut entry.input,
                         state: &mut entry.state,
                         request: &entry.request,
@@ -424,6 +457,7 @@ impl<'a> AppSession<'a> {
                         .context("session has no active view")?;
                     let host = EngineHost {
                         config: self.config,
+                        theme: self.theme,
                         input: &mut entry.input,
                         state: &mut entry.state,
                         request: &entry.request,
@@ -467,6 +501,7 @@ impl<'a> AppSession<'a> {
                             .context("session has no active view")?;
                         let mut host = EngineHost {
                             config: self.config,
+                            theme: self.theme,
                             input: &mut entry.input,
                             state: &mut entry.state,
                             request: &entry.request,
@@ -518,6 +553,7 @@ impl<'a> AppSession<'a> {
                                     .context("session has no active view")?;
                                 let mut host = EngineHost {
                                     config: self.config,
+                                    theme: self.theme,
                                     input: &mut entry.input,
                                     state: &mut entry.state,
                                     request: &entry.request,
@@ -631,10 +667,11 @@ impl<'a> AppSession<'a> {
             let area = chrome.content_area(Rect::new(0, 0, columns, rows));
             (area.width.max(1), area.height.max(1))
         };
+        let theme = self.theme;
         let mut render =
             |terminal: &mut Terminal, screen: &crate::embedded_terminal::EmbeddedTerminal| {
                 terminal.draw(|frame| {
-                    let area = chrome.render_chrome(frame);
+                    let area = chrome.render_chrome(frame, &theme);
                     frame.render_widget(screen.widget(), area);
                     if let Some((column, row)) = screen.cursor()
                         && column < area.width as usize
@@ -678,6 +715,7 @@ impl<'a> AppSession<'a> {
         {
             let mut host = EngineHost {
                 config: self.config,
+                theme: self.theme,
                 input: &mut entry.input,
                 state: &mut entry.state,
                 request: &entry.request,
@@ -711,6 +749,7 @@ impl<'a> AppSession<'a> {
             .expect("session has no active view while recording a command result");
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -776,6 +815,7 @@ impl<'a> AppSession<'a> {
         entry.input_deadline = None;
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -829,6 +869,7 @@ impl<'a> AppSession<'a> {
         };
         let host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -906,6 +947,7 @@ impl<'a> AppSession<'a> {
             .context("session has no active view")?;
         let host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -916,9 +958,9 @@ impl<'a> AppSession<'a> {
         };
         let route_completion = self.route_completion.clone();
         terminal.draw(|frame| {
-            let content_area = chrome.render_chrome(frame);
+            let content_area = chrome.render_chrome(frame, &host.theme);
             if let Some(completion) = &route_completion {
-                render_route_completion(frame, content_area, completion);
+                render_route_completion(frame, content_area, completion, &host.theme);
             } else {
                 entry.instance.render(&host, frame, content_area);
             }
@@ -1008,6 +1050,7 @@ impl<'a> AppSession<'a> {
         let refresh_policy = entry.instance.input_refresh_policy();
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -1034,6 +1077,7 @@ impl<'a> AppSession<'a> {
         let view_ref = entry.view_ref.clone();
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -1235,6 +1279,7 @@ impl<'a> AppSession<'a> {
             .context("session has no active view")?;
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -1273,6 +1318,7 @@ impl<'a> AppSession<'a> {
             .context("session has no active view")?;
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -1293,6 +1339,7 @@ impl<'a> AppSession<'a> {
         entry.input_deadline = None;
         let mut host = EngineHost {
             config: self.config,
+            theme: self.theme,
             input: &entry.input,
             state: &mut entry.state,
             request: &entry.request,
@@ -1337,14 +1384,22 @@ fn route_completion_edit(input: &InputBuffer, completion: &RouteCompletion) -> O
     Some(InputEdit::SetBuffer { raw, cursor })
 }
 
-fn render_route_completion(frame: &mut Frame, area: Rect, completion: &RouteCompletion) {
+fn render_route_completion(
+    frame: &mut Frame,
+    area: Rect,
+    completion: &RouteCompletion,
+    theme: &crate::theme::Theme,
+) {
     let height = area.height as usize;
     let width = area.width as usize;
     if height == 0 || width == 0 {
         return;
     }
     if completion.candidates.is_empty() {
-        frame.render_widget(Paragraph::new("(no matching views)"), area);
+        frame.render_widget(
+            Paragraph::new("(no matching views)").style(theme.muted),
+            area,
+        );
         return;
     }
 
@@ -1372,15 +1427,10 @@ fn render_route_completion(frame: &mut Frame, area: Rect, completion: &RouteComp
             );
             if index == completion.selected {
                 Line::from(vec![
-                    Span::styled(
-                        "▌",
-                        Style::new()
-                            .fg(Color::LightCyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("▌", theme.accent),
                     Span::styled(
                         text.strip_prefix(' ').unwrap_or(&text).to_string(),
-                        Style::new().add_modifier(Modifier::BOLD),
+                        theme.selected,
                     ),
                 ])
             } else {
@@ -1388,7 +1438,7 @@ fn render_route_completion(frame: &mut Frame, area: Rect, completion: &RouteComp
             }
         })
         .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines).style(theme.base), area);
 }
 
 fn resolve_footer_binding(config: &Config, key: Key, view_ref: &str) -> Option<CommandInvocation> {

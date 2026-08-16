@@ -13,6 +13,7 @@ mod runtime_log;
 mod state;
 mod terminal;
 mod text;
+mod theme;
 
 use anyhow::{Context, Result, bail};
 use app::App;
@@ -35,6 +36,14 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
+    /// Named or builtin theme; overrides the configured theme.
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+
+    /// Override one final theme token field for this invocation.
+    #[arg(long = "theme-set", value_name = "TOKEN.FIELD=VALUE")]
+    theme_set: Vec<crate::theme::ThemeOverride>,
+
     /// Validate the configuration and exit without opening the TUI.
     #[arg(long)]
     check: bool,
@@ -55,8 +64,15 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let config_path = args.config.unwrap_or_else(default_config_path);
-    let mut config = Config::load(&config_path)?;
+    let config_path = args.config.clone().unwrap_or_else(default_config_path);
+    let selector = args.theme.map(theme::cli_named_theme);
+    let theme_options = theme::ThemeLoadOptions {
+        selector,
+        overrides: args.theme_set,
+    };
+    let loaded = Config::load_app(&config_path, &theme_options)?;
+    let mut config = loaded.config;
+    let theme = loaded.theme;
     let engines = engine::EngineRegistry::new();
 
     if args.check {
@@ -99,9 +115,9 @@ fn main() -> Result<()> {
     }
     .context("could not initialize the launcher terminal")?;
     let mut app = if explicit_view {
-        App::with_view(&config, runtime_log, engines, &root_view)?
+        App::with_view(&config, &theme, runtime_log, engines, &root_view)?
     } else {
-        App::with_runtime_log_and_engines(&config, runtime_log, engines)?
+        App::with_runtime_log_and_engines(&config, &theme, runtime_log, engines)?
     };
     let outcome = app.run(&mut terminal);
     let leave_result = terminal.leave();

@@ -16,13 +16,15 @@ The launcher reads its configuration from the XDG configuration directory:
 ```text
 $XDG_CONFIG_HOME/tui-launcher/
 ├── config.toml
+├── themes/
+│   └── work.toml
 └── plugins/
     └── apps/
         ├── plugin.toml
         └── scripts/
 ```
 
-When `XDG_CONFIG_HOME` is unset, `$HOME/.config/tui-launcher/` is used. The loader reads `config.toml` and only its sibling `plugins/` directory. Plugin configuration is never embedded in the executable, and no project-local or system directory is scanned unless `TUI_LAUNCHER_CONFIG` or `--config` explicitly points there.
+When `XDG_CONFIG_HOME` is unset, `$HOME/.config/tui-launcher/` is used. The loader reads `config.toml` and only its sibling `plugins/` directory. Named themes are resolved from the sibling `themes/` directory when selected. Plugin configuration is never embedded in the executable, and no project-local or system directory is scanned unless `TUI_LAUNCHER_CONFIG` or `--config` explicitly points there.
 
 The configuration path is selected in this order:
 
@@ -49,6 +51,60 @@ Validate the active configuration without opening the TUI:
 ```bash
 mise exec -- cargo run -- --check
 ```
+
+## Themes
+
+The built-in `terminal` theme is used when no theme is configured. It uses the terminal's default foreground and background for ordinary content, and ANSI cyan with `bold` for accents, highlights, and selected items. It does not query or modify terminal colors with OSC sequences. The embedded PTY keeps the child process's own ANSI and RGB styles.
+
+A root configuration selects a theme with an explicitly tagged reference:
+
+```toml
+[appearance.theme]
+source = "named"
+name = "work"
+```
+
+Use `source = "builtin"` for the built-in theme or `source = "file"` for a file relative to the configuration directory. Named themes use `source = "named"` and are loaded from the sibling `themes/` directory. Every theme token uses the same table shape; strings are not shorthand for foreground colors:
+
+```toml
+# themes/work.toml
+[tokens.base]
+foreground = "terminal"
+background = "terminal"
+
+[tokens.accent]
+foreground = "cyan"
+bold = true
+
+[tokens.muted]
+foreground = "gray"
+
+[tokens.selected]
+foreground = "black"
+background = "cyan"
+bold = true
+
+[tokens.selected-muted]
+foreground = "blue"
+background = "cyan"
+bold = true
+```
+
+The final tokens are `base`, `accent`, `muted`, `border`, `surface`, `surface-highlight`, `highlight`, `selected`, and `selected-muted`. The `surface-highlight` and `selected-muted` tokens are explicit so selection and surface combinations do not depend on an implicit patch order. Token tables may set `foreground` (or `fg`), `background` (or `bg`), and `bold`. `terminal` restores the terminal foreground or background, `default` is not accepted, and `#RRGGBB` supplies an explicit RGB value. Named ANSI colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, and `white`; 256-color indexes, light/bright names, and aliases are not accepted.
+
+The CLI `--theme` option selects a built-in or named theme. `--theme-set` may be repeated and is parsed as a typed `TOKEN.FIELD=VALUE` override:
+
+```bash
+tui-launcher --theme work apps:main
+
+tui-launcher \
+  --theme work \
+  --theme-set accent.foreground=yellow \
+  --theme-set selected-muted.bg=cyan \
+  apps:main
+```
+
+A built-in or named theme does not access the current directory. A configuration `source = "file"` path is relative to the configuration directory. Global options must precede the View selector.
 
 ## Direct View invocation
 
@@ -518,6 +574,6 @@ Tab opens the Router's built-in visual route completion only in the normal launc
 
 For picker Views, semantic engine bindings take priority over View commands on the same key. Embedded Views reserve only timed-out bare `Esc` for cancellation and otherwise forward input to the PTY. Capture Views check View commands before applying their default other-key Back behavior.
 
-Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses a Rose Pine Dawn surface background inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use a background highlight and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses the active theme's surface style inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use the theme's highlight style and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
 Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. A request generation plus full View/raw binding/state identity prevents results from an older snapshot from being accepted, even when the visible input text is unchanged. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. A command with `requires = "items"` waits for the matching result; `requires = "input"` does not.

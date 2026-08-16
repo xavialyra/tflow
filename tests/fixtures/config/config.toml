@@ -1,5 +1,8 @@
 # Development and integration-test fixture; not a distributed default configuration.
 default_view = "core:default"
+# [appearance.theme]
+# source = "named"
+# name = "fixture"
 [chrome.footer.bindings.commands]
 key = "ctrl+k"
 label = "Commands"

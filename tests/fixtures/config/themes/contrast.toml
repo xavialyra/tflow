@@ -1,0 +1,37 @@
+[tokens.base]
+foreground = "terminal"
+background = "terminal"
+
+[tokens.accent]
+foreground = "#00ffff"
+bold = true
+
+[tokens.muted]
+foreground = "#0000ff"
+
+[tokens.border]
+foreground = "#00ffff"
+
+[tokens.surface]
+foreground = "#ffffff"
+background = "#0000ff"
+
+[tokens.surface-highlight]
+foreground = "#000000"
+background = "#00ffff"
+bold = true
+
+[tokens.highlight]
+foreground = "#000000"
+background = "#00ffff"
+bold = true
+
+[tokens.selected]
+foreground = "#000000"
+background = "#00ffff"
+bold = true
+
+[tokens.selected-muted]
+foreground = "#0000ff"
+background = "#00ffff"
+bold = true

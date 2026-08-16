@@ -1,0 +1,37 @@
+[tokens.base]
+foreground = "terminal"
+background = "terminal"
+
+[tokens.accent]
+foreground = "cyan"
+bold = true
+
+[tokens.muted]
+foreground = "gray"
+
+[tokens.border]
+foreground = "magenta"
+
+[tokens.surface]
+foreground = "terminal"
+background = "terminal"
+
+[tokens.surface-highlight]
+foreground = "cyan"
+background = "terminal"
+bold = true
+
+[tokens.highlight]
+foreground = "black"
+background = "yellow"
+bold = true
+
+[tokens.selected]
+foreground = "black"
+background = "green"
+bold = true
+
+[tokens.selected-muted]
+foreground = "gray"
+background = "green"
+bold = true

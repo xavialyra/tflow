@@ -149,8 +149,8 @@ impl ViewInstance for CaptureView {
         }
     }
 
-    fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
-        render::render_capture(frame, area, self.session.lines());
+    fn render(&mut self, host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
+        render::render_capture(frame, area, self.session.lines(), &host.theme);
     }
 
     fn input_focus(&self) -> InputFocus {

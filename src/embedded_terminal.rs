@@ -70,7 +70,7 @@ impl Widget for EmbeddedTerminalWidget<'_> {
 }
 
 fn ratatui_style(pen: &Pen) -> Style {
-    let mut style = Style::default();
+    let mut style = Style::reset();
     if let Some(foreground) = pen.foreground() {
         style = style.fg(ratatui_color(foreground));
     }
@@ -139,7 +139,14 @@ fn decode_utf8_prefix(bytes: &mut Vec<u8>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::EmbeddedTerminal;
+    use super::{EmbeddedTerminal, ratatui_style};
+    use avt::Pen;
+    use ratatui::style::Style;
+
+    #[test]
+    fn default_pty_cells_reset_launcher_styles() {
+        assert_eq!(ratatui_style(&Pen::default()), Style::reset());
+    }
 
     #[test]
     fn parses_hvp_positioning() {

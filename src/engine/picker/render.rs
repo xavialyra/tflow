@@ -1,9 +1,9 @@
 use super::{Item, PickerView};
 use crate::config::Config;
 use crate::engine::command;
+use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -23,7 +23,12 @@ const MARKER_WIDTH: usize = 1;
 const SCROLLBAR_WIDTH: usize = 1;
 const SCROLLBAR_THUMB_HEIGHT: usize = 2;
 
-pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderState) {
+pub(crate) fn render_picker(
+    frame: &mut Frame,
+    area: Rect,
+    state: &PickerRenderState,
+    theme: &Theme,
+) {
     let width = area.width as usize;
     let height = area.height as usize;
     let start = if state.selected >= height && height > 0 {
@@ -53,10 +58,7 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
         } else {
             &state.empty_message
         };
-        lines.push(Line::from(Span::styled(
-            text.to_string(),
-            Style::new().fg(Color::DarkGray),
-        )));
+        lines.push(Line::from(Span::styled(text.to_string(), theme.muted)));
     } else {
         let thumb_top = scrollbar_thumb_top(start, state.items.len(), height);
         for (visible_row, (index, item)) in state
@@ -109,32 +111,25 @@ pub(crate) fn render_picker(frame: &mut Frame, area: Rect, state: &PickerRenderS
                     text.push('█');
                 }
             }
-            lines.push(picker_line(text, selected, prefix_range));
+            lines.push(picker_line(text, selected, prefix_range, theme));
         }
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    frame.render_widget(Paragraph::new(Text::from(lines)).style(theme.base), area);
 }
 
 fn picker_line(
     mut text: String,
     selected: bool,
     prefix_range: Option<(usize, usize)>,
+    theme: &Theme,
 ) -> Line<'static> {
-    let accent = Style::new()
-        .fg(Color::LightCyan)
-        .add_modifier(Modifier::BOLD);
-    let body = if selected {
-        Style::new().add_modifier(Modifier::BOLD)
+    let accent = theme.accent;
+    let body = if selected { theme.selected } else { theme.base };
+    let prefix = if selected {
+        theme.selected_muted
     } else {
-        Style::new()
+        theme.muted
     };
-    let prefix = Style::new()
-        .fg(Color::Rgb(152, 147, 165))
-        .add_modifier(if selected {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        });
     let scrollbar = text.ends_with('█');
     if scrollbar {
         text.pop();
@@ -259,6 +254,7 @@ fn clip(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::{Color, Modifier, Style};
 
     #[test]
     fn scrollbar_is_hidden_at_the_top_and_shown_after_scrolling() {
@@ -269,36 +265,62 @@ mod tests {
 
     #[test]
     fn picker_markers_and_scrollbars_use_the_accent_color() {
-        let selected = picker_line("▌ item  █".to_string(), true, None);
+        let theme = Theme::terminal();
+        let selected = picker_line("▌ item  █".to_string(), true, None, &theme);
         assert_eq!(selected.spans.first().unwrap().content, "▌");
-        assert_eq!(
-            selected.spans.first().unwrap().style.fg,
-            Some(Color::LightCyan)
-        );
+        assert_eq!(selected.spans.first().unwrap().style.fg, Some(Color::Cyan));
         assert_eq!(selected.spans.last().unwrap().content, "█");
-        assert_eq!(
-            selected.spans.last().unwrap().style.fg,
-            Some(Color::LightCyan)
-        );
+        assert_eq!(selected.spans.last().unwrap().style.fg, Some(Color::Cyan));
 
-        let unselected = picker_line("  item  █".to_string(), false, None);
+        let unselected = picker_line("  item  █".to_string(), false, None, &theme);
         assert_eq!(unselected.spans.last().unwrap().content, "█");
-        assert_eq!(
-            unselected.spans.last().unwrap().style.fg,
-            Some(Color::LightCyan)
-        );
+        assert_eq!(unselected.spans.last().unwrap().style.fg, Some(Color::Cyan));
     }
 
     #[test]
-    fn picker_prefix_uses_the_lighter_muted_color() {
-        let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)));
+    fn picker_prefix_uses_the_muted_terminal_style() {
+        let theme = Theme::terminal();
+        let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)), &theme);
         let prefix = line
             .spans
             .iter()
             .find(|span| span.content == "sys")
             .expect("prefix span should be separate");
-        assert_eq!(prefix.style.fg, Some(Color::Rgb(152, 147, 165)));
+        assert_eq!(prefix.style.fg, Some(Color::Reset));
+        assert!(!prefix.style.add_modifier.contains(Modifier::DIM));
         assert!(prefix.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn selected_prefix_keeps_a_custom_muted_foreground() {
+        let mut theme = Theme::terminal();
+        theme.muted.fg = Some(Color::Gray);
+        theme.selected = Style::new()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        theme.selected_muted = Style::new()
+            .fg(Color::Gray)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+
+        let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)), &theme);
+        let prefix = line
+            .spans
+            .iter()
+            .find(|span| span.content == "sys")
+            .expect("prefix span should be separate");
+        assert_eq!(prefix.style.fg, Some(Color::Gray));
+        assert_eq!(prefix.style.bg, Some(Color::Green));
+        assert!(prefix.style.add_modifier.contains(Modifier::BOLD));
+
+        let body = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Item"))
+            .expect("selected body span should be present");
+        assert_eq!(body.style.fg, Some(Color::Black));
+        assert_eq!(body.style.bg, Some(Color::Green));
     }
 
     #[test]

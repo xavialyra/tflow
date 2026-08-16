@@ -4,6 +4,7 @@ use crate::expression::{
 };
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
+use crate::theme::{ResolvedTheme, ThemeLoadOptions, ThemeRef};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -279,12 +280,26 @@ pub struct Command {
     pub action: CommandAction,
 }
 
+pub(crate) struct LoadedApp {
+    pub(crate) config: Config,
+    pub(crate) theme: ResolvedTheme,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppearanceConfig {
+    #[serde(default)]
+    theme: Option<ThemeRef>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     default_view: Option<String>,
     #[serde(default)]
     chrome: ChromeConfig,
+    #[serde(default)]
+    appearance: AppearanceConfig,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
@@ -308,16 +323,51 @@ struct PluginHeader {
     name: String,
 }
 
+fn remove_theme_from_workflow_config(value: &mut toml::Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+    let remove_appearance = table
+        .get_mut("appearance")
+        .and_then(toml::Value::as_table_mut)
+        .map(|appearance| {
+            appearance.remove("theme");
+            appearance.is_empty()
+        })
+        .unwrap_or(false);
+    if remove_appearance {
+        table.remove("appearance");
+    }
+}
+
 impl Config {
+    #[allow(dead_code)]
     pub fn load(user_path: &Path) -> Result<Self> {
         let engines = crate::engine::EngineRegistry::new();
         Self::load_with_engines(user_path, &engines)
     }
 
+    pub(crate) fn load_app(user_path: &Path, options: &ThemeLoadOptions) -> Result<LoadedApp> {
+        let engines = crate::engine::EngineRegistry::new();
+        Self::load_with_engines_and_options(user_path, &engines, options)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn load_with_engines(
         user_path: &Path,
         engines: &crate::engine::EngineRegistry,
     ) -> Result<Self> {
+        Ok(
+            Self::load_with_engines_and_options(user_path, engines, &ThemeLoadOptions::default())?
+                .config,
+        )
+    }
+
+    fn load_with_engines_and_options(
+        user_path: &Path,
+        engines: &crate::engine::EngineRegistry,
+        options: &ThemeLoadOptions,
+    ) -> Result<LoadedApp> {
         let user_source = fs::read_to_string(user_path)
             .with_context(|| format!("could not read config {}", user_path.display()))?;
         let user_config: toml::Value = toml::from_str(&user_source)
@@ -332,17 +382,29 @@ impl Config {
         merge_values(&mut merged, user_config);
         remove_disabled_plugins(&mut merged, &disabled_plugins);
 
+        if merged.get("theme").is_some() {
+            bail!(
+                "merged configuration from {} does not match the launcher schema: unknown field `theme`",
+                user_path.display()
+            );
+        }
+        let raw: RawConfig = merged.clone().try_into().with_context(|| {
+            format!(
+                "merged configuration from {} does not match the launcher schema",
+                user_path.display()
+            )
+        })?;
+        let theme = crate::theme::load(user_path, raw.appearance.theme.as_ref(), options)?;
+        remove_theme_from_workflow_config(&mut merged);
         let mut config_value =
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         normalize_engine_configs(&mut config_value);
-        let raw: RawConfig = merged
-            .try_into()
-            .context("merged configuration does not match the picker schema")?;
-        let mut config = Self::from_raw(raw, plugin_roots)?;
+        let config = Self::from_raw(raw, plugin_roots)?;
+        let mut config = config;
         config.config_value = config_value;
         config.state_registry = StateRegistry::compile(&config.config_value)?;
         config.validate_with_engines(engines)?;
-        Ok(config)
+        Ok(LoadedApp { config, theme })
     }
 
     pub(crate) fn bind_invocation_state(
@@ -1306,6 +1368,7 @@ fn default_plugin_api() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
     use std::{env, fs};
 
     fn config(source: &str) -> Config {
@@ -1906,6 +1969,38 @@ mod tests {
             crate::expression::apply_path(config.config_value.clone(), "$.aa.*.bb").unwrap(),
             serde_json::json!([1, 2])
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn appearance_theme_is_not_exposed_in_the_workflow_config_tree() {
+        let root =
+            env::temp_dir().join(format!("tui-launcher-config-theme-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [appearance.theme]
+            source = "file"
+            path = "./theme.toml"
+
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("theme.toml"),
+            "[tokens.accent]\nforeground = \"green\"\n",
+        )
+        .unwrap();
+
+        let loaded = Config::load_app(&config_path, &ThemeLoadOptions::default()).unwrap();
+        assert!(loaded.config.config_value.get("appearance").is_none());
+        assert_eq!(loaded.theme.accent.fg, Some(Color::Green));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -651,17 +651,18 @@ impl ViewInstance for PickerView {
         }
     }
 
-    fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
+    fn render(&mut self, host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
         let state = self.render_state();
+        let theme = host.theme;
         if let Some(preview) = &mut self.preview {
             let (items_area, preview_area) = preview.areas(area);
-            render::render_picker(frame, items_area, &state);
+            render::render_picker(frame, items_area, &state, &theme);
             if let Some(preview_area) = preview_area {
-                preview.render(frame, preview_area);
-                preview.render_separator(frame, items_area, preview_area);
+                preview.render(frame, preview_area, &theme);
+                preview.render_separator(frame, items_area, preview_area, &theme);
             }
         } else {
-            render::render_picker(frame, area, &state);
+            render::render_picker(frame, area, &state, &theme);
         }
     }
 }
@@ -813,12 +814,14 @@ mod tests {
         let mut active_error = None;
         let mut active_error_deadline = None;
         let request = None;
+        let theme = crate::theme::Theme::terminal();
 
         config.update_query_input(&mut state, "AB").unwrap();
         let mut input = InputBuffer::new("AB");
         {
             let mut host = EngineHost {
                 config: &config,
+                theme,
                 input: &input,
                 state: &state,
                 request: &request,
@@ -835,6 +838,7 @@ mod tests {
         {
             let mut host = EngineHost {
                 config: &config,
+                theme,
                 input: &input,
                 state: &state,
                 request: &request,
@@ -856,6 +860,7 @@ mod tests {
         let effect = {
             let mut host = EngineHost {
                 config: &config,
+                theme,
                 input: &input,
                 state: &state,
                 request: &request,
