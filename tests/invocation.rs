@@ -1,9 +1,12 @@
 mod support;
 
 use std::fs;
+use std::io::Write;
 use support::{
     run_invocation, run_invocation_steps, run_tty_invocation_with_redirected_stdout,
-    temporary_root, wait_for_process_exit, write_test_config,
+    run_tty_invocation_with_redirected_stdout_after_marker, spawn_launcher_with_args_and_env,
+    temporary_root, wait_for_launcher_exit, wait_for_nonempty_file, wait_for_process_exit,
+    wait_for_ready, write_test_config,
 };
 
 #[test]
@@ -277,7 +280,7 @@ fn embedded_escape_and_ctrl_c_reach_the_child_when_cancellation_is_disabled() {
         type = "embedded"
 
         [plugins.core.views.default.engine.config]
-        command = ["sh", "-c", "stty raw -echo; set -- $(dd bs=1 count=2 2>/dev/null | od -An -tu1); printf '%s,%s' \"$1\" \"$2\""]
+        command = ["sh", "-c", "stty raw -echo; printf '__TUI_LAUNCHER_CHILD_READY__\\n' >&2; set -- $(dd bs=1 count=2 2>/dev/null | od -An -tu1); printf '%s,%s' \"$1\" \"$2\""]
         escape-cancels = false
         result = { format = "text", required = true }
         "#,
@@ -285,8 +288,9 @@ fn embedded_escape_and_ctrl_c_reach_the_child_when_cancellation_is_disabled() {
     .unwrap();
 
     let config = config.to_str().unwrap();
-    let result = run_tty_invocation_with_redirected_stdout(
+    let result = run_tty_invocation_with_redirected_stdout_after_marker(
         &["--config", config, "core:default"],
+        "__TUI_LAUNCHER_CHILD_READY__",
         b"\x1b\x03",
     );
 
@@ -659,6 +663,67 @@ exit 7
 
     assert_eq!(result.status, 7);
     assert_eq!(result.stdout, b"handled-output");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signal_exit_terminates_a_running_return_handler() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    let pid_file = root.join("handler.pid");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(
+        &config,
+        r#"
+        default_view = "custom:main"
+        [catalog]
+        items = [{label = "Return"}]
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "picker"
+        [views.main.engine.config]
+        items = "{{ config:catalog.items }}"
+        [views.main.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "return"
+        [views.main.commands.accept.payload]
+        handler = "scripts/result.sh"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/result.sh"),
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\n",
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process = spawn_launcher_with_args_and_env(
+        &config,
+        &["custom:main"],
+        &[("PID_FILE", pid_path.as_str())],
+    );
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    wait_for_process_exit(child_pid);
     fs::remove_dir_all(root).unwrap();
 }
 

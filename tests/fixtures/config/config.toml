@@ -1,6 +1,7 @@
 # Development and integration-test fixture; not a distributed default configuration.
 default_view = "core:default"
 theme = "fixture"
+image_protocol = "sixel"
 [chrome.footer.bindings.commands]
 key = "ctrl+k"
 label = "Commands"

@@ -1,13 +1,447 @@
 mod support;
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
+use std::time::Duration;
 
 use support::{
-    fixture_config, spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
-    temporary_root, wait_for_launcher_exit, wait_for_nonempty_file, wait_for_process_exit,
-    wait_for_ready, wait_for_text, write_test_config,
+    fixture_config, run_tty_invocation_with_blocked_stdout_signal, spawn_launcher,
+    spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
+    wait_for_launcher_exit, wait_for_launcher_exit_without_reading, wait_for_nonempty_file,
+    wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
 };
+
+fn assert_termios_eq(left: &libc::termios, right: &libc::termios) {
+    assert_eq!(left.c_iflag, right.c_iflag);
+    assert_eq!(left.c_oflag, right.c_oflag);
+    assert_eq!(left.c_cflag, right.c_cflag);
+    assert_eq!(left.c_lflag, right.c_lflag);
+    assert_eq!(left.c_cc, right.c_cc);
+    assert_eq!(unsafe { libc::cfgetispeed(left) }, unsafe {
+        libc::cfgetispeed(right)
+    });
+    assert_eq!(unsafe { libc::cfgetospeed(left) }, unsafe {
+        libc::cfgetospeed(right)
+    });
+}
+
+fn assert_terminal_restored(process: &support::LauncherProcess, output: &[u8]) {
+    assert_termios_eq(process.original_termios(), &process.current_termios());
+    assert!(
+        output
+            .windows(b"\x1b[?25h".len())
+            .any(|bytes| bytes == b"\x1b[?25h"),
+        "launcher output did not restore the cursor: {:?}",
+        output
+    );
+    assert!(
+        output
+            .windows(b"\x1b[?1049l".len())
+            .any(|bytes| bytes == b"\x1b[?1049l"),
+        "launcher output did not leave the alternate screen: {:?}",
+        output
+    );
+}
+
+#[test]
+fn normal_exit_restores_terminal_state() {
+    let mut process = spawn_launcher(&fixture_config());
+    wait_for_ready(&process.master);
+    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+}
+
+#[test]
+fn first_signal_aborts_a_blocked_final_output_write() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin_root = root.join("plugins/custom");
+    fs::create_dir_all(plugin_root.join("scripts")).unwrap();
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        "[plugin]\napi = 1\nname = \"custom\"\n\n[views.main.engine]\ntype = \"picker\"\n[views.main.engine.config]\nitems = []\n",
+    )
+    .unwrap();
+    write_test_config(
+        &config,
+        r#"
+        default_view = "custom:main"
+
+        [plugins.custom.views.main]
+        [plugins.custom.views.main.engine]
+        type = "picker"
+        [plugins.custom.views.main.engine.config]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.custom.views.main.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "return"
+        [plugins.custom.views.main.commands.accept.payload]
+        handler = "scripts/large.sh"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin_root.join("scripts/large.sh"),
+        "head -c 16777216 /dev/zero\n",
+    )
+    .unwrap();
+
+    let args = ["--config", config.to_str().unwrap()];
+    let result = run_tty_invocation_with_blocked_stdout_signal(&args, b"\r", libc::SIGTERM);
+    assert_eq!(
+        result.status,
+        128 + libc::SIGTERM,
+        "output: {:?}",
+        result.stdout
+    );
+    assert!(result.stdout.len() < 16 * 1024 * 1024);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn first_signal_exits_when_outer_terminal_stops_reading() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "custom:main"
+
+        [plugins.custom.views.main]
+        [plugins.custom.views.main.engine]
+        type = "embedded"
+        [plugins.custom.views.main.engine.config]
+        command = ["sh", "-c", "while :; do printf x; done"]
+        escape-cancels = false
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &[]);
+    wait_for_ready(&process.master);
+    std::thread::sleep(Duration::from_millis(300));
+    process.send_signal(libc::SIGTERM);
+    let status = wait_for_launcher_exit_without_reading(&mut process, Duration::from_secs(3));
+    assert_eq!(status, 128 + libc::SIGTERM);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_signals_restore_terminal_state() {
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT, libc::SIGINT] {
+        let mut process = spawn_launcher(&fixture_config());
+        wait_for_ready(&process.master);
+        assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+        process.send_signal(signal);
+
+        let (status, output) = wait_for_launcher_exit(&mut process);
+        assert_eq!(status, 128 + signal, "launcher output: {:?}", output);
+        assert_terminal_restored(&process, &output);
+    }
+}
+
+#[test]
+fn terminal_disconnect_exits_with_sighup_without_panicking() {
+    let mut process = spawn_launcher(&fixture_config());
+    wait_for_ready(&process.master);
+    let master = std::mem::replace(&mut process.master, File::open("/dev/null").unwrap());
+    drop(master);
+
+    let (status, _output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGHUP);
+}
+
+#[test]
+fn signal_exit_terminates_command_expression_script() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    let pid_file = root.join("expression.pid");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(
+        &config,
+        r#"
+        default_view = "custom:main"
+        [catalog]
+        items = [{label = "Open"}]
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "picker"
+        [views.main.engine.config]
+        items = "{{ config:catalog.items }}"
+        [views.main.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "navigate"
+        [views.main.commands.open.payload]
+        target = '{{ script("scripts/target.sh") }}'
+        [views.next.engine]
+        type = "capture"
+        [views.next.engine.config]
+        output = "done"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/target.sh"),
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"custom:next\"\\n'\n",
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signal_exit_cancels_view_creation_script() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    let pid_file = root.join("creation.pid");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(
+        &config,
+        r#"
+        default_view = "custom:main"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "capture"
+        [views.main.engine.config]
+        output = '{{ script("scripts/output.sh") }}'
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/output.sh"),
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"done\"'\n",
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signal_exit_waits_for_items_worker_cleanup() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    let pid_file = root.join("items.pid");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(
+        &config,
+        r#"
+        default_view = "custom:main"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "picker"
+        [views.main.engine.config]
+        items = '{{ script("scripts/items.sh") }}'
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/items.sh"),
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '[{\"label\":\"Item\"}]'\n",
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
+    wait_for_ready(&process.master);
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signal_exit_terminates_embedded_process() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let pid_file = root.join("embedded.pid");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "custom:main"
+
+        [plugins.custom.views.main]
+        [plugins.custom.views.main.engine]
+        type = "embedded"
+        [plugins.custom.views.main.engine.config]
+        command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; sleep 30"]
+        escape-cancels = false
+        "#,
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
+    wait_for_ready(&process.master);
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_pty_disconnect_cancels_a_running_child() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let pid_file = root.join("embedded-disconnect.pid");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "custom:main"
+
+        [plugins.custom.views.main]
+        [plugins.custom.views.main.engine]
+        type = "embedded"
+        [plugins.custom.views.main.engine.config]
+        command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; exec 0<&- 1>&- 2>&-; sleep 30"]
+        escape-cancels = false
+        "#,
+    )
+    .unwrap();
+    let pid_path = pid_file.to_string_lossy().to_string();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
+    wait_for_ready(&process.master);
+    let child_pid = wait_for_nonempty_file(&pid_file)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn runtime_log_open_failure_is_reported_without_stopping_the_launcher() {
+    let mut process = spawn_launcher_with_args_and_env(
+        &fixture_config(),
+        &["sys:output"],
+        &[("TUI_LAUNCHER_LOG_FILE", "/dev/full")],
+    );
+    wait_for_text(&process.master, "runtime log disabled");
+    process.master.write_all(b"q").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item", value = "value"}]
+        [plugins.core.views.default.commands.exit]
+        key = "enter"
+        label = "Exit"
+        type = "run"
+        [plugins.core.views.default.commands.exit.payload]
+        handler = '''printf 'done\\n' '''
+        exit = true
+        "#,
+    )
+    .unwrap();
+    let mut process =
+        spawn_launcher_with_args_and_env(&config, &[], &[("TUI_LAUNCHER_LOG_FILE", "/dev/full")]);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+    assert!(
+        String::from_utf8_lossy(&output).contains("runtime log disabled"),
+        "immediate exit dropped the runtime warning: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn loads_items_from_an_expression() {
@@ -540,7 +974,7 @@ fi
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
+        items = '{{ script("scripts/items.sh", {query = this:query}) }}'
 "#,
     )
     .expect("could not write cancellation integration config");
@@ -990,11 +1424,6 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
 fn view_alias_routes_to_the_configured_messages_picker() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    fs::write(
-        root.join("runtime.jsonl"),
-        "{\"label\":\"preexisting log\",\"value\":\"1\",\"metadata\":{}}\n",
-    )
-    .expect("could not seed runtime log");
     let plugin_root = root.join("plugins/core");
     fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
     fs::write(
@@ -1004,7 +1433,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
     .expect("could not write test plugin manifest");
     fs::write(
         plugin_root.join("scripts/items.sh"),
-        "input=$(cat)\nlog_file=$(printf '%s\\n' \"$input\" | jq -r '.log_file // empty')\nif [ -n \"$log_file\" ] && [ -f \"$log_file\" ]; then\n    jq -s '.' \"$log_file\"\nelse\n    printf '[]\\n'\nfi\n",
+        "printf '[{\\\"label\\\":\\\"preexisting log\\\",\\\"value\\\":\\\"1\\\"}]\\n'\n",
     )
     .expect("could not write test items script");
     write_test_config(
@@ -1022,7 +1451,7 @@ fn view_alias_routes_to_the_configured_messages_picker() {
         [plugins.core.views.messages.engine]
         type = "picker"
         [plugins.core.views.messages.engine.config]
-        items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
+        items = '{{ script("scripts/items.sh", {query = this:query}) }}'
 "#,
     )
     .expect("could not write messages integration config");

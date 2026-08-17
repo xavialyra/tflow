@@ -18,4 +18,4 @@ alias = "log"
 type = "picker"
 
 [views.messages.engine.config]
-items = '{{ script("scripts/items.sh", {query = this:query, log_file = runtime:view.current.log_file}) }}'
+items = []
