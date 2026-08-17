@@ -24,6 +24,7 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 pub struct Config {
     pub default_view: Option<ViewRef>,
     pub(crate) image_protocol: ImageProtocol,
+    pub(crate) log_file: Option<PathBuf>,
     pub(crate) chrome: ChromeConfig,
     pub views: BTreeMap<ViewRef, View>,
     pub plugins: BTreeMap<String, PluginMetadata>,
@@ -303,6 +304,8 @@ struct RawConfig {
     #[serde(default)]
     image_protocol: ImageProtocol,
     #[serde(default)]
+    log_file: Option<PathBuf>,
+    #[serde(default)]
     chrome: ChromeConfig,
     #[serde(default)]
     theme: Option<String>,
@@ -377,15 +380,21 @@ impl Config {
                 user_path.display()
             )
         })?;
+        let log_file = raw
+            .log_file
+            .as_deref()
+            .map(|path| resolve_config_path(user_path, path));
         let theme = crate::theme::load(user_path, raw.theme.as_deref(), options)?;
         if let Some(table) = merged.as_table_mut() {
             table.remove("theme");
+            table.remove("log_file");
         }
         let mut config_value =
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         normalize_engine_configs(&mut config_value);
         let config = Self::from_raw(raw, plugin_roots)?;
         let mut config = config;
+        config.log_file = log_file;
         config.config_value = config_value;
         config.state_registry = StateRegistry::compile(&config.config_value)?;
         config.validate_with_engines(engines)?;
@@ -472,6 +481,7 @@ impl Config {
         Ok(Self {
             default_view: raw.default_view,
             image_protocol: raw.image_protocol,
+            log_file: raw.log_file,
             chrome: raw.chrome,
             views,
             plugins,
@@ -1343,6 +1353,17 @@ fn validate_templates(value: &toml::Value) -> Result<()> {
     Ok(())
 }
 
+fn resolve_config_path(config_path: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    }
+}
+
 fn default_engine_type() -> String {
     ENGINE_PICKER.to_string()
 }
@@ -1380,6 +1401,19 @@ mod tests {
     fn image_protocol_rejects_unknown_values() {
         let value: toml::Value = toml::from_str("image_protocol = \"auto\"").unwrap();
         assert!(value.try_into::<RawConfig>().is_err());
+    }
+
+    #[test]
+    fn explicit_log_file_is_loaded() {
+        let config = config("log_file = \"logs/runtime.jsonl\"");
+        assert_eq!(config.log_file, Some(PathBuf::from("logs/runtime.jsonl")));
+        assert_eq!(
+            resolve_config_path(
+                Path::new("/tmp/config/config.toml"),
+                Path::new("logs/runtime.jsonl")
+            ),
+            PathBuf::from("/tmp/config/logs/runtime.jsonl")
+        );
     }
 
     #[test]

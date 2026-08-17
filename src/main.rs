@@ -107,7 +107,7 @@ fn main_inner() -> Result<i32> {
     let input = invocation::InputArtifact::capture()?;
     config.set_invocation(input.value(), state);
 
-    let runtime_log = runtime_log::RuntimeLog::open();
+    let runtime_log = runtime_log::RuntimeLog::open(config.log_file.as_deref());
     let signal_guard =
         shutdown::SignalGuard::install().context("could not install launcher signal handlers")?;
     let cancellation = signal_guard.cancellation_token();

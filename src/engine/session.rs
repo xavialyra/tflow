@@ -1789,7 +1789,7 @@ mod tests {
         assert!(
             session
                 .apply_navigation(
-                    NavigationRequest::new("core:messages", ""),
+                    NavigationRequest::new("sys:main", ""),
                     NavigationMode::Push,
                     None,
                 )
@@ -1839,7 +1839,7 @@ mod tests {
         let context = call_context(&session);
         session
             .apply_call(CallRequest {
-                request: NavigationRequest::with_defaults("core:messages"),
+                request: NavigationRequest::with_defaults("sys:main"),
                 origin: CommandOrigin::ChromeFooter {
                     view: "core:default".to_string(),
                     binding: "commands".to_string(),
@@ -1896,7 +1896,7 @@ mod tests {
         let outer_context = call_context(&session);
         session
             .apply_call(CallRequest {
-                request: NavigationRequest::with_defaults("core:messages"),
+                request: NavigationRequest::with_defaults("sys:main"),
                 origin: CommandOrigin::View(CommandRef {
                     view: "core:default".to_string(),
                     id: "views".to_string(),
@@ -1910,7 +1910,7 @@ mod tests {
             .apply_call(CallRequest {
                 request: NavigationRequest::with_defaults("apps:main"),
                 origin: CommandOrigin::View(CommandRef {
-                    view: "core:messages".to_string(),
+                    view: "sys:main".to_string(),
                     id: "inner".to_string(),
                 }),
                 context: inner_context,
@@ -1932,12 +1932,12 @@ mod tests {
             ReturnTransition::Effect(effect) if matches!(*effect, ViewEffect::Continue)
         ));
         assert_eq!(session.views.len(), 2);
-        assert_eq!(session.views.last().unwrap().view_ref, "core:messages");
+        assert_eq!(session.views.last().unwrap().view_ref, "sys:main");
         assert!(session.views.last().unwrap().call_boundary.is_some());
 
         let transition = session
             .apply_return(ViewReturn {
-                source_view: "core:messages".to_string(),
+                source_view: "sys:main".to_string(),
                 output: super::super::ViewOutput::Value {
                     value: serde_json::json!("outer"),
                 },
@@ -1963,7 +1963,7 @@ mod tests {
         .unwrap();
         session
             .apply_call(CallRequest {
-                request: NavigationRequest::with_defaults("core:messages"),
+                request: NavigationRequest::with_defaults("sys:main"),
                 origin: CommandOrigin::View(CommandRef {
                     view: "core:default".to_string(),
                     id: "views".to_string(),
@@ -1999,7 +1999,7 @@ mod tests {
         let context = call_context(&session);
         session
             .apply_call(CallRequest {
-                request: NavigationRequest::with_defaults("core:messages"),
+                request: NavigationRequest::with_defaults("sys:main"),
                 origin: CommandOrigin::View(CommandRef {
                     view: "core:default".to_string(),
                     id: "views".to_string(),

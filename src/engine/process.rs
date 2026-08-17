@@ -14,7 +14,6 @@ pub(crate) const MANAGED_ENVIRONMENT: &[&str] = &[
     "LAUNCHER_ITEM_VIEW_REF",
     "LAUNCHER_LOG_FILE",
     "LAUNCHER_METADATA",
-    "TUI_LAUNCHER_LOG_FILE",
     "LAUNCHER_PLUGIN",
     "LAUNCHER_PLUGIN_DIR",
     "LAUNCHER_QUERY",
@@ -247,7 +246,6 @@ mod tests {
         );
         assert_eq!(environment["LAUNCHER_PLUGIN_DIR"], None);
         assert_eq!(environment["LAUNCHER_LOG_FILE"], None);
-        assert_eq!(environment["TUI_LAUNCHER_LOG_FILE"], None);
         assert_eq!(environment["LAUNCHER_STDIN_FILE"], None);
     }
 

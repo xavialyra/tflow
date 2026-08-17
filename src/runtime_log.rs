@@ -84,6 +84,7 @@ pub struct RuntimeLog {
 }
 
 impl RuntimeLog {
+    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             path: None,
@@ -93,10 +94,9 @@ impl RuntimeLog {
         }
     }
 
-    pub fn open() -> Self {
-        match log_path() {
-            Ok(Some(path)) => Self::open_configured(path),
-            Ok(None) => Self::disabled(),
+    pub fn open(configured_path: Option<&Path>) -> Self {
+        match log_path(configured_path) {
+            Ok(path) => Self::open_configured(path),
             Err(error) => Self::with_warning(None, error),
         }
     }
@@ -221,16 +221,31 @@ fn ensure_regular_file(file: &File, path: &Path) -> io::Result<()> {
     ))
 }
 
-fn log_path() -> io::Result<Option<PathBuf>> {
-    let Some(path) = env::var_os("TUI_LAUNCHER_LOG_FILE") else {
-        return Ok(None);
-    };
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        Ok(Some(path))
-    } else {
-        Ok(Some(env::current_dir()?.join(path)))
+fn log_path(configured_path: Option<&Path>) -> io::Result<PathBuf> {
+    if let Some(path) = configured_path {
+        return Ok(path.to_path_buf());
     }
+
+    let xdg_state_home = env::var_os("XDG_STATE_HOME").map(PathBuf::from);
+    let home = env::var_os("HOME").map(PathBuf::from);
+    default_log_path(xdg_state_home.as_deref(), home.as_deref())
+}
+
+fn default_log_path(xdg_state_home: Option<&Path>, home: Option<&Path>) -> io::Result<PathBuf> {
+    let state_home = xdg_state_home
+        .filter(|path| path.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            home.filter(|path| path.is_absolute())
+                .map(|path| path.join(".local/state"))
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "neither XDG_STATE_HOME nor HOME is set to an absolute path",
+            )
+        })?;
+    Ok(state_home.join("tui-launcher/runtime.jsonl"))
 }
 
 fn timestamp() -> (String, String) {
@@ -263,6 +278,22 @@ mod tests {
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn default_log_path_prefers_xdg_state_home() {
+        assert_eq!(
+            default_log_path(Some(Path::new("/tmp/state")), Some(Path::new("/tmp/home"))).unwrap(),
+            PathBuf::from("/tmp/state/tui-launcher/runtime.jsonl")
+        );
+    }
+
+    #[test]
+    fn default_log_path_falls_back_to_home_state_directory() {
+        assert_eq!(
+            default_log_path(None, Some(Path::new("/tmp/home"))).unwrap(),
+            PathBuf::from("/tmp/home/.local/state/tui-launcher/runtime.jsonl")
+        );
     }
 
     #[test]

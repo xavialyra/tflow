@@ -10,12 +10,3 @@ show_prefix = true
 
 [[views.default.engine.config.feeds]]
 view = "*:main"
-
-[views.messages]
-alias = "log"
-
-[views.messages.engine]
-type = "picker"
-
-[views.messages.engine.config]
-items = []

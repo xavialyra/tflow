@@ -239,6 +239,7 @@ mod tests {
         Config {
             default_view: Some("core:default".to_string()),
             image_protocol: crate::config::ImageProtocol::default(),
+            log_file: None,
             chrome: crate::config::ChromeConfig::default(),
             views: BTreeMap::from([
                 ("core:default".to_string(), view(None)),

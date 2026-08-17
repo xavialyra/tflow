@@ -244,12 +244,8 @@ mod tests {
     #[test]
     fn bounded_command_does_not_inherit_launcher_log_environment() {
         let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "test -z \"${LAUNCHER_LOG_FILE+x}\" && test -z \"${TUI_LAUNCHER_LOG_FILE+x}\"",
-        ]);
+        command.args(["-c", "test -z \"${LAUNCHER_LOG_FILE+x}\""]);
         command.env("LAUNCHER_LOG_FILE", "/tmp/should-not-be-visible");
-        command.env("TUI_LAUNCHER_LOG_FILE", "/tmp/should-not-be-visible-either");
         let output = run_bounded_command_with_stdin(
             command,
             None,

@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ struct DmenuProcess {
     master: File,
     input: Option<File>,
     output: File,
+    state_home: PathBuf,
     finished: bool,
 }
 
@@ -27,6 +29,7 @@ impl Drop for DmenuProcess {
                 libc::waitpid(self.pid, std::ptr::null_mut(), 0);
             }
         }
+        fs::remove_dir_all(&self.state_home).ok();
     }
 }
 
@@ -34,6 +37,7 @@ pub struct LauncherProcess {
     pid: libc::pid_t,
     pub master: File,
     original_termios: libc::termios,
+    state_home: PathBuf,
     finished: bool,
 }
 
@@ -64,6 +68,7 @@ impl Drop for LauncherProcess {
                 libc::waitpid(self.pid, std::ptr::null_mut(), 0);
             }
         }
+        fs::remove_dir_all(&self.state_home).ok();
     }
 }
 
@@ -83,13 +88,12 @@ struct PreparedExec {
     argv: Vec<*const libc::c_char>,
     _environment: Vec<CString>,
     envp: Vec<*const libc::c_char>,
+    state_home: PathBuf,
 }
 
-fn prepare_exec(
-    arguments: Vec<String>,
-    log_path: Option<&Path>,
-    overrides: &[(&str, &str)],
-) -> PreparedExec {
+static TEST_STATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn prepare_exec(arguments: Vec<String>, overrides: &[(&str, &str)]) -> PreparedExec {
     let command = arguments
         .into_iter()
         .map(|argument| CString::new(argument).expect("test argument contains a NUL byte"))
@@ -100,18 +104,17 @@ fn prepare_exec(
         .collect::<Vec<_>>();
     argv.push(std::ptr::null());
 
+    let state_home = std::env::temp_dir().join(format!(
+        "tui-launcher-test-state-{}-{}",
+        std::process::id(),
+        TEST_STATE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&state_home).expect("could not create test XDG state directory");
     let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    match log_path {
-        Some(path) => {
-            environment.insert(
-                OsString::from("TUI_LAUNCHER_LOG_FILE"),
-                OsString::from(path.as_os_str()),
-            );
-        }
-        None => {
-            environment.remove(&OsString::from("TUI_LAUNCHER_LOG_FILE"));
-        }
-    }
+    environment.insert(
+        OsString::from("XDG_STATE_HOME"),
+        OsString::from(state_home.as_os_str()),
+    );
     for (key, value) in overrides {
         environment.insert(OsString::from(key), OsString::from(value));
     }
@@ -134,6 +137,7 @@ fn prepare_exec(
         argv,
         _environment: environment,
         envp,
+        state_home,
     }
 }
 
@@ -280,13 +284,8 @@ pub fn spawn_launcher_with_args_and_env(
         config.to_string_lossy().into_owned(),
     ];
     arguments.extend(extra_args.iter().map(|argument| (*argument).to_string()));
-    let log_path = (config != fixture_config()).then(|| {
-        config
-            .parent()
-            .expect("test config has no parent")
-            .join("runtime.jsonl")
-    });
-    let prepared = prepare_exec(arguments, log_path.as_deref(), environment);
+    let prepared = prepare_exec(arguments, environment);
+    let state_home = prepared.state_home.clone();
     let window = libc::winsize {
         ws_row: 24,
         ws_col: 80,
@@ -325,6 +324,7 @@ pub fn spawn_launcher_with_args_and_env(
         pid,
         master: unsafe { File::from_raw_fd(master) },
         original_termios,
+        state_home,
         finished: false,
     }
 }
@@ -332,7 +332,8 @@ pub fn spawn_launcher_with_args_and_env(
 fn spawn(args: &[&str]) -> DmenuProcess {
     let mut arguments = vec![binary_path().to_string_lossy().into_owned()];
     arguments.extend(args.iter().map(|argument| (*argument).to_string()));
-    let prepared = prepare_exec(arguments, None, &[]);
+    let prepared = prepare_exec(arguments, &[]);
+    let state_home = prepared.state_home.clone();
     let input_pipe = create_cloexec_pipe();
     let output_pipe = create_cloexec_pipe();
 
@@ -361,6 +362,7 @@ fn spawn(args: &[&str]) -> DmenuProcess {
         master: unsafe { File::from_raw_fd(master) },
         input: Some(unsafe { File::from_raw_fd(input_pipe[1]) }),
         output: unsafe { File::from_raw_fd(output_pipe[0]) },
+        state_home,
         finished: false,
     }
 }
@@ -394,7 +396,8 @@ fn child_exec(
 fn spawn_tty_with_redirected_stdout(args: &[&str]) -> DmenuProcess {
     let mut arguments = vec![binary_path().to_string_lossy().into_owned()];
     arguments.extend(args.iter().map(|argument| (*argument).to_string()));
-    let prepared = prepare_exec(arguments, None, &[]);
+    let prepared = prepare_exec(arguments, &[]);
+    let state_home = prepared.state_home.clone();
     let output_pipe = create_cloexec_pipe();
     let window = libc::winsize {
         ws_row: 24,
@@ -425,6 +428,7 @@ fn spawn_tty_with_redirected_stdout(args: &[&str]) -> DmenuProcess {
         master: unsafe { File::from_raw_fd(master) },
         input: None,
         output: unsafe { File::from_raw_fd(output_pipe[0]) },
+        state_home,
         finished: false,
     }
 }

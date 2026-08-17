@@ -389,17 +389,31 @@ fn embedded_pty_disconnect_cancels_a_running_child() {
 #[cfg(target_os = "linux")]
 #[test]
 fn runtime_log_open_failure_is_reported_without_stopping_the_launcher() {
-    let mut process = spawn_launcher_with_args_and_env(
-        &fixture_config(),
-        &["sys:output"],
-        &[("TUI_LAUNCHER_LOG_FILE", "/dev/full")],
-    );
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        log_file = "/dev/full"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
     wait_for_text(&process.master, "runtime log disabled");
-    process.master.write_all(b"q").unwrap();
+    process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
 
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "launcher output: {:?}", output);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -411,6 +425,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         &config,
         r#"
         default_view = "core:default"
+        log_file = "/dev/full"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -427,8 +442,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         "#,
     )
     .unwrap();
-    let mut process =
-        spawn_launcher_with_args_and_env(&config, &[], &[("TUI_LAUNCHER_LOG_FILE", "/dev/full")]);
+    let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
     process.master.write_all(b"\r").unwrap();
     process.master.flush().unwrap();
@@ -968,6 +982,7 @@ fi
         &config,
         r#"
         default_view = "core:default"
+        log_file = "runtime.jsonl"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -1110,6 +1125,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         &config,
         r#"
         default_view = "core:default"
+        log_file = "runtime.jsonl"
 
         [plugins.core.views.default]
         [plugins.core.views.default.engine]
@@ -1418,67 +1434,6 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove route editing config");
-}
-
-#[test]
-fn view_alias_routes_to_the_configured_messages_picker() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    let plugin_root = root.join("plugins/core");
-    fs::create_dir_all(plugin_root.join("scripts")).expect("could not create test plugin");
-    fs::write(
-        plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
-    )
-    .expect("could not write test plugin manifest");
-    fs::write(
-        plugin_root.join("scripts/items.sh"),
-        "printf '[{\\\"label\\\":\\\"preexisting log\\\",\\\"value\\\":\\\"1\\\"}]\\n'\n",
-    )
-    .expect("could not write test items script");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        show_prefix = true
-        [plugins.core.views.messages]
-        alias = "log"
-        [plugins.core.views.messages.engine]
-        type = "picker"
-        [plugins.core.views.messages.engine.config]
-        items = '{{ script("scripts/items.sh", {query = this:query}) }}'
-"#,
-    )
-    .expect("could not write messages integration config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"log ")
-        .expect("could not write view alias");
-    process.master.flush().expect("could not flush view alias");
-    let _ = wait_for_text(&process.master, "log");
-    let output = wait_for_text(&process.master, "preexisting log");
-    let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("preexisting log"), "output: {output}");
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close messages picker");
-    process
-        .master
-        .flush()
-        .expect("could not flush messages picker close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove messages integration config");
 }
 
 #[test]
