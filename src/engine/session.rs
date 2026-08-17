@@ -3,13 +3,14 @@ use super::{
     EngineRegistry, InputFocus, InputRefreshPolicy, InputSeed, NavigationMode, NavigationRequest,
     TaskScheduler, ViewContext, ViewEffect, ViewInstance, ViewReturn,
 };
+use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
 use crate::config::Config;
 use crate::engine::api::{EditorAction, InputEdit, LauncherOutcome, ResolvedLauncherAction};
 use crate::input::{DecodedInput, InputDecoder, Key};
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::state::StateInstance;
-use crate::terminal::Terminal;
+use crate::terminal::{InputRead, Terminal};
 use crate::text::sanitize_terminal_text;
 use crate::theme::ResolvedTheme;
 use anyhow::{Context, Result};
@@ -73,6 +74,8 @@ pub(crate) struct AppSession<'a> {
     pending_inputs: VecDeque<QueuedInput>,
     active_error: Option<LogRecord>,
     active_error_deadline: Option<Instant>,
+    runtime_warning: Option<String>,
+    cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -113,13 +116,20 @@ fn prepared_action_effect(action: crate::engine::command::PreparedAction) -> Vie
 }
 
 impl<'a> AppSession<'a> {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn new(
         config: &'a Config,
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
     ) -> Result<Self> {
-        Self::new_with_theme(config, ResolvedTheme::terminal(), runtime_log, engines)
+        let cancellation = CancellationToken::new();
+        Self::new_with_theme(
+            config,
+            ResolvedTheme::terminal(),
+            runtime_log,
+            engines,
+            &cancellation,
+        )
     }
 
     pub(crate) fn new_with_theme(
@@ -127,6 +137,7 @@ impl<'a> AppSession<'a> {
         theme: ResolvedTheme,
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
+        cancellation: &CancellationToken,
     ) -> Result<Self> {
         let mut runtime = super::RuntimeStore::new();
         let tasks = TaskScheduler::new(runtime.handle());
@@ -152,9 +163,9 @@ impl<'a> AppSession<'a> {
             request: &request,
             input: &input,
             state: &state,
-            log_file: runtime_log.path(),
             runtime: runtime.handle(),
             tasks: tasks.clone(),
+            cancellation: cancellation.clone(),
         };
         let root = engines.create_view(root_context)?;
         Ok(Self {
@@ -182,23 +193,9 @@ impl<'a> AppSession<'a> {
             pending_inputs: VecDeque::new(),
             active_error: None,
             active_error_deadline: None,
+            runtime_warning: None,
+            cancellation: cancellation.clone(),
         })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn single_root(
-        config: &'a Config,
-        runtime_log: RuntimeLog,
-        engines: EngineRegistry,
-        view_ref: &str,
-    ) -> Result<Self> {
-        Self::single_root_with_theme(
-            config,
-            ResolvedTheme::terminal(),
-            runtime_log,
-            engines,
-            view_ref,
-        )
     }
 
     pub(crate) fn single_root_with_theme(
@@ -207,6 +204,7 @@ impl<'a> AppSession<'a> {
         runtime_log: RuntimeLog,
         engines: EngineRegistry,
         view_ref: &str,
+        cancellation: &CancellationToken,
     ) -> Result<Self> {
         let mut runtime = super::RuntimeStore::new();
         let tasks = TaskScheduler::new(runtime.handle());
@@ -228,9 +226,9 @@ impl<'a> AppSession<'a> {
             request: &request,
             input: &input,
             state: &state,
-            log_file: runtime_log.path(),
             runtime: runtime.handle(),
             tasks: tasks.clone(),
+            cancellation: cancellation.clone(),
         })?;
         Ok(Self {
             config,
@@ -257,18 +255,35 @@ impl<'a> AppSession<'a> {
             pending_inputs: VecDeque::new(),
             active_error: None,
             active_error_deadline: None,
+            runtime_warning: None,
+            cancellation: cancellation.clone(),
         })
     }
 
     pub(crate) fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
         loop {
+            if self.cancellation.is_cancelled() {
+                self.tasks.cancel_all();
+                return Ok(SessionOutcome::Exited);
+            }
             self.clear_expired_error();
             let effect = self.step(terminal)?;
-            if let Some(outcome) = self.process_effect(effect, terminal)? {
+            let outcome = self.process_effect(effect, terminal)?;
+            self.surface_runtime_log_warning();
+            if self.cancellation.is_cancelled() {
+                self.tasks.cancel_all();
+                return Ok(SessionOutcome::Exited);
+            }
+            if let Some(outcome) = outcome {
                 return Ok(outcome);
             }
             self.render(terminal)?;
+            self.runtime_warning = None;
         }
+    }
+
+    pub(crate) fn take_runtime_warning(&mut self) -> Option<String> {
+        self.runtime_warning.take()
     }
 
     fn route_completion_available(&self) -> bool {
@@ -390,9 +405,14 @@ impl<'a> AppSession<'a> {
         };
         if let Some(timeout) = timeout {
             if self.pending_inputs.is_empty() {
-                let bytes = terminal.read_input(timeout)?;
-                self.pending_inputs
-                    .extend(self.decoder.feed(&bytes).into_iter().map(QueuedInput::new));
+                match terminal.read_input(timeout)? {
+                    InputRead::Data(bytes) => {
+                        self.pending_inputs
+                            .extend(self.decoder.feed(&bytes).into_iter().map(QueuedInput::new));
+                    }
+                    InputRead::Eof => return Ok(ViewEffect::Exit),
+                    InputRead::Timeout => {}
+                }
                 self.pending_inputs
                     .extend(self.decoder.flush_due().into_iter().map(QueuedInput::new));
             }
@@ -603,16 +623,20 @@ impl<'a> AppSession<'a> {
             effect = match effect {
                 ViewEffect::Continue => return Ok(None),
                 ViewEffect::Exit => return Ok(Some(SessionOutcome::Exited)),
-                ViewEffect::DispatchCommand(execution) => prepared_action_effect(
-                    crate::engine::command::prepare_command_action(self.config, execution)?,
-                ),
+                ViewEffect::DispatchCommand(execution) => {
+                    prepared_action_effect(crate::engine::command::prepare_command_action(
+                        self.config,
+                        execution,
+                        &self.cancellation,
+                    )?)
+                }
                 ViewEffect::RunCommand {
                     invocation,
                     prepared,
                     exit,
                 } => {
                     terminal.leave()?;
-                    let status = prepared.command().status();
+                    let status = prepared.status(&self.cancellation);
                     if !exit {
                         terminal.reenter()?;
                     }
@@ -695,6 +719,7 @@ impl<'a> AppSession<'a> {
             escape_cancels,
             initial_input,
             terminal,
+            &self.cancellation,
             &content_size,
             &mut render,
         )?;
@@ -806,9 +831,9 @@ impl<'a> AppSession<'a> {
             .views
             .last_mut()
             .context("session has no active view")?;
-        if !entry
+        if entry
             .input_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+            .is_none_or(|deadline| Instant::now() < deadline)
         {
             return Ok(ViewEffect::Continue);
         }
@@ -1125,9 +1150,9 @@ impl<'a> AppSession<'a> {
             request: &request,
             input: &input,
             state: &state,
-            log_file: self.runtime_log.path(),
             runtime: self.runtime.handle(),
             tasks: self.tasks.clone(),
+            cancellation: self.cancellation.clone(),
         });
         let view = match view {
             Ok(view) => view,
@@ -1207,12 +1232,14 @@ impl<'a> AppSession<'a> {
         context.runtime = self.runtime.snapshot().clone();
         context.request = entry.request.clone();
         let returned_value = crate::engine::command::return_value(&returned);
+        let cancellation = self.cancellation.clone();
         let action = crate::engine::command::prepare_continuation(
             self.config,
             &then,
             boundary.origin,
             context,
             &returned_value,
+            &cancellation,
         )?;
         Ok(ReturnTransition::Effect(Box::new(prepared_action_effect(
             action,
@@ -1352,6 +1379,15 @@ impl<'a> AppSession<'a> {
         entry.instance.input_rejected(&mut host)
     }
 
+    fn surface_runtime_log_warning(&mut self) {
+        if let Some(record) = self.runtime_log.take_warning_record() {
+            self.runtime_warning = Some(record.message.clone());
+            self.active_error = Some(record);
+            self.active_error_deadline =
+                Some(Instant::now() + crate::engine::host::ERROR_DISPLAY_DURATION);
+        }
+    }
+
     fn clear_expired_error(&mut self) {
         if self
             .active_error_deadline
@@ -1360,6 +1396,12 @@ impl<'a> AppSession<'a> {
             self.active_error = None;
             self.active_error_deadline = None;
         }
+    }
+}
+
+impl Drop for AppSession<'_> {
+    fn drop(&mut self) {
+        self.tasks.shutdown_and_wait();
     }
 }
 
@@ -1782,7 +1824,6 @@ mod tests {
             runtime: session.runtime.snapshot().clone(),
             request: entry.request.clone(),
             output: None,
-            log_file: session.runtime_log.path().map(std::path::Path::to_path_buf),
         }
     }
 

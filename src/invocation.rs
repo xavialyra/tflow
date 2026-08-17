@@ -55,10 +55,6 @@ impl InputArtifact {
         Ok(artifact)
     }
 
-    pub(crate) fn is_tty(&self) -> bool {
-        self.is_tty
-    }
-
     pub(crate) fn value(&self) -> Value {
         serde_json::json!({
             "stdin": {
@@ -83,6 +79,7 @@ pub(crate) fn finish(
     config: &Config,
     root_view: &str,
     outcome: SessionOutcome,
+    cancellation: &CancellationToken,
 ) -> Result<InvocationResult> {
     let SessionOutcome::Completed(returned) = outcome else {
         let exit_code = config
@@ -141,7 +138,7 @@ pub(crate) fn finish(
             scope: ConfigScope::View(&owner.state),
             runtime: &adapter.context.runtime,
             input: &config.input_value,
-            cancellation: None,
+            cancellation: Some(cancellation.clone()),
             binding_raw: Some(&owner.binding_raw),
         },
         &toml::Value::Table(payload.params.clone()),
@@ -157,7 +154,7 @@ pub(crate) fn finish(
         RESULT_TIMEOUT,
         RESULT_STDOUT_LIMIT,
         RESULT_STDERR_LIMIT,
-        &CancellationToken::new(),
+        cancellation,
     )
     .with_context(|| format!("could not run result handler {}", handler.display()))?;
     Ok(InvocationResult {

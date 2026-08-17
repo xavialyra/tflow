@@ -30,9 +30,6 @@ impl PickerView {
             .then(|| frame.items.get(frame.selected))
             .flatten()
             .map(runtime_item_value);
-        let log_file = self
-            .log_file()
-            .map(|path| path.to_string_lossy().to_string());
         let base = runtime
             .snapshot()
             .pointer("/view/current")
@@ -91,13 +88,6 @@ impl PickerView {
             "command_owner".to_string(),
             match owner {
                 Some(owner) => serde_json::Value::String(owner.to_string()),
-                None => serde_json::Value::Null,
-            },
-        );
-        current.insert(
-            "log_file".to_string(),
-            match log_file {
-                Some(path) => serde_json::Value::String(path),
                 None => serde_json::Value::Null,
             },
         );

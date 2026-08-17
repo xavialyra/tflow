@@ -1,16 +1,15 @@
 use super::Item;
-use crate::engine::{TaskCompletion, TaskHandle, TaskScheduler};
+use crate::engine::image_decode::{self, ImageDecodeHandle};
 use crate::terminal::Terminal;
 use crate::theme::Theme;
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, ImageReader};
+use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_image::{StatefulImage, protocol::StatefulProtocol};
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(super) struct PickerPreviewConfig {
@@ -170,6 +169,13 @@ fn validate_blocks(blocks: &[PreviewBlockConfig]) -> Result<()> {
     if blocks.is_empty() {
         bail!("picker preview requires at least one block");
     }
+    let image_blocks = blocks
+        .iter()
+        .filter(|block| matches!(&block.kind, PreviewBlockKind::Image))
+        .count();
+    if image_blocks > 4 {
+        bail!("picker preview supports at most 4 image blocks");
+    }
     for block in blocks {
         if matches!(&block.kind, PreviewBlockKind::Separator) {
             if block.source.is_some() || block.grow.is_some() || block.size == Some(0) {
@@ -199,7 +205,7 @@ pub(super) struct PickerPreview {
     revision: u64,
     selection: Option<String>,
     blocks: Vec<PreviewBlockState>,
-    tasks: Vec<Option<TaskHandle<ImageResponse>>>,
+    task: Option<ImageTask>,
 }
 
 enum PreviewBlockState {
@@ -207,20 +213,13 @@ enum PreviewBlockState {
     Text(String),
     Image {
         protocol: Option<Box<StatefulProtocol>>,
+        image: Option<DynamicImage>,
         error: Option<String>,
     },
 }
 
-struct ImageRequest {
-    revision: u64,
-    block: usize,
-    path: PathBuf,
-}
-
-struct ImageResponse {
-    revision: u64,
-    block: usize,
-    result: std::result::Result<DynamicImage, String>,
+struct ImageTask {
+    handle: ImageDecodeHandle,
 }
 
 impl PickerPreview {
@@ -232,7 +231,7 @@ impl PickerPreview {
             revision: 0,
             selection: None,
             blocks: (0..count).map(|_| PreviewBlockState::Empty).collect(),
-            tasks: (0..count).map(|_| None).collect(),
+            task: None,
         }
     }
 
@@ -296,6 +295,19 @@ impl PickerPreview {
         self.visible = !self.visible;
     }
 
+    pub(super) fn deactivate(&mut self) {
+        self.reset_selection();
+    }
+
+    fn reset_selection(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.selection = None;
+        self.task.take();
+        self.blocks = (0..self.config.blocks.len())
+            .map(|_| PreviewBlockState::Empty)
+            .collect();
+    }
+
     pub(super) fn render_separator(
         &self,
         frame: &mut Frame,
@@ -340,7 +352,6 @@ impl PickerPreview {
         &mut self,
         item: Option<&Item>,
         config: &crate::config::Config,
-        tasks: &TaskScheduler,
         terminal: &mut Terminal,
     ) {
         self.collect(terminal);
@@ -348,16 +359,13 @@ impl PickerPreview {
         if selection == self.selection {
             return;
         }
+        self.reset_selection();
         self.selection = selection;
-        self.revision = self.revision.wrapping_add(1);
-        self.blocks = (0..self.config.blocks.len())
-            .map(|_| PreviewBlockState::Empty)
-            .collect();
-        self.tasks = (0..self.config.blocks.len()).map(|_| None).collect();
         let Some(item) = item else {
             return;
         };
         let value = item_value(item);
+        let mut images = Vec::new();
         for (index, block) in self.config.blocks.iter().enumerate() {
             if matches!(&block.kind, PreviewBlockKind::Separator) {
                 continue;
@@ -385,64 +393,75 @@ impl PickerPreview {
                     );
                     self.blocks[index] = PreviewBlockState::Image {
                         protocol: None,
+                        image: None,
                         error: None,
                     };
-                    let request = ImageRequest {
-                        revision: self.revision,
-                        block: index,
-                        path,
-                    };
-                    self.tasks[index] = Some(tasks.submit_keyed(
-                        request,
-                        format!("picker-preview:{}:{}", item.source_view, index),
-                        |request, _, _| {
-                            let result = ImageReader::open(&request.path)
-                                .map_err(|error| error.to_string())
-                                .and_then(|reader| {
-                                    reader.decode().map_err(|error| error.to_string())
-                                })
-                                .map_err(|error| {
-                                    format!("could not load {}: {}", request.path.display(), error)
-                                });
-                            ImageResponse {
-                                revision: request.revision,
-                                block: request.block,
-                                result,
-                            }
-                        },
-                    ));
+                    images.push((index, path));
                 }
                 PreviewBlockKind::Separator => {}
+            }
+        }
+        if images.is_empty() {
+            return;
+        }
+        match image_decode::submit(self.revision, images) {
+            Ok(handle) => {
+                self.task = Some(ImageTask { handle });
+            }
+            Err(message) => {
+                for state in &mut self.blocks {
+                    if let PreviewBlockState::Image { error, .. } = state {
+                        *error = Some(message.clone());
+                    }
+                }
             }
         }
     }
 
     fn collect(&mut self, terminal: &mut Terminal) {
-        for task in &mut self.tasks {
-            let Some(mut handle) = task.take() else {
-                continue;
-            };
-            match handle.try_recv() {
-                Ok(response) if response.is_current() => match response.into_completion() {
-                    TaskCompletion::Completed(response) if response.revision == self.revision => {
-                        if let PreviewBlockState::Image { protocol, error } =
-                            &mut self.blocks[response.block]
+        let result = self.task.as_ref().map(|task| task.handle.try_recv());
+        match result {
+            Some(Ok(batch)) => {
+                self.task = None;
+                if batch.revision != self.revision {
+                    self.reset_selection();
+                } else {
+                    for decoded in batch.images {
+                        if let PreviewBlockState::Image { image, error, .. } =
+                            &mut self.blocks[decoded.block]
                         {
-                            match response.result {
-                                Ok(image) => {
-                                    *protocol = Some(Box::new(
-                                        terminal.image_picker().new_resize_protocol(image),
+                            match decoded.result {
+                                Ok(decoded) => *image = Some(decoded),
+                                Err(message) => {
+                                    *error = Some(format!(
+                                        "could not load {}: {message}",
+                                        decoded.path.display()
                                     ))
                                 }
-                                Err(message) => *error = Some(message),
                             }
                         }
                     }
-                    _ => {}
-                },
-                Ok(_) => {}
-                Err(std::sync::mpsc::TryRecvError::Empty) => *task = Some(handle),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+                }
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.reset_selection();
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
+        }
+        if self
+            .blocks
+            .iter()
+            .any(|state| matches!(state, PreviewBlockState::Image { image: Some(_), .. }))
+            && let Some(picker) = terminal.image_picker()
+        {
+            for state in &mut self.blocks {
+                if let PreviewBlockState::Image {
+                    protocol, image, ..
+                } = state
+                    && let Some(image) = image.take()
+                {
+                    *protocol = Some(Box::new(picker.new_resize_protocol(image)));
+                }
             }
         }
     }
@@ -570,6 +589,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_more_than_four_image_blocks() {
+        let blocks = (0..5)
+            .map(|index| json!({"type": "image", "source": format!("/image{index}"), "grow": 1}))
+            .collect::<Vec<_>>();
+        assert!(
+            parse(
+                Some(json!({
+                    "panes": [
+                        {"slot": "items", "grow": 1},
+                        {"slot": "preview", "grow": 1}
+                    ]
+                })),
+                Some(json!({"blocks": blocks})),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn separator_has_a_default_height_and_no_source() {
         let config = parse(
             Some(json!({
@@ -598,6 +636,47 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn deactivation_releases_loaded_preview_state() {
+        let config = parse(
+            Some(json!({
+                "panes": [
+                    {"slot": "items", "grow": 1},
+                    {"slot": "preview", "grow": 1}
+                ]
+            })),
+            Some(json!({
+                "blocks": [
+                    {"type": "text", "source": "/summary", "grow": 1},
+                    {"type": "image", "source": "/image", "grow": 1}
+                ]
+            })),
+        )
+        .unwrap()
+        .unwrap();
+        let mut preview = PickerPreview::new(config);
+        preview.selection = Some("selected".to_string());
+        preview.blocks[0] = PreviewBlockState::Text("loaded".to_string());
+        preview.blocks[1] = PreviewBlockState::Image {
+            protocol: None,
+            image: Some(image::DynamicImage::new_rgba8(2, 2)),
+            error: None,
+        };
+        let revision = preview.revision;
+
+        preview.deactivate();
+
+        assert!(preview.selection.is_none());
+        assert!(preview.task.is_none());
+        assert!(
+            preview
+                .blocks
+                .iter()
+                .all(|state| matches!(state, PreviewBlockState::Empty))
+        );
+        assert_ne!(preview.revision, revision);
     }
 
     #[test]
@@ -648,6 +727,7 @@ mod tests {
         let mut preview = PickerPreview::new(config);
         preview.blocks[0] = PreviewBlockState::Image {
             protocol: None,
+            image: None,
             error: Some("image failed".to_string()),
         };
         let mut theme = Theme::terminal();

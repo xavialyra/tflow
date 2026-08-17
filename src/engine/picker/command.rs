@@ -101,7 +101,6 @@ impl PickerView {
             runtime: host.runtime.snapshot().clone(),
             request: host.request.clone(),
             output,
-            log_file: host.runtime_log.path().map(std::path::Path::to_path_buf),
         })
     }
 

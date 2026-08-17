@@ -1,14 +1,14 @@
 use super::PendingAction;
 use crate::cancellation::CancellationToken;
 use crate::config::{Config, ConfigReadContext, ConfigScope};
-use crate::engine::{TaskHandle, TaskScheduler};
 use crate::state::StateInstance;
 use crate::text::sanitize_text;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+
+const MAX_ITEMS_PER_SESSION: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FeedId(pub(crate) String);
@@ -66,56 +66,20 @@ pub(crate) struct ItemsResponse {
     pub(crate) view: String,
     pub(crate) generation: u64,
     pub(crate) input: String,
-    pub(crate) binding_raw: String,
-    pub(crate) state_revision: u64,
     pub(crate) query: String,
     pub(crate) result: std::result::Result<ItemsResult, String>,
 }
 
 pub(crate) struct ItemsEvent {
-    pub(crate) current: bool,
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
     pub(crate) failure: Option<String>,
     pub(crate) pending_action: Option<PendingAction>,
 }
 
-pub(crate) type ItemsTaskHandle = TaskHandle<ItemsResponse>;
+pub(crate) type ItemsTaskHandle = crate::engine::TaskHandle;
 
-pub(crate) fn submit_items_task(
-    tasks: &TaskScheduler,
-    config: &Arc<Config>,
-    request: ItemsRequest,
-) -> ItemsTaskHandle {
-    let config = Arc::clone(config);
-    tasks.submit_keyed(
-        request,
-        "picker-items".to_string(),
-        move |request, runtime_value, cancellation| {
-            let result = load_items_for_page(
-                &config,
-                &request.view,
-                &request.page_state,
-                &request.binding_raw,
-                request.request.as_ref(),
-                &runtime_value,
-                &cancellation,
-            )
-            .map_err(|error| error.to_string());
-            ItemsResponse {
-                view: request.view,
-                generation: request.generation,
-                input: request.input,
-                binding_raw: request.binding_raw.clone(),
-                state_revision: request.page_state.revision(),
-                query: request.binding_raw,
-                result,
-            }
-        },
-    )
-}
-
-fn load_items_for_page(
+pub(crate) fn load_items_for_page(
     config: &Config,
     view_ref: &str,
     page_state: &StateInstance,
@@ -127,6 +91,16 @@ fn load_items_for_page(
     let mut result = ItemsResult::default();
 
     for (owner_ref, view) in config.feed_views(view_ref)? {
+        if cancellation.is_cancelled() {
+            return Ok(result);
+        }
+        if result.items.len() >= MAX_ITEMS_PER_SESSION {
+            result.errors.push(format!(
+                "items exceeded the session limit of {}",
+                MAX_ITEMS_PER_SESSION
+            ));
+            break;
+        }
         let prefix = view.alias.clone().unwrap_or_else(|| owner_ref.clone());
         if view.selected_items().is_none() {
             continue;
@@ -176,7 +150,17 @@ fn load_items_for_page(
                 continue;
             }
         };
-        append_items(&mut result, &owner_ref, &feed_id, &prefix, value);
+        append_items(
+            &mut result,
+            &owner_ref,
+            &feed_id,
+            &prefix,
+            value,
+            cancellation,
+        );
+        if cancellation.is_cancelled() {
+            return Ok(result);
+        }
     }
 
     Ok(result)
@@ -207,17 +191,29 @@ fn append_items(
     feed_id: &FeedId,
     prefix: &str,
     value: Value,
+    cancellation: &CancellationToken,
 ) {
-    let Some(items) = value.as_array() else {
+    let Value::Array(items) = value else {
         result.errors.push(format!(
             "{}: items must evaluate to a JSON array",
             source_ref
         ));
         return;
     };
+    let remaining = MAX_ITEMS_PER_SESSION.saturating_sub(result.items.len());
+    if items.len() > remaining {
+        result.errors.push(format!(
+            "{}: items exceeded the session limit of {}",
+            source_ref, MAX_ITEMS_PER_SESSION
+        ));
+        return;
+    }
     let mut parsed_items = Vec::with_capacity(items.len());
-    for (index, value) in items.iter().enumerate() {
-        let parsed = match serde_json::from_value::<ItemValue>(value.clone()) {
+    for (index, value) in items.into_iter().enumerate() {
+        if cancellation.is_cancelled() {
+            return;
+        }
+        let parsed = match serde_json::from_value::<ItemValue>(value) {
             Ok(item) => item,
             Err(error) => {
                 result.errors.push(format!(
@@ -313,6 +309,7 @@ mod tests {
         );
         Config {
             default_view: Some("core:default".to_string()),
+            image_protocol: crate::config::ImageProtocol::default(),
             chrome: crate::config::ChromeConfig::default(),
             views,
             plugins: BTreeMap::from([
@@ -347,6 +344,43 @@ mod tests {
         assert_eq!(item.label, "Termius");
         assert_eq!(item.value.as_deref(), Some("termius.desktop"));
         assert_eq!(item.metadata["kind"], "app");
+    }
+
+    #[test]
+    fn item_aggregation_has_a_session_limit_and_observes_cancellation() {
+        let mut result = ItemsResult::default();
+        let items = Value::Array(
+            (0..=MAX_ITEMS_PER_SESSION)
+                .map(|index| serde_json::json!({"label": index.to_string()}))
+                .collect(),
+        );
+        append_items(
+            &mut result,
+            "feed:main",
+            &FeedId("feed:main".to_string()),
+            "feed",
+            items,
+            &CancellationToken::new(),
+        );
+        assert!(result.items.is_empty());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("session limit"))
+        );
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        append_items(
+            &mut result,
+            "feed:main",
+            &FeedId("feed:main".to_string()),
+            "feed",
+            serde_json::json!([{"label": "ignored"}]),
+            &cancellation,
+        );
+        assert!(result.items.is_empty());
     }
 
     #[test]

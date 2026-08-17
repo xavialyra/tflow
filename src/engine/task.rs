@@ -1,346 +1,219 @@
+use super::picker::{ItemsRequest, ItemsResponse, load_items_for_page};
 use super::runtime::RuntimeHandle;
 use crate::cancellation::CancellationToken;
+use crate::config::Config;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-#[cfg(test)]
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-#[cfg(test)]
-use std::time::Duration;
 
-pub(crate) type TaskId = u64;
-
-pub(crate) enum TaskCompletion<R> {
-    Completed(R),
+pub(crate) enum TaskCompletion {
+    Completed(ItemsResponse),
     Cancelled,
-}
-
-pub(crate) struct TaskResponse<R> {
-    #[allow(dead_code)]
-    pub(crate) id: TaskId,
-    completion: TaskCompletion<R>,
-    current: bool,
-}
-
-impl<R> TaskResponse<R> {
-    pub(crate) fn is_current(&self) -> bool {
-        self.current
-    }
-
-    pub(crate) fn into_completion(self) -> TaskCompletion<R> {
-        self.completion
-    }
 }
 
 #[derive(Clone)]
 pub(crate) struct TaskScheduler {
-    inner: Arc<SchedulerInner>,
-}
-
-pub(crate) struct TaskHandle<R> {
-    scheduler: Arc<SchedulerInner>,
-    control: Arc<TaskControl>,
-    completion: Receiver<TaskCompletion<R>>,
-    key: Option<String>,
-    id: TaskId,
-}
-
-struct SchedulerInner {
     runtime: RuntimeHandle,
-    active: Mutex<HashMap<String, ActiveTask>>,
-    next_id: AtomicU64,
+    registry: Arc<TaskRegistry>,
 }
 
-struct ActiveTask {
-    id: TaskId,
-    control: Arc<TaskControl>,
-}
-
-const PENDING: u8 = 0;
-const RUNNING: u8 = 1;
-const CANCELLED: u8 = 2;
-
-struct TaskControl {
-    state: AtomicU8,
+pub(crate) struct TaskHandle {
     cancellation: CancellationToken,
+    completion: Receiver<TaskCompletion>,
 }
 
-impl TaskControl {
-    fn new() -> Self {
-        Self {
-            state: AtomicU8::new(PENDING),
-            cancellation: CancellationToken::new(),
-        }
-    }
+struct Job {
+    config: Arc<Config>,
+    request: ItemsRequest,
+    runtime: Value,
+    cancellation: CancellationToken,
+    completion: SyncSender<TaskCompletion>,
+}
 
-    fn try_start(&self) -> bool {
-        self.state
-            .compare_exchange(PENDING, RUNNING, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
+struct RegistryState {
+    active: Option<CancellationToken>,
+    pending: Option<Job>,
+    closed: bool,
+}
 
-    fn cancel(&self) {
-        let _ =
-            self.state
-                .compare_exchange(PENDING, CANCELLED, Ordering::AcqRel, Ordering::Acquire);
-        self.cancellation.cancel();
-    }
+struct TaskRegistry {
+    state: Mutex<RegistryState>,
+    ready: Condvar,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl TaskScheduler {
     pub(crate) fn new(runtime: RuntimeHandle) -> Self {
         Self {
-            inner: Arc::new(SchedulerInner {
-                runtime,
-                active: Mutex::new(HashMap::new()),
-                next_id: AtomicU64::new(0),
+            runtime,
+            registry: Arc::new(TaskRegistry {
+                state: Mutex::new(RegistryState {
+                    active: None,
+                    pending: None,
+                    closed: false,
+                }),
+                ready: Condvar::new(),
+                worker: Mutex::new(None),
             }),
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn submit<T, R, F>(&self, value: T, worker: F) -> TaskHandle<R>
-    where
-        T: Send + 'static,
-        R: Send + 'static,
-        F: FnOnce(T, Value, CancellationToken) -> R + Send + 'static,
-    {
-        self.start_task(None, value, worker)
-    }
-
-    pub(crate) fn submit_keyed<T, R, F>(&self, value: T, key: String, worker: F) -> TaskHandle<R>
-    where
-        T: Send + 'static,
-        R: Send + 'static,
-        F: FnOnce(T, Value, CancellationToken) -> R + Send + 'static,
-    {
-        let mut active = self
-            .inner
-            .active
+    pub(crate) fn submit_items(&self, config: &Arc<Config>, request: ItemsRequest) -> TaskHandle {
+        let cancellation = CancellationToken::new();
+        let (completion, receiver) = sync_channel(1);
+        let job = Job {
+            config: Arc::clone(config),
+            request,
+            runtime: self.runtime.read(),
+            cancellation: cancellation.clone(),
+            completion,
+        };
+        let mut state = self
+            .registry
+            .state
             .lock()
-            .expect("task scheduler state was poisoned");
-        if let Some(existing) = active.get(&key) {
-            existing.control.cancel();
+            .expect("task registry state was poisoned");
+        if state.closed {
+            cancellation.cancel();
+            let _ = job.completion.send(TaskCompletion::Cancelled);
+        } else {
+            if let Some(active) = &state.active {
+                active.cancel();
+            }
+            if let Some(pending) = state.pending.replace(job) {
+                pending.cancellation.cancel();
+            }
+            self.registry.ensure_worker();
+            drop(state);
+            self.registry.ready.notify_one();
         }
-        let handle = self.start_task(Some(key.clone()), value, worker);
-        active.insert(
-            key,
-            ActiveTask {
-                id: handle.id,
-                control: Arc::clone(&handle.control),
-            },
-        );
-        handle
+        TaskHandle {
+            cancellation,
+            completion: receiver,
+        }
     }
 
-    fn start_task<T, R, F>(&self, key: Option<String>, value: T, worker: F) -> TaskHandle<R>
-    where
-        T: Send + 'static,
-        R: Send + 'static,
-        F: FnOnce(T, Value, CancellationToken) -> R + Send + 'static,
-    {
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let control = Arc::new(TaskControl::new());
-        let (completion_sender, completion) = sync_channel(1);
-        let runtime = self.inner.runtime.read();
-        let worker_control = Arc::clone(&control);
-        thread::spawn(move || {
-            let completion =
-                if !worker_control.try_start() || worker_control.cancellation.is_cancelled() {
-                    TaskCompletion::Cancelled
-                } else {
-                    let value = worker(value, runtime, worker_control.cancellation.clone());
-                    if worker_control.cancellation.is_cancelled() {
-                        TaskCompletion::Cancelled
-                    } else {
-                        TaskCompletion::Completed(value)
-                    }
-                };
-            let _ = completion_sender.send(completion);
-        });
-        TaskHandle::new(Arc::clone(&self.inner), control, completion, key, id)
+    pub(crate) fn cancel_all(&self) {
+        let state = self
+            .registry
+            .state
+            .lock()
+            .expect("task registry state was poisoned");
+        if let Some(active) = &state.active {
+            active.cancel();
+        }
+        if let Some(pending) = &state.pending {
+            pending.cancellation.cancel();
+        }
+    }
+
+    pub(crate) fn shutdown_and_wait(&self) {
+        {
+            let mut state = self
+                .registry
+                .state
+                .lock()
+                .expect("task registry state was poisoned");
+            state.closed = true;
+            if let Some(active) = &state.active {
+                active.cancel();
+            }
+            if let Some(pending) = state.pending.take() {
+                pending.cancellation.cancel();
+            }
+        }
+        self.registry.ready.notify_all();
+        let worker = self
+            .registry
+            .worker
+            .lock()
+            .expect("task registry state was poisoned")
+            .take();
+        if let Some(worker) = worker {
+            let _ = worker.join();
+        }
     }
 }
 
-impl SchedulerInner {
-    fn is_current(&self, key: Option<&str>, id: TaskId) -> bool {
-        let Some(key) = key else {
-            return true;
-        };
-        self.active
+impl TaskRegistry {
+    fn ensure_worker(self: &Arc<Self>) {
+        let mut worker = self
+            .worker
             .lock()
-            .expect("task scheduler state was poisoned")
-            .get(key)
-            .is_some_and(|task| task.id == id)
-    }
-
-    fn remove_if_current(&self, key: Option<&str>, id: TaskId) {
-        let Some(key) = key else {
+            .expect("task registry state was poisoned");
+        if worker.is_some() {
             return;
+        }
+        let registry = Arc::clone(self);
+        *worker = Some(thread::spawn(move || worker_loop(registry)));
+    }
+}
+
+fn worker_loop(registry: Arc<TaskRegistry>) {
+    loop {
+        let job = {
+            let mut state = registry
+                .state
+                .lock()
+                .expect("task registry state was poisoned");
+            while state.pending.is_none() && !state.closed {
+                state = registry
+                    .ready
+                    .wait(state)
+                    .expect("task registry state was poisoned");
+            }
+            if state.pending.is_none() && state.closed {
+                return;
+            }
+            let job = state.pending.take().expect("pending items job disappeared");
+            state.active = Some(job.cancellation.clone());
+            job
         };
-        let mut active = self
-            .active
+
+        let completion = if job.cancellation.is_cancelled() {
+            TaskCompletion::Cancelled
+        } else {
+            let result = load_items_for_page(
+                &job.config,
+                &job.request.view,
+                &job.request.page_state,
+                &job.request.binding_raw,
+                job.request.request.as_ref(),
+                &job.runtime,
+                &job.cancellation,
+            )
+            .map_err(|error| error.to_string());
+            let response = ItemsResponse {
+                view: job.request.view,
+                generation: job.request.generation,
+                input: job.request.input,
+                query: job.request.binding_raw,
+                result,
+            };
+            if job.cancellation.is_cancelled() {
+                TaskCompletion::Cancelled
+            } else {
+                TaskCompletion::Completed(response)
+            }
+        };
+        let _ = job.completion.send(completion);
+        registry
+            .state
             .lock()
-            .expect("task scheduler state was poisoned");
-        if active.get(key).is_some_and(|task| task.id == id) {
-            active.remove(key);
-        }
+            .expect("task registry state was poisoned")
+            .active = None;
     }
 }
 
-impl<R> TaskHandle<R> {
-    fn new(
-        scheduler: Arc<SchedulerInner>,
-        control: Arc<TaskControl>,
-        completion: Receiver<TaskCompletion<R>>,
-        key: Option<String>,
-        id: TaskId,
-    ) -> Self {
-        Self {
-            scheduler,
-            control,
-            completion,
-            key,
-            id,
-        }
-    }
-
-    pub(crate) fn try_recv(&mut self) -> std::result::Result<TaskResponse<R>, TryRecvError> {
-        self.completion.try_recv().map(|completion| TaskResponse {
-            id: self.id,
-            completion,
-            current: self.scheduler.is_current(self.key.as_deref(), self.id),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn recv_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> std::result::Result<TaskResponse<R>, RecvTimeoutError> {
-        self.completion
-            .recv_timeout(timeout)
-            .map(|completion| TaskResponse {
-                id: self.id,
-                completion,
-                current: self.scheduler.is_current(self.key.as_deref(), self.id),
-            })
+impl TaskHandle {
+    pub(crate) fn try_recv(&mut self) -> std::result::Result<TaskCompletion, TryRecvError> {
+        self.completion.try_recv()
     }
 }
 
-impl<R> Drop for TaskHandle<R> {
+impl Drop for TaskHandle {
     fn drop(&mut self) {
-        self.control.cancel();
-        self.scheduler
-            .remove_if_current(self.key.as_deref(), self.id);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::runtime::RuntimeStore;
-    use serde_json::json;
-    use std::sync::{Arc, Barrier, mpsc};
-
-    #[test]
-    fn independent_tasks_with_different_keys_run_in_parallel() {
-        let store = RuntimeStore::new();
-        let (started_tx, started_rx) = mpsc::channel();
-        let barrier = Arc::new(Barrier::new(3));
-        let scheduler = TaskScheduler::new(store.handle());
-        let first_barrier = Arc::clone(&barrier);
-        let first_started = started_tx.clone();
-        let mut first = scheduler.submit_keyed(
-            "first".to_string(),
-            "first-key".to_string(),
-            move |value, _, _| {
-                first_started.send(value.clone()).unwrap();
-                first_barrier.wait();
-                value
-            },
-        );
-        let second_barrier = Arc::clone(&barrier);
-        let mut second = scheduler.submit_keyed(
-            "second".to_string(),
-            "second-key".to_string(),
-            move |value, _, _| {
-                started_tx.send(value.clone()).unwrap();
-                second_barrier.wait();
-                value
-            },
-        );
-        let mut started = [
-            started_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            started_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-        ];
-        started.sort();
-        assert_eq!(started, ["first", "second"]);
-        barrier.wait();
-
-        let first = first.recv_timeout(Duration::from_secs(1)).unwrap();
-        let second = second.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(first.is_current());
-        assert!(second.is_current());
-        assert!(matches!(
-            first.into_completion(),
-            TaskCompletion::Completed(_)
-        ));
-        assert!(matches!(
-            second.into_completion(),
-            TaskCompletion::Completed(_)
-        ));
-    }
-
-    #[test]
-    fn replacing_a_key_cancels_the_old_task_and_marks_its_result_stale() {
-        let store = RuntimeStore::new();
-        let scheduler = TaskScheduler::new(store.handle());
-        let (started_tx, started_rx) = mpsc::channel();
-        let mut first = scheduler.submit_keyed(
-            "first".to_string(),
-            "items".to_string(),
-            move |value, _, cancellation| {
-                started_tx.send(()).unwrap();
-                while !cancellation.is_cancelled() {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                value
-            },
-        );
-        started_rx.recv().unwrap();
-        let mut second =
-            scheduler.submit_keyed("second".to_string(), "items".to_string(), |value, _, _| {
-                value
-            });
-
-        let first = first.recv_timeout(Duration::from_secs(1)).unwrap();
-        let second = second.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(!first.is_current());
-        assert!(matches!(first.into_completion(), TaskCompletion::Cancelled));
-        assert!(second.is_current());
-        assert!(matches!(
-            second.into_completion(),
-            TaskCompletion::Completed(value) if value == "second"
-        ));
-    }
-
-    #[test]
-    fn task_captures_runtime_when_submitted() {
-        let mut store = RuntimeStore::new();
-        store.replace(json!({"version": "initial"}));
-        let scheduler = TaskScheduler::new(store.handle());
-        let mut task = scheduler.submit("task".to_string(), |_, runtime, _| runtime);
-
-        store.replace(json!({"version": "latest"}));
-
-        let response = task.recv_timeout(Duration::from_secs(1)).unwrap();
-        let TaskCompletion::Completed(runtime) = response.into_completion() else {
-            panic!("task should complete");
-        };
-        assert_eq!(runtime["version"], "initial");
+        self.cancellation.cancel();
     }
 }

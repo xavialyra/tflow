@@ -23,6 +23,7 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 #[derive(Debug, Clone)]
 pub struct Config {
     pub default_view: Option<ViewRef>,
+    pub(crate) image_protocol: ImageProtocol,
     pub(crate) chrome: ChromeConfig,
     pub views: BTreeMap<ViewRef, View>,
     pub plugins: BTreeMap<String, PluginMetadata>,
@@ -52,6 +53,16 @@ pub(crate) struct ConfigReadContext<'a> {
 #[derive(Debug, Clone)]
 pub struct PluginMetadata {
     pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ImageProtocol {
+    #[default]
+    Halfblocks,
+    Kitty,
+    Sixel,
+    Iterm2,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -290,6 +301,8 @@ struct RawConfig {
     #[serde(default)]
     default_view: Option<String>,
     #[serde(default)]
+    image_protocol: ImageProtocol,
+    #[serde(default)]
     chrome: ChromeConfig,
     #[serde(default)]
     theme: Option<String>,
@@ -458,6 +471,7 @@ impl Config {
 
         Ok(Self {
             default_view: raw.default_view,
+            image_protocol: raw.image_protocol,
             chrome: raw.chrome,
             views,
             plugins,
@@ -1347,6 +1361,25 @@ mod tests {
         let value: toml::Value = toml::from_str(source).unwrap();
         let raw: RawConfig = value.try_into().unwrap();
         Config::from_raw(raw, BTreeMap::new()).unwrap()
+    }
+
+    #[test]
+    fn image_protocol_is_loaded_from_the_root_config() {
+        let configured = config(
+            r#"
+            image_protocol = "kitty"
+            "#,
+        );
+        assert_eq!(configured.image_protocol, ImageProtocol::Kitty);
+
+        let default_config = config("");
+        assert_eq!(default_config.image_protocol, ImageProtocol::Halfblocks);
+    }
+
+    #[test]
+    fn image_protocol_rejects_unknown_values() {
+        let value: toml::Value = toml::from_str("image_protocol = \"auto\"").unwrap();
+        assert!(value.try_into::<RawConfig>().is_err());
     }
 
     #[test]

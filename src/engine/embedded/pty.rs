@@ -1,19 +1,29 @@
+use crate::cancellation::CancellationToken;
 use crate::embedded_terminal::EmbeddedTerminal;
 use crate::engine::process::MANAGED_ENVIRONMENT;
-use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat, PreparedProcess, ViewOutput};
-use crate::terminal::Terminal;
+use crate::engine::{
+    EmbeddedResultConfig, EmbeddedResultFormat, PreparedProcess, ProcessGroupGuard, ViewOutput,
+};
+use crate::terminal::{InputRead, Terminal};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::ffi::CString;
+use std::collections::BTreeMap;
+use std::env;
+use std::ffi::{CString, OsStr, OsString};
+use std::fs;
 use std::io;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(40);
 const MAX_QUERY_SEQUENCE_LEN: usize = 4096;
 const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const PTY_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
+const MAX_PTY_READ_BYTES: usize = 64 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?6c";
 
 pub enum EmbeddedOutcome {
@@ -28,12 +38,14 @@ pub struct EmbeddedRunResult {
     pub remaining_input: Vec<u8>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     prepared: &PreparedProcess,
     result: Option<EmbeddedResultConfig>,
     escape_cancels: bool,
     initial_input: Vec<u8>,
     terminal: &mut Terminal,
+    cancellation: &CancellationToken,
     content_size: &dyn Fn(u16, u16) -> (u16, u16),
     render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
 ) -> Result<EmbeddedRunResult> {
@@ -47,6 +59,22 @@ pub fn run(
         .map(|argument| CString::new(argument.as_str()))
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("embedded command contains a NUL byte")?;
+    let command_path = resolve_executable(
+        &command_cstrings[0],
+        prepared.current_dir.as_deref(),
+        &prepared.environment,
+    )?;
+    let mut argv = command_cstrings
+        .iter()
+        .map(|argument| argument.as_ptr())
+        .collect::<Vec<_>>();
+    argv.push(std::ptr::null());
+    let environment_cstrings = build_child_environment(&prepared.environment)?;
+    let mut envp = environment_cstrings
+        .iter()
+        .map(|entry| entry.as_ptr())
+        .collect::<Vec<_>>();
+    envp.push(std::ptr::null());
     let working_dir_cstring = prepared
         .current_dir
         .as_deref()
@@ -55,22 +83,6 @@ pub fn run(
                 .context("embedded working directory contains a NUL byte")
         })
         .transpose()?;
-    let environment_cstrings = prepared
-        .environment
-        .iter()
-        .map(|(key, value)| {
-            Ok((
-                CString::new(key.as_str())
-                    .context("embedded environment key contains a NUL byte")?,
-                CString::new(value.as_str())
-                    .context("embedded environment value contains a NUL byte")?,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let managed_environment_cstrings = MANAGED_ENVIRONMENT
-        .iter()
-        .map(|key| CString::new(*key).expect("managed environment key contains a NUL byte"))
-        .collect::<Vec<_>>();
 
     let (result_read, result_write) = if result.is_some() {
         let (read, write) = create_pipe()?;
@@ -107,17 +119,19 @@ pub fn run(
                 unsafe { libc::close(write) };
             }
         }
+        unsafe { libc::close(master) };
         exec_child(
-            &command_cstrings,
-            &managed_environment_cstrings,
-            &environment_cstrings,
+            &command_path,
+            argv.as_ptr(),
+            envp.as_ptr(),
             working_dir_cstring.as_ref(),
         );
     }
 
     close_optional(result_write);
-    let mut child_reaped = false;
+    let mut process = ProcessGroupGuard::from_pid(pid);
     let outcome = (|| {
+        set_cloexec(master)?;
         set_nonblocking(master)?;
         if let Some(fd) = result_read {
             set_nonblocking(fd)?;
@@ -125,29 +139,88 @@ pub fn run(
         relay(
             master,
             result_read,
-            pid,
-            &mut child_reaped,
+            &mut process,
             result,
             escape_cancels,
             initial_input,
             terminal,
+            cancellation,
             (columns, rows),
             content_size,
             render,
         )
     })();
-    if outcome.is_err() && !child_reaped {
-        terminate_child(pid);
+    if outcome.is_err() {
+        process.force_kill();
     }
     unsafe { libc::close(master) };
     close_optional(result_read);
     outcome
 }
 
+fn build_child_environment(overrides: &[(String, String)]) -> Result<Vec<CString>> {
+    let mut environment: BTreeMap<OsString, OsString> = env::vars_os().collect();
+    for key in MANAGED_ENVIRONMENT {
+        environment.remove(OsStr::new(key));
+    }
+    for (key, value) in overrides {
+        environment.insert(OsString::from(key), OsString::from(value));
+    }
+    environment
+        .into_iter()
+        .map(|(mut key, value)| {
+            key.push("=");
+            key.push(value);
+            CString::new(key.as_os_str().as_bytes())
+                .context("embedded environment contains a NUL byte")
+        })
+        .collect()
+}
+
+fn resolve_executable(
+    command: &CString,
+    working_dir: Option<&Path>,
+    overrides: &[(String, String)],
+) -> Result<CString> {
+    if command.as_bytes().contains(&b'/') {
+        return Ok(command.clone());
+    }
+    let command_os = OsStr::from_bytes(command.as_bytes());
+    let path = overrides
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| OsString::from(value))
+        .or_else(|| env::var_os("PATH"))
+        .unwrap_or_else(|| OsString::from("/usr/local/bin:/usr/bin:/bin"));
+    let base = match working_dir {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => env::current_dir()?.join(path),
+        None => env::current_dir()?,
+    };
+    for directory in env::split_paths(&path) {
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            base.join(directory)
+        };
+        let candidate = directory.join(command_os);
+        let executable = fs::metadata(&candidate)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0);
+        if executable && let Ok(candidate) = CString::new(candidate.as_os_str().as_bytes()) {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "embedded executable {:?} was not found in PATH",
+        command.to_string_lossy()
+    )
+}
+
 fn exec_child(
-    command: &[CString],
-    managed_environment: &[CString],
-    environment: &[(CString, CString)],
+    command: &CString,
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
     working_dir: Option<&CString>,
 ) -> ! {
     if let Some(working_dir) = working_dir
@@ -155,22 +228,8 @@ fn exec_child(
     {
         unsafe { libc::_exit(127) };
     }
-    for key in managed_environment {
-        if unsafe { libc::unsetenv(key.as_ptr()) } != 0 {
-            unsafe { libc::_exit(127) };
-        }
-    }
-    for (key, value) in environment {
-        if unsafe { libc::setenv(key.as_ptr(), value.as_ptr(), 1) } != 0 {
-            unsafe { libc::_exit(127) };
-        }
-    }
-
-    let mut arguments: Vec<*const libc::c_char> =
-        command.iter().map(|argument| argument.as_ptr()).collect();
-    arguments.push(std::ptr::null());
     unsafe {
-        libc::execvp(command[0].as_ptr(), arguments.as_ptr());
+        libc::execve(command.as_ptr(), argv, envp);
         libc::_exit(127);
     }
 }
@@ -179,12 +238,12 @@ fn exec_child(
 fn relay(
     master: RawFd,
     result_fd: Option<RawFd>,
-    pid: libc::pid_t,
-    child_reaped: &mut bool,
+    process: &mut ProcessGroupGuard,
     result_config: Option<EmbeddedResultConfig>,
     escape_cancels: bool,
     initial_input: Vec<u8>,
     terminal: &mut Terminal,
+    cancellation: &CancellationToken,
     mut last_size: (u16, u16),
     content_size: &dyn Fn(u16, u16) -> (u16, u16),
     render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
@@ -192,43 +251,32 @@ fn relay(
     let mut input = InputRelay::new(escape_cancels);
     let mut result_bytes = Vec::new();
     let mut result_open = result_fd.is_some();
-    let mut pty_open = true;
     let mut responder = TerminalResponder::default();
     let mut screen = EmbeddedTerminal::new(last_size.0, last_size.1);
     render(terminal, &screen)?;
     input.push(&initial_input, master)?;
 
     loop {
-        if input.bare_escape_expired() {
-            terminate_child(pid);
+        if cancellation.is_cancelled() {
+            process.force_kill();
             input.take_pending();
             return Ok(EmbeddedRunResult {
                 outcome: EmbeddedOutcome::Cancelled,
                 remaining_input: Vec::new(),
             });
         }
-        if let Some(status) = wait_status(pid, true)? {
-            *child_reaped = true;
-            terminate_process_group(pid);
-            if pty_open {
-                drain_output(master, &mut responder, &mut screen, terminal, render)?;
-            }
-            if let (Some(fd), Some(config)) = (result_fd, result_config) {
-                drain_result_to_eof(
-                    fd,
-                    &mut result_bytes,
-                    config.max_bytes,
-                    Duration::from_secs(1),
-                )?;
-            }
-            let outcome = if libc::WIFEXITED(status)
-                && libc::WEXITSTATUS(status) == 0
-                && let Some(config) = result_config
-            {
-                EmbeddedOutcome::Returned(parse_result(&result_bytes, config)?)
-            } else {
-                decode_status(status)
-            };
+        if input.bare_escape_expired() {
+            process.force_kill();
+            input.take_pending();
+            return Ok(EmbeddedRunResult {
+                outcome: EmbeddedOutcome::Cancelled,
+                remaining_input: Vec::new(),
+            });
+        }
+        if let Some(status) = process.try_wait_raw()? {
+            process.cleanup_group();
+            drain_output(master, &mut responder, &mut screen, terminal, render)?;
+            let outcome = process_outcome(status, result_fd, result_config, &mut result_bytes)?;
             return Ok(EmbeddedRunResult {
                 outcome,
                 remaining_input: input.take_pending(),
@@ -237,9 +285,9 @@ fn relay(
 
         let outer_size = terminal.size();
         let current_size = content_size(outer_size.0, outer_size.1);
-        if pty_open && current_size != last_size {
+        if current_size != last_size {
             screen.resize(current_size.0, current_size.1);
-            resize_pty(master, pid, current_size)?;
+            resize_pty(master, process.pid(), current_size)?;
             last_size = current_size;
             render(terminal, &screen)?;
         }
@@ -251,7 +299,7 @@ fn relay(
                 revents: 0,
             },
             libc::pollfd {
-                fd: if pty_open { master } else { -1 },
+                fd: master,
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -270,20 +318,45 @@ fn relay(
             return Err(error).context("could not poll embedded PTY");
         }
 
-        if descriptors[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-            let Some(bytes) = read_input(terminal.input_fd())? else {
-                terminate_child(pid);
+        if descriptors[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)
+            != 0
+        {
+            match terminal.read_input_ready(descriptors[0].revents)? {
+                InputRead::Data(bytes) if !bytes.is_empty() => input.push(&bytes, master)?,
+                InputRead::Eof => {
+                    process.force_kill();
+                    input.take_pending();
+                    return Ok(EmbeddedRunResult {
+                        outcome: EmbeddedOutcome::Cancelled,
+                        remaining_input: Vec::new(),
+                    });
+                }
+                InputRead::Data(_) | InputRead::Timeout => {}
+            }
+        }
+        let output_events = descriptors[1].revents;
+        if output_events & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            let output_closed =
+                drain_output(master, &mut responder, &mut screen, terminal, render)?;
+            if output_closed
+                || output_events & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+            {
+                if let Some(status) = wait_for_pty_exit(process)? {
+                    process.cleanup_group();
+                    let outcome =
+                        process_outcome(status, result_fd, result_config, &mut result_bytes)?;
+                    return Ok(EmbeddedRunResult {
+                        outcome,
+                        remaining_input: input.take_pending(),
+                    });
+                }
+                process.force_kill();
+                input.take_pending();
                 return Ok(EmbeddedRunResult {
                     outcome: EmbeddedOutcome::Cancelled,
-                    remaining_input: input.take_pending(),
+                    remaining_input: Vec::new(),
                 });
-            };
-            input.push(&bytes, master)?;
-        }
-        if descriptors[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-            && drain_output(master, &mut responder, &mut screen, terminal, render)?
-        {
-            pty_open = false;
+            }
         }
         if descriptors[2].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
             && let (Some(fd), Some(config)) = (result_fd, result_config)
@@ -292,22 +365,6 @@ fn relay(
             result_open = false;
         }
     }
-}
-
-fn read_input(input_fd: RawFd) -> Result<Option<Vec<u8>>> {
-    let mut buffer = [0_u8; 4096];
-    let count = unsafe { libc::read(input_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-    if count == 0 {
-        return Ok(None);
-    }
-    if count < 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            return Ok(Some(Vec::new()));
-        }
-        return Err(error).context("could not read embedded input");
-    }
-    Ok(Some(buffer[..count as usize].to_vec()))
 }
 
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
@@ -412,6 +469,12 @@ impl InputRelay {
             }
 
             if matches!(self.pending[1], b'[' | b'O') {
+                if self.pending.len().saturating_sub(2) > MAX_QUERY_SEQUENCE_LEN {
+                    let bytes = std::mem::take(&mut self.pending);
+                    self.escape_started = None;
+                    write_fd(master, &bytes)?;
+                    continue;
+                }
                 let Some(end) = escape_sequence_end(&self.pending[2..]) else {
                     return Ok(());
                 };
@@ -467,8 +530,10 @@ fn parse_result(bytes: &[u8], config: EmbeddedResultConfig) -> Result<ViewOutput
 
 fn drain_result(fd: RawFd, bytes: &mut Vec<u8>, limit: usize) -> Result<bool> {
     let mut buffer = [0_u8; 8192];
-    loop {
-        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+    let mut drained = 0;
+    while drained < MAX_PTY_READ_BYTES {
+        let read_size = (MAX_PTY_READ_BYTES - drained).min(buffer.len());
+        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), read_size) };
         if count == 0 {
             return Ok(true);
         }
@@ -487,6 +552,7 @@ fn drain_result(fd: RawFd, bytes: &mut Vec<u8>, limit: usize) -> Result<bool> {
             bail!("embedded result stdout exceeded {limit} bytes");
         }
         bytes.extend_from_slice(&buffer[..count]);
+        drained += count;
     }
     Ok(false)
 }
@@ -528,9 +594,11 @@ fn drain_output(
     render: &mut dyn FnMut(&mut Terminal, &EmbeddedTerminal) -> Result<()>,
 ) -> Result<bool> {
     let mut buffer = [0_u8; 8192];
+    let mut drained = 0;
     let mut reached_eof = false;
-    loop {
-        let count = unsafe { libc::read(master, buffer.as_mut_ptr().cast(), buffer.len()) };
+    while drained < MAX_PTY_READ_BYTES {
+        let read_size = (MAX_PTY_READ_BYTES - drained).min(buffer.len());
+        let count = unsafe { libc::read(master, buffer.as_mut_ptr().cast(), read_size) };
         if count == 0 {
             reached_eof = true;
             break;
@@ -543,10 +611,15 @@ fn drain_output(
             if error.kind() == io::ErrorKind::WouldBlock {
                 break;
             }
-            reached_eof = true;
-            break;
+            if error.raw_os_error() == Some(libc::EIO) {
+                reached_eof = true;
+                break;
+            }
+            return Err(error).context("could not read embedded PTY");
         }
-        let output = &buffer[..count as usize];
+        let count = count as usize;
+        drained += count;
+        let output = &buffer[..count];
         for _ in 0..responder.primary_device_attribute_queries(output) {
             write_fd(master, PRIMARY_DEVICE_ATTRIBUTES)?;
         }
@@ -608,8 +681,15 @@ impl TerminalResponder {
 
 fn create_pipe() -> Result<(RawFd, RawFd)> {
     let mut fds = [-1; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error()).context("could not create embedded result pipe");
+    }
+    if let Err(error) = set_cloexec(fds[0]).and_then(|()| set_cloexec(fds[1])) {
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        return Err(error);
     }
     Ok((fds[0], fds[1]))
 }
@@ -674,6 +754,18 @@ fn resize_pty(master: RawFd, pid: libc::pid_t, size: (u16, u16)) -> Result<()> {
     Ok(())
 }
 
+fn set_cloexec(fd: RawFd) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error()).context("could not inspect embedded descriptor");
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error())
+            .context("could not set embedded descriptor close-on-exec");
+    }
+    Ok(())
+}
+
 fn set_nonblocking(fd: RawFd) -> Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
@@ -685,45 +777,39 @@ fn set_nonblocking(fd: RawFd) -> Result<()> {
     Ok(())
 }
 
-fn wait_status(pid: libc::pid_t, nohang: bool) -> Result<Option<libc::c_int>> {
-    let mut status = 0;
-    let options = if nohang { libc::WNOHANG } else { 0 };
-    let result = unsafe { libc::waitpid(pid, &mut status, options) };
-    if result == pid {
-        Ok(Some(status))
-    } else if result == 0 {
-        Ok(None)
-    } else if result < 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            Ok(None)
-        } else {
-            Err(error).context("could not wait for embedded process")
+fn wait_for_pty_exit(process: &mut ProcessGroupGuard) -> Result<Option<libc::c_int>> {
+    let deadline = Instant::now() + PTY_CLOSE_EXIT_GRACE;
+    loop {
+        if let Some(status) = process.try_wait_raw()? {
+            return Ok(Some(status));
         }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn process_outcome(
+    status: libc::c_int,
+    result_fd: Option<RawFd>,
+    result_config: Option<EmbeddedResultConfig>,
+    result_bytes: &mut Vec<u8>,
+) -> Result<EmbeddedOutcome> {
+    if let (Some(fd), Some(config)) = (result_fd, result_config) {
+        drain_result_to_eof(fd, result_bytes, config.max_bytes, Duration::from_secs(1))?;
+    }
+    if libc::WIFEXITED(status)
+        && libc::WEXITSTATUS(status) == 0
+        && let Some(config) = result_config
+    {
+        Ok(EmbeddedOutcome::Returned(parse_result(
+            result_bytes,
+            config,
+        )?))
     } else {
-        Ok(None)
+        Ok(decode_status(status))
     }
-}
-
-fn terminate_process_group(pid: libc::pid_t) {
-    if unsafe { libc::kill(-pid, libc::SIGTERM) } == 0 {
-        thread::sleep(Duration::from_millis(10));
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
-}
-
-fn terminate_child(pid: libc::pid_t) {
-    unsafe { libc::kill(-pid, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < deadline {
-        if matches!(wait_status(pid, true), Ok(Some(_))) {
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-            return;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    unsafe { libc::kill(-pid, libc::SIGKILL) };
-    let _ = wait_status(pid, false);
 }
 
 fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
@@ -744,6 +830,44 @@ mod tests {
     };
     use std::io::Read;
     use std::os::fd::FromRawFd;
+
+    #[test]
+    fn path_lookup_uses_the_embedded_working_directory() {
+        use std::ffi::CString;
+        use std::fs;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("tui-launcher-pty-path-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        let working_dir = root.join("plugin");
+        let bin_dir = working_dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let executable = bin_dir.join("probe");
+        fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+
+        let command = CString::new("probe").unwrap();
+        let resolved = super::resolve_executable(
+            &command,
+            Some(&working_dir),
+            &[("PATH".to_string(), "bin".to_string())],
+        )
+        .unwrap();
+        assert_eq!(resolved.to_bytes(), executable.as_os_str().as_bytes());
+        assert!(
+            super::resolve_executable(
+                &CString::new("missing-probe").unwrap(),
+                Some(&working_dir),
+                &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn responds_to_primary_device_attributes_across_pty_read_boundaries() {
@@ -798,6 +922,20 @@ mod tests {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn input_relay_forwards_an_incomplete_csi_after_the_sequence_limit() {
+        let (read, write) = create_pipe().unwrap();
+        let mut relay = InputRelay::default();
+        relay.push(b"\x1b[", write).unwrap();
+        let payload = vec![b' '; super::MAX_QUERY_SEQUENCE_LEN + 1];
+        relay.push(&payload, write).unwrap();
+        unsafe { libc::close(write) };
+        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, [b"\x1b[".as_slice(), payload.as_slice()].concat());
     }
 
     #[test]

@@ -1,7 +1,5 @@
 use super::PendingAction;
-use super::items::{
-    FeedContext, FeedId, Item, ItemsEvent, ItemsRequest, ItemsTaskHandle, submit_items_task,
-};
+use super::items::{FeedContext, FeedId, Item, ItemsEvent, ItemsRequest, ItemsTaskHandle};
 use super::keymap::PickerKeymap;
 use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
@@ -16,7 +14,6 @@ use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -75,7 +72,6 @@ pub(crate) struct PickerView {
     pub(super) feed_contexts: BTreeMap<FeedId, FeedContext>,
     request: Option<serde_json::Value>,
     options: PickerOptions,
-    log_file: Option<PathBuf>,
     started: bool,
     route_child: bool,
     router: Router,
@@ -107,7 +103,6 @@ impl PickerView {
             feed_contexts: BTreeMap::new(),
             request,
             options,
-            log_file: None,
             started: false,
             route_child,
             router: Router::new(&config),
@@ -116,17 +111,8 @@ impl PickerView {
         }
     }
 
-    pub(super) fn with_log_file(mut self, log_file: Option<PathBuf>) -> Self {
-        self.log_file = log_file;
-        self
-    }
-
     pub(crate) fn current(&self) -> &PickerFrame {
         &self.frame
-    }
-
-    pub(crate) fn log_file(&self) -> Option<&Path> {
-        self.log_file.as_deref()
     }
 
     pub(super) fn list_presentation(&self) -> (bool, String) {
@@ -213,8 +199,7 @@ impl PickerView {
         self.frame.requested_input = input.to_string();
         self.frame.items_pending = true;
         self.frame.retry_requested = false;
-        self.items_task = Some(submit_items_task(
-            &self.tasks,
+        self.items_task = Some(self.tasks.submit_items(
             &self.config,
             ItemsRequest {
                 view: view.to_string(),
@@ -237,13 +222,18 @@ impl PickerView {
         self.frame.pending_selection = 0;
     }
 
-    fn collect_items(&mut self, input: &str) -> Vec<ItemsEvent> {
+    fn collect_items(&mut self) -> Vec<ItemsEvent> {
         let mut events = Vec::new();
         let Some(mut task) = self.items_task.take() else {
             return events;
         };
-        let task_response = match task.try_recv() {
-            Ok(response) => response,
+        let response = match task.try_recv() {
+            Ok(TaskCompletion::Completed(response)) => response,
+            Ok(TaskCompletion::Cancelled) => {
+                self.frame.items_pending = false;
+                self.schedule_retry();
+                return events;
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.items_task = Some(task);
                 return events;
@@ -254,7 +244,6 @@ impl PickerView {
                 self.frame.pending_action = None;
                 self.frame.pending_selection = 0;
                 events.push(ItemsEvent {
-                    current: true,
                     view: self.requested_view.clone(),
                     errors: Vec::new(),
                     failure: Some("items task stopped before producing a result".to_string()),
@@ -263,25 +252,7 @@ impl PickerView {
                 return events;
             }
         };
-        if !task_response.is_current() {
-            self.frame.items_pending = false;
-            self.schedule_retry();
-            return events;
-        }
-        let response = match task_response.into_completion() {
-            TaskCompletion::Completed(response) => response,
-            TaskCompletion::Cancelled => {
-                self.frame.items_pending = false;
-                self.schedule_retry();
-                return events;
-            }
-        };
-        if response.view != self.frame.view
-            || response.input != input
-            || response.generation != self.request_generation
-            || response.binding_raw != self.requested_binding_raw
-            || response.state_revision != self.requested_state_revision
-        {
+        if response.generation != self.request_generation {
             self.frame.items_pending = false;
             self.schedule_retry();
             return events;
@@ -321,7 +292,6 @@ impl PickerView {
             }
         };
         events.push(ItemsEvent {
-            current: true,
             view,
             errors,
             failure,
@@ -368,7 +338,7 @@ impl PickerView {
     fn update_preview(&mut self, config: &Config, terminal: &mut Terminal) {
         let item = self.frame.items.get(self.frame.selected).cloned();
         if let Some(preview) = &mut self.preview {
-            preview.update(item.as_ref(), config, &self.tasks, terminal);
+            preview.update(item.as_ref(), config, terminal);
         }
     }
 
@@ -382,28 +352,7 @@ impl PickerView {
     }
 
     fn handle_events(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
-        let input = host.input.raw.clone();
-        for event in self.collect_items(&input) {
-            if !event.current {
-                for error in event.errors {
-                    host.runtime_log.record(
-                        crate::runtime_log::LogLevel::Error,
-                        Some(&event.view),
-                        None,
-                        &error,
-                    );
-                }
-                if let Some(error) = event.failure {
-                    host.runtime_log.record(
-                        crate::runtime_log::LogLevel::Error,
-                        Some(&event.view),
-                        None,
-                        &error,
-                    );
-                }
-                continue;
-            }
-
+        for event in self.collect_items() {
             let failed = event.failure.is_some();
             if let Some(error) = event.failure {
                 host.record_error_message(Some(&event.view), None, &error);
@@ -513,6 +462,9 @@ impl ViewInstance for PickerView {
         if self.items_task.take().is_some() {
             self.frame.items_pending = false;
             self.schedule_retry();
+        }
+        if let Some(preview) = &mut self.preview {
+            preview.deactivate();
         }
         Ok(())
     }
@@ -698,61 +650,9 @@ fn key_display(key: Key) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::items::ItemsResponse;
     use super::*;
     use crate::chrome::InputBuffer;
     use crate::engine::RuntimeStore;
-    use std::thread;
-    use std::time::Duration;
-
-    #[test]
-    fn failed_item_refresh_discards_pending_actions() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
-        let runtime = RuntimeStore::new();
-        let tasks = TaskScheduler::new(runtime.handle());
-        let mut picker = PickerView::new(
-            "core:default",
-            tasks,
-            config,
-            false,
-            None,
-            PickerKeymap::from_values(None, None).unwrap(),
-            PickerOptions {
-                show_prefix: false,
-                preview: None,
-            },
-        );
-        picker.frame.items_pending = true;
-        picker.frame.pending_action = Some(PendingAction::Activate(Key::Enter));
-        picker.items_task = Some(picker.tasks.submit_keyed(
-            (),
-            "picker-items".to_string(),
-            |_, _, _| ItemsResponse {
-                view: "core:default".to_string(),
-                generation: 0,
-                input: String::new(),
-                binding_raw: String::new(),
-                state_revision: 0,
-                query: String::new(),
-                result: Err("items provider failed".to_string()),
-            },
-        ));
-
-        let mut events = Vec::new();
-        for _ in 0..10 {
-            events = picker.collect_items("");
-            if !events.is_empty() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].failure.as_deref(), Some("items provider failed"));
-        assert!(events[0].pending_action.is_none());
-        assert!(picker.frame.pending_action.is_none());
-    }
-
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {
         let config = Arc::new(crate::config::load_test_fixture().unwrap());

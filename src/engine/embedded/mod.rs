@@ -3,6 +3,8 @@ mod session;
 
 pub(crate) use self::pty::{EmbeddedOutcome, EmbeddedRunResult};
 use self::session::EmbeddedSession;
+use crate::cancellation::CancellationToken;
+
 use super::{
     EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputFocus, PreparedProcess,
     ViewContext, ViewEffect, ViewInstance, evaluate_field, evaluate_optional_string, require_field,
@@ -163,12 +165,6 @@ impl Engine for EmbeddedEngine {
                 root.to_string_lossy().to_string(),
             ));
         }
-        if let Some(path) = context.log_file {
-            environment.push((
-                "LAUNCHER_LOG_FILE".to_string(),
-                path.to_string_lossy().to_string(),
-            ));
-        }
         let view = context
             .config
             .view(&context.request.view_ref)
@@ -227,12 +223,14 @@ impl ViewInstance for EmbeddedView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     prepared: &PreparedProcess,
     result: Option<EmbeddedResultConfig>,
     escape_cancels: bool,
     initial_input: Vec<u8>,
     terminal: &mut Terminal,
+    cancellation: &CancellationToken,
     content_size: &dyn Fn(u16, u16) -> (u16, u16),
     render: &mut dyn FnMut(
         &mut Terminal,
@@ -245,6 +243,7 @@ pub(crate) fn run(
         escape_cancels,
         initial_input,
         terminal,
+        cancellation,
         content_size,
         render,
     )

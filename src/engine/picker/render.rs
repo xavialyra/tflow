@@ -95,11 +95,7 @@ pub(crate) fn render_picker(
             });
             let mut text = pad_right(
                 &clip(
-                    &format!(
-                        "{marker}{}{content}{}",
-                        " ".repeat(SIDE_PADDING),
-                        " ".repeat(right_padding)
-                    ),
+                    &format!("{marker} {content}{}", " ".repeat(right_padding)),
                     width,
                 ),
                 width,

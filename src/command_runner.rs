@@ -1,9 +1,9 @@
 use crate::cancellation::CancellationToken;
+use crate::engine::{ProcessGroupGuard, clear_managed_environment};
 use anyhow::{Context, Result, anyhow};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -19,14 +19,7 @@ pub(crate) fn run_bounded_command_with_stdin(
     stderr_limit: usize,
     cancellation: &CancellationToken,
 ) -> Result<std::process::Output> {
-    unsafe {
-        process.pre_exec(|| {
-            if libc::setpgid(0, 0) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    clear_managed_environment(&mut process);
     process
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -35,16 +28,19 @@ pub(crate) fn run_bounded_command_with_stdin(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = process.spawn().context("could not spawn bounded command")?;
-    let mut stdout_reader = child
+    let mut process_group =
+        ProcessGroupGuard::spawn(process).context("could not spawn bounded command")?;
+    let mut stdout_reader = process_group
+        .child_mut()
         .stdout
         .take()
         .context("bounded command has no stdout pipe")?;
-    let mut stderr_reader = child
+    let mut stderr_reader = process_group
+        .child_mut()
         .stderr
         .take()
         .context("bounded command has no stderr pipe")?;
-    let mut stdin_writer = child.stdin.take();
+    let mut stdin_writer = process_group.child_mut().stdin.take();
     for fd in [
         stdout_reader.as_raw_fd(),
         stderr_reader.as_raw_fd(),
@@ -53,7 +49,7 @@ pub(crate) fn run_bounded_command_with_stdin(
         if fd >= 0
             && let Err(error) = set_nonblocking(fd)
         {
-            terminate_child(&mut child);
+            process_group.force_kill();
             return Err(error);
         }
     }
@@ -65,30 +61,29 @@ pub(crate) fn run_bounded_command_with_stdin(
     let mut stdout_eof = false;
     let mut stderr_eof = false;
     let mut status = None;
-    let mut group_cleaned = false;
     let deadline = Instant::now() + timeout;
 
     loop {
         if cancellation.is_cancelled() {
-            terminate_child(&mut child);
+            process_group.force_kill();
             return Err(anyhow!("bounded command cancelled"));
         }
         if Instant::now() >= deadline {
-            terminate_child(&mut child);
+            process_group.force_kill();
             return Err(anyhow!("bounded command timed out after {:?}", timeout));
         }
 
         stdout_eof |= match drain_pipe(&mut stdout_reader, &mut stdout, stdout_limit, "stdout") {
             Ok(eof) => eof,
             Err(error) => {
-                terminate_child(&mut child);
+                process_group.force_kill();
                 return Err(error);
             }
         };
         stderr_eof |= match drain_pipe(&mut stderr_reader, &mut stderr, stderr_limit, "stderr") {
             Ok(eof) => eof,
             Err(error) => {
-                terminate_child(&mut child);
+                process_group.force_kill();
                 return Err(error);
             }
         };
@@ -100,7 +95,7 @@ pub(crate) fn run_bounded_command_with_stdin(
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => {
-                    terminate_child(&mut child);
+                    process_group.force_kill();
                     return Err(error).context("could not write bounded command input");
                 }
             }
@@ -110,18 +105,17 @@ pub(crate) fn run_bounded_command_with_stdin(
         }
 
         if status.is_none() {
-            match child.try_wait() {
-                Ok(Some(exit_status)) => status = Some(exit_status),
+            match process_group.try_wait() {
+                Ok(Some(exit_status)) => {
+                    status = Some(exit_status);
+                    process_group.cleanup_group();
+                }
                 Ok(None) => {}
                 Err(error) => {
-                    terminate_child(&mut child);
+                    process_group.force_kill();
                     return Err(anyhow!(error).context("could not inspect bounded command"));
                 }
             }
-        }
-        if status.is_some() && !group_cleaned {
-            terminate_process_group(child.id());
-            group_cleaned = true;
         }
         if let Some(status) = status
             && stdout_eof
@@ -198,18 +192,6 @@ fn read_limited(mut reader: impl Read, limit: usize, exceeded: &AtomicBool) -> i
     Ok(output)
 }
 
-fn terminate_process_group(pid: u32) {
-    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-}
-
-fn terminate_child(child: &mut Child) {
-    let process_group = -(child.id() as libc::pid_t);
-    if unsafe { libc::kill(process_group, libc::SIGKILL) } != 0 {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,10 +222,11 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn detached_pipe_holding_descendant_is_still_bounded_by_the_deadline() {
         let mut command = Command::new("sh");
-        command.args(["-c", "setsid sh -c 'sleep 1' & exit 0"]);
+        command.args(["-c", "setsid sh -c 'sleep 1' & sleep 0.05; exit 0"]);
         let started = Instant::now();
         let error = run_bounded_command_with_stdin(
             command,
@@ -256,6 +239,27 @@ mod tests {
         .expect_err("detached pipe holder should keep the command incomplete");
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn bounded_command_does_not_inherit_launcher_log_environment() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "test -z \"${LAUNCHER_LOG_FILE+x}\" && test -z \"${TUI_LAUNCHER_LOG_FILE+x}\"",
+        ]);
+        command.env("LAUNCHER_LOG_FILE", "/tmp/should-not-be-visible");
+        command.env("TUI_LAUNCHER_LOG_FILE", "/tmp/should-not-be-visible-either");
+        let output = run_bounded_command_with_stdin(
+            command,
+            None,
+            Duration::from_secs(1),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(output.status.success());
     }
 
     #[test]

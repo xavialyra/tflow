@@ -11,7 +11,7 @@ pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Valu
             scope: ConfigScope::View(context.state),
             runtime: &runtime,
             input: &context.config.input_value,
-            cancellation: None,
+            cancellation: Some(context.cancellation.clone()),
             binding_raw: None,
         },
         &[name],

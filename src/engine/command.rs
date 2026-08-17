@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationToken;
 use crate::config::{
     Command, CommandAction, CommandScope, Config, ConfigReadContext, ConfigScope, NavigatePayload,
     RunPayload, normalize_key,
@@ -31,6 +32,7 @@ pub(crate) enum PreparedAction {
 pub(crate) fn prepare_command_action(
     config: &Config,
     execution: CommandExecution,
+    cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let action = execution.invocation.command.action.clone();
     prepare_action(
@@ -40,6 +42,7 @@ pub(crate) fn prepare_command_action(
         execution.context,
         None,
         true,
+        cancellation,
     )
 }
 
@@ -49,6 +52,7 @@ pub(crate) fn prepare_continuation(
     origin: CommandOrigin,
     context: CommandContext,
     returned: &Value,
+    cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let command = match &origin {
         CommandOrigin::View(reference) => config
@@ -75,6 +79,7 @@ pub(crate) fn prepare_continuation(
         context,
         Some(returned),
         false,
+        cancellation,
     )
 }
 
@@ -85,6 +90,7 @@ fn prepare_action(
     context: CommandContext,
     returned: Option<&Value>,
     root_adapter: bool,
+    cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let owner = command_owner(&context, invocation.source_view())?;
     match action {
@@ -97,7 +103,8 @@ fn prepare_action(
             })
         }
         CommandAction::Navigate { payload } => {
-            let (target, query) = evaluate_target(config, payload, &context, owner, returned)?;
+            let (target, query) =
+                evaluate_target(config, payload, &context, owner, returned, cancellation)?;
             let request = match query {
                 Some(query) => NavigationRequest::new(target, "").with_query(query),
                 None => NavigationRequest::with_defaults(target),
@@ -105,20 +112,27 @@ fn prepare_action(
             Ok(PreparedAction::Navigate(request))
         }
         CommandAction::Call { payload } => {
-            let target = evaluate_value(config, &payload.target, &context, owner, returned)?
-                .as_str()
-                .context("call target must evaluate to a string")?
-                .to_string();
+            let target = evaluate_value(
+                config,
+                &payload.target,
+                &context,
+                owner,
+                returned,
+                cancellation,
+            )?
+            .as_str()
+            .context("call target must evaluate to a string")?
+            .to_string();
             let target = config.resolve_view(&target)?;
             let query = payload
                 .query
                 .as_ref()
-                .map(|value| evaluate_value(config, value, &context, owner, returned))
+                .map(|value| evaluate_value(config, value, &context, owner, returned, cancellation))
                 .transpose()?;
             let args = payload
                 .args
                 .as_ref()
-                .map(|value| evaluate_value(config, value, &context, owner, returned))
+                .map(|value| evaluate_value(config, value, &context, owner, returned, cancellation))
                 .transpose()?
                 .unwrap_or(Value::Null);
             let request = match query {
@@ -136,7 +150,7 @@ fn prepare_action(
         CommandAction::Return { payload } => {
             let output = match &payload.value {
                 Some(value) => ViewOutput::Value {
-                    value: evaluate_value(config, value, &context, owner, returned)?,
+                    value: evaluate_value(config, value, &context, owner, returned, cancellation)?,
                 },
                 None => context.output.clone().context(
                     "return command has no engine output; configure payload.value explicitly",
@@ -160,16 +174,25 @@ fn prepare_action(
             }))
         }
         CommandAction::EditInput { payload } => {
-            let value = evaluate_value(config, &payload.value, &context, owner, returned)?
-                .as_str()
-                .context("edit-input value must evaluate to a string")?
-                .to_string();
+            let value = evaluate_value(
+                config,
+                &payload.value,
+                &context,
+                owner,
+                returned,
+                cancellation,
+            )?
+            .as_str()
+            .context("edit-input value must evaluate to a string")?
+            .to_string();
             let cursor = match &payload.cursor {
-                Some(cursor) => evaluate_value(config, cursor, &context, owner, returned)?
-                    .as_u64()
-                    .context("edit-input cursor must evaluate to a non-negative integer")?
-                    .try_into()
-                    .context("edit-input cursor does not fit in usize")?,
+                Some(cursor) => {
+                    evaluate_value(config, cursor, &context, owner, returned, cancellation)?
+                        .as_u64()
+                        .context("edit-input cursor must evaluate to a non-negative integer")?
+                        .try_into()
+                        .context("edit-input cursor does not fit in usize")?
+                }
                 None => value.len(),
             };
             if cursor > value.len() || !value.is_char_boundary(cursor) {
@@ -178,7 +201,14 @@ fn prepare_action(
             Ok(PreparedAction::EditInput { value, cursor })
         }
         CommandAction::Invoke { payload } => {
-            let value = evaluate_value(config, &payload.command, &context, owner, returned)?;
+            let value = evaluate_value(
+                config,
+                &payload.command,
+                &context,
+                owner,
+                returned,
+                cancellation,
+            )?;
             let reference: CommandRef = serde_json::from_value(value)
                 .context("invoke command must evaluate to {view, id}")?;
             let invocation = resolve_visible_command(config, &context, &reference)?;
@@ -216,16 +246,24 @@ fn evaluate_target(
     context: &CommandContext,
     owner: &CommandOwnerContext,
     returned: Option<&Value>,
+    cancellation: &CancellationToken,
 ) -> Result<(String, Option<Value>)> {
-    let target = evaluate_value(config, &payload.target, context, owner, returned)?
-        .as_str()
-        .context("navigation target must evaluate to a string")?
-        .to_string();
+    let target = evaluate_value(
+        config,
+        &payload.target,
+        context,
+        owner,
+        returned,
+        cancellation,
+    )?
+    .as_str()
+    .context("navigation target must evaluate to a string")?
+    .to_string();
     let target = config.resolve_view(&target)?;
     let query = payload
         .query
         .as_ref()
-        .map(|value| evaluate_value(config, value, context, owner, returned))
+        .map(|value| evaluate_value(config, value, context, owner, returned, cancellation))
         .transpose()?;
     Ok((target, query))
 }
@@ -236,13 +274,14 @@ fn evaluate_value(
     context: &CommandContext,
     owner: &CommandOwnerContext,
     returned: Option<&Value>,
+    cancellation: &CancellationToken,
 ) -> Result<Value> {
     config.evaluate_value(
         ConfigReadContext {
             scope: ConfigScope::View(&owner.state),
             runtime: &context.runtime,
             input: &config.input_value,
-            cancellation: None,
+            cancellation: Some(cancellation.clone()),
             binding_raw: Some(&owner.binding_raw),
         },
         value,
@@ -305,12 +344,6 @@ fn prepare_run_command(
         environment.push((
             "LAUNCHER_PLUGIN_DIR".to_string(),
             root.to_string_lossy().to_string(),
-        ));
-    }
-    if let Some(path) = context.log_file.as_deref() {
-        environment.push((
-            "LAUNCHER_LOG_FILE".to_string(),
-            path.to_string_lossy().to_string(),
         ));
     }
     if let Some(path) = config
@@ -462,7 +495,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_command_preserves_optional_launcher_environment() {
+    fn run_command_does_not_export_runtime_log_environment() {
         let mut config = crate::config::load_test_fixture().unwrap();
         config.input_value = serde_json::json!({
             "stdin": {"path": "/tmp/tui-launcher-captured-stdin"}
@@ -477,7 +510,6 @@ mod tests {
             runtime: serde_json::json!({}),
             request: None,
             output: None,
-            log_file: Some(std::path::PathBuf::from("/tmp/tui-launcher-runtime.jsonl")),
         };
         let invocation = CommandInvocation::view(
             CommandRef {
@@ -491,7 +523,7 @@ mod tests {
                 requires: crate::config::CommandRequirement::Input,
                 action: CommandAction::Run {
                     payload: crate::config::RunPayload {
-                        handler: "printf '%s' \"$LAUNCHER_LOG_FILE\"".to_string(),
+                        handler: "printf '%s' \"${LAUNCHER_LOG_FILE-unset}\"".to_string(),
                         shell: None,
                         exit: false,
                     },
@@ -504,18 +536,17 @@ mod tests {
                 invocation,
                 context,
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         let PreparedAction::Execute { prepared, .. } = prepared else {
             panic!("run action was not prepared for execution");
         };
-        assert_eq!(
-            prepared
+        assert!(
+            !prepared
                 .environment
                 .iter()
-                .find(|(key, _)| key == "LAUNCHER_LOG_FILE")
-                .map(|(_, value)| value.as_str()),
-            Some("/tmp/tui-launcher-runtime.jsonl")
+                .any(|(key, _)| key == "LAUNCHER_LOG_FILE")
         );
         assert_eq!(
             prepared
@@ -540,7 +571,6 @@ mod tests {
             runtime: serde_json::json!({}),
             request: None,
             output: None,
-            log_file: None,
         };
         let action = CommandAction::EditInput {
             payload: crate::config::EditInputPayload {
@@ -558,6 +588,7 @@ mod tests {
                 }),
                 context,
                 &serde_json::json!({}),
+                &CancellationToken::new(),
             )
             .is_err()
         );
@@ -593,7 +624,6 @@ mod tests {
             runtime: serde_json::json!({}),
             request: None,
             output: None,
-            log_file: None,
         };
         let action = CommandAction::EditInput {
             payload: crate::config::EditInputPayload {
@@ -611,6 +641,7 @@ mod tests {
             }),
             context,
             &serde_json::Value::Null,
+            &CancellationToken::new(),
         )
         .unwrap();
         assert!(matches!(
@@ -633,7 +664,6 @@ mod tests {
             runtime: serde_json::json!({}),
             request: None,
             output: None,
-            log_file: None,
         };
         let forged = CommandRef {
             view: "sys:main".to_string(),

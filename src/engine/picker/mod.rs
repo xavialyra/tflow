@@ -13,10 +13,9 @@ use super::{Engine, ViewContext, ViewInstance, validate_fields};
 use crate::config::{ConfigReadContext, ConfigScope, ENGINE_PICKER, View};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-pub(crate) use items::Item;
+pub(crate) use items::{Item, ItemsRequest, ItemsResponse, load_items_for_page};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PendingAction {
@@ -49,7 +48,7 @@ impl Engine for PickerEngine {
                 scope: ConfigScope::Root,
                 runtime: &runtime,
                 input: &context.config.input_value,
-                cancellation: None,
+                cancellation: Some(context.cancellation.clone()),
                 binding_raw: None,
             },
             &["defaults", "picker", "bindings"],
@@ -61,7 +60,7 @@ impl Engine for PickerEngine {
                     scope: ConfigScope::View(context.state),
                     runtime: &runtime,
                     input: &context.config.input_value,
-                    cancellation: None,
+                    cancellation: Some(context.cancellation.clone()),
                     binding_raw: None,
                 },
                 path,
@@ -87,8 +86,7 @@ impl Engine for PickerEngine {
             context.request.reference_value(),
             keymap,
             options,
-        )
-        .with_log_file(context.log_file.map(PathBuf::from));
+        );
         Ok(Box::new(picker))
     }
 }

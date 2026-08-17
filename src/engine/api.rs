@@ -2,6 +2,7 @@ use super::host::EngineHost;
 use super::process::PreparedProcess;
 use super::runtime::RuntimeHandle;
 use super::task::TaskScheduler;
+use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
 use crate::config::{Command, CommandAction, Config, View};
 use crate::input::{DecodedInput, Key};
@@ -11,7 +12,6 @@ use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,7 +267,6 @@ pub(crate) struct CommandContext {
     pub(crate) runtime: Value,
     pub(crate) request: Option<Value>,
     pub(crate) output: Option<ViewOutput>,
-    pub(crate) log_file: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -403,7 +402,6 @@ pub(crate) trait ViewInstance {
             runtime: host.runtime.snapshot().clone(),
             request: host.request.clone(),
             output: self.view_command_output(),
-            log_file: host.runtime_log.path().map(std::path::Path::to_path_buf),
         })
     }
 
@@ -463,9 +461,9 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) request: &'a NavigationRequest,
     pub(crate) input: &'a InputBuffer,
     pub(crate) state: &'a StateInstance,
-    pub(crate) log_file: Option<&'a Path>,
     pub(crate) runtime: RuntimeHandle,
     pub(crate) tasks: TaskScheduler,
+    pub(crate) cancellation: CancellationToken,
 }
 
 pub(crate) trait Engine {

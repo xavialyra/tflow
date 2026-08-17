@@ -12,7 +12,10 @@ pub(crate) struct EmbeddedTerminal {
 impl EmbeddedTerminal {
     pub(crate) fn new(columns: u16, rows: u16) -> Self {
         Self {
-            vt: Vt::new(columns as usize, rows as usize),
+            vt: Vt::builder()
+                .size(columns as usize, rows as usize)
+                .scrollback_limit(0)
+                .build(),
             pending_utf8: Vec::new(),
         }
     }
