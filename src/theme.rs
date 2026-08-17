@@ -1,21 +1,49 @@
 use anyhow::{Context, Result, bail};
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedTheme {
-    pub(crate) base: Style,
-    pub(crate) accent: Style,
+    pub(crate) text: Style,
+    pub(crate) muted_text: Style,
+    pub(crate) chrome: ChromeTheme,
+    pub(crate) picker: PickerTheme,
+    pub(crate) preview: PreviewTheme,
+    pub(crate) capture: CaptureTheme,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChromeTheme {
+    pub(crate) divider: Style,
+    pub(crate) input_prefix: Style,
+    pub(crate) footer: Style,
+    pub(crate) footer_key: Style,
+    pub(crate) error: Style,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PickerTheme {
+    pub(crate) text: Style,
     pub(crate) muted: Style,
-    pub(crate) border: Style,
-    pub(crate) surface: Style,
-    pub(crate) surface_highlight: Style,
-    pub(crate) highlight: Style,
     pub(crate) selected: Style,
     pub(crate) selected_muted: Style,
+    pub(crate) marker: Style,
+    pub(crate) scrollbar: Style,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PreviewTheme {
+    pub(crate) text: Style,
+    pub(crate) error: Style,
+    pub(crate) border: Style,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CaptureTheme {
+    pub(crate) text: Style,
 }
 
 pub(crate) type Theme = ResolvedTheme;
@@ -28,132 +56,43 @@ impl Default for ResolvedTheme {
 
 impl ResolvedTheme {
     pub(crate) fn terminal() -> Self {
-        let base = Style::new().fg(Color::Reset).bg(Color::Reset);
-        let accent = base.patch(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD));
-        let muted = base;
-        let border = base;
-        let surface = base;
-        let highlight = accent;
-        let selected = accent;
-        let selected_muted = Style {
-            fg: muted.fg,
-            bg: selected.bg,
-            add_modifier: selected.add_modifier,
-            sub_modifier: selected.sub_modifier,
-            ..Style::new()
-        };
-
-        Self {
-            base,
-            accent,
-            muted,
-            border,
-            surface,
-            surface_highlight: highlight,
-            highlight,
-            selected,
-            selected_muted,
-        }
+        Self::from_raw(&RawTheme::default(), "builtin terminal")
+            .expect("builtin terminal theme must be valid")
     }
 
-    fn apply_patches(&mut self, patches: &ThemeTokenPatches, source: &str) -> Result<()> {
-        apply_style_patch(
-            &mut self.base,
-            patches.base.as_ref(),
-            source,
-            ThemeToken::Base,
-        )?;
-        apply_token_patch(
-            &mut self.accent,
-            patches.base.as_ref(),
-            patches.accent.as_ref(),
-            source,
-            ThemeToken::Accent,
-        )?;
-        apply_token_patch(
-            &mut self.muted,
-            patches.base.as_ref(),
-            patches.muted.as_ref(),
-            source,
-            ThemeToken::Muted,
-        )?;
-        apply_token_patch(
-            &mut self.border,
-            patches.base.as_ref(),
-            patches.border.as_ref(),
-            source,
-            ThemeToken::Border,
-        )?;
-        apply_token_patch(
-            &mut self.surface,
-            patches.base.as_ref(),
-            patches.surface.as_ref(),
-            source,
-            ThemeToken::Surface,
-        )?;
-        apply_token_patch(
-            &mut self.surface_highlight,
-            patches.base.as_ref(),
-            patches.surface_highlight.as_ref(),
-            source,
-            ThemeToken::SurfaceHighlight,
-        )?;
-        apply_token_patch(
-            &mut self.highlight,
-            patches.base.as_ref(),
-            patches.highlight.as_ref(),
-            source,
-            ThemeToken::Highlight,
-        )?;
-        apply_token_patch(
-            &mut self.selected,
-            patches.base.as_ref(),
-            patches.selected.as_ref(),
-            source,
-            ThemeToken::Selected,
-        )?;
-        apply_token_patch(
-            &mut self.selected_muted,
-            patches.base.as_ref(),
-            patches.selected_muted.as_ref(),
-            source,
-            ThemeToken::SelectedMuted,
-        )?;
-        Ok(())
-    }
+    fn from_raw(raw: &RawTheme, source: &str) -> Result<Self> {
+        let palette = resolve_palette(&raw.palette, source)?;
+        validate_bindings(&raw.bindings, source)?;
+        let scheme = ResolvedScheme::resolve(&palette, &raw.scheme, source)?;
+        let binding = |binding| resolve_binding(binding, &raw.bindings, &scheme, source);
 
-    fn apply_override(&mut self, override_value: &ThemeOverride) -> Result<()> {
-        let style = match override_value.token {
-            ThemeToken::Base => &mut self.base,
-            ThemeToken::Accent => &mut self.accent,
-            ThemeToken::Muted => &mut self.muted,
-            ThemeToken::Border => &mut self.border,
-            ThemeToken::Surface => &mut self.surface,
-            ThemeToken::SurfaceHighlight => &mut self.surface_highlight,
-            ThemeToken::Highlight => &mut self.highlight,
-            ThemeToken::Selected => &mut self.selected,
-            ThemeToken::SelectedMuted => &mut self.selected_muted,
-        };
-        match (&override_value.field, &override_value.value) {
-            (StyleField::Foreground, StyleValue::Color(color))
-            | (StyleField::Background, StyleValue::Color(color)) => {
-                let slot = match override_value.field {
-                    StyleField::Foreground => &mut style.fg,
-                    StyleField::Background => &mut style.bg,
-                    StyleField::Bold => unreachable!(),
-                };
-                *slot = Some(*color);
-            }
-            (StyleField::Bold, StyleValue::Bold(enabled)) => {
-                *style = set_modifier(*style, Modifier::BOLD, Some(*enabled));
-            }
-            _ => bail!(
-                "theme override {}.{} has an invalid value",
-                override_value.token,
-                override_value.field
-            ),
-        }
-        Ok(())
+        Ok(Self {
+            text: binding(ThemeBinding::Text)?,
+            muted_text: binding(ThemeBinding::MutedText)?,
+            chrome: ChromeTheme {
+                divider: binding(ThemeBinding::ChromeDivider)?,
+                input_prefix: binding(ThemeBinding::ChromeInputPrefix)?,
+                footer: binding(ThemeBinding::ChromeFooter)?,
+                footer_key: binding(ThemeBinding::ChromeFooterKey)?,
+                error: binding(ThemeBinding::ChromeError)?,
+            },
+            picker: PickerTheme {
+                text: binding(ThemeBinding::PickerText)?,
+                muted: binding(ThemeBinding::PickerMuted)?,
+                selected: binding(ThemeBinding::PickerSelected)?,
+                selected_muted: binding(ThemeBinding::PickerSelectedMuted)?,
+                marker: binding(ThemeBinding::PickerMarker)?,
+                scrollbar: binding(ThemeBinding::PickerScrollbar)?,
+            },
+            preview: PreviewTheme {
+                text: binding(ThemeBinding::PreviewText)?,
+                error: binding(ThemeBinding::PreviewError)?,
+                border: binding(ThemeBinding::PreviewBorder)?,
+            },
+            capture: CaptureTheme {
+                text: binding(ThemeBinding::CaptureText)?,
+            },
+        })
     }
 }
 
@@ -168,194 +107,502 @@ pub(crate) enum ThemeRef {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawTheme {
     #[serde(default)]
-    tokens: ThemeTokenPatches,
+    palette: BTreeMap<String, String>,
+    #[serde(default)]
+    scheme: RawScheme,
+    #[serde(default)]
+    bindings: BTreeMap<String, RawBinding>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ThemeTokenPatches {
+struct RawScheme {
     #[serde(default)]
-    base: Option<ThemeStylePatch>,
+    primary: Option<String>,
+    #[serde(default, rename = "on-primary")]
+    on_primary: Option<String>,
+    #[serde(default, rename = "primary-container")]
+    primary_container: Option<String>,
+    #[serde(default, rename = "on-primary-container")]
+    on_primary_container: Option<String>,
     #[serde(default)]
-    accent: Option<ThemeStylePatch>,
+    surface: Option<String>,
+    #[serde(default, rename = "surface-container")]
+    surface_container: Option<String>,
+    #[serde(default, rename = "on-surface")]
+    on_surface: Option<String>,
+    #[serde(default, rename = "on-surface-variant")]
+    on_surface_variant: Option<String>,
     #[serde(default)]
-    muted: Option<ThemeStylePatch>,
+    outline: Option<String>,
     #[serde(default)]
-    border: Option<ThemeStylePatch>,
-    #[serde(default)]
-    surface: Option<ThemeStylePatch>,
-    #[serde(default, rename = "surface-highlight", alias = "surface_highlight")]
-    surface_highlight: Option<ThemeStylePatch>,
-    #[serde(default)]
-    highlight: Option<ThemeStylePatch>,
-    #[serde(default)]
-    selected: Option<ThemeStylePatch>,
-    #[serde(default, rename = "selected-muted", alias = "selected_muted")]
-    selected_muted: Option<ThemeStylePatch>,
+    error: Option<String>,
+    #[serde(default, rename = "on-error")]
+    on_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ThemeStylePatch {
-    #[serde(default, alias = "fg")]
+struct RawBinding {
+    #[serde(default)]
     foreground: Option<String>,
-    #[serde(default, alias = "bg")]
+    #[serde(default)]
     background: Option<String>,
     #[serde(default)]
     bold: Option<bool>,
+    #[serde(default)]
+    italic: Option<bool>,
+    #[serde(default)]
+    underline: Option<bool>,
+    #[serde(default)]
+    strikethrough: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ThemeToken {
-    Base,
-    Accent,
-    Muted,
-    Border,
-    Surface,
-    SurfaceHighlight,
-    Highlight,
-    Selected,
-    SelectedMuted,
+#[derive(Debug, Clone, Copy)]
+struct ResolvedScheme {
+    primary: Color,
+    on_primary: Color,
+    primary_container: Color,
+    on_primary_container: Color,
+    surface: Color,
+    surface_container: Color,
+    on_surface: Color,
+    on_surface_variant: Color,
+    outline: Color,
+    error: Color,
+    on_error: Color,
 }
 
-impl ThemeToken {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "base" => Some(Self::Base),
-            "accent" => Some(Self::Accent),
-            "muted" => Some(Self::Muted),
-            "border" => Some(Self::Border),
-            "surface" => Some(Self::Surface),
-            "surface-highlight" | "surface_highlight" => Some(Self::SurfaceHighlight),
-            "highlight" => Some(Self::Highlight),
-            "selected" => Some(Self::Selected),
-            "selected-muted" | "selected_muted" => Some(Self::SelectedMuted),
-            _ => None,
-        }
-    }
-
-    fn all_names() -> &'static str {
-        "base, accent, muted, border, surface, surface-highlight, highlight, selected, or selected-muted"
-    }
-}
-
-impl std::fmt::Display for ThemeToken {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::Base => "base",
-            Self::Accent => "accent",
-            Self::Muted => "muted",
-            Self::Border => "border",
-            Self::Surface => "surface",
-            Self::SurfaceHighlight => "surface-highlight",
-            Self::Highlight => "highlight",
-            Self::Selected => "selected",
-            Self::SelectedMuted => "selected-muted",
+impl ResolvedScheme {
+    fn resolve(palette: &BTreeMap<String, Color>, raw: &RawScheme, source: &str) -> Result<Self> {
+        let resolve = |role: SchemeRole, value: Option<&str>| match value {
+            Some(value) => resolve_scheme_reference(value, palette, source, role),
+            None => Ok(default_scheme_color(role)),
         };
-        formatter.write_str(name)
-    }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StyleField {
-    Foreground,
-    Background,
-    Bold,
-}
-
-impl StyleField {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "foreground" | "fg" => Some(Self::Foreground),
-            "background" | "bg" => Some(Self::Background),
-            "bold" => Some(Self::Bold),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for StyleField {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Foreground => "foreground",
-            Self::Background => "background",
-            Self::Bold => "bold",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StyleValue {
-    Color(Color),
-    Bold(bool),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ThemeOverride {
-    token: ThemeToken,
-    field: StyleField,
-    value: StyleValue,
-}
-
-impl FromStr for ThemeOverride {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (key, raw_value) = value
-            .split_once('=')
-            .ok_or_else(|| format!("theme override {value:?} must use TOKEN.FIELD=VALUE"))?;
-        let (raw_token, raw_field) = key.split_once('.').ok_or_else(|| {
-            format!(
-                "theme override {key:?} must use TOKEN.FIELD=VALUE; expected {}",
-                ThemeToken::all_names()
-            )
-        })?;
-        if raw_token.contains('.') {
-            return Err(format!(
-                "theme override key {key:?} contains too many separators"
-            ));
-        }
-        let token = ThemeToken::parse(raw_token.trim()).ok_or_else(|| {
-            format!(
-                "theme override token {:?} is unsupported; expected {}",
-                raw_token.trim(),
-                ThemeToken::all_names()
-            )
-        })?;
-        let field = StyleField::parse(raw_field.trim()).ok_or_else(|| {
-            format!(
-                "theme override field {:?} is unsupported; expected foreground, background, or bold",
-                raw_field.trim()
-            )
-        })?;
-        let raw_value = raw_value.trim();
-        if raw_value.is_empty() {
-            return Err(format!(
-                "theme override {key:?} must have a non-empty value"
-            ));
-        }
-        let value =
-            match field {
-                StyleField::Foreground | StyleField::Background => StyleValue::Color(
-                    parse_color_value(raw_value)
-                        .map_err(|error| format!("theme override {key:?} has {error}"))?,
-                ),
-                StyleField::Bold => StyleValue::Bold(raw_value.parse::<bool>().map_err(|_| {
-                    format!("theme override {key:?} must set bold to true or false")
-                })?),
-            };
         Ok(Self {
-            token,
-            field,
-            value,
+            primary: resolve(SchemeRole::Primary, raw.primary.as_deref())?,
+            on_primary: resolve(SchemeRole::OnPrimary, raw.on_primary.as_deref())?,
+            primary_container: resolve(
+                SchemeRole::PrimaryContainer,
+                raw.primary_container.as_deref(),
+            )?,
+            on_primary_container: resolve(
+                SchemeRole::OnPrimaryContainer,
+                raw.on_primary_container.as_deref(),
+            )?,
+            surface: resolve(SchemeRole::Surface, raw.surface.as_deref())?,
+            surface_container: resolve(
+                SchemeRole::SurfaceContainer,
+                raw.surface_container.as_deref(),
+            )?,
+            on_surface: resolve(SchemeRole::OnSurface, raw.on_surface.as_deref())?,
+            on_surface_variant: resolve(
+                SchemeRole::OnSurfaceVariant,
+                raw.on_surface_variant.as_deref(),
+            )?,
+            outline: resolve(SchemeRole::Outline, raw.outline.as_deref())?,
+            error: resolve(SchemeRole::Error, raw.error.as_deref())?,
+            on_error: resolve(SchemeRole::OnError, raw.on_error.as_deref())?,
         })
     }
+
+    fn color(self, role: SchemeRole) -> Color {
+        match role {
+            SchemeRole::Primary => self.primary,
+            SchemeRole::OnPrimary => self.on_primary,
+            SchemeRole::PrimaryContainer => self.primary_container,
+            SchemeRole::OnPrimaryContainer => self.on_primary_container,
+            SchemeRole::Surface => self.surface,
+            SchemeRole::SurfaceContainer => self.surface_container,
+            SchemeRole::OnSurface => self.on_surface,
+            SchemeRole::OnSurfaceVariant => self.on_surface_variant,
+            SchemeRole::Outline => self.outline,
+            SchemeRole::Error => self.error,
+            SchemeRole::OnError => self.on_error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemeRole {
+    Primary,
+    OnPrimary,
+    PrimaryContainer,
+    OnPrimaryContainer,
+    Surface,
+    SurfaceContainer,
+    OnSurface,
+    OnSurfaceVariant,
+    Outline,
+    Error,
+    OnError,
+}
+
+impl SchemeRole {
+    const ALL: &'static [Self] = &[
+        Self::Primary,
+        Self::OnPrimary,
+        Self::PrimaryContainer,
+        Self::OnPrimaryContainer,
+        Self::Surface,
+        Self::SurfaceContainer,
+        Self::OnSurface,
+        Self::OnSurfaceVariant,
+        Self::Outline,
+        Self::Error,
+        Self::OnError,
+    ];
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|role| role.name() == value)
+    }
+
+    fn all_names() -> String {
+        Self::ALL
+            .iter()
+            .map(|role| role.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::OnPrimary => "on-primary",
+            Self::PrimaryContainer => "primary-container",
+            Self::OnPrimaryContainer => "on-primary-container",
+            Self::Surface => "surface",
+            Self::SurfaceContainer => "surface-container",
+            Self::OnSurface => "on-surface",
+            Self::OnSurfaceVariant => "on-surface-variant",
+            Self::Outline => "outline",
+            Self::Error => "error",
+            Self::OnError => "on-error",
+        }
+    }
+}
+
+impl std::fmt::Display for SchemeRole {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+fn default_scheme_color(role: SchemeRole) -> Color {
+    match role {
+        SchemeRole::Primary | SchemeRole::OnPrimaryContainer => Color::Cyan,
+        SchemeRole::OnPrimary => Color::Black,
+        SchemeRole::Error => Color::Red,
+        SchemeRole::OnError => Color::White,
+        SchemeRole::PrimaryContainer
+        | SchemeRole::Surface
+        | SchemeRole::SurfaceContainer
+        | SchemeRole::OnSurface
+        | SchemeRole::OnSurfaceVariant
+        | SchemeRole::Outline => Color::Reset,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeBinding {
+    Text,
+    MutedText,
+    ChromeDivider,
+    ChromeInputPrefix,
+    ChromeFooter,
+    ChromeFooterKey,
+    ChromeError,
+    PickerText,
+    PickerMuted,
+    PickerSelected,
+    PickerSelectedMuted,
+    PickerMarker,
+    PickerScrollbar,
+    PreviewText,
+    PreviewError,
+    PreviewBorder,
+    CaptureText,
+}
+
+impl ThemeBinding {
+    const ALL: &'static [Self] = &[
+        Self::Text,
+        Self::MutedText,
+        Self::ChromeDivider,
+        Self::ChromeInputPrefix,
+        Self::ChromeFooter,
+        Self::ChromeFooterKey,
+        Self::ChromeError,
+        Self::PickerText,
+        Self::PickerMuted,
+        Self::PickerSelected,
+        Self::PickerSelectedMuted,
+        Self::PickerMarker,
+        Self::PickerScrollbar,
+        Self::PreviewText,
+        Self::PreviewError,
+        Self::PreviewBorder,
+        Self::CaptureText,
+    ];
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|binding| binding.name() == value)
+    }
+
+    fn all_names() -> String {
+        Self::ALL
+            .iter()
+            .map(|binding| binding.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::MutedText => "muted-text",
+            Self::ChromeDivider => "chrome-divider",
+            Self::ChromeInputPrefix => "chrome-input-prefix",
+            Self::ChromeFooter => "chrome-footer",
+            Self::ChromeFooterKey => "chrome-footer-key",
+            Self::ChromeError => "chrome-error",
+            Self::PickerText => "picker-text",
+            Self::PickerMuted => "picker-muted",
+            Self::PickerSelected => "picker-selected",
+            Self::PickerSelectedMuted => "picker-selected-muted",
+            Self::PickerMarker => "picker-marker",
+            Self::PickerScrollbar => "picker-scrollbar",
+            Self::PreviewText => "preview-text",
+            Self::PreviewError => "preview-error",
+            Self::PreviewBorder => "preview-border",
+            Self::CaptureText => "capture-text",
+        }
+    }
+}
+
+impl std::fmt::Display for ThemeBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BindingDefault {
+    foreground: SchemeRole,
+    background: SchemeRole,
+    bold: bool,
+}
+
+fn default_binding(binding: ThemeBinding) -> BindingDefault {
+    match binding {
+        ThemeBinding::Text => BindingDefault {
+            foreground: SchemeRole::OnSurface,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::MutedText => BindingDefault {
+            foreground: SchemeRole::OnSurfaceVariant,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::ChromeDivider => BindingDefault {
+            foreground: SchemeRole::Outline,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::ChromeInputPrefix => BindingDefault {
+            foreground: SchemeRole::OnPrimaryContainer,
+            background: SchemeRole::PrimaryContainer,
+            bold: true,
+        },
+        ThemeBinding::ChromeFooter => BindingDefault {
+            foreground: SchemeRole::OnSurfaceVariant,
+            background: SchemeRole::SurfaceContainer,
+            bold: false,
+        },
+        ThemeBinding::ChromeFooterKey => BindingDefault {
+            foreground: SchemeRole::OnPrimaryContainer,
+            background: SchemeRole::PrimaryContainer,
+            bold: true,
+        },
+        ThemeBinding::ChromeError => BindingDefault {
+            foreground: SchemeRole::OnError,
+            background: SchemeRole::Error,
+            bold: true,
+        },
+        ThemeBinding::PickerText => BindingDefault {
+            foreground: SchemeRole::OnSurface,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::PickerMuted => BindingDefault {
+            foreground: SchemeRole::OnSurfaceVariant,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::PickerSelected => BindingDefault {
+            foreground: SchemeRole::OnPrimaryContainer,
+            background: SchemeRole::PrimaryContainer,
+            bold: true,
+        },
+        ThemeBinding::PickerSelectedMuted => BindingDefault {
+            foreground: SchemeRole::OnPrimaryContainer,
+            background: SchemeRole::PrimaryContainer,
+            bold: false,
+        },
+        ThemeBinding::PickerMarker | ThemeBinding::PickerScrollbar => BindingDefault {
+            foreground: SchemeRole::Primary,
+            background: SchemeRole::Surface,
+            bold: true,
+        },
+        ThemeBinding::PreviewText => BindingDefault {
+            foreground: SchemeRole::OnSurface,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::PreviewError => BindingDefault {
+            foreground: SchemeRole::OnError,
+            background: SchemeRole::Error,
+            bold: false,
+        },
+        ThemeBinding::PreviewBorder => BindingDefault {
+            foreground: SchemeRole::Outline,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+        ThemeBinding::CaptureText => BindingDefault {
+            foreground: SchemeRole::OnSurface,
+            background: SchemeRole::Surface,
+            bold: false,
+        },
+    }
+}
+
+fn validate_bindings(bindings: &BTreeMap<String, RawBinding>, source: &str) -> Result<()> {
+    for name in bindings.keys() {
+        if ThemeBinding::parse(name).is_none() {
+            bail!(
+                "{source} binding {:?} is unsupported; expected {}",
+                name,
+                ThemeBinding::all_names()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn resolve_binding(
+    binding: ThemeBinding,
+    raw_bindings: &BTreeMap<String, RawBinding>,
+    scheme: &ResolvedScheme,
+    source: &str,
+) -> Result<Style> {
+    let patch = raw_bindings.get(binding.name());
+    let defaults = default_binding(binding);
+    let foreground = match patch.and_then(|patch| patch.foreground.as_deref()) {
+        Some(value) => resolve_binding_reference(value, scheme, source, binding, "foreground")?,
+        None => scheme.color(defaults.foreground),
+    };
+    let background = match patch.and_then(|patch| patch.background.as_deref()) {
+        Some(value) => resolve_binding_reference(value, scheme, source, binding, "background")?,
+        None => scheme.color(defaults.background),
+    };
+    let mut style = set_modifier(
+        Style::new().fg(foreground).bg(background),
+        Modifier::BOLD,
+        Some(patch.and_then(|patch| patch.bold).unwrap_or(defaults.bold)),
+    );
+    for (modifier, enabled) in [
+        (Modifier::ITALIC, patch.and_then(|patch| patch.italic)),
+        (
+            Modifier::UNDERLINED,
+            patch.and_then(|patch| patch.underline),
+        ),
+        (
+            Modifier::CROSSED_OUT,
+            patch.and_then(|patch| patch.strikethrough),
+        ),
+    ] {
+        style = set_modifier(style, modifier, Some(enabled.unwrap_or(false)));
+    }
+    Ok(style)
+}
+
+fn resolve_binding_reference(
+    value: &str,
+    scheme: &ResolvedScheme,
+    source: &str,
+    binding: ThemeBinding,
+    field: &str,
+) -> Result<Color> {
+    let value = value.trim();
+    let Some(role_name) = value.strip_prefix("scheme:") else {
+        bail!("{source} bindings.{binding}.{field} must reference a scheme role as scheme:ROLE");
+    };
+    let Some(role) = SchemeRole::parse(role_name) else {
+        bail!(
+            "{source} bindings.{binding}.{field} references unsupported scheme role {:?}; expected {}",
+            role_name,
+            SchemeRole::all_names()
+        );
+    };
+    Ok(scheme.color(role))
+}
+
+fn resolve_scheme_reference(
+    value: &str,
+    palette: &BTreeMap<String, Color>,
+    source: &str,
+    role: SchemeRole,
+) -> Result<Color> {
+    let value = value.trim();
+    if let Some(palette_name) = value.strip_prefix("palette:") {
+        let Some(color) = palette.get(palette_name) else {
+            bail!(
+                "{source} scheme.{role} references unknown palette color {:?}",
+                palette_name
+            );
+        };
+        return Ok(*color);
+    }
+    if let Some(ansi_name) = value.strip_prefix("ansi:") {
+        return parse_ansi_color(ansi_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{source} scheme.{role} references unsupported ANSI color {:?}; expected {}",
+                ansi_name,
+                ansi_color_names()
+            )
+        });
+    }
+    bail!("{source} scheme.{role} must reference a color as palette:NAME or ansi:COLOR")
+}
+
+fn resolve_palette(
+    overrides: &BTreeMap<String, String>,
+    source: &str,
+) -> Result<BTreeMap<String, Color>> {
+    let mut palette = BTreeMap::new();
+    for (name, value) in overrides {
+        if name.trim().is_empty() {
+            bail!("{source} palette names must not be empty");
+        }
+        let color = parse_color_value(value).map_err(|error| {
+            anyhow::anyhow!(
+                "{source} palette.{name} has {error}; expected a basic ANSI color or #RRGGBB"
+            )
+        })?;
+        palette.insert(name.clone(), color);
+    }
+    Ok(palette)
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ThemeLoadOptions {
     pub(crate) selector: Option<ThemeRef>,
-    pub(crate) overrides: Vec<ThemeOverride>,
 }
 
 pub(crate) fn cli_named_theme(name: String) -> ThemeRef {
@@ -373,7 +620,7 @@ pub(crate) fn load(
 ) -> Result<ResolvedTheme> {
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let loader = ThemeLoader { config_dir };
-    let mut theme = if let Some(selector) = options.selector.as_ref() {
+    let theme = if let Some(selector) = options.selector.as_ref() {
         loader.resolve_reference(selector)?
     } else if let Some(configured) = configured {
         loader.resolve_reference(&ThemeRef::Named {
@@ -382,9 +629,6 @@ pub(crate) fn load(
     } else {
         ResolvedTheme::terminal()
     };
-    for override_value in &options.overrides {
-        theme.apply_override(override_value)?;
-    }
     Ok(theme)
 }
 
@@ -416,68 +660,16 @@ impl ThemeLoader<'_> {
             .with_context(|| format!("could not read theme {}", canonical.display()))?;
         let raw: RawTheme = toml::from_str(&source)
             .with_context(|| format!("could not parse theme {}", canonical.display()))?;
-        let mut theme = ResolvedTheme::terminal();
-        theme.apply_patches(&raw.tokens, &canonical.display().to_string())?;
-        Ok(theme)
+        ResolvedTheme::from_raw(&raw, &canonical.display().to_string())
     }
 }
 
-fn apply_token_patch(
-    style: &mut Style,
-    base_patch: Option<&ThemeStylePatch>,
-    token_patch: Option<&ThemeStylePatch>,
-    source: &str,
-    token: ThemeToken,
-) -> Result<()> {
-    let Some(base_patch) = base_patch else {
-        return apply_style_patch(style, token_patch, source, token);
-    };
-    let inherits_foreground = token_patch.is_none_or(|patch| patch.foreground.is_none());
-    let inherits_background = token_patch.is_none_or(|patch| patch.background.is_none());
-    let inherits_bold = token_patch.is_none_or(|patch| patch.bold.is_none());
-    if inherits_foreground && let Some(value) = base_patch.foreground.as_deref() {
-        style.fg = Some(parse_color(value, source, token, StyleField::Foreground)?);
-    }
-    if inherits_background && let Some(value) = base_patch.background.as_deref() {
-        style.bg = Some(parse_color(value, source, token, StyleField::Background)?);
-    }
-    if inherits_bold {
-        *style = set_modifier(*style, Modifier::BOLD, base_patch.bold);
-    }
-    apply_style_patch(style, token_patch, source, token)
+fn ansi_color_names() -> &'static str {
+    "black, red, green, yellow, blue, magenta, cyan, gray, or white"
 }
 
-fn apply_style_patch(
-    style: &mut Style,
-    patch: Option<&ThemeStylePatch>,
-    source: &str,
-    token: ThemeToken,
-) -> Result<()> {
-    let Some(patch) = patch else {
-        return Ok(());
-    };
-    if let Some(value) = patch.foreground.as_deref() {
-        style.fg = Some(parse_color(value, source, token, StyleField::Foreground)?);
-    }
-    if let Some(value) = patch.background.as_deref() {
-        style.bg = Some(parse_color(value, source, token, StyleField::Background)?);
-    }
-    *style = set_modifier(*style, Modifier::BOLD, patch.bold);
-    Ok(())
-}
-
-fn parse_color(value: &str, source: &str, token: ThemeToken, field: StyleField) -> Result<Color> {
-    parse_color_value(value).map_err(|error| {
-        anyhow::anyhow!(
-            "{source} {token}.{field} has {error}; expected terminal, a basic ANSI color, or #RRGGBB"
-        )
-    })
-}
-
-fn parse_color_value(value: &str) -> Result<Color, String> {
-    let value = value.trim();
-    let color = match value.to_ascii_lowercase().as_str() {
-        "terminal" => Some(Color::Reset),
+fn parse_ansi_color(value: &str) -> Option<Color> {
+    match value.to_ascii_lowercase().as_str() {
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
@@ -489,8 +681,13 @@ fn parse_color_value(value: &str) -> Result<Color, String> {
         "white" => Some(Color::White),
         _ => None,
     }
-    .or_else(|| parse_hex_color(value));
-    color.ok_or_else(|| format!("unsupported color {value:?}"))
+}
+
+fn parse_color_value(value: &str) -> Result<Color, String> {
+    let value = value.trim();
+    parse_ansi_color(value)
+        .or_else(|| parse_hex_color(value))
+        .ok_or_else(|| format!("unsupported color {value:?}"))
 }
 
 fn parse_hex_color(value: &str) -> Option<Color> {
@@ -535,63 +732,251 @@ mod tests {
         path
     }
 
-    #[test]
-    fn terminal_theme_contains_final_tokens() {
-        let theme = ResolvedTheme::terminal();
-
-        assert_eq!(theme.base.fg, Some(Color::Reset));
-        assert_eq!(theme.base.bg, Some(Color::Reset));
-        assert_eq!(theme.accent.fg, Some(Color::Cyan));
-        assert!(theme.accent.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(theme.highlight.fg, Some(Color::Cyan));
-        assert_eq!(theme.surface_highlight.fg, Some(Color::Cyan));
-        assert_eq!(theme.selected.fg, Some(Color::Cyan));
-        assert_eq!(theme.selected_muted.fg, Some(Color::Reset));
+    fn resolved_binding_style(theme: &ResolvedTheme, binding: ThemeBinding) -> Style {
+        match binding {
+            ThemeBinding::Text => theme.text,
+            ThemeBinding::MutedText => theme.muted_text,
+            ThemeBinding::ChromeDivider => theme.chrome.divider,
+            ThemeBinding::ChromeInputPrefix => theme.chrome.input_prefix,
+            ThemeBinding::ChromeFooter => theme.chrome.footer,
+            ThemeBinding::ChromeFooterKey => theme.chrome.footer_key,
+            ThemeBinding::ChromeError => theme.chrome.error,
+            ThemeBinding::PickerText => theme.picker.text,
+            ThemeBinding::PickerMuted => theme.picker.muted,
+            ThemeBinding::PickerSelected => theme.picker.selected,
+            ThemeBinding::PickerSelectedMuted => theme.picker.selected_muted,
+            ThemeBinding::PickerMarker => theme.picker.marker,
+            ThemeBinding::PickerScrollbar => theme.picker.scrollbar,
+            ThemeBinding::PreviewText => theme.preview.text,
+            ThemeBinding::PreviewError => theme.preview.error,
+            ThemeBinding::PreviewBorder => theme.preview.border,
+            ThemeBinding::CaptureText => theme.capture.text,
+        }
     }
 
     #[test]
-    fn token_tables_accept_ansi_and_hex_colors() {
+    fn scheme_role_names_cover_raw_and_resolved_fields() {
+        let mut names = Vec::new();
+        for &role in SchemeRole::ALL {
+            let name = role.name();
+            assert!(names.iter().all(|known| *known != name));
+            names.push(name);
+            assert_eq!(SchemeRole::parse(name), Some(role));
+
+            let raw: RawTheme =
+                toml::from_str(&format!("[scheme]\n{name} = \"ansi:magenta\"\n")).unwrap();
+            let resolved =
+                ResolvedScheme::resolve(&BTreeMap::new(), &raw.scheme, "test theme").unwrap();
+            assert_eq!(resolved.color(role), Color::Magenta, "scheme role {name}");
+        }
+        assert_eq!(SchemeRole::all_names(), names.join(", "));
+    }
+
+    #[test]
+    fn binding_names_cover_raw_and_resolved_fields() {
+        let mut names = Vec::new();
+        for &binding in ThemeBinding::ALL {
+            let name = binding.name();
+            assert!(names.iter().all(|known| *known != name));
+            names.push(name);
+            assert_eq!(ThemeBinding::parse(name), Some(binding));
+
+            let raw: RawTheme =
+                toml::from_str(&format!("[bindings.{name}]\nitalic = true\n")).unwrap();
+            let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
+            assert!(
+                resolved_binding_style(&theme, binding)
+                    .add_modifier
+                    .contains(Modifier::ITALIC),
+                "binding {name} did not resolve"
+            );
+        }
+        assert_eq!(ThemeBinding::all_names(), names.join(", "));
+    }
+
+    #[test]
+    fn terminal_theme_contains_default_bindings() {
+        let theme = ResolvedTheme::terminal();
+
+        assert_eq!(theme.text.fg, Some(Color::Reset));
+        assert_eq!(theme.text.bg, Some(Color::Reset));
+        assert_eq!(theme.chrome.input_prefix.fg, Some(Color::Cyan));
+        assert_eq!(theme.chrome.input_prefix.bg, Some(Color::Reset));
+        assert!(
+            theme
+                .chrome
+                .input_prefix
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(theme.picker.selected.fg, Some(Color::Cyan));
+        assert_eq!(theme.picker.selected.bg, Some(Color::Reset));
+        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
+        assert_eq!(theme.chrome.error.fg, Some(Color::White));
+        assert_eq!(theme.chrome.error.bg, Some(Color::Red));
+        assert_eq!(theme.preview.text.fg, Some(Color::Reset));
+        assert_eq!(theme.preview.error.fg, Some(Color::White));
+        assert_eq!(theme.preview.error.bg, Some(Color::Red));
+        assert_eq!(theme.preview.border.fg, Some(Color::Reset));
+        assert_eq!(theme.capture.text.fg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn palette_scheme_and_binding_references_resolve() {
         let raw: RawTheme = toml::from_str(
             r##"
-            [tokens.base]
-            foreground = "terminal"
-            background = "#102030"
+            [palette]
+            brand = "#102030"
+            paper = "#F2E9E1"
+            ink = "#204060"
 
-            [tokens.accent]
-            foreground = "magenta"
+            [scheme]
+            primary = "palette:brand"
+            primary-container = "palette:paper"
+            on-primary-container = "palette:ink"
+            surface = "palette:paper"
+            on-surface = "palette:ink"
+            on-surface-variant = "palette:brand"
+            outline = "palette:brand"
 
-            [tokens.muted]
-            foreground = "#204060"
-
-            [tokens.highlight]
-            foreground = "yellow"
-            background = "blue"
+            [bindings.picker-selected]
+            foreground = "scheme:on-primary-container"
+            background = "scheme:primary-container"
             bold = true
+            italic = true
+            underline = true
+            strikethrough = true
+
+            [bindings.chrome-divider]
+            foreground = "scheme:outline"
+
+            [bindings.chrome-error]
+            foreground = "scheme:on-error"
+            background = "scheme:error"
+
+            [bindings.preview-text]
+            foreground = "scheme:on-surface-variant"
+
+            [bindings.preview-error]
+            foreground = "scheme:on-error"
+            background = "scheme:error"
+
+            [bindings.capture-text]
+            foreground = "scheme:primary"
             "##,
         )
         .unwrap();
-        let mut theme = ResolvedTheme::terminal();
-        theme.apply_patches(&raw.tokens, "test theme").unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
 
-        assert_eq!(theme.base.fg, Some(Color::Reset));
-        assert_eq!(theme.base.bg, Some(Color::Rgb(16, 32, 48)));
-        assert_eq!(theme.accent.fg, Some(Color::Magenta));
-        assert_eq!(theme.accent.bg, Some(Color::Rgb(16, 32, 48)));
-        assert_eq!(theme.muted.fg, Some(Color::Rgb(32, 64, 96)));
-        assert_eq!(theme.muted.bg, Some(Color::Rgb(16, 32, 48)));
-        assert_eq!(theme.highlight.fg, Some(Color::Yellow));
-        assert_eq!(theme.highlight.bg, Some(Color::Blue));
-        assert!(theme.highlight.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(theme.picker.selected.fg, Some(Color::Rgb(32, 64, 96)));
+        assert_eq!(theme.picker.selected.bg, Some(Color::Rgb(242, 233, 225)));
+        assert!(theme.picker.selected.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            theme
+                .picker
+                .selected
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
+        assert!(
+            theme
+                .picker
+                .selected
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert!(
+            theme
+                .picker
+                .selected
+                .add_modifier
+                .contains(Modifier::CROSSED_OUT)
+        );
+        assert_eq!(theme.chrome.divider.fg, Some(Color::Rgb(16, 32, 48)));
+        assert_eq!(theme.chrome.divider.bg, Some(Color::Rgb(242, 233, 225)));
+        assert_eq!(theme.text.fg, Some(Color::Rgb(32, 64, 96)));
+        assert_eq!(theme.text.bg, Some(Color::Rgb(242, 233, 225)));
+        assert_eq!(theme.chrome.error.fg, Some(Color::White));
+        assert_eq!(theme.chrome.error.bg, Some(Color::Red));
+        assert_eq!(theme.preview.text.fg, Some(Color::Rgb(16, 32, 48)));
+        assert_eq!(theme.preview.error.fg, Some(Color::White));
+        assert_eq!(theme.preview.error.bg, Some(Color::Red));
+        assert_eq!(theme.capture.text.fg, Some(Color::Rgb(16, 32, 48)));
     }
 
     #[test]
-    fn token_values_must_use_tables() {
+    fn user_palette_names_do_not_shadow_ansi_or_builtin_scheme_colors() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [palette]
+            cyan = "#102030"
+            black = "#203040"
+            red = "#304050"
+            white = "#F0E0D0"
+
+            [scheme]
+            outline = "ansi:cyan"
+
+            [bindings.text]
+            foreground = "scheme:on-primary"
+            "##,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
+
+        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
+        assert_eq!(theme.picker.selected.fg, Some(Color::Cyan));
+        assert_eq!(theme.text.fg, Some(Color::Black));
+        assert_eq!(theme.chrome.error.bg, Some(Color::Red));
+        assert_eq!(theme.chrome.error.fg, Some(Color::White));
+        assert_eq!(theme.chrome.divider.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn omitted_bindings_use_defaults_and_partial_bindings_are_supported() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [palette]
+            quiet = "#696969"
+
+            [scheme]
+            on-surface-variant = "palette:quiet"
+
+            [bindings.picker-marker]
+            bold = false
+            "##,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
+
+        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
+        assert_eq!(theme.picker.marker.bg, Some(Color::Reset));
+        assert!(!theme.picker.marker.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(theme.picker.muted.fg, Some(Color::Rgb(105, 105, 105)));
+        assert!(
+            !theme
+                .picker
+                .selected_muted
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(theme.chrome.footer_key.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn theme_tables_are_strict_and_old_token_tables_are_rejected() {
         assert!(toml::from_str::<RawTheme>("[tokens]\naccent = \"cyan\"\n").is_err());
-        assert!(toml::from_str::<RawTheme>("[tokens.accent]\nreverse = true\n").is_err());
+        assert!(toml::from_str::<RawTheme>("[bindings.text]\nreverse = true\n").is_err());
+        assert!(toml::from_str::<RawTheme>("[scheme]\nprimaryy = \"palette:cyan\"\n").is_err());
         assert!(
             toml::from_str::<RawTheme>("extends = { source = \"builtin\", name = \"terminal\" }\n")
                 .is_err()
         );
+
+        let raw: RawTheme =
+            toml::from_str("[bindings.unknown]\nforeground = \"scheme:primary\"\n").unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("unknown"));
     }
 
     #[test]
@@ -601,12 +986,13 @@ mod tests {
         assert!(ref_error.to_string().contains("mystery"));
 
         let field_error =
-            toml::from_str::<RawTheme>("[tokens.accent]\nforegroundd = \"red\"\n").unwrap_err();
+            toml::from_str::<RawTheme>("[bindings.text]\nforegroundd = \"scheme:primary\"\n")
+                .unwrap_err();
         assert!(field_error.to_string().contains("foregroundd"));
     }
 
     #[test]
-    fn removed_color_aliases_are_rejected() {
+    fn palette_values_must_be_supported_colors() {
         for color in [
             "bright-blue",
             "light-blue",
@@ -615,14 +1001,36 @@ mod tests {
             "silver",
             "42",
             "default",
+            "terminal",
         ] {
             let raw: RawTheme =
-                toml::from_str(&format!("[tokens.accent]\nforeground = {color:?}\n")).unwrap();
-            let error = ResolvedTheme::terminal()
-                .apply_patches(&raw.tokens, "test theme")
-                .unwrap_err();
+                toml::from_str(&format!("[palette]\nprimary = {color:?}\n")).unwrap();
+            let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
             assert!(error.to_string().contains("unsupported color"));
         }
+    }
+
+    #[test]
+    fn scheme_values_must_reference_known_palette_or_ansi_colors() {
+        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"palette:missing\"\n").unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("unknown palette color"));
+
+        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"#102030\"\n").unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("palette:NAME or ansi:COLOR"));
+
+        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"palette:terminal\"\n").unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("unknown palette color"));
+
+        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"ansi:bright-blue\"\n").unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("unsupported ANSI color"));
+
+        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"ansi:magenta\"\n").unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
+        assert_eq!(theme.picker.marker.fg, Some(Color::Magenta));
     }
 
     #[test]
@@ -631,7 +1039,7 @@ mod tests {
         fs::create_dir_all(root.join("themes")).unwrap();
         fs::write(
             root.join("themes/work.toml"),
-            "[tokens.accent]\nforeground = \"blue\"\n",
+            "[palette]\nbrand = \"blue\"\n\n[scheme]\nprimary = \"palette:brand\"\n",
         )
         .unwrap();
 
@@ -642,7 +1050,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(theme.accent.fg, Some(Color::Blue));
+        assert_eq!(theme.picker.marker.fg, Some(Color::Blue));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -653,7 +1061,7 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("work.toml"),
-            "[tokens.accent]\nforeground = \"yellow\"\n\n[tokens.muted]\nforeground = \"gray\"\n",
+            "[palette]\nbrand = \"yellow\"\nquiet = \"gray\"\n\n[scheme]\nprimary = \"palette:brand\"\non-surface-variant = \"palette:quiet\"\n",
         )
         .unwrap();
         let theme = load(
@@ -663,42 +1071,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(theme.accent.fg, Some(Color::Yellow));
-        assert_eq!(theme.muted.fg, Some(Color::Gray));
+        assert_eq!(theme.picker.marker.fg, Some(Color::Yellow));
+        assert_eq!(theme.picker.muted.fg, Some(Color::Gray));
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cli_selector_replaces_configured_ref_and_applies_typed_overrides() {
-        let configured = "missing-root-theme";
-        let options = ThemeLoadOptions {
-            selector: Some(ThemeRef::Builtin {
-                name: "terminal".to_string(),
-            }),
-            overrides: vec![
-                "accent.foreground=green".parse().unwrap(),
-                "highlight.bold=false".parse().unwrap(),
-            ],
-        };
-
-        let theme = load(Path::new("config.toml"), Some(configured), &options).unwrap();
-
-        assert_eq!(theme.accent.fg, Some(Color::Green));
-        assert!(!theme.highlight.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn cli_overrides_are_strongly_typed() {
-        let error = "accent.foreground=not-a-color"
-            .parse::<ThemeOverride>()
-            .unwrap_err();
-        assert!(error.contains("unsupported color"));
-        let error = "highlight.reverse=true"
-            .parse::<ThemeOverride>()
-            .unwrap_err();
-        assert!(error.contains("foreground, background, or bold"));
-        let override_value: ThemeOverride = "selected-muted.bg=cyan".parse().unwrap();
-        assert_eq!(override_value.token, ThemeToken::SelectedMuted);
-        assert_eq!(override_value.field, StyleField::Background);
     }
 }

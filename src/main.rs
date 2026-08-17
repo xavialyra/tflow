@@ -40,10 +40,6 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
 
-    /// Override one final theme token field for this invocation.
-    #[arg(long = "theme-set", value_name = "TOKEN.FIELD=VALUE")]
-    theme_set: Vec<crate::theme::ThemeOverride>,
-
     /// Validate the configuration and exit without opening the TUI.
     #[arg(long)]
     check: bool,
@@ -66,10 +62,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
     let selector = args.theme.map(theme::cli_named_theme);
-    let theme_options = theme::ThemeLoadOptions {
-        selector,
-        overrides: args.theme_set,
-    };
+    let theme_options = theme::ThemeLoadOptions { selector };
     let loaded = Config::load_app(&config_path, &theme_options)?;
     let mut config = loaded.config;
     let theme = loaded.theme;

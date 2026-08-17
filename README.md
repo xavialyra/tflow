@@ -54,7 +54,7 @@ mise exec -- cargo run -- --check
 
 ## Themes
 
-The built-in `terminal` theme is used when no theme is configured. It uses the terminal's default foreground and background for ordinary content, and ANSI cyan with `bold` for accents, highlights, and selected items. It does not query or modify terminal colors with OSC sequences. The embedded PTY keeps the child process's own ANSI and RGB styles.
+The built-in `terminal` theme is used when no theme is configured. It uses the terminal's default foreground and background for ordinary content, and ANSI cyan with `bold` for primary emphasis, markers, and selected items. It does not query or modify terminal colors with OSC sequences. The embedded PTY keeps the child process's own ANSI and RGB styles.
 
 A root configuration selects a named theme from the sibling `themes/` directory:
 
@@ -62,47 +62,50 @@ A root configuration selects a named theme from the sibling `themes/` directory:
 theme = "work"
 ```
 
-This loads `themes/work.toml`. The built-in `terminal` theme is used when `theme` is omitted. Every theme token uses the same table shape:
+This loads `themes/work.toml`. Themes are resolved in three layers:
+
+1. `palette` defines theme-owned ANSI or RGB colors.
+2. `scheme` assigns Material Design 3-inspired semantic roles to user palette colors or fixed ANSI colors.
+3. `bindings` assigns semantic roles to concrete launcher UI elements.
+
+The last layer has defaults, so a theme may only define the colors it needs:
 
 ```toml
 # themes/work.toml
-[tokens.base]
-foreground = "terminal"
-background = "terminal"
+[palette]
+brand = "#BC7588"
+paper = "#F2E9E1"
+ink = "#696969"
 
-[tokens.accent]
-foreground = "cyan"
+[scheme]
+primary = "palette:brand"
+primary-container = "palette:paper"
+on-primary-container = "palette:ink"
+# Omitted surface roles use the terminal's default colors.
+on-surface-variant = "palette:ink"
+outline = "ansi:magenta"
+
+[bindings.picker-selected]
+foreground = "scheme:on-primary-container"
+background = "scheme:primary-container"
 bold = true
-
-[tokens.muted]
-foreground = "gray"
-
-[tokens.selected]
-foreground = "black"
-background = "cyan"
-bold = true
-
-[tokens.selected-muted]
-foreground = "blue"
-background = "cyan"
-bold = true
+italic = true
+underline = true
 ```
 
-The final tokens are `base`, `accent`, `muted`, `border`, `surface`, `surface-highlight`, `highlight`, `selected`, and `selected-muted`. The `surface-highlight` and `selected-muted` tokens are explicit so selection and surface combinations do not depend on an implicit patch order. Token tables may set `foreground` (or `fg`), `background` (or `bg`), and `bold`. `terminal` restores the terminal foreground or background, `default` is not accepted, and `#RRGGBB` supplies an explicit RGB value. Named ANSI colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, and `white`; 256-color indexes, light/bright names, and aliases are not accepted.
+The supported scheme roles are `primary`, `on-primary`, `primary-container`, `on-primary-container`, `surface`, `surface-container`, `on-surface`, `on-surface-variant`, `outline`, `error`, and `on-error`. A scheme value must use `palette:NAME` for a theme-owned color or `ansi:COLOR` for a fixed basic ANSI color; a binding value must use `scheme:ROLE`. The `on-*` roles are intended to be used with their matching background role so foreground/background contrast remains understandable.
 
-The CLI `--theme` option selects a built-in or named theme. `--theme-set` may be repeated and is parsed as a typed `TOKEN.FIELD=VALUE` override:
+Bindings are concrete and independently overridable. The built-in bindings cover `text`, `muted-text`, chrome divider/input prefix/footer/error/footer key, picker text/muted/selected/selected-muted/marker/scrollbar, preview text/error/border, and capture text. Route completion reuses the picker text, muted, selected, and marker bindings. Each binding supports `foreground`, `background`, and boolean text effects: `bold`, `italic`, `underline`, and `strikethrough`. A missing binding inherits its built-in semantic defaults; a missing field inherits only that binding's field default. Bindings do not implicitly inherit from one another.
+
+Palette values may be a basic ANSI color or `#RRGGBB`. The palette namespace contains only names declared by the theme; it has no built-in entries. The separate `ansi:` namespace contains `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, and `white` and cannot be shadowed by palette names. For example, `palette:cyan` and `ansi:cyan` are independent. Omitting a scheme role keeps its built-in default, including the terminal's default foreground or background where appropriate. 256-color indexes, light/bright names, and aliases are not accepted.
+
+The CLI `--theme` option selects a built-in or named theme:
 
 ```bash
 tui-launcher --theme work apps:main
-
-tui-launcher \
-  --theme work \
-  --theme-set accent.foreground=yellow \
-  --theme-set selected-muted.bg=cyan \
-  apps:main
 ```
 
-Themes are resolved relative to the configuration directory. Global options must precede the View selector.
+Themes are resolved relative to the configuration directory. Global options must precede the View selector. The previous `[tokens]` format is not supported.
 
 ## Direct View invocation
 
@@ -572,6 +575,6 @@ Tab opens the Router's built-in visual route completion only in the normal launc
 
 For picker Views, semantic engine bindings take priority over View commands on the same key. Embedded Views reserve only timed-out bare `Esc` for cancellation and otherwise forward input to the PTY. Capture Views check View commands before applying their default other-key Back behavior.
 
-Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses the active theme's surface style inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use the theme's highlight style and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
+Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses the active theme's `chrome-footer` binding inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use the `chrome-footer-key` binding and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command. Errors and command status records are also appended to the runtime JSONL log at `$XDG_STATE_HOME/tui-launcher/runtime.jsonl` or `$HOME/.local/state/tui-launcher/runtime.jsonl`. `TUI_LAUNCHER_LOG_FILE` overrides the path.
 
 Launcher input is committed to View state and runtime immediately; picker item refreshes are then scheduled by the shared input controller with a 120ms debounce and evaluated by a background worker. A request generation plus full View/raw binding/state identity prevents results from an older snapshot from being accepted, even when the visible input text is unchanged. Each script has a 10-second timeout, is limited to 64 KiB of JSON input, 1 MiB of stdout, and 64 KiB of stderr. Timed-out or oversized scripts report an error for that source. A command with `requires = "items"` waits for the matching result; `requires = "input"` does not.

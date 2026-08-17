@@ -58,7 +58,10 @@ pub(crate) fn render_picker(
         } else {
             &state.empty_message
         };
-        lines.push(Line::from(Span::styled(text.to_string(), theme.muted)));
+        lines.push(Line::from(Span::styled(
+            text.to_string(),
+            theme.picker.muted,
+        )));
     } else {
         let thumb_top = scrollbar_thumb_top(start, state.items.len(), height);
         for (visible_row, (index, item)) in state
@@ -114,7 +117,10 @@ pub(crate) fn render_picker(
             lines.push(picker_line(text, selected, prefix_range, theme));
         }
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)).style(theme.base), area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(theme.picker.text),
+        area,
+    );
 }
 
 fn picker_line(
@@ -123,20 +129,25 @@ fn picker_line(
     prefix_range: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
-    let accent = theme.accent;
-    let body = if selected { theme.selected } else { theme.base };
-    let prefix = if selected {
-        theme.selected_muted
+    let marker_style = theme.picker.marker;
+    let scrollbar_style = theme.picker.scrollbar;
+    let body = if selected {
+        theme.picker.selected
     } else {
-        theme.muted
+        theme.picker.text
+    };
+    let prefix = if selected {
+        theme.picker.selected_muted
+    } else {
+        theme.picker.muted
     };
     let scrollbar = text.ends_with('█');
     if scrollbar {
         text.pop();
     }
-    let marker = selected && text.starts_with('▌');
-    let marker_bytes = if marker { '▌'.len_utf8() } else { 0 };
-    if marker {
+    let has_marker = selected && text.starts_with('▌');
+    let marker_bytes = if has_marker { '▌'.len_utf8() } else { 0 };
+    if has_marker {
         text.remove(0);
     }
     let prefix_range = prefix_range.and_then(|(start, end)| {
@@ -150,8 +161,8 @@ fn picker_line(
     });
 
     let mut spans = Vec::with_capacity(5);
-    if marker {
-        spans.push(Span::styled("▌", accent));
+    if has_marker {
+        spans.push(Span::styled("▌", marker_style));
     }
     if let Some((start, end)) = prefix_range {
         spans.push(Span::styled(text[..start].to_string(), body));
@@ -161,7 +172,7 @@ fn picker_line(
         spans.push(Span::styled(text, body));
     }
     if scrollbar {
-        spans.push(Span::styled("█", accent));
+        spans.push(Span::styled("█", scrollbar_style));
     }
     Line::from(spans)
 }
@@ -264,21 +275,30 @@ mod tests {
     }
 
     #[test]
-    fn picker_markers_and_scrollbars_use_the_accent_color() {
-        let theme = Theme::terminal();
+    fn picker_markers_and_scrollbars_use_their_bindings() {
+        let mut theme = Theme::terminal();
+        theme.picker.marker.fg = Some(Color::Magenta);
+        theme.picker.scrollbar.fg = Some(Color::Green);
+
         let selected = picker_line("▌ item  █".to_string(), true, None, &theme);
         assert_eq!(selected.spans.first().unwrap().content, "▌");
-        assert_eq!(selected.spans.first().unwrap().style.fg, Some(Color::Cyan));
+        assert_eq!(
+            selected.spans.first().unwrap().style.fg,
+            Some(Color::Magenta)
+        );
         assert_eq!(selected.spans.last().unwrap().content, "█");
-        assert_eq!(selected.spans.last().unwrap().style.fg, Some(Color::Cyan));
+        assert_eq!(selected.spans.last().unwrap().style.fg, Some(Color::Green));
 
         let unselected = picker_line("  item  █".to_string(), false, None, &theme);
         assert_eq!(unselected.spans.last().unwrap().content, "█");
-        assert_eq!(unselected.spans.last().unwrap().style.fg, Some(Color::Cyan));
+        assert_eq!(
+            unselected.spans.last().unwrap().style.fg,
+            Some(Color::Green)
+        );
     }
 
     #[test]
-    fn picker_prefix_uses_the_muted_terminal_style() {
+    fn picker_prefix_uses_the_selected_container_style() {
         let theme = Theme::terminal();
         let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)), &theme);
         let prefix = line
@@ -286,20 +306,21 @@ mod tests {
             .iter()
             .find(|span| span.content == "sys")
             .expect("prefix span should be separate");
-        assert_eq!(prefix.style.fg, Some(Color::Reset));
+        assert_eq!(prefix.style.fg, Some(Color::Cyan));
+        assert_eq!(prefix.style.bg, Some(Color::Reset));
         assert!(!prefix.style.add_modifier.contains(Modifier::DIM));
-        assert!(prefix.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!prefix.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
     fn selected_prefix_keeps_a_custom_muted_foreground() {
         let mut theme = Theme::terminal();
-        theme.muted.fg = Some(Color::Gray);
-        theme.selected = Style::new()
+        theme.picker.muted.fg = Some(Color::Gray);
+        theme.picker.selected = Style::new()
             .fg(Color::Black)
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD);
-        theme.selected_muted = Style::new()
+        theme.picker.selected_muted = Style::new()
             .fg(Color::Gray)
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD);

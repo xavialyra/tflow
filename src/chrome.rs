@@ -401,6 +401,7 @@ pub(crate) struct ChromeFrame {
     input_muted: bool,
     recognized_input_prefix_end: Option<usize>,
     pub(crate) footer: String,
+    footer_is_error: bool,
     pub(crate) footer_divider: String,
     footer_keys: Vec<(usize, usize)>,
     layout: ChromeLayout,
@@ -536,6 +537,7 @@ impl ChromeFrame {
         let footer_width = layout
             .chrome_width(width)
             .saturating_sub(layout.footer_padding.horizontal());
+        let footer_is_error = error.is_some();
         let footer = if let Some(error) = error {
             FooterContent::plain(error)
         } else if let Some(footer) = footer {
@@ -575,6 +577,7 @@ impl ChromeFrame {
             },
             "",
             footer,
+            footer_is_error,
         )
     }
 
@@ -584,6 +587,7 @@ impl ChromeFrame {
         input: ComposedInput,
         divider_label: &str,
         footer: FooterContent,
+        footer_is_error: bool,
     ) -> Self {
         let width = layout.chrome_width(width);
         let footer_width = width.saturating_sub(layout.footer_padding.horizontal());
@@ -603,6 +607,7 @@ impl ChromeFrame {
             input_muted: input.muted,
             recognized_input_prefix_end: input.recognized_prefix_end,
             footer: footer.text,
+            footer_is_error,
             footer_divider: layout.pad_line(
                 &divider_line(footer_divider_width, ""),
                 width,
@@ -667,7 +672,7 @@ impl ChromeFrame {
             } else if row == layout.divider_content_row() {
                 Line::styled(
                     layout.pad_line(&self.divider, width, layout.viewport_padding),
-                    theme.accent,
+                    theme.chrome.divider,
                 )
             } else {
                 Line::default()
@@ -675,7 +680,7 @@ impl ChromeFrame {
             lines.push(line);
         }
 
-        frame.render_widget(Paragraph::new(Text::from(lines)).style(theme.base), area);
+        frame.render_widget(Paragraph::new(Text::from(lines)).style(theme.text), area);
     }
 
     fn footer_spans(&self, width: usize, theme: &Theme) -> Vec<Span<'static>> {
@@ -683,8 +688,12 @@ impl ChromeFrame {
         let viewport_left = layout.viewport_padding.left.min(width);
         let footer_width = layout.chrome_width(width);
         let footer_left = layout.footer_padding.left.min(footer_width);
-        let footer_style = theme.surface;
-        let key_style = theme.surface_highlight;
+        let footer_style = if self.footer_is_error {
+            theme.chrome.error
+        } else {
+            theme.chrome.footer
+        };
+        let key_style = theme.chrome.footer_key;
         let mut spans = vec![Span::raw(" ".repeat(viewport_left))];
         spans.push(Span::styled(" ".repeat(footer_left), footer_style));
         let mut cursor = 0;
@@ -747,7 +756,7 @@ fn input_spans(
     input_muted: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let input_style = input_muted.then_some(theme.muted);
+    let input_style = input_muted.then_some(theme.muted_text);
     let span = |text: String| match input_style {
         Some(style) => Span::styled(text, style),
         None => Span::raw(text),
@@ -760,7 +769,7 @@ fn input_spans(
     }) else {
         return vec![span(text)];
     };
-    let prefix_style = theme.highlight;
+    let prefix_style = theme.chrome.input_prefix;
     let mut spans = Vec::new();
     if start > 0 {
         spans.push(span(text[..start].to_string()));
@@ -1074,7 +1083,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut theme = Theme::terminal();
-        theme.muted.fg = Some(Color::Gray);
+        theme.muted_text.fg = Some(Color::Gray);
 
         let frame = ChromeFrame::compose_with_cursor(
             80,
@@ -1261,6 +1270,32 @@ mod tests {
             Some("view alias is ambiguous"),
         );
         assert_eq!(frame.footer, "view alias is ambiguous");
+    }
+
+    #[test]
+    fn error_footer_uses_the_error_binding() {
+        use ratatui::Terminal as RatatuiTerminal;
+        use ratatui::backend::TestBackend;
+
+        let frame = ChromeFrame::compose(
+            80,
+            &route(),
+            "",
+            EngineChrome::default(),
+            Some("operation failed"),
+        );
+        let mut theme = Theme::terminal();
+        theme.chrome.error.fg = Some(Color::Magenta);
+        theme.chrome.error.bg = Some(Color::Green);
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
+
+        terminal
+            .draw(|draw| frame.render_frame(draw, &theme))
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((1, 23)).unwrap();
+        assert_eq!(cell.style().fg, Some(Color::Magenta));
+        assert_eq!(cell.style().bg, Some(Color::Green));
     }
 
     #[test]

@@ -1397,7 +1397,7 @@ fn render_route_completion(
     }
     if completion.candidates.is_empty() {
         frame.render_widget(
-            Paragraph::new("(no matching views)").style(theme.muted),
+            Paragraph::new("(no matching views)").style(theme.picker.muted),
             area,
         );
         return;
@@ -1421,24 +1421,26 @@ fn render_route_completion(
                 .map(|_| format!("  {}", candidate.view_ref))
                 .unwrap_or_default();
             let metadata = format!("  [{} / {}]", candidate.plugin_name, candidate.engine_type);
-            let text = crate::chrome::clip(
-                &format!("  {}{}{}", candidate.primary_label(), reference, metadata),
-                width,
-            );
+            let label = format!("  {}", candidate.primary_label());
+            let text = crate::chrome::clip(&format!("{label}{reference}{metadata}"), width);
             if index == completion.selected {
                 Line::from(vec![
-                    Span::styled("▌", theme.accent),
+                    Span::styled("▌", theme.picker.marker),
                     Span::styled(
                         text.strip_prefix(' ').unwrap_or(&text).to_string(),
-                        theme.selected,
+                        theme.picker.selected,
                     ),
                 ])
             } else {
-                Line::raw(text)
+                let label_end = label.len().min(text.len());
+                Line::from(vec![
+                    Span::styled(text[..label_end].to_string(), theme.picker.text),
+                    Span::styled(text[label_end..].to_string(), theme.picker.muted),
+                ])
             }
         })
         .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines).style(theme.base), area);
+    frame.render_widget(Paragraph::new(lines).style(theme.picker.text), area);
 }
 
 fn resolve_footer_binding(config: &Config, key: Key, view_ref: &str) -> Option<CommandInvocation> {
@@ -1616,6 +1618,9 @@ fn publish_view_catalog(runtime: &mut super::RuntimeStore, config: &Config) -> R
 mod tests {
     use super::*;
     use crate::engine::CommandRef;
+    use ratatui::Terminal as RatatuiTerminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Style};
     use std::sync::{Arc, Mutex};
 
     struct RecordingView {
@@ -2117,6 +2122,80 @@ mod tests {
 
         drop(session);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn route_completion_uses_shared_picker_bindings() {
+        let completion = RouteCompletion {
+            candidates: vec![
+                crate::router::ViewCandidate {
+                    view_ref: "apps:main".to_string(),
+                    alias: Some("app".to_string()),
+                    plugin_name: "Applications".to_string(),
+                    engine_type: "picker".to_string(),
+                },
+                crate::router::ViewCandidate {
+                    view_ref: "system:main".to_string(),
+                    alias: Some("sys".to_string()),
+                    plugin_name: "System".to_string(),
+                    engine_type: "capture".to_string(),
+                },
+            ],
+            selected: 1,
+            selector_end: 0,
+        };
+        let mut theme = ResolvedTheme::terminal();
+        theme.picker.text = Style::new().fg(Color::Red).bg(Color::Black);
+        theme.picker.muted = Style::new().fg(Color::Green).bg(Color::Black);
+        theme.picker.selected = Style::new().fg(Color::Yellow).bg(Color::Blue);
+        theme.picker.marker = Style::new().fg(Color::Magenta).bg(Color::Black);
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(60, 2)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_route_completion(frame, frame.area(), &completion, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let label = buffer.cell((2, 0)).unwrap();
+        assert_eq!(label.symbol(), "a");
+        assert_eq!(label.style().fg, Some(Color::Red));
+        assert_eq!(label.style().bg, Some(Color::Black));
+        let metadata = buffer.cell((7, 0)).unwrap();
+        assert_eq!(metadata.symbol(), "a");
+        assert_eq!(metadata.style().fg, Some(Color::Green));
+        assert_eq!(metadata.style().bg, Some(Color::Black));
+        let marker = buffer.cell((0, 1)).unwrap();
+        assert_eq!(marker.symbol(), "▌");
+        assert_eq!(marker.style().fg, Some(Color::Magenta));
+        let selected = buffer.cell((2, 1)).unwrap();
+        assert_eq!(selected.symbol(), "s");
+        assert_eq!(selected.style().fg, Some(Color::Yellow));
+        assert_eq!(selected.style().bg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn empty_route_completion_uses_the_muted_binding() {
+        let completion = RouteCompletion {
+            candidates: Vec::new(),
+            selected: 0,
+            selector_end: 0,
+        };
+        let mut theme = ResolvedTheme::terminal();
+        theme.picker.muted = Style::new().fg(Color::Magenta).bg(Color::Green);
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(30, 1)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_route_completion(frame, frame.area(), &completion, &theme);
+            })
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((0, 0)).unwrap();
+        assert_eq!(cell.symbol(), "(");
+        assert_eq!(cell.style().fg, Some(Color::Magenta));
+        assert_eq!(cell.style().bg, Some(Color::Green));
     }
 
     #[test]

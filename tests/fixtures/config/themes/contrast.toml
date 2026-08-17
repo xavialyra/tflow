@@ -1,37 +1,19 @@
-[tokens.base]
-foreground = "terminal"
-background = "terminal"
+# High-contrast scheme used by integration tests.
+[palette]
+cyan = "#00ffff"
+black = "#000000"
+blue = "#0000ff"
+white = "#ffffff"
 
-[tokens.accent]
-foreground = "#00ffff"
-bold = true
-
-[tokens.muted]
-foreground = "#0000ff"
-
-[tokens.border]
-foreground = "#00ffff"
-
-[tokens.surface]
-foreground = "#ffffff"
-background = "#0000ff"
-
-[tokens.surface-highlight]
-foreground = "#000000"
-background = "#00ffff"
-bold = true
-
-[tokens.highlight]
-foreground = "#000000"
-background = "#00ffff"
-bold = true
-
-[tokens.selected]
-foreground = "#000000"
-background = "#00ffff"
-bold = true
-
-[tokens.selected-muted]
-foreground = "#0000ff"
-background = "#00ffff"
-bold = true
+[scheme]
+primary = "palette:cyan"
+on-primary = "palette:black"
+primary-container = "palette:cyan"
+on-primary-container = "palette:black"
+surface = "palette:blue"
+surface-container = "palette:blue"
+on-surface = "palette:white"
+on-surface-variant = "palette:white"
+outline = "palette:cyan"
+error = "palette:cyan"
+on-error = "palette:black"

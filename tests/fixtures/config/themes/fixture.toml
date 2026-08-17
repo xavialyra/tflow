@@ -1,37 +1,27 @@
-[tokens.base]
-foreground = "terminal"
-background = "terminal"
+# Development and integration-test theme.
+[palette]
+primary = "#BC7588"
+muted = "#696969"
+paper = "#F2E9E1"
 
-[tokens.accent]
-foreground = "cyan"
+[scheme]
+primary = "palette:primary"
+primary-container = "palette:paper"
+on-primary-container = "palette:muted"
+on-surface-variant = "palette:muted"
+outline = "ansi:magenta"
+
+[bindings.chrome-footer-key]
+foreground = "scheme:primary"
+background = "scheme:primary-container"
 bold = true
 
-[tokens.muted]
-foreground = "#696969"
-
-[tokens.border]
-foreground = "magenta"
-
-[tokens.surface]
-foreground = "terminal"
-background = "terminal"
-
-[tokens.surface-highlight]
-foreground = "cyan"
-background = "terminal"
+[bindings.picker-selected]
+foreground = "scheme:on-surface"
+background = "scheme:surface"
 bold = true
 
-[tokens.highlight]
-foreground = "terminal"
-background = "white"
-bold = true
-
-[tokens.selected]
-foreground = "black"
-background = "green"
-bold = true
-
-[tokens.selected-muted]
-foreground = "gray"
-background = "green"
+[bindings.picker-selected-muted]
+foreground = "scheme:on-surface-variant"
+background = "scheme:surface"
 bold = true

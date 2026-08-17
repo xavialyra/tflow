@@ -272,7 +272,7 @@ fn check_loads_a_named_theme_from_the_config_directory() {
     std::fs::create_dir_all(root.join("themes")).unwrap();
     std::fs::write(
         root.join("themes/work.toml"),
-        "[tokens.accent]\nforeground = \"magenta\"\n\n[tokens.muted]\nforeground = \"gray\"\n",
+        "[palette]\nbrand = \"magenta\"\nquiet = \"gray\"\n\n[scheme]\nprimary = \"palette:brand\"\non-surface-variant = \"palette:quiet\"\n",
     )
     .unwrap();
 
@@ -317,68 +317,6 @@ fn check_rejects_an_inline_theme_value() {
         "stderr: {:?}",
         output.stderr
     );
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_an_invalid_theme_override() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
-        .args(["--theme-set", "accent.foreground=not-a-color"])
-        .output()
-        .expect("could not validate an invalid theme override");
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("unsupported color"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_removed_theme_modifiers() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
-        .args(["--theme-set", "highlight.reverse=true"])
-        .output()
-        .expect("could not validate a removed theme modifier");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(!output.status.success());
-    assert!(
-        stderr.contains("unsupported"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    assert!(stderr.contains("reverse"), "stderr: {:?}", output.stderr);
     std::fs::remove_dir_all(root).unwrap();
 }
 

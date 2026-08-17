@@ -329,7 +329,9 @@ impl PickerPreview {
             Direction::Vertical => Borders::TOP,
         };
         frame.render_widget(
-            Block::new().borders(borders).border_style(theme.border),
+            Block::new()
+                .borders(borders)
+                .border_style(theme.preview.border),
             area,
         );
     }
@@ -452,7 +454,7 @@ impl PickerPreview {
                 frame.render_widget(
                     Block::new()
                         .borders(Borders::TOP)
-                        .border_style(theme.border),
+                        .border_style(theme.preview.border),
                     area,
                 );
                 continue;
@@ -461,7 +463,7 @@ impl PickerPreview {
                 PreviewBlockState::Empty => {}
                 PreviewBlockState::Text(text) => frame.render_widget(
                     Paragraph::new(text.as_str())
-                        .style(theme.base)
+                        .style(theme.preview.text)
                         .wrap(Wrap { trim: false }),
                     area,
                 ),
@@ -475,7 +477,7 @@ impl PickerPreview {
                     error: Some(error), ..
                 } => frame.render_widget(
                     Paragraph::new(error.as_str())
-                        .style(theme.base)
+                        .style(theme.preview.error)
                         .wrap(Wrap { trim: false }),
                     area,
                 ),
@@ -528,8 +530,12 @@ fn block_size(block: &PreviewBlockConfig) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerPreview, block_areas, parse};
+    use super::{PickerPreview, PreviewBlockState, block_areas, parse};
+    use crate::theme::Theme;
+    use ratatui::Terminal as RatatuiTerminal;
+    use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use serde_json::json;
 
     #[test]
@@ -592,6 +598,73 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn preview_text_uses_the_preview_text_binding() {
+        let config = parse(
+            Some(json!({
+                "panes": [
+                    {"slot": "items", "grow": 1},
+                    {"slot": "preview", "grow": 1}
+                ]
+            })),
+            Some(json!({"blocks": [{"type": "text", "source": "/summary", "grow": 1}]})),
+        )
+        .unwrap()
+        .unwrap();
+        let mut preview = PickerPreview::new(config);
+        preview.blocks[0] = PreviewBlockState::Text("summary".to_string());
+        let mut theme = Theme::terminal();
+        theme.preview.text.fg = Some(Color::Magenta);
+        theme.preview.text.bg = Some(Color::Green);
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                preview.render(frame, area, &theme);
+            })
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((0, 0)).unwrap();
+        assert_eq!(cell.style().fg, Some(Color::Magenta));
+        assert_eq!(cell.style().bg, Some(Color::Green));
+    }
+
+    #[test]
+    fn preview_errors_use_the_preview_error_binding() {
+        let config = parse(
+            Some(json!({
+                "panes": [
+                    {"slot": "items", "grow": 1},
+                    {"slot": "preview", "grow": 1}
+                ]
+            })),
+            Some(json!({"blocks": [{"type": "image", "source": "/image", "grow": 1}]})),
+        )
+        .unwrap()
+        .unwrap();
+        let mut preview = PickerPreview::new(config);
+        preview.blocks[0] = PreviewBlockState::Image {
+            protocol: None,
+            error: Some("image failed".to_string()),
+        };
+        let mut theme = Theme::terminal();
+        theme.preview.error.fg = Some(Color::Magenta);
+        theme.preview.error.bg = Some(Color::Green);
+        let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                preview.render(frame, area, &theme);
+            })
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((0, 0)).unwrap();
+        assert_eq!(cell.style().fg, Some(Color::Magenta));
+        assert_eq!(cell.style().bg, Some(Color::Green));
     }
 
     #[test]

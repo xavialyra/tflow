@@ -1965,13 +1965,13 @@ mod tests {
         fs::create_dir_all(root.join("themes")).unwrap();
         fs::write(
             root.join("themes/work.toml"),
-            "[tokens.accent]\nforeground = \"green\"\n",
+            "[palette]\nbrand = \"green\"\n\n[scheme]\nprimary = \"palette:brand\"\n",
         )
         .unwrap();
 
         let loaded = Config::load_app(&config_path, &ThemeLoadOptions::default()).unwrap();
         assert!(loaded.config.config_value.get("theme").is_none());
-        assert_eq!(loaded.theme.accent.fg, Some(Color::Green));
+        assert_eq!(loaded.theme.picker.marker.fg, Some(Color::Green));
         fs::remove_dir_all(root).unwrap();
     }
 
