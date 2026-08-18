@@ -18,6 +18,10 @@ type = "invoke"
 [chrome.footer.bindings.commands.payload.then.payload]
 command = "{{ return:output.value }}"
 
+[defaults.capture.bindings]
+copy = ["enter"]
+back = ["escape"]
+
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 toggle_preview = ["ctrl+p"]

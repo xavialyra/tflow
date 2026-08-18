@@ -67,13 +67,24 @@ pub(crate) enum ImageProtocol {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Defaults {
     #[serde(default)]
     pub(crate) picker: PickerDefaults,
+    #[serde(default)]
+    pub(crate) capture: CaptureDefaults,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PickerDefaults {
+    #[serde(default)]
+    pub(crate) bindings: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CaptureDefaults {
     #[serde(default)]
     pub(crate) bindings: Option<toml::Value>,
 }
@@ -115,6 +126,8 @@ pub struct View {
     #[serde(default)]
     #[allow(dead_code)]
     pub(crate) query: Option<toml::Table>,
+    #[serde(default)]
+    pub(crate) keymap: Option<toml::Value>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
 }
@@ -362,9 +375,12 @@ impl Config {
     ) -> Result<LoadedApp> {
         let user_source = fs::read_to_string(user_path)
             .with_context(|| format!("could not read config {}", user_path.display()))?;
-        let user_config: toml::Value = toml::from_str(&user_source)
+        let mut user_config: toml::Value = toml::from_str(&user_source)
             .with_context(|| format!("cannot parse config {}", user_path.display()))?;
         let disabled_plugins = disabled_plugins(Some(&user_config))?;
+        remove_disabled_plugins(&mut user_config, &disabled_plugins);
+        normalize_keymap_tables(&mut user_config)
+            .with_context(|| format!("invalid keymap in {}", user_path.display()))?;
         let mut merged = toml::Value::Table(toml::map::Map::new());
         let plugin_directory = user_path
             .parent()
@@ -508,15 +524,7 @@ impl Config {
             self.engine(default_view)?;
         }
 
-        let default_picker_bindings = self
-            .defaults
-            .picker
-            .bindings
-            .as_ref()
-            .map(toml_to_json)
-            .transpose()?;
-        crate::engine::validate_picker_bindings(default_picker_bindings.as_ref(), None)
-            .context("default picker bindings")?;
+        engines.validate_defaults(&self.defaults)?;
 
         for (package_id, plugin) in &self.plugins {
             if plugin.name.trim().is_empty() {
@@ -580,17 +588,6 @@ impl Config {
             }
             let engine = self.engine(view_ref)?;
             engines.validate_config(view_ref, view)?;
-            if engine == ENGINE_PICKER {
-                let view_bindings = view
-                    .engine_field("bindings")
-                    .map(toml_to_json)
-                    .transpose()?;
-                crate::engine::validate_picker_bindings(
-                    default_picker_bindings.as_ref(),
-                    view_bindings.as_ref(),
-                )
-                .with_context(|| format!("view {:?} picker bindings", view_ref))?;
-            }
             if engine != ENGINE_PICKER && (!feeds.is_empty() || items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide picker items",
@@ -725,6 +722,9 @@ impl Config {
                             format!("view {:?} is not configured", state.view_ref())
                         })?;
                         let mut values = serde_json::Map::new();
+                        if let Some(keymap) = &view.keymap {
+                            values.insert("keymap".to_string(), toml_to_json(keymap)?);
+                        }
                         if let Some(items) = view.selected_items() {
                             values.insert("items".to_string(), toml_to_json(items)?);
                         }
@@ -1007,10 +1007,20 @@ fn load_plugin_packages(
 
     let mut roots = BTreeMap::new();
     for manifest in manifests {
-        let (plugin_id, package) = read_plugin_package(&manifest)?;
-        if disabled.contains(&plugin_id) {
+        let plugin_id = manifest
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .with_context(|| {
+                format!(
+                    "plugin directory for {} has no valid name",
+                    manifest.display()
+                )
+            })?;
+        if disabled.contains(plugin_id) {
             continue;
         }
+        let (plugin_id, package) = read_plugin_package(&manifest)?;
         let root = manifest
             .parent()
             .expect("plugin manifest has a parent directory")
@@ -1068,6 +1078,7 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
         .remove("views")
         .with_context(|| format!("plugin {:?} is missing [views.*]", plugin_id))?;
     expand_script_refs(&mut views, root, plugin_id)?;
+    normalize_view_keymaps(&mut views, plugin_id)?;
 
     let mut plugin_table = toml::map::Map::new();
     plugin_table.insert("name".to_string(), toml::Value::String(header.name));
@@ -1147,6 +1158,73 @@ fn remove_disabled_plugins(value: &mut toml::Value, disabled: &BTreeSet<String>)
     }
 }
 
+fn normalize_keymap_tables(value: &mut toml::Value) -> Result<()> {
+    let Some(plugins) = value.get_mut("plugins").and_then(toml::Value::as_table_mut) else {
+        return Ok(());
+    };
+    for (plugin_id, plugin) in plugins {
+        let Some(views) = plugin.get_mut("views").and_then(toml::Value::as_table_mut) else {
+            continue;
+        };
+        for (view_name, view) in views {
+            let Some(keymap) = view
+                .as_table_mut()
+                .and_then(|view| view.get_mut("keymap"))
+                .and_then(toml::Value::as_table_mut)
+            else {
+                continue;
+            };
+            normalize_keymap_table(keymap, &format!("view {plugin_id}:{view_name}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_view_keymaps(value: &mut toml::Value, plugin_id: &str) -> Result<()> {
+    let views = value
+        .as_table_mut()
+        .context("plugin views must be a table")?;
+    for (view_name, view) in views {
+        let Some(keymap) = view
+            .as_table_mut()
+            .and_then(|view| view.get_mut("keymap"))
+            .and_then(toml::Value::as_table_mut)
+        else {
+            continue;
+        };
+        normalize_keymap_table(keymap, &format!("view {plugin_id}:{view_name}"))?;
+    }
+    Ok(())
+}
+
+fn normalize_keymap_table(
+    table: &mut toml::map::Map<String, toml::Value>,
+    label: &str,
+) -> Result<()> {
+    let entries = std::mem::replace(table, toml::map::Map::new());
+    let mut normalized = toml::map::Map::new();
+    let mut source_by_key = BTreeMap::new();
+    for (source, value) in entries {
+        let key = Key::parse_binding(&source)
+            .with_context(|| format!("{label} keymap binding {:?}", source))?
+            .binding_name()
+            .with_context(|| {
+                format!("{label} keymap binding {:?} has no canonical name", source)
+            })?;
+        if let Some(previous) = source_by_key.insert(key.clone(), source.clone()) {
+            bail!(
+                "{label} keymap bindings {:?} and {:?} normalize to the same key {:?}",
+                previous,
+                source,
+                key
+            );
+        }
+        normalized.insert(key, value);
+    }
+    *table = normalized;
+    Ok(())
+}
+
 fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
         (toml::Value::Table(base), toml::Value::Table(overlay)) => {
@@ -1162,7 +1240,7 @@ fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-fn toml_to_json(value: &toml::Value) -> Result<Value> {
+pub(crate) fn toml_to_json(value: &toml::Value) -> Result<Value> {
     serde_json::to_value(value).context("could not convert TOML to JSON")
 }
 
@@ -1417,6 +1495,105 @@ mod tests {
     }
 
     #[test]
+    fn defaults_reject_unknown_fields() {
+        for source in [
+            r#"
+            [defaults.capture]
+            binding = { copy = ["enter"] }
+            "#,
+            r#"
+            [defaults.captuer.bindings]
+            copy = ["enter"]
+            "#,
+        ] {
+            let value: toml::Value = toml::from_str(source).unwrap();
+            assert!(
+                value.try_into::<RawConfig>().is_err(),
+                "unknown defaults fields must be rejected: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_inline_plugins_are_removed_before_keymap_normalization() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-disabled-inline-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            disabled_plugins = ["ghost"]
+            default_view = "core:default"
+
+            [plugins.ghost.views.main.keymap]
+            escape = "back"
+            esc = false
+
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert!(!config.views.contains_key("ghost:main"));
+        assert!(config.views.contains_key("core:default"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_directory_plugins_are_skipped_before_reading_keymaps() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-disabled-directory-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        let plugin_root = root.join("plugins/ghost");
+        fs::create_dir_all(&plugin_root).unwrap();
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "Ghost"
+
+            [views.main]
+            [views.main.engine]
+            type = "picker"
+            [views.main.engine.config]
+            [views.main.keymap]
+            escape = "back"
+            esc = false
+            "#,
+        )
+        .unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            disabled_plugins = ["ghost"]
+            default_view = "core:default"
+
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "picker"
+            [plugins.core.views.default.engine.config]
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert!(!config.views.contains_key("ghost:main"));
+        assert!(config.views.contains_key("core:default"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn plugin_views_are_namespaced() {
         let config = config(
             r#"
@@ -1499,6 +1676,60 @@ mod tests {
             .validate()
             .expect_err("unknown engine fields should be rejected");
         assert!(error.to_string().contains("unsupported field \"titel\""));
+    }
+
+    #[test]
+    fn capture_keymap_patches_override_the_effective_physical_keys() {
+        let valid = config(
+            r#"
+            [defaults.capture.bindings]
+            copy = ["ctrl+y"]
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "capture"
+            [plugins.core.views.default.engine.config]
+            output = "ok"
+            [plugins.core.views.default.keymap]
+            "ctrl+y" = false
+            "alt+c" = "copy"
+"#,
+        );
+        valid.validate().unwrap();
+
+        let invalid = config(
+            r#"
+            [plugins.core.views.default]
+            [plugins.core.views.default.engine]
+            type = "capture"
+            [plugins.core.views.default.engine.config]
+            output = "ok"
+            [plugins.core.views.default.keymap]
+            enter = false
+            "ctrl+j" = "copy"
+"#,
+        );
+        let error = invalid
+            .validate()
+            .expect_err("one key cannot be both disabled and rebound");
+        assert!(format!("{error:#}").contains("both disabled and rebound"));
+    }
+
+    #[test]
+    fn engine_config_does_not_accept_view_keymaps() {
+        let config = config(
+            r#"
+            [plugins.core.views.default.engine]
+            type = "capture"
+            [plugins.core.views.default.engine.config]
+            output = "ok"
+            [plugins.core.views.default.engine.config.bindings]
+            copy = ["ctrl+y"]
+"#,
+        );
+        let error = config
+            .validate()
+            .expect_err("engine config bindings are not View keymap patches");
+        assert!(error.to_string().contains("unsupported field \"bindings\""));
     }
 
     #[test]
@@ -1891,7 +2122,8 @@ mod tests {
         assert_eq!(normalize_key("enter").unwrap(), "enter");
         assert_eq!(normalize_key("Ctrl+R").unwrap(), "ctrl+r");
         assert_eq!(normalize_key("Ctrl+J").unwrap(), "enter");
-        assert!(normalize_key("c").is_err());
+        assert_eq!(normalize_key("c").unwrap(), "c");
+        assert_eq!(normalize_key("space").unwrap(), "space");
     }
 
     #[test]
@@ -2040,6 +2272,68 @@ mod tests {
         assert!(loaded.config.config_value.get("theme").is_none());
         assert_eq!(loaded.theme.picker.marker.fg, Some(Color::Green));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keymap_tombstones_override_recursive_plugin_values() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+            [plugins.base.views.main]
+            [plugins.base.views.main.engine]
+            type = "picker"
+            [plugins.base.views.main.engine.config]
+            [plugins.base.views.main.keymap]
+            escape = "back"
+"#,
+        )
+        .unwrap();
+        let mut overlay: toml::Value = toml::from_str(
+            r#"
+            [plugins.base.views.main.keymap]
+            esc = false
+"#,
+        )
+        .unwrap();
+        normalize_keymap_tables(&mut base).unwrap();
+        normalize_keymap_tables(&mut overlay).unwrap();
+        merge_values(&mut base, overlay);
+        let keymap = base
+            .get("plugins")
+            .and_then(|value| value.get("base"))
+            .and_then(|value| value.get("views"))
+            .and_then(|value| value.get("main"))
+            .and_then(|value| value.get("keymap"))
+            .and_then(toml::Value::as_table)
+            .expect("merged view keymap");
+        assert_eq!(keymap.len(), 1);
+        assert_eq!(keymap.get("escape"), Some(&toml::Value::Boolean(false)));
+
+        let raw: RawConfig = base.try_into().unwrap();
+        let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.views["base:main"]
+                .keymap
+                .as_ref()
+                .and_then(toml::Value::as_table)
+                .and_then(|value| value.get("escape")),
+            Some(&toml::Value::Boolean(false))
+        );
+    }
+
+    #[test]
+    fn keymap_aliases_conflict_within_one_configuration_layer() {
+        let mut value: toml::Value = toml::from_str(
+            r#"
+            [plugins.core.views.default.keymap]
+            escape = "back"
+            esc = false
+"#,
+        )
+        .unwrap();
+        let error = normalize_keymap_tables(&mut value)
+            .expect_err("aliases in one keymap layer must conflict");
+        assert!(error.to_string().contains("normalize to the same key"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use self::keymap::PickerKeymap;
 use self::session::PickerOptions;
 pub(crate) use self::session::PickerView;
 use super::{Engine, ViewContext, ViewInstance, validate_fields};
-use crate::config::{ConfigReadContext, ConfigScope, ENGINE_PICKER, View};
+use crate::config::{ConfigReadContext, ConfigScope, Defaults, ENGINE_PICKER, View, toml_to_json};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::sync::Arc;
@@ -30,15 +30,27 @@ impl Engine for PickerEngine {
     }
 
     fn validate_config(&self, name: &str, view: &View) -> Result<()> {
-        validate_fields(
-            name,
-            view,
-            &["bindings", "show_prefix", "layout", "preview"],
-        )?;
+        validate_fields(name, view, &["show_prefix", "layout", "preview"])?;
         validate_static_bool(view.engine_field("show_prefix"), "show_prefix")?;
         validate_static_table(view.engine_field("layout"), "layout")?;
         validate_static_table(view.engine_field("preview"), "preview")?;
         Ok(())
+    }
+
+    fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
+        let bindings = defaults
+            .picker
+            .bindings
+            .as_ref()
+            .map(toml_to_json)
+            .transpose()?;
+        PickerKeymap::validate_values(bindings.as_ref(), None).context("picker bindings")
+    }
+
+    fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {
+        let keymap = view.keymap.as_ref().map(toml_to_json).transpose()?;
+        PickerKeymap::validate_values(None, keymap.as_ref())
+            .with_context(|| format!("view {:?} picker keymap", name))
     }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
@@ -68,12 +80,12 @@ impl Engine for PickerEngine {
                 None,
             )
         };
-        let view_bindings = get_view_field(&["bindings"])?;
+        let view_keymap = get_view_field(&["keymap"])?;
         let show_prefix = get_view_field(&["show_prefix"])?;
         let layout = get_view_field(&["layout"])?;
         let preview = get_view_field(&["preview"])?;
         drop(runtime);
-        let keymap = PickerKeymap::from_values(default_bindings, view_bindings)?;
+        let keymap = PickerKeymap::from_values(default_bindings, view_keymap)?;
         let options = PickerOptions {
             show_prefix: parse_bool(show_prefix, "show_prefix", false)?,
             preview: self::preview::parse(layout, preview)?,
@@ -89,10 +101,6 @@ impl Engine for PickerEngine {
         );
         Ok(Box::new(picker))
     }
-}
-
-pub(crate) fn validate_bindings(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
-    PickerKeymap::validate_values(defaults, view)
 }
 
 fn is_dynamic(value: &toml::Value) -> bool {

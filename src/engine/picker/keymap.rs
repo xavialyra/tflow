@@ -1,5 +1,6 @@
+use crate::engine::keymap::{apply_patch, static_bindings, static_patch, validate_patch};
 use crate::expression::Template;
-use crate::input::Key;
+use crate::input::{BindingKey, Key};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -51,37 +52,42 @@ impl PickerAction {
 
 #[derive(Debug, Clone)]
 pub(super) struct PickerKeymap {
-    bindings: HashMap<Key, PickerAction>,
+    bindings: HashMap<BindingKey, PickerAction>,
 }
 
 impl PickerKeymap {
     #[cfg(test)]
     pub(super) fn validate_value(value: Option<&Value>) -> Result<()> {
-        Self::validate_values(None, value)
-    }
-
-    pub(super) fn validate_values(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
-        let dynamic = Self::validate_shape(defaults)? | Self::validate_shape(view)?;
-        if !dynamic {
-            Self::from_values(defaults.cloned(), view.cloned())?;
-        }
+        Self::validate_shape(value)?;
+        Self::from_values(static_bindings(value), None)?;
         Ok(())
     }
 
-    fn validate_shape(value: Option<&Value>) -> Result<bool> {
+    #[cfg(test)]
+    pub(super) fn validate_keymap_value(value: Option<&Value>) -> Result<()> {
+        validate_patch(value, "picker", PickerAction::parse)
+    }
+
+    pub(super) fn validate_values(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
+        Self::validate_shape(defaults)?;
+        validate_patch(view, "picker", PickerAction::parse)?;
+        Self::from_values(static_bindings(defaults), static_patch(view))?;
+        Ok(())
+    }
+
+    fn validate_shape(value: Option<&Value>) -> Result<()> {
         let Some(value) = value else {
-            return Ok(false);
+            return Ok(());
         };
         if let Some(source) = value.as_str() {
             if Template::parse(source)?.is_complete_expression() {
-                return Ok(true);
+                return Ok(());
             }
             bail!("picker bindings must be an object or complete expression");
         }
         let bindings = value
             .as_object()
             .context("picker bindings must be an object")?;
-        let mut dynamic = false;
         for (name, values) in bindings {
             PickerAction::parse(name)
                 .with_context(|| format!("unsupported picker binding action {:?}", name))?;
@@ -94,19 +100,18 @@ impl PickerKeymap {
                 })?;
                 if source.contains("{{") {
                     Template::parse(source)?;
-                    dynamic = true;
                 } else {
                     Key::parse_binding(source)
                         .with_context(|| format!("picker binding action {:?}", name))?;
                 }
             }
         }
-        Ok(dynamic)
+        Ok(())
     }
 
     #[cfg(test)]
     pub(super) fn from_value(value: Option<Value>) -> Result<Self> {
-        Self::from_values(None, value)
+        Self::from_values(value, None)
     }
 
     pub(super) fn from_values(defaults: Option<Value>, view: Option<Value>) -> Result<Self> {
@@ -117,7 +122,7 @@ impl PickerKeymap {
             keymap.apply(defaults)?;
         }
         if let Some(view) = view {
-            keymap.apply(view)?;
+            keymap.apply_patch(view)?;
         }
         Ok(keymap)
     }
@@ -145,7 +150,8 @@ impl PickerKeymap {
                     format!("picker binding {:?} entries must be strings", name)
                 })?;
                 let key = Key::parse_binding(source)
-                    .with_context(|| format!("picker binding action {:?}", name))?;
+                    .with_context(|| format!("picker binding action {:?}", name))?
+                    .binding_identity();
                 if let Some(existing) = self.bindings.insert(key, action) {
                     bail!(
                         "picker key {:?} is assigned to both {:?} and {:?}",
@@ -159,12 +165,16 @@ impl PickerKeymap {
         Ok(())
     }
 
+    fn apply_patch(&mut self, value: Value) -> Result<()> {
+        apply_patch(&mut self.bindings, value, "picker", PickerAction::parse)
+    }
+
     pub(super) fn action(&self, key: Key) -> Option<PickerAction> {
-        self.bindings.get(&key).copied()
+        self.bindings.get(&key.binding_identity()).copied()
     }
 }
 
-fn default_bindings() -> HashMap<Key, PickerAction> {
+fn default_bindings() -> HashMap<BindingKey, PickerAction> {
     [
         (Key::Ctrl('c'), PickerAction::Exit),
         (Key::Ctrl('d'), PickerAction::Exit),
@@ -177,6 +187,7 @@ fn default_bindings() -> HashMap<Key, PickerAction> {
         (Key::Enter, PickerAction::Activate),
     ]
     .into_iter()
+    .map(|(key, action)| (key.binding_identity(), action))
     .collect()
 }
 
@@ -200,10 +211,13 @@ mod tests {
     }
 
     #[test]
-    fn view_overrides_are_applied_after_root_defaults() {
+    fn view_keymap_patch_is_applied_after_root_defaults() {
         let keymap = PickerKeymap::from_values(
             Some(json!({"select_next": ["ctrl+n"]})),
-            Some(json!({"select_next": ["ctrl+o"]})),
+            Some(json!({
+                "ctrl+n": false,
+                "ctrl+o": "select_next"
+            })),
         )
         .unwrap();
         assert_eq!(
@@ -211,6 +225,28 @@ mod tests {
             Some(PickerAction::SelectNext)
         );
         assert_eq!(keymap.action(Key::Ctrl('n')), None);
+    }
+
+    #[test]
+    fn keymap_patch_disables_an_inherited_action_with_a_tombstone() {
+        let keymap = PickerKeymap::from_values(None, Some(json!({"enter": false}))).unwrap();
+        assert_eq!(keymap.action(Key::Enter), None);
+    }
+
+    #[test]
+    fn keymap_patch_replaces_an_inherited_action_by_key() {
+        let keymap =
+            PickerKeymap::from_values(None, Some(json!({"enter": "select_next"}))).unwrap();
+        assert_eq!(keymap.action(Key::Enter), Some(PickerAction::SelectNext));
+    }
+
+    #[test]
+    fn keymap_matches_uppercase_printable_input() {
+        let keymap = PickerKeymap::from_values(None, Some(json!({"a": "select_next"}))).unwrap();
+        assert_eq!(
+            keymap.action(Key::Char('A')),
+            Some(PickerAction::SelectNext)
+        );
     }
 
     #[test]
@@ -254,6 +290,11 @@ mod tests {
         PickerKeymap::validate_value(Some(&json!("{{ config:keymaps.picker }}"))).unwrap();
         PickerKeymap::validate_value(Some(&json!({
             "exit": ["{{ config:keymaps.exit }}"]
+        })))
+        .unwrap();
+        PickerKeymap::validate_keymap_value(Some(&json!({
+            "escape": false,
+            "ctrl+y": "{{ config:keymaps.action }}"
         })))
         .unwrap();
     }

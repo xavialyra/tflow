@@ -1,5 +1,5 @@
 use super::api::{Engine, ViewContext, ViewInstance};
-use crate::config::View;
+use crate::config::{Defaults, View};
 use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -28,6 +28,15 @@ impl EngineRegistry {
         self.engines.contains_key(engine_type)
     }
 
+    pub(crate) fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
+        for engine in self.engines.values() {
+            engine
+                .validate_defaults(defaults)
+                .with_context(|| format!("{} defaults", engine.engine_type()))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_config(&self, name: &str, view: &View) -> Result<()> {
         let engine = self
             .engines
@@ -39,7 +48,8 @@ impl EngineRegistry {
                     view.selected_engine_type()
                 )
             })?;
-        engine.validate_config(name, view)
+        engine.validate_config(name, view)?;
+        engine.validate_keymap(name, view)
     }
 
     pub(crate) fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {

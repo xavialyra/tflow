@@ -599,7 +599,7 @@ fn explicit_capture_view_receives_typed_query_state() {
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("from-option"));
 
-    process.master.write_all(b"\x03").unwrap();
+    process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
@@ -638,7 +638,7 @@ fn explicit_capture_view_receives_typed_runtime_input() {
     let output = wait_for_text(&process.master, "from-option");
     assert!(String::from_utf8_lossy(&output).contains("from-option"));
 
-    process.master.write_all(b"\x03").unwrap();
+    process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
@@ -911,6 +911,210 @@ fn view_commands_accept_unreserved_control_bindings() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove control command config");
+}
+
+#[test]
+fn printable_keymap_action_precedes_picker_editor_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [
+            { label = "First", value = "first" },
+            { label = "Second", value = "second" },
+        ]
+        [plugins.core.views.default.keymap]
+        "space" = "select_next"
+        [plugins.core.views.default.commands.space]
+        key = "space"
+        label = "HiddenSpace"
+        type = "run"
+
+        [plugins.core.views.default.commands.space.payload]
+        handler = '''printf 'hidden-space-command\n' '''
+        exit = true
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "run"
+
+        [plugins.core.views.default.commands.accept.payload]
+        handler = '''printf 'space-selection:%s\n' "$LAUNCHER_VALUE"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write printable keymap config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let initial = wait_for_text(&process.master, "First");
+    let initial = String::from_utf8_lossy(&initial);
+    assert!(!initial.contains("HiddenSpace"), "output: {initial}");
+    assert!(initial.contains("Accept"), "output: {initial}");
+    process.master.write_all(b" \r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("space-selection:second"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unavailable_toggle_preview_consumes_its_key() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "First", value = "first"}]
+        [plugins.core.views.default.keymap]
+        space = "toggle_preview"
+
+        [plugins.core.views.default.commands.space]
+        key = "space"
+        label = "SpaceCommand"
+        type = "run"
+
+        [plugins.core.views.default.commands.space.payload]
+        handler = '''printf 'space-command\n' '''
+        exit = true
+
+        [plugins.core.views.default.commands.inspect]
+        key = "enter"
+        label = "Inspect"
+        scope = "view"
+        requires = "input"
+        type = "run"
+
+        [plugins.core.views.default.commands.inspect.payload]
+        handler = '''printf 'toggle-query:%s:end\n' "$LAUNCHER_QUERY"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write unavailable preview config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let initial = wait_for_text(&process.master, "First");
+    let initial = String::from_utf8_lossy(&initial);
+    assert!(!initial.contains("SpaceCommand"), "output: {initial}");
+    assert!(initial.contains("Inspect"), "output: {initial}");
+
+    process.master.write_all(b" \r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    let output = String::from_utf8_lossy(&output);
+    assert_eq!(status, 0, "output: {output}");
+    assert!(output.contains("toggle-query::end"), "output: {output}");
+    assert!(!output.contains("space-command"), "output: {output}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn uppercase_printable_keymap_binding_matches_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [
+            { label = "First", value = "first" },
+            { label = "Second", value = "second" },
+        ]
+        [plugins.core.views.default.keymap]
+        a = "select_next"
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "run"
+
+        [plugins.core.views.default.commands.accept.payload]
+        handler = '''printf 'uppercase-selection:%s\n' "$LAUNCHER_VALUE"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write uppercase keymap config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let _ = wait_for_text(&process.master, "First");
+    process.master.write_all(b"A\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("uppercase-selection:second"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unbound_uppercase_printable_input_reaches_the_editor() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = []
+        [plugins.core.views.default.keymap]
+        a = "select_next"
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        requires = "input"
+        type = "run"
+
+        [plugins.core.views.default.commands.accept.payload]
+        handler = '''printf 'uppercase-input:%s\n' "$LAUNCHER_QUERY"'''
+        exit = true
+        "#,
+    )
+    .expect("could not write uppercase input config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"Z\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("uppercase-input:Z"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1490,7 +1694,7 @@ fn navigation_without_query_uses_the_target_view_default() {
 
     process
         .master
-        .write_all(b"\r")
+        .write_all(b"\x1b")
         .expect("could not return from default capture view");
     process
         .master
@@ -1533,8 +1737,12 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.capture.engine]
         type = "capture"
         [plugins.core.views.capture.engine.config]
-        output = "{{ runtime:view.current.input }}"
+        output = "{{ runtime:view.current.input }}\u001b[31m\n\u4e16\u754c\u001b[0m"
         title = "Capture"
+
+        [plugins.core.views.capture.keymap]
+        enter = false
+        "ctrl+y" = "copy"
 "#,
     )
     .expect("could not write capture integration config");
@@ -1553,7 +1761,19 @@ fn capture_command_returns_to_launcher_and_restores_input() {
     let output = wait_for_text(&process.master, "capture-marker:value");
     process
         .master
-        .write_all(b"\r")
+        .write_all(b"\x19")
+        .expect("could not write capture copy key");
+    process
+        .master
+        .flush()
+        .expect("could not flush capture copy key");
+    let copied = wait_for_text(
+        &process.master,
+        "\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07",
+    );
+    process
+        .master
+        .write_all(b"\x1b")
         .expect("could not write capture return key");
     process
         .master
@@ -1573,12 +1793,116 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
     assert_eq!(status, 0);
     let mut output = output;
+    output.extend(copied);
     output.extend(launcher);
     output.extend(remaining);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("capture-marker:value"), "output: {output}");
     assert!(output.contains("cap"), "output: {output}");
     fs::remove_dir_all(root).expect("could not remove capture integration config");
+}
+
+#[test]
+fn failed_capture_cannot_copy_its_diagnostic_text() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default.engine]
+        type = "capture"
+        [plugins.core.views.default.engine.config]
+        output = "{{ runtime:missing }}"
+        "#,
+    )
+    .expect("could not write failed capture config");
+
+    let mut process = spawn_launcher(&config);
+    let initial = wait_for_text(&process.master, "failed");
+    assert!(
+        !String::from_utf8_lossy(&initial).contains("Copy"),
+        "failed capture still advertises Copy: {initial:?}"
+    );
+
+    process
+        .master
+        .write_all(b"\r\x1b")
+        .expect("could not write failed capture actions");
+    process
+        .master
+        .flush()
+        .expect("could not flush failed capture actions");
+    let (status, remaining) = wait_for_launcher_exit(&mut process);
+
+    let mut observed = initial;
+    observed.extend(remaining);
+    assert_eq!(status, 0);
+    assert!(
+        !String::from_utf8_lossy(&observed).contains("\x1b]52;"),
+        "failed capture copied its diagnostic output: {observed:?}"
+    );
+    fs::remove_dir_all(root).expect("could not remove failed capture config");
+}
+
+#[test]
+fn capture_keeps_global_footer_bindings_available() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [defaults.capture.bindings]
+        copy = ["ctrl+k"]
+
+        [chrome.footer.bindings.details]
+        key = "ctrl+k"
+        label = "Details"
+        type = "call"
+
+        [chrome.footer.bindings.details.payload]
+        target = "core:details"
+
+        [plugins.core.views.default.engine]
+        type = "capture"
+        [plugins.core.views.default.engine.config]
+        output = "xxxxxxxxxxxxxx"
+
+        [plugins.core.views.details.engine]
+        type = "capture"
+        [plugins.core.views.details.engine.config]
+        output = "footer-capture"
+        "#,
+    )
+    .expect("could not write capture footer config");
+
+    let mut process = spawn_launcher(&config);
+    let root_output = wait_for_text(&process.master, "Details");
+    assert!(String::from_utf8_lossy(&root_output).contains("Details"));
+
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    let called_output = wait_for_text(&process.master, "footer-capture");
+    assert!(String::from_utf8_lossy(&called_output).contains("footer-capture"));
+    let mut observed = root_output;
+    observed.extend(called_output);
+    assert!(
+        !String::from_utf8_lossy(&observed).contains("\x1b]52;"),
+        "footer key unexpectedly copied capture output: {observed:?}"
+    );
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let _ = wait_for_text(&process.master, "xxxxxxxxxxxxxx");
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove capture footer config");
 }
 
 #[test]

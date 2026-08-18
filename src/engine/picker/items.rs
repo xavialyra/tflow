@@ -272,6 +272,7 @@ mod tests {
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
+                keymap: None,
                 commands: BTreeMap::new(),
             },
         );
@@ -289,6 +290,7 @@ mod tests {
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
+                keymap: None,
                 commands: BTreeMap::from([(
                     "open".to_string(),
                     Command {
@@ -694,6 +696,7 @@ mod tests {
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
+                keymap: None,
                 commands: BTreeMap::new(),
             },
         );
@@ -847,6 +850,7 @@ mod tests {
                 run_shell: None,
                 cancel_exit_code: None,
                 query: None,
+                keymap: None,
                 commands: BTreeMap::new(),
             },
         );

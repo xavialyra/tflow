@@ -520,18 +520,7 @@ impl ViewInstance for PickerView {
             Some(super::keymap::PickerAction::SelectPrevious) => LauncherAction::MovePrevious,
             Some(super::keymap::PickerAction::SelectNext) => LauncherAction::MoveNext,
             Some(super::keymap::PickerAction::Activate) => LauncherAction::Activate,
-            Some(super::keymap::PickerAction::TogglePreview) if self.preview.is_some() => {
-                LauncherAction::TogglePreview
-            }
-            Some(super::keymap::PickerAction::TogglePreview)
-                if self
-                    .resolve_command(host.config, key, &host.input.raw)
-                    .is_some()
-                    || self.command_requires_items(host.config, key, &host.input.raw) =>
-            {
-                LauncherAction::Activate
-            }
-            Some(super::keymap::PickerAction::TogglePreview) => return None,
+            Some(super::keymap::PickerAction::TogglePreview) => LauncherAction::TogglePreview,
             None if self
                 .resolve_command(host.config, key, &host.input.raw)
                 .is_some()
@@ -572,6 +561,7 @@ impl ViewInstance for PickerView {
             LauncherAction::Exit => {
                 return Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)));
             }
+            LauncherAction::Copy => unreachable!("picker received a capture-only action"),
         }
         Ok(LauncherOutcome::Continue)
     }

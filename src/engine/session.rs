@@ -434,24 +434,6 @@ impl<'a> AppSession<'a> {
                     .context("session has no active view")?
                     .instance
                     .captures_editor_input();
-                if matches!(key, Key::Char(character) if !character.is_control())
-                    && !captures_editor_input
-                {
-                    let changed = apply_editor_key(
-                        &mut self
-                            .views
-                            .last_mut()
-                            .context("session has no active view")?
-                            .input,
-                        key,
-                    )
-                    .expect("printable characters are editor input");
-                    if changed {
-                        self.mark_input_changed()?;
-                    }
-                    continue;
-                }
-
                 let action = {
                     let entry = self
                         .views
@@ -590,13 +572,15 @@ impl<'a> AppSession<'a> {
                             }
                         }
                         None => {
-                            if let Some(changed) = {
-                                let entry = self
-                                    .views
-                                    .last_mut()
-                                    .context("session has no active view")?;
-                                apply_editor_key(&mut entry.input, key)
-                            } && changed
+                            if !captures_editor_input
+                                && let Some(changed) = {
+                                    let entry = self
+                                        .views
+                                        .last_mut()
+                                        .context("session has no active view")?;
+                                    apply_editor_key(&mut entry.input, key)
+                                }
+                                && changed
                             {
                                 self.mark_input_changed()?;
                             }
@@ -622,6 +606,10 @@ impl<'a> AppSession<'a> {
         for _ in 0..64 {
             effect = match effect {
                 ViewEffect::Continue => return Ok(None),
+                ViewEffect::CopyToClipboard(value) => {
+                    terminal.copy_to_clipboard(&value)?;
+                    ViewEffect::Continue
+                }
                 ViewEffect::Exit => return Ok(Some(SessionOutcome::Exited)),
                 ViewEffect::DispatchCommand(execution) => {
                     prepared_action_effect(crate::engine::command::prepare_command_action(

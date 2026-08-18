@@ -36,6 +36,132 @@ fn fixture_can_switch_between_named_theme_files() {
 }
 
 #[test]
+fn check_rejects_unknown_defaults_fields() {
+    for (source, expected) in [
+        (
+            r#"
+            [defaults.capture]
+            binding = { copy = ["enter"] }
+            "#,
+            "unknown field `binding`",
+        ),
+        (
+            r#"
+            [defaults.captuer.bindings]
+            copy = ["enter"]
+            "#,
+            "unknown field `captuer`",
+        ),
+    ] {
+        let root = temporary_root();
+        let config = root.join("config.toml");
+        write_test_config(
+            &config,
+            &format!(
+                r#"
+                default_view = "core:default"
+
+                [plugins.core.views.default]
+                [plugins.core.views.default.engine]
+                type = "picker"
+                [plugins.core.views.default.engine.config]
+                {source}
+                "#
+            ),
+        )
+        .unwrap();
+
+        let output = launcher_command()
+            .args(["--check", "--config"])
+            .arg(&config)
+            .output()
+            .expect("could not run tui-launcher --check");
+
+        assert!(!output.status.success(), "stderr: {:?}", output.stderr);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "stderr: {:?}",
+            output.stderr
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        keymaps = { back = "escape" }
+
+        [defaults.picker.bindings]
+        exit = ["enter"]
+        back = ["{{ config:keymaps.back }}"]
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not run tui-launcher --check");
+
+    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("picker key \"enter\" is assigned to both \"activate\" and \"exit\""),
+        "stderr: {:?}",
+        output.stderr
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_rejects_static_capture_conflicts_with_dynamic_defaults() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        keymaps = { extra = "enter" }
+
+        [defaults.capture.bindings]
+        back = ["enter", "{{ config:keymaps.extra }}"]
+
+        [plugins.core.views.default.engine]
+        type = "capture"
+        [plugins.core.views.default.engine.config]
+        output = "captured"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not run tui-launcher --check");
+
+    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("capture key \"enter\" is assigned to both \"copy\" and \"back\""),
+        "stderr: {:?}",
+        output.stderr
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cli_theme_selection_does_not_require_an_existing_current_directory() {
     for theme in ["terminal", "contrast"] {
         let current_dir = temporary_root();

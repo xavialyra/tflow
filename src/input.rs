@@ -20,7 +20,31 @@ pub(crate) enum Key {
     Ctrl(char),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct BindingKey(Key);
+
+impl BindingKey {
+    pub(crate) fn from_key(key: Key) -> Self {
+        Self(match key {
+            Key::Char(character) if character.is_ascii_alphabetic() => {
+                Key::Char(character.to_ascii_lowercase())
+            }
+            Key::Alt(character) => Key::Alt(character.to_ascii_lowercase()),
+            Key::Ctrl(character) => Key::Ctrl(character.to_ascii_lowercase()),
+            key => key,
+        })
+    }
+
+    pub(crate) fn key(self) -> Key {
+        self.0
+    }
+}
+
 impl Key {
+    pub(crate) fn binding_identity(self) -> BindingKey {
+        BindingKey::from_key(self)
+    }
+
     pub(crate) fn parse_binding(source: &str) -> Result<Self> {
         let normalized = source.trim().to_ascii_lowercase();
         match normalized.as_str() {
@@ -36,6 +60,17 @@ impl Key {
             "up" => Ok(Self::Up),
             "down" => Ok(Self::Down),
             "escape" | "esc" => Ok(Self::Escape),
+            "space" => Ok(Self::Char(' ')),
+            _ if normalized.chars().count() == 1
+                && normalized
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_graphic()) =>
+            {
+                Ok(Self::Char(
+                    normalized.chars().next().expect("one character"),
+                ))
+            }
             _ => {
                 let (modifier, value) = normalized
                     .split_once('+')
@@ -73,6 +108,10 @@ impl Key {
             Self::Escape => Some("escape".to_string()),
             Self::Alt(character) => Some(format!("alt+{}", character.to_ascii_lowercase())),
             Self::Ctrl(character) => Some(format!("ctrl+{}", character.to_ascii_lowercase())),
+            Self::Char(' ') => Some("space".to_string()),
+            Self::Char(character) if character.is_ascii_graphic() => {
+                Some(character.to_ascii_lowercase().to_string())
+            }
             Self::Char(_) => None,
         }
     }
@@ -396,6 +435,11 @@ mod tests {
         assert_eq!(Key::parse_binding("ctrl+i").unwrap(), Key::Tab);
         assert_eq!(Key::parse_binding("shift+tab").unwrap(), Key::BackTab);
         assert_eq!(Key::parse_binding("left").unwrap(), Key::Left);
+        assert_eq!(Key::parse_binding("space").unwrap(), Key::Char(' '));
+        assert_eq!(Key::parse_binding("x").unwrap(), Key::Char('x'));
+        assert_eq!(Key::parse_binding("!").unwrap(), Key::Char('!'));
+        assert_eq!(Key::Char(' ').binding_name().as_deref(), Some("space"));
+        assert_eq!(Key::Char('X').binding_name().as_deref(), Some("x"));
         assert_eq!(Key::Ctrl('R').binding_name().as_deref(), Some("ctrl+r"));
         assert!(Key::parse_binding("ctrl+1").is_err());
         assert!(Key::parse_binding("plain").is_err());

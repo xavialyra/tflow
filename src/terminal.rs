@@ -1,6 +1,7 @@
 use crate::cancellation::CancellationToken;
 use crate::config::ImageProtocol;
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, encoded_len, engine::general_purpose::STANDARD};
 use image::DynamicImage;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal as RatatuiTerminal};
@@ -284,6 +285,13 @@ impl Terminal {
         Some(self.image_picker)
     }
 
+    pub(crate) fn copy_to_clipboard(&self, value: &str) -> Result<()> {
+        let sequence = osc52_sequence(value, self.image_picker.is_tmux)
+            .context("could not encode capture output for the terminal clipboard")?;
+        self.write_output(&sequence)
+            .context("could not copy capture output to the terminal clipboard")
+    }
+
     pub(crate) fn read_input(&mut self, timeout_ms: i32) -> Result<InputRead> {
         let mut descriptor = libc::pollfd {
             fd: self.input_fd,
@@ -351,6 +359,30 @@ impl Terminal {
         self.renderer_discard.store(true, Ordering::Release);
         let _ = self.renderer.show_cursor();
     }
+}
+
+fn osc52_sequence(value: &str, is_tmux: bool) -> Result<Vec<u8>> {
+    let payload_len = encoded_len(value.len(), true).context("capture output is too large")?;
+    let wrapper_len = if is_tmux { 10 } else { 0 };
+    let capacity = payload_len
+        .checked_add(8 + wrapper_len)
+        .context("clipboard sequence is too large")?;
+    let mut sequence = Vec::with_capacity(capacity);
+    if is_tmux {
+        sequence.extend_from_slice(b"\x1bPtmux;\x1b");
+    }
+    sequence.extend_from_slice(b"\x1b]52;c;");
+    let payload_start = sequence.len();
+    sequence.resize(payload_start + payload_len, 0);
+    let written = STANDARD
+        .encode_slice(value.as_bytes(), &mut sequence[payload_start..])
+        .context("could not base64 encode capture output")?;
+    debug_assert_eq!(written, payload_len);
+    sequence.push(0x07);
+    if is_tmux {
+        sequence.extend_from_slice(b"\x1b\\");
+    }
+    Ok(sequence)
 }
 
 fn duplicate_fd(fd: libc::c_int) -> Result<File> {
@@ -564,6 +596,22 @@ mod tests {
         assert_eq!(unsafe { libc::cfgetospeed(left) }, unsafe {
             libc::cfgetospeed(right)
         });
+    }
+
+    #[test]
+    fn osc52_clipboard_sequence_encodes_utf8_and_wraps_for_tmux() {
+        assert_eq!(
+            osc52_sequence("hello", false).unwrap(),
+            b"\x1b]52;c;aGVsbG8=\x07"
+        );
+        assert_eq!(
+            osc52_sequence("hello", true).unwrap(),
+            b"\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\"
+        );
+        assert_eq!(
+            osc52_sequence("\u{4f60}", false).unwrap(),
+            b"\x1b]52;c;5L2g\x07"
+        );
     }
 
     #[test]

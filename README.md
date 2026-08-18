@@ -199,9 +199,8 @@ accept-nth = { type = "string", nullable = true }
 match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
-[views.main.engine.config.bindings]
-back = []
-exit = ["escape", "ctrl+c", "ctrl+d"]
+[views.main.keymap]
+"escape" = "exit"
 
 [views.main.commands.accept]
 key = "enter"
@@ -350,11 +349,15 @@ handler = { file = "scripts/open.sh" }
 
 Unsupported API versions are rejected. `name` must not be empty. An alias cannot be empty or contain `:` or whitespace. Duplicate plugin names are accepted, but each View alias must be globally unique; duplicate aliases are rejected when the configuration is loaded. Package directory names cannot contain `:` or whitespace because they form canonical view references. Script paths must remain below the package directory. Inline scripts are supported for small commands. Git source, release version, and lock data are not part of the runtime manifest yet.
 
-The root config may select an explicit default View and can define shared picker binding defaults:
+The root config may select an explicit default View and can define shared engine binding defaults:
 
 ```toml
 # Optional when every invocation names a View explicitly.
 default_view = "custom:home"
+
+[defaults.capture.bindings]
+copy = ["enter"]
+back = ["escape"]
 
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
@@ -477,7 +480,7 @@ command = "{{ return:output.value }}"
 
 `edit-input` replaces the restored View's complete UTF-8 buffer. Its optional byte `cursor` must be on a character boundary; omitting it places the cursor at the end. The footer is assembled from current page commands and, when an item is selected, selection-scoped commands from the item's source View. Item JSON does not contain command definitions.
 
-View commands use the same named-key, Ctrl, and Alt syntax as picker bindings. A picker semantic action wins when the same physical key is assigned to both, so disable or rebind that picker action before using the key as a View command. An explicit View command wins over the built-in default-View Tab behavior and a same-key chrome footer binding. Capture resolves bound View commands before applying its default Back behavior.
+View commands and View keymap patches use the same named-key, printable ASCII, Ctrl, and Alt syntax. A picker semantic action wins when the same physical key is assigned to both, so a View keymap patch can replace or disable that key before using it as a View command. An explicit View command wins over the built-in default-View Tab behavior and a same-key chrome footer binding. Capture gives its View commands and global footer bindings priority over capture semantic bindings.
 
 ### Embedded results
 
@@ -550,7 +553,7 @@ Command `shell` selects the command interpreter. When omitted, the command owner
 
 An embedded View starts its argv in the target plugin directory and receives `LAUNCHER_VIEW_REF`, `LAUNCHER_INPUT`, `LAUNCHER_PLUGIN`, and optional `LAUNCHER_PLUGIN_DIR`; it never receives the launcher runtime-log path. Navigation does not implicitly carry source item metadata; evaluate the target `query` or call `args` explicitly when it is needed.
 
-Picker engine configs accept `bindings` and `show_prefix`. Owner prefixes are hidden by default; feeds pickers may set `engine.config.show_prefix = true` to identify each owner. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `return` command. Picker has no activation mode, local filter, initial-input field, or item search field.
+Picker engine configs accept `show_prefix`; View keymap patches are declared at `[views.<name>.keymap]` and apply to the effective bindings of the selected engine. Owner prefixes are hidden by default; feeds pickers may set `engine.config.show_prefix = true` to identify each owner. Input defaults and types belong to the View's `query` schema; acceptance belongs to an ordinary `return` command. Picker has no activation mode, local filter, initial-input field, or item search field.
 
 ## Keys
 
@@ -569,21 +572,38 @@ activate = ["enter"]
 toggle_preview = ["ctrl+p"]
 ```
 
-A View can override only the actions it needs; omitted actions inherit root or built-in defaults, while an empty array disables an action:
+A View overrides the effective physical keys without knowing which engine supplied them. A value of `false` disables an inherited key (a tombstone that survives recursive plugin/user configuration merging), while a string assigns or replaces the action on that key:
 
 ```toml
-[views.main.engine.config.bindings]
-delete_word = []
-activate = ["enter"]
+[views.main.keymap]
+enter = false
+"ctrl+p" = false
+"space" = "activate"
 ```
 
-Available picker actions are `exit`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, `activate`, and `toggle_preview`. Bindings accept `enter`, `tab`, `backtab`, `backspace`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`. Arrow, Home/End, and Delete edit input when they are not assigned to a picker action. One physical key cannot be assigned to multiple picker actions.
+Unmentioned keys remain unchanged. A key cannot be both disabled and rebound in one patch. Key aliases are canonicalized before plugin and user tables are merged, and conflicting aliases in one layer are rejected. Action names are checked against the selected engine; a key patch does not need to identify the layer or engine that originally supplied the key. Bindings accept `space`, printable ASCII characters, `enter`, `tab`, `backtab`, `backspace`, `delete`, `left`, `right`, `home`, `end`, `up`, `down`, `escape`, `ctrl+<letter>`, and `alt+<character>`.
+
+Available picker actions are `exit`, `back`, `select_previous`, `select_next`, `delete_backward`, `clear_input`, `delete_word`, `activate`, and `toggle_preview`. Picker defaults are configured under `[defaults.picker.bindings]`; a View patch can replace or disable any effective picker key.
+
+Capture's engine defaults copy the complete, unsanitized capture output with Enter and return with Escape:
+
+```toml
+[defaults.capture.bindings]
+copy = ["enter"]
+back = ["escape"]
+
+[views.output.keymap]
+enter = false
+"ctrl+y" = "copy"
+```
+
+Available capture actions are `copy` and `back`. Disabled or otherwise unbound keys are ignored. Copy uses OSC 52 and wraps the sequence for tmux; clipboard acceptance still depends on the terminal or multiplexer configuration.
 
 Tab opens the Router's built-in visual route completion only in the normal launcher's root View while its input is focused. The overlay excludes the current default View and searches the remaining configured aliases, canonical View references, and plugin names; Tab/Down and Shift-Tab/Up move through candidates, Enter inserts the selected canonical View reference into the input, and Esc closes the overlay. It is route grammar UI rather than a View command: it creates no Call boundary, is not rendered as an input hint, is unavailable to directly invoked Views and child Views, and is never published in `runtime:view.current.command`. Engine semantic bindings and explicit View commands retain priority over the built-in Tab behavior. Session chrome separately defines global footer bindings under `chrome.footer.bindings`; the fixture uses Ctrl-K to call the ordinary `selectors:commands` View with `runtime:view.current.command`, then invokes the returned strict `CommandRef`. Footer bindings are unavailable while an embedded PTY is active.
 
-For picker Views, semantic engine bindings take priority over View commands on the same key. Embedded Views reserve only timed-out bare `Esc` for cancellation and otherwise forward input to the PTY. Capture Views check View commands before applying their default other-key Back behavior.
+For picker Views, semantic engine bindings take priority over View commands on the same key. An unavailable `toggle_preview` binding still consumes its key without editing input; an `activate` binding delegates to the same-key View command when one exists. Embedded Views reserve only timed-out bare `Esc` for cancellation and otherwise forward input to the PTY. Capture Views resolve View commands and global footer bindings first, then their `copy` and `back` semantic bindings.
 
-Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses the active theme's `chrome-footer` binding inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use the `chrome-footer-key` binding and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View input bindings are behavioral and are not rendered in the input line. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command.
+Top status, input, divider, content, and footer chrome are composed and rendered centrally from the active route, the current engine, and global errors. The top status line is reserved as blank space. The root input line has no route prefix. Child Views display the router-provided alias, falling back to the canonical View reference, and keep the editable query and cursor separate from that prefix. Long input scrolls around the cursor; non-focus Views mute only the query text. The divider is a plain horizontal rule. The footer follows the content directly and uses the active theme's `chrome-footer` binding inside the viewport padding. Engine title and status remain on the left of the footer, while engine command keys use the `chrome-footer-key` binding and their descriptions remain plain text. Footer hints are omitted when the active engine, View command, or built-in router owns the same key. An overflow footer binding is shown only when all current View commands do not fit; its key remains active when the hint is hidden. View keymap patches are behavioral and are not rendered in the input line. Picker footers hide View commands whose keys are consumed by semantic actions, except `activate` keys that dispatch the command; capture footers additionally render effective `copy` and `back` actions, omitting `copy` for failed captures. A current error temporarily replaces the complete footer and includes its occurrence time. The latest error replaces the previous one and is cleared after five seconds, a new query, a view change, a successful refresh, or a successful command.
 
 Errors and command status records are written exclusively by the launcher. By default the JSONL file is `$XDG_STATE_HOME/tui-launcher/runtime.jsonl`, falling back to `$HOME/.local/state/tui-launcher/runtime.jsonl`; set the root `log_file` configuration to override it, for example `log_file = "state/runtime.jsonl"`. Relative paths are resolved from the main configuration file's directory. Plugin commands and embedded processes do not receive the log path or write this file, and there is no log picker/plugin. The launcher opens one append-only regular file for its lifetime, using `O_NOFOLLOW`, rejecting special files, limiting individual messages, and assembling each JSONL record before one `write_all`. An initial open or later write failure disables logging and reports the degradation once through the footer when possible or on stderr for an immediate exit. Concurrent launcher instances sharing one path are unsupported; there is no file snapshot, lock, rotation, or cross-process completeness guarantee.
 

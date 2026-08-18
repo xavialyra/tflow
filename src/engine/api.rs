@@ -4,11 +4,11 @@ use super::runtime::RuntimeHandle;
 use super::task::TaskScheduler;
 use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
-use crate::config::{Command, CommandAction, Config, View};
+use crate::config::{Command, CommandAction, Config, Defaults, View};
 use crate::input::{DecodedInput, Key};
 use crate::state::StateInstance;
 use crate::terminal::Terminal;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -123,6 +123,7 @@ pub(crate) enum EditorAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LauncherAction {
     Activate,
+    Copy,
     MoveNext,
     MovePrevious,
     Back,
@@ -297,6 +298,7 @@ pub(crate) struct ViewReturn {
 
 pub(crate) enum ViewEffect {
     Continue,
+    CopyToClipboard(String),
     DispatchCommand(CommandExecution),
     Navigate {
         request: NavigationRequest,
@@ -470,6 +472,21 @@ pub(crate) trait Engine {
     fn engine_type(&self) -> &'static str;
 
     fn validate_config(&self, name: &str, view: &View) -> Result<()>;
+
+    fn validate_defaults(&self, _defaults: &Defaults) -> Result<()> {
+        Ok(())
+    }
+
+    fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {
+        if view.keymap.is_some() {
+            bail!(
+                "view {:?} using engine {:?} cannot define a keymap",
+                name,
+                self.engine_type()
+            );
+        }
+        Ok(())
+    }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
 }

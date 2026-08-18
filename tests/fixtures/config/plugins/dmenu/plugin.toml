@@ -24,9 +24,8 @@ accept-nth = { type = "string", nullable = true }
 match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
-[views.main.engine.config.bindings]
-back = []
-exit = ["escape", "ctrl+c", "ctrl+d"]
+[views.main.keymap]
+"escape" = "exit"
 
 [views.main.commands.accept]
 key = "enter"

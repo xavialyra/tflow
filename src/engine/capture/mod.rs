@@ -1,12 +1,14 @@
+mod keymap;
 mod render;
 mod session;
 
+use self::keymap::{CaptureAction, CaptureKeymap};
 use self::session::CaptureSession;
 use super::{
     Engine, EngineHost, InputFocus, ViewContext, ViewEffect, ViewInstance, ViewOutput, command,
     evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
-use crate::config::{ENGINE_CAPTURE, View};
+use crate::config::{ConfigReadContext, ConfigScope, Defaults, ENGINE_CAPTURE, View, toml_to_json};
 use crate::engine::api::{LauncherAction, LauncherOutcome, ResolvedLauncherAction};
 use crate::input::Key;
 use crate::terminal::Terminal;
@@ -37,7 +39,49 @@ impl Engine for CaptureEngine {
         Ok(())
     }
 
+    fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
+        let bindings = defaults
+            .capture
+            .bindings
+            .as_ref()
+            .map(toml_to_json)
+            .transpose()?;
+        CaptureKeymap::validate_values(bindings.as_ref(), None).context("capture bindings")
+    }
+
+    fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {
+        let keymap = view.keymap.as_ref().map(toml_to_json).transpose()?;
+        CaptureKeymap::validate_values(None, keymap.as_ref())
+            .with_context(|| format!("view {:?} capture keymap", name))
+    }
+
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+        let runtime = context.runtime.read();
+        let default_bindings = context.config.get(
+            ConfigReadContext {
+                scope: ConfigScope::Root,
+                runtime: &runtime,
+                input: &context.config.input_value,
+                cancellation: Some(context.cancellation.clone()),
+                binding_raw: None,
+            },
+            &["defaults", "capture", "bindings"],
+        )?;
+        let view_keymap = context.config.get_with_references(
+            ConfigReadContext {
+                scope: ConfigScope::View(context.state),
+                runtime: &runtime,
+                input: &context.config.input_value,
+                cancellation: Some(context.cancellation.clone()),
+                binding_raw: None,
+            },
+            &["keymap"],
+            context.request.reference_value().as_ref(),
+            None,
+        )?;
+        drop(runtime);
+        let keymap = CaptureKeymap::from_values(default_bindings, view_keymap)?;
+
         let default_title = context.request.view_ref.clone();
         let evaluated = (|| {
             let title = evaluate_optional_string(&context, "title")?
@@ -61,6 +105,7 @@ impl Engine for CaptureEngine {
         Ok(Box::new(CaptureView {
             view_ref: context.request.view_ref.clone(),
             session: CaptureSession::new(&title, &output, &status),
+            keymap,
             status,
             success,
             reported: false,
@@ -71,9 +116,21 @@ impl Engine for CaptureEngine {
 struct CaptureView {
     view_ref: String,
     session: CaptureSession,
+    keymap: CaptureKeymap,
     status: String,
     success: bool,
     reported: bool,
+}
+
+impl CaptureView {
+    fn command_owns_key(&self, host: &EngineHost<'_>, key: Key) -> bool {
+        command::find_command_for_key(host.config, &self.view_ref, key).is_some()
+            || key.binding_name().is_some_and(|key| {
+                host.config.chrome.footer.bindings.values().any(|binding| {
+                    crate::config::normalize_key(&binding.key).ok().as_deref() == Some(&key)
+                })
+            })
+    }
 }
 
 impl ViewInstance for CaptureView {
@@ -98,18 +155,16 @@ impl ViewInstance for CaptureView {
         host: &EngineHost<'_>,
         key: Key,
     ) -> Option<ResolvedLauncherAction> {
-        let chrome_footer = key.binding_name().is_some_and(|key| {
-            host.config.chrome.footer.bindings.values().any(|binding| {
-                crate::config::normalize_key(&binding.key).ok().as_deref() == Some(&key)
-            })
-        });
-        if command::find_command_for_key(host.config, &self.view_ref, key).is_some()
-            || chrome_footer
-        {
-            None
-        } else {
-            Some(ResolvedLauncherAction::View(LauncherAction::Back))
+        if self.command_owns_key(host, key) {
+            return None;
         }
+        let action = match self.keymap.action(key) {
+            Some(CaptureAction::Copy) if self.success => LauncherAction::Copy,
+            Some(CaptureAction::Back) => LauncherAction::Back,
+            Some(CaptureAction::Copy) => return None,
+            None => return None,
+        };
+        Some(ResolvedLauncherAction::View(action))
     }
 
     fn handle_launcher_action(
@@ -118,8 +173,12 @@ impl ViewInstance for CaptureView {
         action: LauncherAction,
         _input: crate::input::DecodedInput,
     ) -> Result<LauncherOutcome> {
-        debug_assert_eq!(action, LauncherAction::Back);
-        Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))))
+        let effect = match action {
+            LauncherAction::Copy => ViewEffect::CopyToClipboard(self.session.output().to_string()),
+            LauncherAction::Back => ViewEffect::Back(None),
+            _ => unreachable!("capture received an unsupported launcher action"),
+        };
+        Ok(LauncherOutcome::Effect(Box::new(effect)))
     }
 
     fn view_command_output(&self) -> Option<ViewOutput> {
@@ -140,7 +199,14 @@ impl ViewInstance for CaptureView {
                     .map(|key| (key, command.label.clone()))
             })
             .collect::<Vec<_>>();
-        commands.push(("other key".to_string(), "Back".to_string()));
+        commands.extend(self.keymap.bindings().filter_map(|(key, action)| {
+            if self.command_owns_key(host, key) || (action == CaptureAction::Copy && !self.success)
+            {
+                return None;
+            }
+            Some((key.binding_name()?, action.label().to_string()))
+        }));
+        commands.sort_by(|left, right| command::compare_bindings(&left.0, &right.0));
         crate::chrome::EngineChrome {
             title: Some(format!("capture: {}", self.session.title())),
             status: Some(self.session.status().to_string()),

@@ -6,6 +6,7 @@ mod evaluate;
 mod host;
 mod image_decode;
 mod image_path;
+mod keymap;
 mod picker;
 mod process;
 mod registry;
@@ -22,7 +23,6 @@ pub(crate) use api::{
 };
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;
-pub(crate) use picker::validate_bindings as validate_picker_bindings;
 pub(crate) use process::{PreparedProcess, ProcessGroupGuard, clear_managed_environment};
 pub(crate) use registry::{EngineRegistry, require_field, validate_fields};
 pub(crate) use runtime::RuntimeStore;

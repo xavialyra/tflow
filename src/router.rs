@@ -231,6 +231,7 @@ mod tests {
             run_shell: None,
             cancel_exit_code: None,
             query: None,
+            keymap: None,
             commands: BTreeMap::new(),
         }
     }
