@@ -809,6 +809,22 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
     let config = root.join("config.toml");
     let plugin = root.join("plugins/custom");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
+    let core = root.join("plugins/core");
+    fs::create_dir_all(&core).unwrap();
+    fs::write(
+        core.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "core"
+
+        [views.default.engine]
+        type = "picker"
+        [[views.default.engine.config.feeds]]
+        view = "custom:main"
+        "#,
+    )
+    .unwrap();
     fs::write(
         &config,
         r#"
@@ -816,13 +832,6 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
 
         [catalog]
         items = [{label = "Item", value = "selected-value"}]
-
-        [plugins.core]
-        name = "core"
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [[plugins.core.views.default.engine.config.feeds]]
-        view = "custom:main"
         "#,
     )
     .unwrap();

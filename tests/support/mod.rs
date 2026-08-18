@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsString};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -156,8 +156,102 @@ fn with_test_config(source: &str) -> String {
     format!("{TEST_CONFIG}\n{source}")
 }
 
-pub fn write_test_config(path: &Path, source: &str) -> std::io::Result<()> {
-    fs::write(path, with_test_config(source))
+pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
+    let mut config: toml::Value = toml::from_str(&with_test_config(source))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let plugins = config
+        .as_table_mut()
+        .and_then(|table| table.remove("plugins"));
+    let Some(plugins) = plugins else {
+        return fs::write(path, toml::to_string(&config).map_err(io::Error::other)?);
+    };
+    let toml::Value::Table(plugins) = plugins else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "test plugins must be a TOML table",
+        ));
+    };
+    let config_root = path.parent().unwrap_or_else(|| Path::new("."));
+    for (plugin_id, plugin) in plugins {
+        materialize_test_plugin(config_root, &plugin_id, plugin)?;
+    }
+    let config_source = toml::to_string(&config).map_err(io::Error::other)?;
+    fs::write(path, config_source)
+}
+
+fn materialize_test_plugin(
+    config_root: &Path,
+    plugin_id: &str,
+    plugin: toml::Value,
+) -> io::Result<()> {
+    let toml::Value::Table(plugin) = plugin else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("test plugin {plugin_id:?} must be a TOML table"),
+        ));
+    };
+    let plugin_root = config_root.join("plugins").join(plugin_id);
+    fs::create_dir_all(&plugin_root)?;
+    let manifest_path = plugin_root.join("plugin.toml");
+    let mut manifest = if manifest_path.is_file() {
+        let source = fs::read_to_string(&manifest_path)?;
+        toml::from_str(&source)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let manifest_table = manifest.as_table_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("test plugin manifest {manifest_path:?} must be a TOML table"),
+        )
+    })?;
+    let header = manifest_table
+        .entry("plugin".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let header = header.as_table_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("test plugin manifest {manifest_path:?} has an invalid plugin header"),
+        )
+    })?;
+    header
+        .entry("api".to_string())
+        .or_insert(toml::Value::Integer(1));
+    if let Some(name) = plugin.get("name") {
+        header.insert("name".to_string(), name.clone());
+    } else {
+        header
+            .entry("name".to_string())
+            .or_insert_with(|| toml::Value::String(plugin_id.to_string()));
+    }
+
+    let views = plugin
+        .get("views")
+        .cloned()
+        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+    let manifest_views = manifest_table
+        .entry("views".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    merge_test_values(manifest_views, views);
+
+    let manifest_source = toml::to_string(&manifest).map_err(io::Error::other)?;
+    fs::write(manifest_path, manifest_source)
+}
+
+fn merge_test_values(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (key, value) in overlay {
+                if let Some(existing) = base.get_mut(&key) {
+                    merge_test_values(existing, value);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 fn lock_dmenu_tests() -> MutexGuard<'static, ()> {

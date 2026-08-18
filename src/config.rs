@@ -377,6 +377,7 @@ impl Config {
             .with_context(|| format!("could not read config {}", user_path.display()))?;
         let mut user_config: toml::Value = toml::from_str(&user_source)
             .with_context(|| format!("cannot parse config {}", user_path.display()))?;
+        reject_root_plugins(&user_config)?;
         let disabled_plugins = disabled_plugins(Some(&user_config))?;
         remove_disabled_plugins(&mut user_config, &disabled_plugins);
         normalize_keymap_tables(&mut user_config)
@@ -953,6 +954,15 @@ pub fn normalize_key(key: &str) -> Result<String> {
         .with_context(|| format!("unsupported command key {:?}", key))
 }
 
+fn reject_root_plugins(user_config: &toml::Value) -> Result<()> {
+    if user_config.get("plugins").is_some() {
+        bail!(
+            "root configuration cannot define plugins; use the sibling plugins/<id>/plugin.toml files"
+        );
+    }
+    Ok(())
+}
+
 fn disabled_plugins(user_config: Option<&toml::Value>) -> Result<BTreeSet<String>> {
     let mut disabled = BTreeSet::new();
     let Some(table) = user_config.and_then(toml::Value::as_table) else {
@@ -1515,11 +1525,9 @@ mod tests {
     }
 
     #[test]
-    fn disabled_inline_plugins_are_removed_before_keymap_normalization() {
-        let root = env::temp_dir().join(format!(
-            "tui-launcher-disabled-inline-{}",
-            std::process::id()
-        ));
+    fn root_plugins_are_rejected_before_keymap_normalization() {
+        let root =
+            env::temp_dir().join(format!("tui-launcher-root-plugins-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
         let config_path = root.join("config.toml");
@@ -1532,18 +1540,12 @@ mod tests {
             [plugins.ghost.views.main.keymap]
             escape = "back"
             esc = false
-
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
             "#,
         )
         .unwrap();
 
-        let config = Config::load(&config_path).unwrap();
-        assert!(!config.views.contains_key("ghost:main"));
-        assert!(config.views.contains_key("core:default"));
+        let error = Config::load(&config_path).expect_err("root plugins must be rejected");
+        assert!(error.to_string().contains("cannot define plugins"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1572,17 +1574,26 @@ mod tests {
             "#,
         )
         .unwrap();
+        let core_root = root.join("plugins/core");
+        fs::create_dir_all(&core_root).unwrap();
+        fs::write(
+            core_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "core"
+
+            [views.default.engine]
+            type = "picker"
+            [views.default.engine.config]
+            "#,
+        )
+        .unwrap();
         let config_path = root.join("config.toml");
         fs::write(
             &config_path,
             r#"
             disabled_plugins = ["ghost"]
             default_view = "core:default"
-
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
             "#,
         )
         .unwrap();
@@ -2179,15 +2190,25 @@ mod tests {
         )
         .unwrap();
         fs::write(plugin_root.join("scripts/run.sh"), "printf 'run\\n'\\n").unwrap();
+        let core_root = root.join("plugins/core");
+        fs::create_dir_all(&core_root).unwrap();
+        fs::write(
+            core_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "core"
+
+            [views.default.engine]
+            type = "picker"
+            [views.default.engine.config]
+            [[views.default.engine.config.feeds]]
+            view = "filetest:main"
+            "#,
+        )
+        .unwrap();
         let config_path = root.join("config.toml");
         let default_source = r#"
             default_view = "core:default"
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
-            [[plugins.core.views.default.engine.config.feeds]]
-            view = "filetest:main"
 "#;
         fs::write(&config_path, default_source).unwrap();
 
@@ -2218,14 +2239,24 @@ mod tests {
         let root = env::temp_dir().join(format!("tui-launcher-config-json-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
+        let core_root = root.join("plugins/core");
+        fs::create_dir_all(&core_root).unwrap();
+        fs::write(
+            core_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "core"
+
+            [views.default.engine]
+            type = "picker"
+            [views.default.engine.config]
+            "#,
+        )
+        .unwrap();
         let config_path = root.join("config.toml");
         fs::write(
             &config_path,
             r#"
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
             [aa.a]
             bb = 1
 
@@ -2249,15 +2280,24 @@ mod tests {
             env::temp_dir().join(format!("tui-launcher-config-theme-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
+        let core_root = root.join("plugins/core");
+        fs::create_dir_all(&core_root).unwrap();
+        fs::write(
+            core_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "core"
+
+            [views.default.engine]
+            type = "picker"
+            "#,
+        )
+        .unwrap();
         let config_path = root.join("config.toml");
         fs::write(
             &config_path,
             r#"
             theme = "work"
-
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
             "#,
         )
         .unwrap();

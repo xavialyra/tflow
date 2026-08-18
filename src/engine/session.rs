@@ -2094,19 +2094,29 @@ mod tests {
         ));
         std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(&root).unwrap();
+        let core_root = root.join("plugins/core");
+        std::fs::create_dir_all(&core_root).unwrap();
+        std::fs::write(
+            core_root.join("plugin.toml"),
+            r#"
+            [plugin]
+            name = "core"
+
+            [views.default.engine]
+            type = "picker"
+
+            [views.default.query]
+            type = "object"
+            input_order = ["count"]
+            count = { type = "integer", default = 1 }
+            "#,
+        )
+        .unwrap();
         let path = root.join("config.toml");
         std::fs::write(
             &path,
             r#"
             default_view = "core:default"
-
-            [plugins.core.views.default.engine]
-            type = "picker"
-
-            [plugins.core.views.default.query]
-            type = "object"
-            input_order = ["count"]
-            count = { type = "integer", default = 1 }
             "#,
         )
         .unwrap();

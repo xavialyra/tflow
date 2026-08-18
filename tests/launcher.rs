@@ -755,11 +755,13 @@ fn embedded_view_removes_stale_launcher_environment() {
     let (status, output) = wait_for_launcher_exit(&mut process);
 
     assert_eq!(status, 0);
+    let output = String::from_utf8_lossy(&output);
     assert!(
-        String::from_utf8_lossy(&output).contains("managed=unset|unset|unset|unset|unset"),
+        output.contains("managed=unset|unset|unset|unset|"),
         "output: {:?}",
         output
     );
+    assert!(output.contains("/plugins/core"), "output: {:?}", output);
     fs::remove_dir_all(root).unwrap();
 }
 

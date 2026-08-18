@@ -310,7 +310,7 @@ Expression syntax is validated when configuration is loaded and expressions are 
 
 `exit` is not a view. A local command with `exit = true` returns an exit event after its script finishes.
 
-A plugin is packaged as a directory so its configuration and scripts stay together:
+A plugin is packaged as a directory so its configuration and scripts stay together. The root `config.toml` cannot define or override a `plugins` table; every configured plugin must come from a sibling `plugins/<id>/plugin.toml` manifest so its runtime files have a registered plugin root:
 
 ```text
 plugins/apps/
