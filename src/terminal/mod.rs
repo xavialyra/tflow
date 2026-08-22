@@ -2,7 +2,6 @@ mod sanitize;
 
 pub(crate) use sanitize::{sanitize_terminal_text, sanitize_text};
 
-use crate::config::ImageProtocol;
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, encoded_len, engine::general_purpose::STANDARD};
@@ -22,6 +21,15 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ImageProtocol {
+    #[default]
+    Halfblocks,
+    Kitty,
+    Sixel,
+    Iterm2,
+}
 
 const RESTORE_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H";
 const OUTPUT_POLL_INTERVAL_MS: i32 = 50;

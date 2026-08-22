@@ -697,7 +697,7 @@ fn key_display(key: Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chrome::InputBuffer;
+    use crate::input::InputBuffer;
     use crate::runtime::RuntimeStore;
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {

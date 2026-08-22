@@ -1,11 +1,21 @@
 use super::api::{Engine, ViewContext, ViewInstance};
-use crate::config::{Defaults, View};
+use crate::config::{Defaults, EngineConfigValidator, View};
 use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 
 pub(crate) struct EngineRegistry {
     engines: BTreeMap<&'static str, Box<dyn Engine>>,
+}
+
+impl EngineConfigValidator for EngineRegistry {
+    fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
+        EngineRegistry::validate_defaults(self, defaults)
+    }
+
+    fn validate_view(&self, name: &str, view: &View) -> Result<()> {
+        EngineRegistry::validate_config(self, name, view)
+    }
 }
 
 impl EngineRegistry {

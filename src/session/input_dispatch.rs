@@ -4,13 +4,13 @@ use super::state::{
     ACTION_PRIORITY, BindingHint, BindingTarget, InputBinding, InputContext, InputGrammar,
     PublishedBindings, RegisteredBinding, RouteAction, RouteCompletion,
 };
-use crate::chrome::InputBuffer;
 use crate::command::{
     CommandExecution, EditorAction, InputEdit, LauncherOutcome, NavigationMode, NavigationRequest,
     ResolvedInputAction, SelectionBindingState, ViewEffect, ViewInputMode,
 };
 use crate::config::{CommandBindingVisibility, CommandRequirement, CommandScope};
 use crate::engine::{EngineHost, InputFocus, InputRefreshPolicy};
+use crate::input::InputBuffer;
 use crate::input::keymap::{BindingEntry, BindingRecord, BindingState};
 use crate::input::{DecodedInput, Key};
 use crate::terminal::{InputRead, Terminal};

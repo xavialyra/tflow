@@ -16,7 +16,6 @@ use state::{InputBinding, ReturnTransition, RouteAction};
 use state::{RegisteredBinding, RouteCompletion, ViewEntry, mount_view_input_layers};
 
 use self::input::CommandSession;
-use crate::chrome::InputBuffer;
 #[cfg(test)]
 use crate::command::{CallRequest, CommandOrigin};
 #[cfg(test)]
@@ -34,6 +33,7 @@ use crate::engine::{EngineHost, ViewInstance};
 use crate::engine::{EngineRegistry, ViewContext};
 #[cfg(test)]
 use crate::input::DecodedInput;
+use crate::input::InputBuffer;
 #[cfg(test)]
 use crate::input::Key;
 #[cfg(test)]

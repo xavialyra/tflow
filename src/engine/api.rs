@@ -1,12 +1,12 @@
 use super::host::EngineHost;
 use super::picker::TaskScheduler;
-use crate::chrome::InputBuffer;
 use crate::command::{
     CommandContext, CommandExecution, CommandInvocation, InputActionBinding, InputFocus,
     InputRefreshPolicy, LauncherOutcome, NavigationRequest, SelectionBindingState, ViewAction,
     ViewEffect, ViewInputMode, ViewOutput,
 };
 use crate::config::{Config, Defaults, EvaluationSnapshot, View};
+use crate::input::InputBuffer;
 use crate::input::{DecodedInput, Key};
 use crate::lifecycle::CancellationToken;
 use crate::state::StateInstance;

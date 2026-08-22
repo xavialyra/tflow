@@ -1,5 +1,5 @@
 use super::{
-    CommandAction, CommandBindingVisibility, Config, ENGINE_CAPTURE, ENGINE_PICKER,
+    CommandAction, CommandBindingVisibility, Config, Defaults, ENGINE_CAPTURE, ENGINE_PICKER,
     ScriptSourceSpec, View, ViewRef, validate_script_source_args,
 };
 use crate::expression::{EvaluationStage, Template, TemplateRegistry, is_dynamic_string};
@@ -9,6 +9,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
+
+pub(crate) trait EngineConfigValidator {
+    fn validate_defaults(&self, defaults: &Defaults) -> Result<()>;
+    fn validate_view(&self, name: &str, view: &View) -> Result<()>;
+}
 
 pub(super) fn validate_json_requirements(
     templates: &TemplateRegistry,
@@ -384,10 +389,10 @@ impl Config {
         self.validate_with_engines(&engines)
     }
 
-    pub(crate) fn validate_with_engines(
-        &self,
-        engines: &crate::engine::EngineRegistry,
-    ) -> Result<()> {
+    pub(crate) fn validate_with_engines<V>(&self, engines: &V) -> Result<()>
+    where
+        V: EngineConfigValidator,
+    {
         if let Some(default_view) = &self.default_view {
             self.engine(default_view)?;
         }
@@ -509,7 +514,7 @@ impl Config {
                 bail!("feeds view {:?} cannot define items", view_ref);
             }
             let engine = self.engine(view_ref)?;
-            engines.validate_config(view_ref, view)?;
+            engines.validate_view(view_ref, view)?;
             self.validate_view_operation_requirements(view_ref, view)?;
             if engine != ENGINE_PICKER && (!feeds.is_empty() || items.is_some()) {
                 bail!(

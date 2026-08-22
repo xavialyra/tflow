@@ -3,6 +3,7 @@ mod input;
 mod layout;
 
 pub(crate) use frame::ChromeFrame;
+#[allow(unused_imports)]
 pub(crate) use input::InputBuffer;
 use input::previous_char_boundary;
 use layout::ChromeLayout;

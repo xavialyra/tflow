@@ -1,11 +1,10 @@
 use super::{
-    Config, LoadedApp, PluginHeader, RawConfig,
+    Config, PluginHeader, RawConfig,
     normalize::{
         normalize_engine_configs, normalize_keymap_tables, normalize_view_keymaps,
         remove_disabled_plugins,
     },
 };
-use crate::theme::ThemeLoadOptions;
 use anyhow::{Context, Result, bail};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,34 +12,43 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) struct LoadedConfig {
+    raw: RawConfig,
+    merged: toml::Value,
+    plugin_roots: BTreeMap<String, PathBuf>,
+    log_file: Option<PathBuf>,
+    theme_selector: Option<String>,
+}
+
+impl LoadedConfig {
+    pub(crate) fn theme_selector(&self) -> Option<&str> {
+        self.theme_selector.as_deref()
+    }
+
+    pub(crate) fn compile(self) -> Result<Config> {
+        let LoadedConfig {
+            raw,
+            mut merged,
+            plugin_roots,
+            log_file,
+            ..
+        } = self;
+        if let Some(table) = merged.as_table_mut() {
+            table.remove("theme");
+            table.remove("log_file");
+        }
+        let mut config_value = super::toml_to_json(&merged)
+            .context("merged configuration cannot be represented as JSON")?;
+        normalize_engine_configs(&mut config_value);
+        let mut config = Config::from_raw(raw, plugin_roots, config_value)
+            .context("could not compile dynamic configuration values")?;
+        config.log_file = log_file;
+        Ok(config)
+    }
+}
+
 impl Config {
-    #[allow(dead_code)]
-    pub(crate) fn load(user_path: &Path) -> Result<Self> {
-        let engines = crate::engine::EngineRegistry::new();
-        Self::load_with_engines(user_path, &engines)
-    }
-
-    pub(crate) fn load_app(user_path: &Path, options: &ThemeLoadOptions) -> Result<LoadedApp> {
-        let engines = crate::engine::EngineRegistry::new();
-        Self::load_with_engines_and_options(user_path, &engines, options)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn load_with_engines(
-        user_path: &Path,
-        engines: &crate::engine::EngineRegistry,
-    ) -> Result<Self> {
-        Ok(
-            Self::load_with_engines_and_options(user_path, engines, &ThemeLoadOptions::default())?
-                .config,
-        )
-    }
-
-    fn load_with_engines_and_options(
-        user_path: &Path,
-        engines: &crate::engine::EngineRegistry,
-        options: &ThemeLoadOptions,
-    ) -> Result<LoadedApp> {
+    pub(crate) fn load_unvalidated(user_path: &Path) -> Result<LoadedConfig> {
         let user_source = fs::read_to_string(user_path)
             .with_context(|| format!("could not read config {}", user_path.display()))?;
         let mut user_config: toml::Value = toml::from_str(&user_source)
@@ -68,23 +76,18 @@ impl Config {
                 user_path.display()
             )
         })?;
+        let theme_selector = raw.theme.clone();
         let log_file = raw
             .log_file
             .as_deref()
             .map(|path| resolve_config_path(user_path, path));
-        let theme = crate::theme::load(user_path, raw.theme.as_deref(), options)?;
-        if let Some(table) = merged.as_table_mut() {
-            table.remove("theme");
-            table.remove("log_file");
-        }
-        let mut config_value = super::toml_to_json(&merged)
-            .context("merged configuration cannot be represented as JSON")?;
-        normalize_engine_configs(&mut config_value);
-        let mut config = Self::from_raw(raw, plugin_roots, config_value)
-            .context("could not compile dynamic configuration values")?;
-        config.log_file = log_file;
-        config.validate_with_engines(engines)?;
-        Ok(LoadedApp { config, theme })
+        Ok(LoadedConfig {
+            raw,
+            merged,
+            plugin_roots,
+            log_file,
+            theme_selector,
+        })
     }
 }
 

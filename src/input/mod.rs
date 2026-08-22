@@ -1,4 +1,7 @@
+mod editor;
 pub(crate) mod keymap;
+
+pub(crate) use editor::{InputBuffer, previous_char_boundary};
 
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};

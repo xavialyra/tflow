@@ -1,9 +1,9 @@
-use crate::chrome::InputBuffer;
 use crate::config::{CommandAction, CommandBindingVisibility};
 use crate::engine::{
     CommandContext, CommandOrigin, InputActionBinding, InputEdit, ResolvedInputAction,
     SelectionBindingState, ViewEffect, ViewInputMode, ViewInstance,
 };
+use crate::input::InputBuffer;
 use crate::input::Key;
 use crate::input::keymap::{InputContextId, InputRouter, LayerId};
 use crate::state::StateInstance;

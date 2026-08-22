@@ -1,5 +1,5 @@
-use crate::chrome::InputBuffer;
 use crate::config::Config;
+use crate::input::InputBuffer;
 use crate::runtime::RuntimeStore;
 use crate::state::StateInstance;
 use anyhow::Result;

@@ -73,13 +73,14 @@ src/
 
   input/
     mod.rs                  Key and InputDecoder
+    editor.rs               neutral input buffer and Unicode editing
     keymap.rs               generic layered keymap and input router
 
   ui/
     mod.rs
     chrome/
       mod.rs
-      input.rs
+      input.rs                stable re-export of the input model
       layout.rs
       frame.rs
     theme/
@@ -90,7 +91,7 @@ src/
       load.rs
 
   terminal/
-    mod.rs                  TTY, ratatui backend, and image protocol
+    mod.rs                  TTY, ratatui backend, and terminal image protocol
     sanitize.rs             terminal-control sanitization
 
   execution/
@@ -115,8 +116,8 @@ top-level or feature-specific modules.
 
 ## Target Boundaries
 
-The current module boundaries should converge on this shape for the
-remaining configuration and expression cleanup:
+The current module boundaries use this shape for the application workflow,
+Engine, UI, and infrastructure domains:
 
 ```text
 src/
@@ -164,8 +165,8 @@ test domain.
    by accident.
 5. `engine` owns the View Engine protocol and concrete View implementations.
    `session` owns transitions and orchestration around those engines.
-6. `ui/chrome/input` must remain independent of ratatui. Rendering depends on the
-   input model, never the reverse.
+6. `input/editor` owns input editing semantics independently of ratatui.
+   `ui/chrome` consumes the input model for rendering, never the reverse.
 7. `ui/theme/model` and `ui/theme/color` must not read files. Only `ui/theme/load` may
    depend on the filesystem.
 8. Engines may consume stable configuration queries. New code should not reach
@@ -180,9 +181,15 @@ test domain.
 - Extracted Chrome input editing, layout, and frame rendering.
 - Extracted configuration model types, plugin loading, normalization, and
   validation while keeping `Config::load_app` and existing crate paths.
-- Moved `Config::load*` filesystem/theme/plugin orchestration into
-  `workflow/config/loader.rs`; the façade now retains configuration queries and
-  state operations.
+- Moved raw configuration loading and compilation into
+  `workflow/config/loader.rs`; Theme loading and Engine validation are now
+  coordinated by `app/cli.rs` while preserving the `Config::load*` call shapes.
+- Added the narrow `EngineConfigValidator` contract so configuration validation
+  no longer depends on the concrete `EngineRegistry` type.
+- Moved the input editor model to `input/editor.rs`; `ui/chrome/input.rs` keeps
+  the stable Chrome re-export while Engine and Session use the input domain.
+- Added a terminal-owned Image Protocol type and perform the config-to-terminal
+  mapping at the application composition boundary.
 - Added `lib.rs` as the module composition root and reduced `main.rs` to the
   binary error/exit adapter.
 - Grouped configuration, expression, query, command, navigation, and runtime
@@ -234,8 +241,8 @@ test domain.
 
 The remaining `AppSession` implementation in `session/mod.rs` owns
 construction, the main loop, runtime-log presentation, and stable façade
-methods. The next structural boundary is neutralizing the remaining
-configuration, theme, terminal, and Engine API boundary types.
+methods. The main remaining boundary question is whether Engine steps need a
+capability-oriented terminal contract instead of the concrete TTY adapter.
 
 Each step should keep the same `AppSession` constructors and run the focused
 session tests plus the complete launcher suite.
@@ -247,8 +254,8 @@ session tests plus the complete launcher suite.
 - Do not introduce a generic `common/` catch-all alongside the domain tree.
 - Keep CLI argument parsing and process bootstrap behind `app/`; `main.rs` is
   now a thin binary entry point.
-- Remove upward dependencies from terminal/execution adapters by introducing
-  neutral boundary types for image protocol and theme load requests.
+- Keep the concrete Terminal argument in Engine steps until a second terminal
+  backend or a clear capability contract justifies the additional abstraction.
 - Keep Router separate from both Session and Chrome because both consume its
   route models.
 
@@ -270,7 +277,7 @@ Tests should follow the invariant they protect:
   dynamic value resolution, and evaluation budgets.
 - `workflow/config/compile.rs`: compiled configuration construction, feed expansion,
   template bootstrap validation, and state registry setup.
-- `ui/chrome/input.rs`: Unicode cursor and edit invariants.
+- `input/editor.rs`: Unicode cursor and edit invariants.
 - `ui/chrome/frame.rs`: clipping, footer overflow, layout geometry, and rendering
   styles.
 - `ui/theme/model.rs`: serde shape and resolved theme composition.

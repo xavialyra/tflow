@@ -3,7 +3,6 @@ use crate::expression::TemplateRegistry;
 use crate::expression::{Budget, EvalContext, EvaluationStage, Namespace, evaluate_json_value};
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
-use crate::theme::ResolvedTheme;
 #[cfg(test)]
 use crate::theme::ThemeLoadOptions;
 use anyhow::{Context, Result, bail};
@@ -32,7 +31,7 @@ pub(crate) use model::validate_script_source_args;
 pub(crate) use model::*;
 #[cfg(test)]
 use normalize::normalize_keymap_tables;
-pub(crate) use validation::validate_templates;
+pub(crate) use validation::{EngineConfigValidator, validate_templates};
 
 pub type ViewRef = String;
 
@@ -49,11 +48,6 @@ pub(crate) struct Config {
     pub(crate) input_value: Value,
     pub(crate) invocation_state: StateInstance,
     compiled: CompiledConfig,
-}
-
-pub(crate) struct LoadedApp {
-    pub(crate) config: Config,
-    pub(crate) theme: ResolvedTheme,
 }
 
 #[derive(Debug, Clone)]

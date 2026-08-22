@@ -16,6 +16,11 @@ pub struct App<'a> {
     session: AppSession<'a>,
 }
 
+pub(crate) struct LoadedApp {
+    pub(crate) config: crate::config::Config,
+    pub(crate) theme: ResolvedTheme,
+}
+
 impl<'a> App<'a> {
     pub(crate) fn with_runtime_log_and_engines(
         config: &'a crate::config::Config,

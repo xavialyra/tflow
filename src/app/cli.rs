@@ -1,10 +1,10 @@
-use super::{App, InputArtifact, InvocationResult, finish};
-use crate::config::Config;
+use super::{App, InputArtifact, InvocationResult, LoadedApp, finish};
+use crate::config::{Config, EngineConfigValidator, ImageProtocol as ConfigImageProtocol};
 use crate::diagnostics::RuntimeLog;
 use crate::engine::EngineRegistry;
 use crate::lifecycle::SignalGuard;
 use crate::session::SessionOutcome;
-use crate::terminal::Terminal;
+use crate::terminal::{ImageProtocol as TerminalImageProtocol, Terminal};
 use crate::theme::{self, ThemeLoadOptions};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -12,7 +12,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,6 +47,39 @@ struct Args {
     view_options: Vec<String>,
 }
 
+impl Config {
+    #[allow(dead_code)]
+    pub(crate) fn load(user_path: &Path) -> Result<Self> {
+        let engines = EngineRegistry::new();
+        Self::load_with_engines(user_path, &engines)
+    }
+
+    pub(crate) fn load_app(user_path: &Path, options: &ThemeLoadOptions) -> Result<LoadedApp> {
+        let engines = EngineRegistry::new();
+        let loaded = Self::load_unvalidated(user_path)?;
+        let theme = theme::load(user_path, loaded.theme_selector(), options)?;
+        let config = loaded.compile()?;
+        config.validate_with_engines(&engines)?;
+        Ok(LoadedApp { config, theme })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn load_with_engines<V>(user_path: &Path, engines: &V) -> Result<Self>
+    where
+        V: EngineConfigValidator,
+    {
+        let loaded = Self::load_unvalidated(user_path)?;
+        let _theme = theme::load(
+            user_path,
+            loaded.theme_selector(),
+            &ThemeLoadOptions::default(),
+        )?;
+        let config = loaded.compile()?;
+        config.validate_with_engines(engines)?;
+        Ok(config)
+    }
+}
+
 pub(crate) fn run() -> Result<i32> {
     let args = Args::parse();
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
@@ -54,7 +87,12 @@ pub(crate) fn run() -> Result<i32> {
     let theme_options = ThemeLoadOptions { selector };
     let loaded = Config::load_app(&config_path, &theme_options)?;
     let mut config = loaded.config;
-    let image_protocol = config.image_protocol;
+    let image_protocol = match config.image_protocol {
+        ConfigImageProtocol::Halfblocks => TerminalImageProtocol::Halfblocks,
+        ConfigImageProtocol::Kitty => TerminalImageProtocol::Kitty,
+        ConfigImageProtocol::Sixel => TerminalImageProtocol::Sixel,
+        ConfigImageProtocol::Iterm2 => TerminalImageProtocol::Iterm2,
+    };
     let theme = loaded.theme;
     let engines = EngineRegistry::new();
 

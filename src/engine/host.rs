@@ -1,7 +1,7 @@
-use crate::chrome::InputBuffer;
 use crate::command::CommandInvocation;
 use crate::config::Config;
 use crate::diagnostics::{LogLevel, LogRecord, RuntimeLog};
+use crate::input::InputBuffer;
 use crate::runtime::RuntimeStore;
 use crate::state::StateInstance;
 use crate::theme::ResolvedTheme;
