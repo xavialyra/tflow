@@ -54,7 +54,6 @@ impl RuntimeStore {
         self.revision
     }
 
-    #[cfg(test)]
     pub(crate) fn replace(&mut self, value: Value) -> u64 {
         self.value = value;
         self.publish_shared();

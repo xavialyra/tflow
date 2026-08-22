@@ -374,6 +374,7 @@ mod tests {
                         label: "Open".to_string(),
                         scope: crate::config::CommandScope::Selection,
                         requires: crate::config::CommandRequirement::Items,
+                        passthrough: false,
                         action: CommandAction::Run {
                             payload: crate::config::RunPayload {
                                 handler: crate::config::ScriptSourceSpec::script_file(

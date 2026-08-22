@@ -18,7 +18,6 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const ESCAPE_TIMEOUT: Duration = Duration::from_millis(40);
 const MAX_QUERY_SEQUENCE_LEN: usize = 4096;
 const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const PTY_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
@@ -34,7 +33,6 @@ pub enum EmbeddedOutcome {
 
 pub struct EmbeddedRunResult {
     pub outcome: EmbeddedOutcome,
-    pub remaining_input: Vec<u8>,
 }
 
 fn build_child_environment(overrides: &[(String, String)]) -> Result<Vec<CString>> {
@@ -127,7 +125,6 @@ pub(crate) struct EmbeddedRuntime {
     result_config: Option<EmbeddedResultConfig>,
     result_bytes: Vec<u8>,
     result_open: bool,
-    input: InputRelay,
     responder: TerminalResponder,
     screen: EmbeddedTerminal,
     last_size: (u16, u16),
@@ -139,7 +136,6 @@ impl EmbeddedRuntime {
     pub(crate) fn start(
         prepared: &PreparedProcess,
         result_config: Option<EmbeddedResultConfig>,
-        escape_cancels: bool,
         initial_size: (u16, u16),
         initial_input: &[u8],
     ) -> Result<Self> {
@@ -243,14 +239,15 @@ impl EmbeddedRuntime {
             result_config,
             result_bytes: Vec::new(),
             result_open: result_read.is_some(),
-            input: InputRelay::new(escape_cancels),
             responder: TerminalResponder::default(),
             screen: EmbeddedTerminal::new(initial_size.0.max(1), initial_size.1.max(1)),
             last_size: (initial_size.0.max(1), initial_size.1.max(1)),
             requested_size: None,
             finished: false,
         };
-        if let Err(error) = runtime.input.push(initial_input, runtime.master) {
+        if !initial_input.is_empty()
+            && let Err(error) = write_fd(runtime.master, initial_input)
+        {
             runtime.finish_cancelled();
             return Err(error);
         }
@@ -265,7 +262,7 @@ impl EmbeddedRuntime {
         if self.finished {
             bail!("embedded runtime was polled after completion");
         }
-        if cancellation.is_cancelled() || self.input.bare_escape_expired() {
+        if cancellation.is_cancelled() {
             return Ok(EmbeddedPoll::Finished(self.finish_cancelled()));
         }
         let size = self
@@ -302,10 +299,10 @@ impl EmbeddedRuntime {
     }
 
     pub(crate) fn push_input(&mut self, bytes: &[u8]) -> Result<()> {
-        if self.finished {
+        if self.finished || bytes.is_empty() {
             return Ok(());
         }
-        self.input.push(bytes, self.master)
+        write_fd(self.master, bytes)
     }
 
     pub(crate) fn request_resize(&mut self, size: (u16, u16)) {
@@ -329,23 +326,17 @@ impl EmbeddedRuntime {
             self.result_config,
             &mut self.result_bytes,
         )?;
-        let remaining_input = self.input.take_pending();
         self.close_fds();
         self.finished = true;
-        Ok(EmbeddedRunResult {
-            outcome,
-            remaining_input,
-        })
+        Ok(EmbeddedRunResult { outcome })
     }
 
     fn finish_cancelled(&mut self) -> EmbeddedRunResult {
         self.process.force_kill();
-        self.input.take_pending();
         self.close_fds();
         self.finished = true;
         EmbeddedRunResult {
             outcome: EmbeddedOutcome::Cancelled,
-            remaining_input: Vec::new(),
         }
     }
 
@@ -365,140 +356,6 @@ impl Drop for EmbeddedRuntime {
         }
         self.close_fds();
     }
-}
-
-const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-
-struct InputRelay {
-    escape_cancels: bool,
-    pending: Vec<u8>,
-    escape_started: Option<Instant>,
-    in_bracketed_paste: bool,
-}
-
-impl Default for InputRelay {
-    fn default() -> Self {
-        Self::new(true)
-    }
-}
-
-impl InputRelay {
-    fn new(escape_cancels: bool) -> Self {
-        Self {
-            escape_cancels,
-            pending: Vec::new(),
-            escape_started: None,
-            in_bracketed_paste: false,
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8], master: RawFd) -> Result<()> {
-        if !self.escape_cancels {
-            return write_fd(master, bytes);
-        }
-        self.pending.extend_from_slice(bytes);
-        self.process(master)
-    }
-
-    fn bare_escape_expired(&self) -> bool {
-        self.escape_cancels
-            && !self.in_bracketed_paste
-            && self.pending.as_slice() == b"\x1b"
-            && self
-                .escape_started
-                .is_some_and(|started| started.elapsed() >= ESCAPE_TIMEOUT)
-    }
-
-    fn take_pending(&mut self) -> Vec<u8> {
-        self.escape_started = None;
-        self.in_bracketed_paste = false;
-        std::mem::take(&mut self.pending)
-    }
-
-    fn process(&mut self, master: RawFd) -> Result<()> {
-        loop {
-            if self.pending.is_empty() {
-                self.escape_started = None;
-                return Ok(());
-            }
-
-            if self.in_bracketed_paste {
-                if let Some(end) = self
-                    .pending
-                    .windows(BRACKETED_PASTE_END.len())
-                    .position(|window| window == BRACKETED_PASTE_END)
-                {
-                    let count = end + BRACKETED_PASTE_END.len();
-                    write_fd(master, &self.pending[..count])?;
-                    self.pending.drain(..count);
-                    self.in_bracketed_paste = false;
-                    continue;
-                }
-                let keep = marker_prefix_suffix_len(&self.pending, BRACKETED_PASTE_END);
-                let count = self.pending.len() - keep;
-                if count > 0 {
-                    write_fd(master, &self.pending[..count])?;
-                    self.pending.drain(..count);
-                }
-                return Ok(());
-            }
-
-            if self.pending[0] != 0x1b {
-                let count = self
-                    .pending
-                    .iter()
-                    .position(|byte| *byte == 0x1b)
-                    .unwrap_or(self.pending.len());
-                write_fd(master, &self.pending[..count])?;
-                self.pending.drain(..count);
-                continue;
-            }
-
-            if self.pending.len() == 1 {
-                self.escape_started.get_or_insert_with(Instant::now);
-                return Ok(());
-            }
-            self.escape_started = None;
-
-            if self.pending.starts_with(BRACKETED_PASTE_START) {
-                write_fd(master, BRACKETED_PASTE_START)?;
-                self.pending.drain(..BRACKETED_PASTE_START.len());
-                self.in_bracketed_paste = true;
-                continue;
-            }
-
-            if matches!(self.pending[1], b'[' | b'O') {
-                if self.pending.len().saturating_sub(2) > MAX_QUERY_SEQUENCE_LEN {
-                    let bytes = std::mem::take(&mut self.pending);
-                    self.escape_started = None;
-                    write_fd(master, &bytes)?;
-                    continue;
-                }
-                let Some(end) = escape_sequence_end(&self.pending[2..]) else {
-                    return Ok(());
-                };
-                let count = end + 3;
-                write_fd(master, &self.pending[..count])?;
-                self.pending.drain(..count);
-                continue;
-            }
-
-            write_fd(master, &self.pending[..2])?;
-            self.pending.drain(..2);
-        }
-    }
-}
-
-fn escape_sequence_end(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|byte| (0x40..=0x7e).contains(byte))
-}
-
-fn marker_prefix_suffix_len(bytes: &[u8], marker: &[u8]) -> usize {
-    (1..marker.len())
-        .rev()
-        .find(|length| bytes.ends_with(&marker[..*length]))
-        .unwrap_or(0)
 }
 
 fn parse_result(bytes: &[u8], config: EmbeddedResultConfig) -> Result<ViewOutput> {
@@ -821,12 +678,7 @@ fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EmbeddedResultConfig, EmbeddedResultFormat, InputRelay, TerminalResponder, create_pipe,
-        parse_result,
-    };
-    use std::io::Read;
-    use std::os::fd::FromRawFd;
+    use super::{EmbeddedResultConfig, EmbeddedResultFormat, TerminalResponder, parse_result};
 
     #[test]
     fn path_lookup_uses_the_embedded_working_directory() {
@@ -891,90 +743,6 @@ mod tests {
             responder.primary_device_attribute_queries(b"\x1b[31\x18\x1b[0c"),
             1
         );
-    }
-
-    #[test]
-    fn input_relay_forwards_non_escape_bytes_without_waiting_for_utf8() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::default();
-        relay.push(&[0xc3], write).unwrap();
-        relay.push(&[0xa9, b'\r'], write).unwrap();
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, [0xc3, 0xa9, b'\r']);
-    }
-
-    #[test]
-    fn input_relay_reserves_only_a_timed_out_bare_escape() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::default();
-        relay.push(b"\x1b", write).unwrap();
-        assert!(!relay.bare_escape_expired());
-        relay.escape_started = Some(std::time::Instant::now() - super::ESCAPE_TIMEOUT);
-        assert!(relay.bare_escape_expired());
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert!(bytes.is_empty());
-    }
-
-    #[test]
-    fn input_relay_forwards_an_incomplete_csi_after_the_sequence_limit() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::default();
-        relay.push(b"\x1b[", write).unwrap();
-        let payload = vec![b' '; super::MAX_QUERY_SEQUENCE_LEN + 1];
-        relay.push(&payload, write).unwrap();
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, [b"\x1b[".as_slice(), payload.as_slice()].concat());
-    }
-
-    #[test]
-    fn input_relay_forwards_bare_escape_immediately_when_cancellation_is_disabled() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::new(false);
-        relay.push(b"\x1b", write).unwrap();
-        assert!(!relay.bare_escape_expired());
-        assert!(relay.take_pending().is_empty());
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"\x1b");
-    }
-
-    #[test]
-    fn input_relay_exposes_unwritten_bytes_for_the_restored_caller() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::default();
-        relay.push(b"\x1b[", write).unwrap();
-        assert_eq!(relay.take_pending(), b"\x1b[");
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert!(bytes.is_empty());
-    }
-
-    #[test]
-    fn input_relay_preserves_escape_sequences_and_bracketed_paste() {
-        let (read, write) = create_pipe().unwrap();
-        let mut relay = InputRelay::default();
-        relay.push(b"\x1b", write).unwrap();
-        relay.push(b"[A\x1ba\x1b[200~paste\x1b", write).unwrap();
-        assert!(!relay.bare_escape_expired());
-        relay.push(b"[201~", write).unwrap();
-        unsafe { libc::close(write) };
-        let mut file = unsafe { std::fs::File::from_raw_fd(read) };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"\x1b[A\x1ba\x1b[200~paste\x1b[201~");
     }
 
     #[test]

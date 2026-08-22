@@ -8,7 +8,6 @@ use anyhow::Result;
 pub(crate) struct EmbeddedSession {
     prepared: PreparedProcess,
     result: Option<EmbeddedResultConfig>,
-    escape_cancels: bool,
     cancellation: CancellationToken,
     runtime: Option<EmbeddedRuntime>,
 }
@@ -17,13 +16,11 @@ impl EmbeddedSession {
     pub(crate) fn new(
         prepared: PreparedProcess,
         result: Option<EmbeddedResultConfig>,
-        escape_cancels: bool,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             prepared,
             result,
-            escape_cancels,
             cancellation,
             runtime: None,
         }
@@ -34,7 +31,6 @@ impl EmbeddedSession {
             self.runtime = Some(EmbeddedRuntime::start(
                 &self.prepared,
                 self.result,
-                self.escape_cancels,
                 size,
                 initial_input,
             )?);

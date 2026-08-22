@@ -16,7 +16,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub(crate) enum PreparedAction {
-    Navigate(NavigationRequest),
+    Navigate {
+        request: NavigationRequest,
+        mode: crate::engine::NavigationMode,
+    },
     Call(CallRequest),
     Return(ViewReturn),
     EditInput {
@@ -61,19 +64,9 @@ pub(crate) fn prepare_continuation(
             .view(&reference.view)
             .and_then(|view| view.commands.get(&reference.id))
             .cloned(),
-        CommandOrigin::ChromeFooter { binding, .. } => config
-            .chrome
-            .footer
-            .bindings
-            .get(binding)
-            .map(|binding| binding.as_command()),
+        CommandOrigin::Session { definition, .. } => Some((**definition).clone()),
     }
-    .with_context(|| {
-        format!(
-            "continuation origin {:?} is no longer configured",
-            origin.id()
-        )
-    })?;
+    .with_context(|| format!("continuation origin {:?} is not configured", origin.id()))?;
     prepare_action(
         config,
         action,
@@ -131,7 +124,14 @@ fn prepare_action(
                 Some(query) => NavigationRequest::new(target, "").with_query(query),
                 None => NavigationRequest::with_defaults(target),
             };
-            Ok(PreparedAction::Navigate(request))
+            Ok(PreparedAction::Navigate {
+                request,
+                mode: if payload.replace {
+                    crate::engine::NavigationMode::Replace
+                } else {
+                    crate::engine::NavigationMode::Push
+                },
+            })
         }
         CommandAction::Call { payload } => {
             let target = evaluate_value(config, &snapshot, stage, &payload.target)?
@@ -168,7 +168,7 @@ fn prepare_action(
                 Some(ReturnAdapter {
                     command: invocation
                         .view_reference()
-                        .context("return action cannot originate from chrome")?
+                        .context("return action cannot originate from a session command")?
                         .clone(),
                     context: context.clone(),
                 })
@@ -294,7 +294,7 @@ fn prepare_run_command(
         .shell
         .as_deref()
         .or(view.run_shell.as_deref())
-        .unwrap_or("sh");
+        .unwrap_or("/bin/sh");
     let shell = evaluate_string_value(config, shell_source, snapshot, stage, "command shell")?;
     let handler_value = config.evaluate_value(snapshot, stage, &payload.handler)?;
     let handler_source = ResolvedScriptSource::parse(&handler_value)
@@ -405,6 +405,59 @@ pub(crate) fn find_command_for_key(
     key: Key,
 ) -> Option<CommandInvocation> {
     find_command(config, view_ref, &key.binding_name()?)
+}
+
+pub(crate) fn find_session_command_for_key(
+    config: &Config,
+    view_ref: &str,
+    key: Key,
+) -> Option<CommandInvocation> {
+    let name = key.binding_name()?;
+    config.commands.bindings.iter().find_map(|(id, binding)| {
+        if binding
+            .key(id)
+            .and_then(|key| normalize_key(key).ok())
+            .as_deref()
+            != Some(name.as_str())
+        {
+            return None;
+        }
+        binding
+            .as_command(id)
+            .map(|command| CommandInvocation::session_command(view_ref, id, command))
+    })
+}
+
+pub(crate) fn find_passthrough_command_for_key(
+    config: &Config,
+    view_ref: &str,
+    key: Key,
+) -> Option<CommandInvocation> {
+    let view = config.view(view_ref)?;
+    view.commands.iter().find_map(|(id, command)| {
+        (command.passthrough
+            && normalize_key(&command.key).ok().as_deref() == key.binding_name().as_deref())
+        .then(|| {
+            CommandInvocation::view(
+                CommandRef {
+                    view: view_ref.to_string(),
+                    id: id.clone(),
+                },
+                command.clone(),
+            )
+        })
+    })
+}
+
+pub(crate) fn passthrough_keys(config: &Config, view_ref: &str) -> Vec<Key> {
+    config
+        .view(view_ref)
+        .into_iter()
+        .flat_map(|view| view.commands.values())
+        .filter(|command| command.passthrough)
+        .filter_map(|command| normalize_key(&command.key).ok())
+        .filter_map(|key| Key::parse_binding(&key).ok())
+        .collect()
 }
 
 pub(crate) fn collect_page_owner_commands(
@@ -528,6 +581,7 @@ mod tests {
                 label: "Run".to_string(),
                 scope: CommandScope::View,
                 requires: crate::config::CommandRequirement::Input,
+                passthrough: false,
                 action: CommandAction::Run {
                     payload: crate::config::RunPayload {
                         handler: crate::config::ScriptSourceSpec::script_file("scripts/items.sh")
@@ -603,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn view_command_ids_cannot_be_misclassified_as_chrome_origins() {
+    fn view_command_ids_cannot_be_misclassified_as_session_origins() {
         let mut config = crate::config::load_test_fixture().unwrap();
         config
             .views
@@ -611,12 +665,13 @@ mod tests {
             .unwrap()
             .commands
             .insert(
-                "__chrome_footer_local".to_string(),
+                "__session_local".to_string(),
                 Command {
                     key: "ctrl+l".to_string(),
                     label: "Local".to_string(),
                     scope: CommandScope::View,
                     requires: crate::config::CommandRequirement::Input,
+                    passthrough: false,
                     action: CommandAction::Return {
                         payload: crate::config::ReturnPayload::default(),
                     },
@@ -644,7 +699,7 @@ mod tests {
             &action,
             CommandOrigin::View(CommandRef {
                 view: "core:default".to_string(),
-                id: "__chrome_footer_local".to_string(),
+                id: "__session_local".to_string(),
             }),
             context,
             &serde_json::Value::Null,

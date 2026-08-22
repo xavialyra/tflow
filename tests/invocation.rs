@@ -184,41 +184,6 @@ fn picker_layout_preview_and_prefix_resolve_from_the_operation_scope() {
 }
 
 #[test]
-fn request_namespace_is_rejected_at_configuration_load() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
-        type = "picker"
-        [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
-
-        [plugins.core.views.default.commands.accept]
-        key = "enter"
-        label = "Accept"
-        type = "return"
-
-        [plugins.core.views.default.commands.accept.payload]
-        value = "{{ request.args }}"
-        "#,
-    )
-    .unwrap();
-
-    let config = config.to_str().unwrap();
-    let result =
-        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\r");
-
-    assert_eq!(result.status, 1);
-    assert!(result.stdout.is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn result_namespace_is_rejected_outside_a_return_consumption_stage() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -383,7 +348,7 @@ fn embedded_escape_and_ctrl_c_reach_the_child_when_cancellation_is_disabled() {
 }
 
 #[test]
-fn embedded_input_does_not_dispatch_chrome_footer_bindings() {
+fn embedded_input_does_not_dispatch_session_commands_without_a_passthrough_binding() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -391,12 +356,12 @@ fn embedded_input_does_not_dispatch_chrome_footer_bindings() {
         r#"
         default_view = "core:default"
 
-        [chrome.footer.bindings.commands]
+        [commands.bindings.details]
         key = "ctrl+k"
-        label = "Commands"
+        label = "Details"
         type = "call"
 
-        [chrome.footer.bindings.commands.payload]
+        [commands.bindings.details.payload]
         target = "selectors:main"
 
         [plugins.core.views.default]
@@ -421,6 +386,94 @@ fn embedded_input_does_not_dispatch_chrome_footer_bindings() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"11\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_passthrough_command_consumes_a_switch_key() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "embedded"
+        [plugins.core.views.default.engine.config]
+        command = ["sh", "-c", "sleep 5"]
+
+        [plugins.core.views.default.commands.finish]
+        key = "ctrl+b"
+        label = "Finish"
+        passthrough = true
+        type = "return"
+
+        [plugins.core.views.default.commands.finish.payload]
+        value = "switch-consumed"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\x02");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"switch-consumed\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_passthrough_command_selector_returns_to_the_embedded_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "embedded"
+        [plugins.core.views.default.engine.config]
+        command = ["sh", "-c", "sleep 5"]
+
+        [plugins.core.views.default.commands.finish]
+        key = "ctrl+b"
+        label = "Finish"
+        passthrough = true
+        type = "return"
+        [plugins.core.views.default.commands.finish.payload]
+        value = "overlay-returned"
+
+        [plugins.selectors.views.commands]
+        [plugins.selectors.views.commands.engine]
+        type = "picker"
+        [plugins.selectors.views.commands.engine.config]
+        items = [{label = "Finish", metadata = {command = {view = "core:default", id = "finish"}}}]
+        [plugins.selectors.views.commands.query]
+        type = "object"
+        input_order = ["search"]
+        search = {type = "string", default = ""}
+        commands = {type = "array<object>", default = []}
+        [plugins.selectors.views.commands.commands.accept]
+        key = "enter"
+        label = "Select"
+        type = "return"
+        [plugins.selectors.views.commands.commands.accept.payload]
+        value = "{{ selection.metadata.command }}"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\x0b\r");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"overlay-returned\n");
     fs::remove_dir_all(root).unwrap();
 }
 

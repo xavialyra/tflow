@@ -126,7 +126,7 @@ pub(crate) struct DecodedInput {
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct InputDecoder {
     pending: Vec<u8>,
     escape_since: Option<Instant>,

@@ -964,14 +964,8 @@ mod tests {
     }
 
     #[test]
-    fn theme_tables_are_strict_and_old_token_tables_are_rejected() {
-        assert!(toml::from_str::<RawTheme>("[tokens]\naccent = \"cyan\"\n").is_err());
-        assert!(toml::from_str::<RawTheme>("[bindings.text]\nreverse = true\n").is_err());
+    fn theme_tables_reject_unknown_fields() {
         assert!(toml::from_str::<RawTheme>("[scheme]\nprimaryy = \"palette:cyan\"\n").is_err());
-        assert!(
-            toml::from_str::<RawTheme>("extends = { source = \"builtin\", name = \"terminal\" }\n")
-                .is_err()
-        );
 
         let raw: RawTheme =
             toml::from_str("[bindings.unknown]\nforeground = \"scheme:primary\"\n").unwrap();

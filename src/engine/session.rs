@@ -1,13 +1,14 @@
 use super::{
-    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin, EngineHost,
-    EngineRegistry, InputFocus, InputRefreshPolicy, InputSeed, NavigationMode, NavigationRequest,
-    TaskScheduler, ViewContext, ViewEffect, ViewInstance, ViewReturn,
+    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandMode, CommandOrigin,
+    CommandSession, EngineHost, EngineRegistry, InputFocus, InputRefreshPolicy, InputSeed,
+    NavigationMode, NavigationRequest, PassthroughEvent, TaskScheduler, ViewContext, ViewEffect,
+    ViewInstance, ViewReturn,
 };
 use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
 use crate::config::{Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, SessionScope};
 use crate::engine::api::{EditorAction, InputEdit, LauncherOutcome, ResolvedLauncherAction};
-use crate::input::{DecodedInput, InputDecoder, Key};
+use crate::input::{DecodedInput, Key};
 use crate::runtime_log::{LogRecord, RuntimeLog};
 use crate::state::StateInstance;
 use crate::terminal::{InputRead, Terminal};
@@ -19,20 +20,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use serde_json::{Value, json};
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
-
-#[derive(Clone)]
-struct QueuedInput {
-    input: DecodedInput,
-}
-
-impl QueuedInput {
-    fn new(input: DecodedInput) -> Self {
-        Self { input }
-    }
-}
 
 struct CallBoundary {
     origin: CommandOrigin,
@@ -42,7 +31,6 @@ struct CallBoundary {
 
 struct ViewEntry {
     view_ref: String,
-    route_child: bool,
     input: InputBuffer,
     input_dirty: bool,
     input_deadline: Option<Instant>,
@@ -69,8 +57,7 @@ pub(crate) struct AppSession<'a> {
     router: Arc<crate::router::Router>,
     route_input: bool,
     route_completion: Option<RouteCompletion>,
-    decoder: InputDecoder,
-    pending_inputs: VecDeque<QueuedInput>,
+    command_session: CommandSession,
     active_error: Option<LogRecord>,
     active_error_deadline: Option<Instant>,
     runtime_warning: Option<String>,
@@ -90,10 +77,13 @@ enum ReturnTransition {
 
 fn prepared_action_effect(action: crate::engine::command::PreparedAction) -> ViewEffect {
     match action {
-        crate::engine::command::PreparedAction::Navigate(request) => ViewEffect::Navigate {
-            request,
-            mode: NavigationMode::Push,
-        },
+        crate::engine::command::PreparedAction::Navigate { request, mode } => {
+            ViewEffect::Navigate {
+                request,
+                mode,
+                parent_edit: None,
+            }
+        }
         crate::engine::command::PreparedAction::Call(call) => ViewEffect::Call(call),
         crate::engine::command::PreparedAction::Return(returned) => ViewEffect::Return(returned),
         crate::engine::command::PreparedAction::EditInput { value, cursor } => {
@@ -183,7 +173,6 @@ impl<'a> AppSession<'a> {
             engines,
             views: vec![ViewEntry {
                 view_ref,
-                route_child: false,
                 input,
                 input_dirty: false,
                 input_deadline: None,
@@ -197,8 +186,7 @@ impl<'a> AppSession<'a> {
             router,
             route_input: true,
             route_completion: None,
-            decoder: InputDecoder::default(),
-            pending_inputs: VecDeque::new(),
+            command_session: CommandSession::from_config(config),
             active_error: None,
             active_error_deadline: None,
             runtime_warning: None,
@@ -250,7 +238,6 @@ impl<'a> AppSession<'a> {
             engines,
             views: vec![ViewEntry {
                 view_ref: view_ref.to_string(),
-                route_child: false,
                 input,
                 input_dirty: false,
                 input_deadline: None,
@@ -264,8 +251,7 @@ impl<'a> AppSession<'a> {
             router,
             route_input: false,
             route_completion: None,
-            decoder: InputDecoder::default(),
-            pending_inputs: VecDeque::new(),
+            command_session: CommandSession::from_config(config),
             active_error: None,
             active_error_deadline: None,
             runtime_warning: None,
@@ -299,7 +285,7 @@ impl<'a> AppSession<'a> {
         self.runtime_warning.take()
     }
 
-    fn route_completion_available(&self) -> bool {
+    fn route_input_available(&self) -> bool {
         self.route_input
             && self.views.len() == 1
             && self.views.last().is_some_and(|entry| {
@@ -372,7 +358,7 @@ impl<'a> AppSession<'a> {
             return Ok(effect);
         }
 
-        let (effect, pending_input) = {
+        let effect = {
             let entry = self
                 .views
                 .last_mut()
@@ -387,17 +373,13 @@ impl<'a> AppSession<'a> {
                 active_error: &mut self.active_error,
                 active_error_deadline: &mut self.active_error_deadline,
             };
-            let effect = entry.instance.step(&mut host, terminal)?;
-            let pending_input = entry.instance.take_pending_terminal_input();
-            (effect, pending_input)
+            entry.instance.step(&mut host, terminal)?
         };
-        if !pending_input.is_empty() {
-            self.pending_inputs.extend(
-                self.decoder
-                    .feed(&pending_input)
-                    .into_iter()
-                    .map(QueuedInput::new),
-            );
+        if matches!(effect, ViewEffect::Continue) {
+            let background_effect = self.poll_background_views(terminal)?;
+            if !matches!(background_effect, ViewEffect::Continue) {
+                return Ok(background_effect);
+            }
         }
         if !matches!(effect, ViewEffect::Continue) {
             return Ok(effect);
@@ -424,28 +406,56 @@ impl<'a> AppSession<'a> {
                 (engine, input) => engine.or(input),
             }
         };
-        let owns_terminal_input = self
-            .views
-            .last()
-            .is_some_and(|entry| entry.instance.owns_terminal_input());
-        if owns_terminal_input {
-            return self.step_owned_terminal_input(terminal, timeout.unwrap_or(40));
+        let (provides_passthrough, passthrough_keys) = {
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no active view")?;
+            let host = EngineHost {
+                config: self.config,
+                theme: self.theme,
+                input: &mut entry.input,
+                state: &mut entry.state,
+                runtime: &mut self.runtime,
+                runtime_log: &mut self.runtime_log,
+                active_error: &mut self.active_error,
+                active_error_deadline: &mut self.active_error_deadline,
+            };
+            (
+                entry.instance.provides_passthrough_input(),
+                entry.instance.passthrough_keys(&host),
+            )
+        };
+        if provides_passthrough {
+            if self.command_session.mode() != CommandMode::Passthrough {
+                let pending = self.command_session.take_all_pending_raw();
+                let mut switches = self.command_session.passthrough_keys();
+                for key in passthrough_keys {
+                    if !switches
+                        .iter()
+                        .any(|existing| existing.binding_identity() == key.binding_identity())
+                    {
+                        switches.push(key);
+                    }
+                }
+                self.command_session.enter_passthrough(switches);
+                self.command_session.feed_passthrough(&pending);
+            }
+            return self.step_passthrough(terminal, timeout.unwrap_or(40));
+        }
+        if self.command_session.mode() == CommandMode::Passthrough {
+            let pending = self.command_session.leave_passthrough();
+            self.command_session.feed_pending_raw_to_normal(&pending);
         }
         if let Some(timeout) = timeout {
-            if self.pending_inputs.is_empty() {
-                match terminal.read_input(timeout)? {
-                    InputRead::Data(bytes) => {
-                        self.pending_inputs
-                            .extend(self.decoder.feed(&bytes).into_iter().map(QueuedInput::new));
-                    }
+            if self.command_session.pending_is_empty() {
+                match self.command_session.read_normal(terminal, timeout)? {
                     InputRead::Eof => return Ok(ViewEffect::Exit),
-                    InputRead::Timeout => {}
+                    InputRead::Data(_) | InputRead::Timeout => {}
                 }
-                self.pending_inputs
-                    .extend(self.decoder.flush_due().into_iter().map(QueuedInput::new));
             }
-            while let Some(queued) = self.pending_inputs.pop_front() {
-                let Some(key) = queued.input.key else {
+            while let Some(queued) = self.command_session.pop_input() {
+                let Some(key) = queued.key else {
                     continue;
                 };
                 if self.handle_route_completion_key(key)? {
@@ -456,13 +466,23 @@ impl<'a> AppSession<'a> {
                     }
                     continue;
                 }
+                let session_command = if self.command_session.mode() == CommandMode::Overlay {
+                    None
+                } else {
+                    let view_ref = &self
+                        .views
+                        .last()
+                        .context("session has no active view")?
+                        .view_ref;
+                    self.command_session.session_command_for_key(view_ref, key)
+                };
                 let captures_editor_input = self
                     .views
                     .last()
                     .context("session has no active view")?
                     .instance
                     .captures_editor_input();
-                let action = {
+                let action = if session_command.is_none() {
                     let entry = self
                         .views
                         .last_mut()
@@ -478,8 +498,10 @@ impl<'a> AppSession<'a> {
                         active_error_deadline: &mut self.active_error_deadline,
                     };
                     entry.instance.resolve_launcher_action(&host, key)
+                } else {
+                    None
                 };
-                let view_command = if action.is_none() {
+                let view_command = if session_command.is_none() && action.is_none() {
                     let entry = self
                         .views
                         .last_mut()
@@ -501,26 +523,16 @@ impl<'a> AppSession<'a> {
                 if action.is_none()
                     && view_command.is_none()
                     && key == Key::Tab
-                    && self.route_completion_available()
+                    && self.route_input_available()
                 {
                     self.open_route_completion()?;
                     continue;
                 }
-                let command = if action.is_none() {
-                    view_command.or_else(|| {
-                        let view_ref = &self
-                            .views
-                            .last()
-                            .expect("session has an active view")
-                            .view_ref;
-                        resolve_footer_binding(self.config, key, view_ref)
-                    })
-                } else {
-                    None
-                };
+                let command =
+                    session_command.or_else(|| if action.is_none() { view_command } else { None });
                 let outcome = if let Some(invocation) = command {
                     if let Some(effect) = self.reconcile_input()? {
-                        self.pending_inputs.push_front(queued.clone());
+                        self.command_session.push_front(queued.clone());
                         LauncherOutcome::Effect(Box::new(effect))
                     } else {
                         let entry = self
@@ -537,7 +549,7 @@ impl<'a> AppSession<'a> {
                             active_error: &mut self.active_error,
                             active_error_deadline: &mut self.active_error_deadline,
                         };
-                        let execution = if invocation.is_chrome_footer() {
+                        let execution = if invocation.is_session_command() {
                             CommandExecution {
                                 invocation,
                                 context: entry.instance.view_command_context(&mut host)?,
@@ -571,7 +583,7 @@ impl<'a> AppSession<'a> {
                         }
                         Some(ResolvedLauncherAction::View(action)) => {
                             if let Some(effect) = self.reconcile_input()? {
-                                self.pending_inputs.push_front(queued.clone());
+                                self.command_session.push_front(queued.clone());
                                 LauncherOutcome::Effect(Box::new(effect))
                             } else {
                                 let entry = self
@@ -591,7 +603,7 @@ impl<'a> AppSession<'a> {
                                 entry.instance.handle_launcher_action(
                                     &mut host,
                                     action,
-                                    queued.input.clone(),
+                                    queued.clone(),
                                 )?
                             }
                         }
@@ -622,56 +634,140 @@ impl<'a> AppSession<'a> {
         Ok(self.reconcile_input()?.unwrap_or(ViewEffect::Continue))
     }
 
-    fn step_owned_terminal_input(
-        &mut self,
-        terminal: &mut Terminal,
-        timeout: i32,
-    ) -> Result<ViewEffect> {
-        let mut initial = Vec::new();
-        while let Some(queued) = self.pending_inputs.pop_front() {
-            initial.extend(queued.input.raw);
-        }
-        initial.extend(self.decoder.take_pending_raw());
-        if !initial.is_empty() {
-            let outcome = self.dispatch_owned_terminal_input(&initial)?;
-            if let LauncherOutcome::Effect(effect) = outcome {
-                return Ok(*effect);
+    fn poll_background_views(&mut self, terminal: &mut Terminal) -> Result<ViewEffect> {
+        let count = self.views.len().saturating_sub(1);
+        for index in 0..count {
+            let entry = &mut self.views[index];
+            let mut host = EngineHost {
+                config: self.config,
+                theme: self.theme,
+                input: &mut entry.input,
+                state: &mut entry.state,
+                runtime: &mut self.runtime,
+                runtime_log: &mut self.runtime_log,
+                active_error: &mut self.active_error,
+                active_error_deadline: &mut self.active_error_deadline,
+            };
+            let effect = entry.instance.background_step(&mut host, terminal)?;
+            if !matches!(effect, ViewEffect::Continue) {
+                return Ok(effect);
             }
-        }
-
-        match terminal.read_input(timeout)? {
-            InputRead::Data(bytes) if !bytes.is_empty() => {
-                if let LauncherOutcome::Effect(effect) =
-                    self.dispatch_owned_terminal_input(&bytes)?
-                {
-                    return Ok(*effect);
-                }
-            }
-            InputRead::Eof => {
-                let outcome = {
-                    let entry = self
-                        .views
-                        .last_mut()
-                        .context("session has no active view")?;
-                    let mut host = EngineHost {
-                        config: self.config,
-                        theme: self.theme,
-                        input: &mut entry.input,
-                        state: &mut entry.state,
-                        runtime: &mut self.runtime,
-                        runtime_log: &mut self.runtime_log,
-                        active_error: &mut self.active_error,
-                        active_error_deadline: &mut self.active_error_deadline,
-                    };
-                    entry.instance.handle_terminal_eof(&mut host)?
-                };
-                if let LauncherOutcome::Effect(effect) = outcome {
-                    return Ok(*effect);
-                }
-            }
-            InputRead::Data(_) | InputRead::Timeout => {}
         }
         Ok(ViewEffect::Continue)
+    }
+
+    fn step_passthrough(&mut self, terminal: &mut Terminal, timeout: i32) -> Result<ViewEffect> {
+        loop {
+            if let Some(event) = self.command_session.next_passthrough_event() {
+                if let LauncherOutcome::Effect(effect) = self.dispatch_passthrough_event(event)? {
+                    return Ok(*effect);
+                }
+                continue;
+            }
+
+            match self.command_session.read_passthrough(terminal, timeout)? {
+                InputRead::Data(bytes) => {
+                    if bytes.is_empty() {
+                        return Ok(ViewEffect::Continue);
+                    }
+                    continue;
+                }
+                InputRead::Eof => {
+                    if let LauncherOutcome::Effect(effect) = self.handle_terminal_eof()? {
+                        return Ok(*effect);
+                    }
+                    return Ok(ViewEffect::Continue);
+                }
+                InputRead::Timeout => {
+                    if let Some(event) = self.command_session.flush_passthrough_due()
+                        && let LauncherOutcome::Effect(effect) =
+                            self.dispatch_passthrough_event(event)?
+                    {
+                        return Ok(*effect);
+                    }
+                    return Ok(ViewEffect::Continue);
+                }
+            }
+        }
+    }
+
+    fn dispatch_passthrough_event(&mut self, event: PassthroughEvent) -> Result<LauncherOutcome> {
+        match event {
+            PassthroughEvent::Forward(bytes) => self.dispatch_owned_terminal_input(&bytes),
+            PassthroughEvent::Switch(input) => self.dispatch_passthrough_switch(input),
+        }
+    }
+
+    fn dispatch_passthrough_switch(&mut self, input: DecodedInput) -> Result<LauncherOutcome> {
+        let key = input.key.context("passthrough switch has no key")?;
+        let (cancel_key, view_invocation, view_ref) = {
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no active view")?;
+            (
+                entry.instance.passthrough_cancel_key(),
+                crate::engine::command::find_passthrough_command_for_key(
+                    self.config,
+                    entry.view_ref.as_str(),
+                    key,
+                ),
+                entry.view_ref.clone(),
+            )
+        };
+        let invocation = self
+            .command_session
+            .session_command_for_key(&view_ref, key)
+            .or(view_invocation);
+        if cancel_key == Some(key) {
+            return self.handle_terminal_eof();
+        }
+        let Some(invocation) = invocation else {
+            return Ok(LauncherOutcome::Continue);
+        };
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let mut host = EngineHost {
+            config: self.config,
+            theme: self.theme,
+            input: &mut entry.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        let execution = if invocation.is_session_command() {
+            CommandExecution {
+                invocation,
+                context: entry.instance.view_command_context(&mut host)?,
+            }
+        } else {
+            entry.instance.prepare_view_command(&mut host, invocation)?
+        };
+        Ok(LauncherOutcome::Effect(Box::new(
+            ViewEffect::DispatchCommand(execution),
+        )))
+    }
+
+    fn handle_terminal_eof(&mut self) -> Result<LauncherOutcome> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let mut host = EngineHost {
+            config: self.config,
+            theme: self.theme,
+            input: &mut entry.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        entry.instance.handle_terminal_eof(&mut host)
     }
 
     fn dispatch_owned_terminal_input(&mut self, bytes: &[u8]) -> Result<LauncherOutcome> {
@@ -733,8 +829,12 @@ impl<'a> AppSession<'a> {
                     self.apply_input_edit(edit)?;
                     self.reconcile_input()?.unwrap_or(ViewEffect::Continue)
                 }
-                ViewEffect::Navigate { request, mode } => {
-                    self.apply_navigation(request, mode, None)?;
+                ViewEffect::Navigate {
+                    request,
+                    mode,
+                    parent_edit,
+                } => {
+                    self.apply_navigation(request, mode, None, parent_edit)?;
                     ViewEffect::Continue
                 }
                 ViewEffect::Call(call) => {
@@ -785,16 +885,12 @@ impl<'a> AppSession<'a> {
     }
 
     fn delete_backward(&mut self) -> Result<bool> {
-        let returns_from_route = self
-            .views
-            .last()
-            .context("session has no active view")?
-            .route_child
+        let returns_to_parent = self.views.len() > 1
             && self
                 .views
                 .last()
                 .is_some_and(|entry| entry.input.raw.is_empty() && entry.input.cursor == 0);
-        if returns_from_route {
+        if returns_to_parent {
             self.pop_current(None)?;
             return Ok(false);
         }
@@ -861,15 +957,80 @@ impl<'a> AppSession<'a> {
         Ok(())
     }
 
+    fn apply_inactive_parent_edit(
+        &mut self,
+        edit: InputEdit,
+        runtime_snapshot: &Value,
+    ) -> Result<()> {
+        let (input, input_dirty, input_deadline, state) = {
+            let entry = self.views.last().context("session has no parent view")?;
+            (
+                entry.input.clone(),
+                entry.input_dirty,
+                entry.input_deadline,
+                entry.state.clone(),
+            )
+        };
+        let active_error = self.active_error.clone();
+        let active_error_deadline = self.active_error_deadline;
+        self.runtime.replace(runtime_snapshot.clone());
+
+        let transaction = (|| {
+            self.apply_input_edit(edit)?;
+            anyhow::ensure!(
+                self.reconcile_input()?.is_none(),
+                "a parent input edit produced another navigation"
+            );
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no parent view")?;
+            anyhow::ensure!(!entry.input.rejected, "the parent input edit was rejected");
+            entry.input_deadline = None;
+            Ok(())
+        })();
+        if let Err(error) = transaction {
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no parent view during rollback")?;
+            entry.input = input;
+            entry.input_dirty = input_dirty;
+            entry.input_deadline = input_deadline;
+            entry.state = state;
+            self.active_error = active_error;
+            self.active_error_deadline = active_error_deadline;
+            self.runtime.replace(runtime_snapshot.clone());
+            let activation = self.activate_current();
+            let restoration = self.restore_current_input();
+            let mut rollback_errors = Vec::new();
+            if let Err(activation_error) = activation {
+                rollback_errors.push(format!("activate failed: {activation_error:#}"));
+            }
+            if let Err(restoration_error) = restoration {
+                rollback_errors.push(format!("input restore failed: {restoration_error:#}"));
+            }
+            return if rollback_errors.is_empty() {
+                Err(error)
+            } else {
+                Err(error.context(format!(
+                    "could not fully restore the parent View after its input edit failed: {}",
+                    rollback_errors.join("; ")
+                )))
+            };
+        }
+        Ok(())
+    }
+
     fn current_chrome(&mut self, width: usize) -> Result<crate::chrome::ChromeFrame> {
-        let show_route = self.views.len() > 1;
-        let route_completion_available = self.route_completion_available();
+        let route_completion_available = self.route_input_available();
         let route_completion_active = self.route_completion.is_some();
         let entry = self
             .views
             .last_mut()
             .context("session has no active view")?;
-        let route = show_route.then(|| self.router.display(&entry.view_ref));
+        let route = (self.config.default_view.as_deref() != Some(entry.view_ref.as_str()))
+            .then(|| self.router.display(&entry.view_ref));
         let error = self
             .active_error
             .as_ref()
@@ -893,8 +1054,16 @@ impl<'a> AppSession<'a> {
             active_error: &mut self.active_error,
             active_error_deadline: &mut self.active_error_deadline,
         };
-        let chrome_footer_enabled = entry.instance.chrome_footer_enabled();
+        let session_commands_visible = entry.instance.session_commands_visible();
         let mut engine_chrome = entry.instance.chrome(&host);
+        if route_completion_available
+            && let Some(end) = self
+                .router
+                .recognized_prefix_end(&entry.view_ref, &entry.input.raw)
+        {
+            engine_chrome.presentation =
+                engine_chrome.presentation.with_recognized_input_prefix(end);
+        }
         if let Some(completion) = &self.route_completion {
             engine_chrome.status = Some(format!(
                 "{} / {} views",
@@ -906,38 +1075,54 @@ impl<'a> AppSession<'a> {
                 ("escape".to_string(), "Close".to_string()),
             ];
         }
-        if chrome_footer_enabled {
-            for binding in self.config.chrome.footer.bindings.values() {
-                let Some(key) = crate::config::normalize_key(&binding.key).ok() else {
+        if session_commands_visible && self.command_session.mode() != CommandMode::Overlay {
+            let passthrough_mode = self.command_session.mode() == CommandMode::Passthrough;
+            let session_keys = self
+                .command_session
+                .session_commands()
+                .filter(|(id, _)| !passthrough_mode || id.as_str() == "commands")
+                .filter_map(|(id, binding)| binding.key(id))
+                .filter_map(|key| crate::config::normalize_key(key).ok())
+                .collect::<Vec<_>>();
+            engine_chrome
+                .commands
+                .retain(|(key, _)| !session_keys.iter().any(|session_key| session_key == key));
+            if engine_chrome
+                .overflow_command
+                .as_ref()
+                .is_some_and(|(key, _)| session_keys.iter().any(|session_key| session_key == key))
+            {
+                engine_chrome.overflow_command = None;
+            }
+            for (id, binding) in self
+                .command_session
+                .session_commands()
+                .filter(|(id, _)| !passthrough_mode || id.as_str() == "commands")
+            {
+                let Some(key) = binding
+                    .key(id)
+                    .and_then(|key| crate::config::normalize_key(key).ok())
+                else {
                     continue;
                 };
-                let engine_uses_key = engine_chrome
-                    .commands
-                    .iter()
-                    .any(|(command_key, _)| command_key == &key)
-                    || Key::parse_binding(&key).ok().is_some_and(|key| {
-                        entry.instance.resolve_launcher_action(&host, key).is_some()
-                    });
-                let router_uses_key = if route_completion_active {
-                    matches!(
-                        key.as_str(),
-                        "tab" | "down" | "shift+tab" | "up" | "enter" | "escape"
-                    )
-                } else {
-                    key == "tab" && route_completion_available
+                let Some(label) = binding.label(id) else {
+                    continue;
                 };
-                if engine_uses_key || router_uses_key {
+                let Some(visibility) = binding.visibility(id) else {
+                    continue;
+                };
+                if route_completion_active || (key == "tab" && route_completion_available) {
                     continue;
                 }
-                let hint = (key, binding.label.clone());
-                match binding.visibility {
-                    crate::config::ChromeBindingVisibility::Always => {
+                let hint = (key, label.to_string());
+                match visibility {
+                    crate::config::CommandBindingVisibility::Always => {
                         engine_chrome.commands.push(hint);
                     }
-                    crate::config::ChromeBindingVisibility::Overflow => {
+                    crate::config::CommandBindingVisibility::Overflow => {
                         engine_chrome.overflow_command = Some(hint);
                     }
-                    crate::config::ChromeBindingVisibility::Hidden => {}
+                    crate::config::CommandBindingVisibility::Hidden => {}
                 }
             }
         }
@@ -985,6 +1170,7 @@ impl<'a> AppSession<'a> {
     }
 
     fn reconcile_input(&mut self) -> Result<Option<ViewEffect>> {
+        let route_input_available = self.route_input_available();
         let entry = self
             .views
             .last_mut()
@@ -994,11 +1180,10 @@ impl<'a> AppSession<'a> {
         }
         entry.input_dirty = false;
         let current_view = entry.view_ref.clone();
-        let route_child = entry.route_child;
         let raw_input = entry.input.raw.clone();
         let cursor = entry.input.cursor;
 
-        if !self.route_input || entry.instance.input_focus() == InputFocus::Unfocused {
+        if !route_input_available {
             self.commit_query_input(raw_input)?;
             return Ok(None);
         }
@@ -1010,11 +1195,11 @@ impl<'a> AppSession<'a> {
                     .min(query.len());
                 Ok(Some(ViewEffect::Navigate {
                     request: NavigationRequest::routed(target, query, query_cursor),
-                    mode: if route_child {
-                        NavigationMode::Replace
-                    } else {
-                        NavigationMode::Push
-                    },
+                    mode: NavigationMode::Push,
+                    parent_edit: Some(InputEdit::SetBuffer {
+                        raw: String::new(),
+                        cursor: 0,
+                    }),
                 }))
             }
             crate::router::RouteResolution::Current { query } => {
@@ -1107,8 +1292,13 @@ impl<'a> AppSession<'a> {
         request: NavigationRequest,
         mode: NavigationMode,
         boundary: Option<CallBoundary>,
+        parent_edit: Option<InputEdit>,
     ) -> Result<bool> {
         self.route_completion = None;
+        if boundary.is_none() && self.command_session.mode() != CommandMode::Normal {
+            self.command_session.reset_mode();
+        }
+        let parent_runtime = self.runtime.snapshot().clone();
         self.deactivate_current()?;
         let mut state = self.config.instantiate_state(&request.view_ref)?;
         let input = match initialize_navigation_input(
@@ -1157,6 +1347,13 @@ impl<'a> AppSession<'a> {
                 return Ok(false);
             }
         };
+        if let Some(edit) = parent_edit {
+            anyhow::ensure!(
+                mode == NavigationMode::Push,
+                "a parent input edit requires push navigation"
+            );
+            self.apply_inactive_parent_edit(edit, &parent_runtime)?;
+        }
         let transferred_boundary = if mode == NavigationMode::Replace {
             self.views
                 .last_mut()
@@ -1171,7 +1368,6 @@ impl<'a> AppSession<'a> {
         }
         self.views.push(ViewEntry {
             view_ref: request.view_ref,
-            route_child: request.route_child,
             input,
             input_dirty: false,
             input_deadline: None,
@@ -1179,17 +1375,30 @@ impl<'a> AppSession<'a> {
             call_boundary: boundary.or(transferred_boundary),
             instance: view,
         });
+        self.publish_current_location()?;
         Ok(true)
     }
 
     fn apply_call(&mut self, call: CallRequest) -> Result<()> {
+        let entering_overlay = self.command_session.mode() == CommandMode::Passthrough
+            || matches!(&call.origin, CommandOrigin::Session { .. });
+        if entering_overlay {
+            self.command_session.push_mode(CommandMode::Overlay);
+        }
         let boundary = CallBoundary {
             origin: call.origin,
             context: call.context,
             then: call.then,
         };
-        self.apply_navigation(call.request, NavigationMode::Push, Some(boundary))?;
-        Ok(())
+        let result =
+            self.apply_navigation(call.request, NavigationMode::Push, Some(boundary), None);
+        if (result.as_ref().is_err() || result.as_ref().is_ok_and(|created| !created))
+            && entering_overlay
+            && self.command_session.mode() == CommandMode::Overlay
+        {
+            self.command_session.restore_mode();
+        }
+        result.map(|_| ())
     }
 
     fn apply_return(&mut self, returned: ViewReturn) -> Result<ReturnTransition> {
@@ -1210,6 +1419,11 @@ impl<'a> AppSession<'a> {
             .take()
             .context("call boundary disappeared during Return")?;
         self.views.truncate(boundary_index);
+        if self.command_session.mode() == CommandMode::Overlay {
+            self.command_session.restore_mode();
+        } else if self.command_session.mode() == CommandMode::Passthrough {
+            self.command_session.reset_mode();
+        }
         self.activate_current()?;
         self.restore_current_input()?;
 
@@ -1240,26 +1454,32 @@ impl<'a> AppSession<'a> {
                 return Ok(Some(SessionOutcome::Exited));
             };
             self.apply_input_edit(edit)?;
-            if let Some(ViewEffect::Navigate { request, mode }) = self.reconcile_input()? {
-                self.apply_navigation(request, mode, None)?;
+            if let Some(ViewEffect::Navigate {
+                request,
+                mode,
+                parent_edit,
+            }) = self.reconcile_input()?
+            {
+                self.apply_navigation(request, mode, None, parent_edit)?;
             }
             return Ok(None);
         }
 
         let current = self.views.last().context("session has no active view")?;
-        let returned_from_route_child = current.route_child;
         let cancelled_call = current.call_boundary.is_some();
         self.deactivate_current()?;
         self.views.pop();
+        match self.command_session.mode() {
+            CommandMode::Overlay => self.command_session.restore_mode(),
+            CommandMode::Passthrough => self.command_session.reset_mode(),
+            CommandMode::Normal => {}
+        }
         if cancelled_call {
             self.activate_current()?;
             self.restore_current_input()?;
             return Ok(None);
         }
         let Some(edit) = edit else {
-            if returned_from_route_child {
-                self.remove_route_tag()?;
-            }
             self.activate_current()?;
             self.restore_current_input()?;
             return Ok(None);
@@ -1269,21 +1489,15 @@ impl<'a> AppSession<'a> {
         self.publish_current_location()?;
         let effect = self.reconcile_input()?;
         self.activate_current()?;
-        if let Some(ViewEffect::Navigate { request, mode }) = effect {
-            self.apply_navigation(request, mode, None)?;
+        if let Some(ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        }) = effect
+        {
+            self.apply_navigation(request, mode, None, parent_edit)?;
         }
         Ok(None)
-    }
-
-    fn remove_route_tag(&mut self) -> Result<()> {
-        let entry = self
-            .views
-            .last_mut()
-            .context("session has no active view")?;
-        entry.input.clear();
-        entry.input.params.clear();
-        entry.input.rejected = false;
-        Ok(())
     }
 
     fn restore_current_input(&mut self) -> Result<()> {
@@ -1467,19 +1681,6 @@ fn render_route_completion(
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).style(theme.picker.text), area);
-}
-
-fn resolve_footer_binding(config: &Config, key: Key, view_ref: &str) -> Option<CommandInvocation> {
-    let key = key.binding_name()?;
-    config
-        .chrome
-        .footer
-        .bindings
-        .iter()
-        .find_map(|(id, binding)| {
-            (crate::config::normalize_key(&binding.key).ok().as_deref() == Some(&key))
-                .then(|| CommandInvocation::chrome_footer(view_ref, id, binding.as_command()))
-        })
 }
 
 fn command_status_message(status: &std::process::ExitStatus) -> String {
@@ -1680,6 +1881,60 @@ mod tests {
         }
     }
 
+    struct ParentTransactionView {
+        events: Arc<Mutex<Vec<String>>>,
+        fail_commit: bool,
+        fail_activate: bool,
+    }
+
+    impl ParentTransactionView {
+        fn record(&self, event: &str) {
+            self.events.lock().unwrap().push(event.to_string());
+        }
+    }
+
+    impl ViewInstance for ParentTransactionView {
+        fn activate(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+            self.record("activate");
+            if self.fail_activate {
+                anyhow::bail!("parent activation failed");
+            }
+            Ok(())
+        }
+
+        fn restore_input(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+            self.record("restore");
+            Ok(())
+        }
+
+        fn input_committed(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
+            let view_ref = host.runtime.snapshot()["view"]["current"]["ref"]
+                .as_str()
+                .unwrap_or("missing");
+            self.record(&format!("commit:{view_ref}:{}", host.input.raw));
+            if self.fail_commit {
+                anyhow::bail!("parent commit failed");
+            }
+            Ok(())
+        }
+
+        fn step(
+            &mut self,
+            _host: &mut EngineHost<'_>,
+            _terminal: &mut Terminal,
+        ) -> Result<ViewEffect> {
+            Ok(ViewEffect::Continue)
+        }
+
+        fn render(
+            &mut self,
+            _host: &EngineHost<'_>,
+            _frame: &mut ratatui::Frame,
+            _area: ratatui::layout::Rect,
+        ) {
+        }
+    }
+
     #[test]
     fn default_session_reuses_bound_invocation_state() {
         let mut config = crate::config::load_test_fixture().unwrap();
@@ -1717,11 +1972,22 @@ mod tests {
         session.mark_input_changed().unwrap();
 
         let effect = session.reconcile_input().unwrap().unwrap();
-        let ViewEffect::Navigate { request, mode } = effect else {
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = effect
+        else {
             panic!("route input did not produce navigation");
         };
         assert_eq!(request.input.as_ref().unwrap().cursor, "que".len());
-        assert!(session.apply_navigation(request, mode, None).unwrap());
+        assert!(
+            session
+                .apply_navigation(request, mode, None, parent_edit)
+                .unwrap()
+        );
+        assert_eq!(session.views[0].input.raw, "");
+        assert_eq!(session.views[0].input.params, "");
         let input = &session.views.last().unwrap().input;
         assert_eq!(input.raw, "query");
         assert_eq!(input.cursor, "que".len());
@@ -1732,7 +1998,142 @@ mod tests {
     }
 
     #[test]
-    fn returning_from_routed_view_removes_the_route_tag() {
+    fn routed_parent_commit_observes_a_coherent_parent_runtime() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let entry = session.views.last_mut().unwrap();
+        entry.instance = Box::new(ParentTransactionView {
+            events: Arc::clone(&events),
+            fail_commit: false,
+            fail_activate: false,
+        });
+        entry.input.raw = "app ".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = session.reconcile_input().unwrap().unwrap()
+        else {
+            panic!("route input did not produce navigation");
+        };
+
+        assert!(
+            session
+                .apply_navigation(request, mode, None, parent_edit)
+                .unwrap()
+        );
+        assert_eq!(*events.lock().unwrap(), ["commit:core:default:"]);
+        assert_eq!(
+            session.runtime.snapshot()["view"]["current"]["ref"],
+            "apps:main"
+        );
+    }
+
+    #[test]
+    fn routed_parent_commit_failure_restores_the_parent() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let entry = session.views.last_mut().unwrap();
+        entry.instance = Box::new(ParentTransactionView {
+            events: Arc::clone(&events),
+            fail_commit: true,
+            fail_activate: false,
+        });
+        entry.input.raw = "app ".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = session.reconcile_input().unwrap().unwrap()
+        else {
+            panic!("route input did not produce navigation");
+        };
+
+        let error = session
+            .apply_navigation(request, mode, None, parent_edit)
+            .unwrap_err();
+        assert!(error.to_string().contains("parent commit failed"));
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["commit:core:default:", "activate", "restore"]
+        );
+        assert_eq!(session.views.len(), 1);
+        assert_eq!(session.views[0].view_ref, "core:default");
+        assert_eq!(session.views[0].input.raw, "app ");
+        assert_eq!(
+            session.runtime.snapshot()["view"]["current"]["ref"],
+            "core:default"
+        );
+        assert_eq!(
+            session.runtime.snapshot()["view"]["current"]["raw_input"],
+            "app "
+        );
+    }
+
+    #[test]
+    fn routed_parent_rollback_restores_input_after_activation_failure() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let entry = session.views.last_mut().unwrap();
+        entry.instance = Box::new(ParentTransactionView {
+            events: Arc::clone(&events),
+            fail_commit: true,
+            fail_activate: true,
+        });
+        entry.input.raw = "app ".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = session.reconcile_input().unwrap().unwrap()
+        else {
+            panic!("route input did not produce navigation");
+        };
+
+        let error = session
+            .apply_navigation(request, mode, None, parent_edit)
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("parent commit failed"), "error: {error}");
+        assert!(error.contains("parent activation failed"), "error: {error}");
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["commit:core:default:", "activate", "restore"]
+        );
+        assert_eq!(session.views.len(), 1);
+        assert_eq!(session.views[0].input.raw, "app ");
+        assert_eq!(
+            session.runtime.snapshot()["view"]["current"]["ref"],
+            "core:default"
+        );
+    }
+
+    #[test]
+    fn routed_navigation_clears_the_default_before_replace_and_return() {
         let config = crate::config::load_test_fixture().unwrap();
         let mut session = AppSession::new(
             &config,
@@ -1746,17 +2147,125 @@ mod tests {
         session.mark_input_changed().unwrap();
 
         let effect = session.reconcile_input().unwrap().unwrap();
-        let ViewEffect::Navigate { request, mode } = effect else {
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = effect
+        else {
             panic!("route input did not produce navigation");
         };
-        assert!(session.apply_navigation(request, mode, None).unwrap());
-        assert!(session.views.last().unwrap().route_child);
-        assert!(session.pop_current(None).unwrap().is_none());
+        assert!(
+            session
+                .apply_navigation(request, mode, None, parent_edit)
+                .unwrap()
+        );
+        assert_eq!(session.views[0].input.raw, "");
+        assert_eq!(session.views[0].input.params, "");
 
+        assert!(
+            session
+                .apply_navigation(
+                    NavigationRequest::with_defaults("apps:main"),
+                    NavigationMode::Replace,
+                    None,
+                    None,
+                )
+                .unwrap()
+        );
+        assert!(session.pop_current(None).unwrap().is_none());
         let input = &session.views.last().unwrap().input;
         assert_eq!(input.raw, "");
         assert_eq!(input.params, "");
         assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn nondefault_root_shows_its_prefix_without_enabling_routes() {
+        let mut config = crate::config::load_test_fixture().unwrap();
+        let state = config.bind_invocation_state("apps:main", &[]).unwrap();
+        config.set_invocation(Value::Null, state);
+        let cancellation = CancellationToken::new();
+        let mut session = AppSession::single_root_with_theme(
+            &config,
+            crate::theme::ResolvedTheme::terminal(),
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+            "apps:main",
+            &cancellation,
+        )
+        .unwrap();
+
+        assert_eq!(session.current_chrome(80).unwrap().input_line(), "app ");
+        let entry = session.views.last_mut().unwrap();
+        entry.input.raw = "sys query".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        assert!(session.reconcile_input().unwrap().is_none());
+        assert_eq!(session.views.len(), 1);
+        assert_eq!(session.views[0].input.params, "sys query");
+    }
+
+    #[test]
+    fn route_prefixes_are_only_resolved_by_the_default_root() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let entry = session.views.last_mut().unwrap();
+        entry.input.raw = "app ".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        let ViewEffect::Navigate {
+            request,
+            mode,
+            parent_edit,
+        } = session.reconcile_input().unwrap().unwrap()
+        else {
+            panic!("default root did not resolve a route prefix");
+        };
+        assert!(
+            session
+                .apply_navigation(request, mode, None, parent_edit)
+                .unwrap()
+        );
+
+        let entry = session.views.last_mut().unwrap();
+        entry.input.raw = "sys nested".to_string();
+        entry.input.cursor = entry.input.raw.len();
+        session.mark_input_changed().unwrap();
+        assert!(session.reconcile_input().unwrap().is_none());
+        assert_eq!(session.views.len(), 2);
+        assert_eq!(session.views.last().unwrap().view_ref, "apps:main");
+        assert_eq!(session.views.last().unwrap().input.params, "sys nested");
+    }
+
+    #[test]
+    fn empty_child_input_backspace_returns_to_its_parent() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        assert!(
+            session
+                .apply_navigation(
+                    NavigationRequest::with_defaults("apps:main"),
+                    NavigationMode::Push,
+                    None,
+                    None,
+                )
+                .unwrap()
+        );
+        assert_eq!(session.views.len(), 2);
+        assert!(!session.delete_backward().unwrap());
+        assert_eq!(session.views.len(), 1);
+        assert_eq!(session.views[0].view_ref, "core:default");
     }
 
     #[test]
@@ -1781,6 +2290,7 @@ mod tests {
                 .apply_navigation(
                     NavigationRequest::new("sys:main", ""),
                     NavigationMode::Push,
+                    None,
                     None,
                 )
                 .unwrap()
@@ -1829,9 +2339,18 @@ mod tests {
         session
             .apply_call(CallRequest {
                 request: NavigationRequest::with_defaults("sys:main"),
-                origin: CommandOrigin::ChromeFooter {
+                origin: CommandOrigin::Session {
                     view: "core:default".to_string(),
-                    binding: "commands".to_string(),
+                    command: "commands".to_string(),
+                    definition: Box::new(
+                        config
+                            .commands
+                            .bindings
+                            .get("commands")
+                            .unwrap()
+                            .as_command("commands")
+                            .unwrap(),
+                    ),
                 },
                 context,
                 then: Some(Box::new(crate::config::CommandAction::EditInput {
@@ -1846,6 +2365,7 @@ mod tests {
             .apply_navigation(
                 NavigationRequest::with_defaults("apps:main"),
                 NavigationMode::Push,
+                None,
                 None,
             )
             .unwrap();
@@ -1966,6 +2486,7 @@ mod tests {
                 NavigationRequest::with_defaults("apps:main"),
                 NavigationMode::Replace,
                 None,
+                None,
             )
             .unwrap();
         assert!(session.views.last().unwrap().call_boundary.is_some());
@@ -2003,11 +2524,11 @@ mod tests {
     }
 
     #[test]
-    fn footer_hint_is_hidden_when_the_engine_or_router_owns_its_key() {
+    fn session_command_hint_is_visible_until_a_modal_router_owns_its_key() {
         let mut config = crate::config::load_test_fixture().unwrap();
-        let binding = config.chrome.footer.bindings.get_mut("commands").unwrap();
-        binding.visibility = crate::config::ChromeBindingVisibility::Always;
-        binding.key = "ctrl+k".to_string();
+        let binding = config.commands.bindings.get_mut("commands").unwrap();
+        binding.visibility = Some(crate::config::CommandBindingVisibility::Always);
+        binding.key = Some("ctrl+k".to_string());
         {
             let mut session = AppSession::new(
                 &config,
@@ -2024,13 +2545,7 @@ mod tests {
             );
         }
 
-        config
-            .chrome
-            .footer
-            .bindings
-            .get_mut("commands")
-            .unwrap()
-            .key = "enter".to_string();
+        config.commands.bindings.get_mut("commands").unwrap().key = Some("enter".to_string());
         {
             let mut session = AppSession::new(
                 &config,
@@ -2039,7 +2554,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                !session
+                session
                     .current_chrome(120)
                     .unwrap()
                     .footer
@@ -2047,13 +2562,7 @@ mod tests {
             );
         }
 
-        config
-            .chrome
-            .footer
-            .bindings
-            .get_mut("commands")
-            .unwrap()
-            .key = "shift+tab".to_string();
+        config.commands.bindings.get_mut("commands").unwrap().key = Some("shift+tab".to_string());
         let mut session = AppSession::new(
             &config,
             crate::runtime_log::RuntimeLog::disabled(),

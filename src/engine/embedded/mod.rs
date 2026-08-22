@@ -95,12 +95,6 @@ impl Engine for EmbeddedEngine {
             &["command", "title", "result", "escape-cancels"],
         )?;
         require_field(name, view, "command")?;
-        if !view.commands.is_empty() {
-            anyhow::bail!(
-                "view {:?} using the embedded engine cannot define View commands",
-                name
-            );
-        }
         if let Some(title) = view.engine_field("title")
             && !title.is_str()
         {
@@ -213,11 +207,9 @@ impl Engine for EmbeddedEngine {
                     current_dir: plugin_root,
                 },
                 result,
-                escape_cancels,
                 context.cancellation,
             ),
             pending_outcome: None,
-            pending_input: Vec::new(),
         }))
     }
 }
@@ -228,36 +220,56 @@ struct EmbeddedView {
     escape_cancels: bool,
     session: EmbeddedSession,
     pending_outcome: Option<crate::engine::embedded::pty::EmbeddedRunResult>,
-    pending_input: Vec<u8>,
+}
+
+impl EmbeddedView {
+    fn poll_runtime(&mut self, terminal: &Terminal) -> Result<()> {
+        if self.pending_outcome.is_some() {
+            return Ok(());
+        }
+        self.session.start(terminal.size(), &[])?;
+        if let EmbeddedPoll::Finished(result) = self.session.poll(terminal.size())? {
+            self.pending_outcome = Some(result);
+        }
+        Ok(())
+    }
+
+    fn complete(&mut self, host: &mut EngineHost<'_>) -> Result<ViewEffect> {
+        let Some(result) = self.pending_outcome.take() else {
+            return Ok(ViewEffect::Continue);
+        };
+        let message = embedded_status_message(&result.outcome);
+        let success = embedded_succeeded(&result.outcome);
+        host.record_view_status(&self.view_ref, &message, success);
+        match result.outcome {
+            EmbeddedOutcome::Returned(output) => Ok(ViewEffect::Return(ViewReturn {
+                source_view: self.view_ref.clone(),
+                output,
+                adapter: None,
+            })),
+            _ => Ok(ViewEffect::Back(None)),
+        }
+    }
 }
 
 impl ViewInstance for EmbeddedView {
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
-        if let Some(result) = self.pending_outcome.take() {
-            let message = embedded_status_message(&result.outcome);
-            let success = embedded_succeeded(&result.outcome);
-            host.record_view_status(&self.view_ref, &message, success);
-            return match result.outcome {
-                EmbeddedOutcome::Returned(output) => Ok(ViewEffect::Return(ViewReturn {
-                    source_view: self.view_ref.clone(),
-                    output,
-                    adapter: None,
-                })),
-                _ => Ok(ViewEffect::Back(None)),
-            };
+        if self.pending_outcome.is_some() {
+            return self.complete(host);
         }
-        self.session.start(terminal.size(), &[])?;
-        match self.session.poll(terminal.size())? {
-            EmbeddedPoll::Running => Ok(ViewEffect::Continue),
-            EmbeddedPoll::Finished(result) => {
-                self.pending_input = result.remaining_input.clone();
-                self.pending_outcome = Some(result);
-                Ok(ViewEffect::Continue)
-            }
-        }
+        self.poll_runtime(terminal)?;
+        Ok(ViewEffect::Continue)
     }
 
-    fn owns_terminal_input(&self) -> bool {
+    fn background_step(
+        &mut self,
+        _host: &mut EngineHost<'_>,
+        terminal: &mut Terminal,
+    ) -> Result<ViewEffect> {
+        self.poll_runtime(terminal).map(|_| ViewEffect::Continue)
+    }
+
+    fn provides_passthrough_input(&self) -> bool {
         self.pending_outcome.is_none() && self.session.is_running()
     }
 
@@ -275,19 +287,40 @@ impl ViewInstance for EmbeddedView {
         Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))))
     }
 
-    fn take_pending_terminal_input(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending_input)
+    fn passthrough_keys(&self, host: &EngineHost<'_>) -> Vec<crate::input::Key> {
+        let mut keys = crate::engine::command::passthrough_keys(host.config, &self.view_ref);
+        if self.escape_cancels && !keys.contains(&crate::input::Key::Escape) {
+            keys.push(crate::input::Key::Escape);
+        }
+        keys
+    }
+
+    fn passthrough_cancel_key(&self) -> Option<crate::input::Key> {
+        self.escape_cancels.then_some(crate::input::Key::Escape)
     }
 
     fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
-        self.owns_terminal_input().then_some(40)
+        self.provides_passthrough_input().then_some(40)
     }
 
-    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+    fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+        let mut commands = chrome_commands(self.escape_cancels);
+        if let Some(view) = host.config.view(&self.view_ref) {
+            commands.extend(
+                view.commands
+                    .values()
+                    .filter(|command| command.passthrough)
+                    .filter_map(|command| {
+                        crate::config::normalize_key(&command.key)
+                            .ok()
+                            .map(|key| (key, command.label.clone()))
+                    }),
+            );
+        }
         crate::chrome::EngineChrome {
             title: Some(format!("embedded: {}", self.title)),
             status: Some("keys pass through".to_string()),
-            commands: chrome_commands(self.escape_cancels),
+            commands,
             ..crate::chrome::EngineChrome::default()
         }
     }
@@ -313,8 +346,8 @@ impl ViewInstance for EmbeddedView {
         InputFocus::Unfocused
     }
 
-    fn chrome_footer_enabled(&self) -> bool {
-        false
+    fn session_commands_visible(&self) -> bool {
+        true
     }
 }
 

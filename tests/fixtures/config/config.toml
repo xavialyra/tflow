@@ -2,22 +2,6 @@
 default_view = "core:default"
 theme = "fixture"
 image_protocol = "sixel"
-[chrome.footer.bindings.commands]
-key = "ctrl+k"
-label = "Commands"
-visibility = "overflow"
-type = "call"
-
-[chrome.footer.bindings.commands.payload]
-target = "selectors:commands"
-query = { commands = "{{ page.commands }}" }
-
-[chrome.footer.bindings.commands.payload.then]
-type = "invoke"
-
-[chrome.footer.bindings.commands.payload.then.payload]
-command = "{{ result.output.value }}"
-
 [defaults.capture.bindings]
 copy = ["enter"]
 back = ["escape"]

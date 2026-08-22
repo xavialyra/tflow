@@ -46,7 +46,6 @@ pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
     pub(crate) query: Option<Value>,
-    pub(crate) route_child: bool,
 }
 
 impl NavigationRequest {
@@ -55,7 +54,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::new(input)),
             query: None,
-            route_child: false,
         }
     }
 
@@ -64,7 +62,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: None,
             query: None,
-            route_child: false,
         }
     }
 
@@ -77,7 +74,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::routed(query, cursor)),
             query: None,
-            route_child: true,
         }
     }
 
@@ -158,28 +154,32 @@ pub(crate) struct EmbeddedResultConfig {
 #[derive(Debug, Clone)]
 pub(crate) enum CommandOrigin {
     View(CommandRef),
-    ChromeFooter { view: String, binding: String },
+    Session {
+        view: String,
+        command: String,
+        definition: Box<Command>,
+    },
 }
 
 impl CommandOrigin {
     pub(crate) fn source_view(&self) -> &str {
         match self {
             Self::View(reference) => &reference.view,
-            Self::ChromeFooter { view, .. } => view,
+            Self::Session { view, .. } => view,
         }
     }
 
     pub(crate) fn id(&self) -> &str {
         match self {
             Self::View(reference) => &reference.id,
-            Self::ChromeFooter { binding, .. } => binding,
+            Self::Session { command, .. } => command,
         }
     }
 
     pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
         match self {
             Self::View(reference) => Some(reference),
-            Self::ChromeFooter { .. } => None,
+            Self::Session { .. } => None,
         }
     }
 }
@@ -199,15 +199,16 @@ impl CommandInvocation {
         Self::from_origin(CommandOrigin::View(reference), command)
     }
 
-    pub(crate) fn chrome_footer(
+    pub(crate) fn session_command(
         view: impl Into<String>,
-        binding: impl Into<String>,
+        command_id: impl Into<String>,
         command: Command,
     ) -> Self {
         Self {
-            origin: CommandOrigin::ChromeFooter {
+            origin: CommandOrigin::Session {
                 view: view.into(),
-                binding: binding.into(),
+                command: command_id.into(),
+                definition: Box::new(command.clone()),
             },
             command,
         }
@@ -221,8 +222,8 @@ impl CommandInvocation {
         self.origin.view_reference()
     }
 
-    pub(crate) fn is_chrome_footer(&self) -> bool {
-        matches!(self.origin, CommandOrigin::ChromeFooter { .. })
+    pub(crate) fn is_session_command(&self) -> bool {
+        matches!(self.origin, CommandOrigin::Session { .. })
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -288,6 +289,7 @@ pub(crate) enum ViewEffect {
     Navigate {
         request: NavigationRequest,
         mode: NavigationMode,
+        parent_edit: Option<InputEdit>,
     },
     Call(CallRequest),
     Return(ViewReturn),
@@ -357,6 +359,16 @@ pub(crate) trait ViewInstance {
 
     fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
 
+    /// Poll a suspended View whose runtime must remain alive while another
+    /// command mode or overlay is active. Ordinary Views do nothing here.
+    fn background_step(
+        &mut self,
+        _host: &mut EngineHost<'_>,
+        _terminal: &mut Terminal,
+    ) -> Result<ViewEffect> {
+        Ok(ViewEffect::Continue)
+    }
+
     fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
         None
     }
@@ -365,9 +377,9 @@ pub(crate) trait ViewInstance {
         false
     }
 
-    /// Whether this View owns raw terminal bytes instead of the session decoder.
-    /// Embedded PTY Views use this to preserve escape sequences and byte order.
-    fn owns_terminal_input(&self) -> bool {
+    /// Whether this View requests the session's raw passthrough input mode.
+    /// The session still owns terminal reads and routes bytes to the View.
+    fn provides_passthrough_input(&self) -> bool {
         false
     }
 
@@ -383,8 +395,15 @@ pub(crate) trait ViewInstance {
         Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)))
     }
 
-    fn take_pending_terminal_input(&mut self) -> Vec<u8> {
-        Vec::new()
+    /// Keys explicitly declared by the active View for its raw passthrough mode.
+    /// Normal View commands are not implicitly active while a PTY owns input.
+    fn passthrough_keys(&self, host: &EngineHost<'_>) -> Vec<Key> {
+        crate::engine::command::passthrough_keys(host.config, host.state.view_ref())
+    }
+
+    /// A mode-specific cancellation key, if the View exposes one.
+    fn passthrough_cancel_key(&self) -> Option<Key> {
+        None
     }
 
     fn resolve_view_command(&self, host: &EngineHost<'_>, key: Key) -> Option<CommandInvocation> {
@@ -454,7 +473,7 @@ pub(crate) trait ViewInstance {
         InputFocus::Focused
     }
 
-    fn chrome_footer_enabled(&self) -> bool {
+    fn session_commands_visible(&self) -> bool {
         true
     }
 }

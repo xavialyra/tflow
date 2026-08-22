@@ -1,6 +1,7 @@
 mod api;
 mod capture;
 pub(crate) mod command;
+mod command_session;
 mod embedded;
 mod evaluate;
 mod host;
@@ -21,6 +22,7 @@ pub(crate) use api::{
     NavigationRequest, ReturnAdapter, ViewContext, ViewEffect, ViewInstance, ViewOutput,
     ViewOutputItem, ViewReturn,
 };
+pub(crate) use command_session::{CommandMode, CommandSession, PassthroughEvent};
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};
 pub(crate) use host::EngineHost;
 pub(crate) use process::{PreparedProcess, ProcessGroupGuard, clear_managed_environment};

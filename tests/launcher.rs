@@ -2,8 +2,9 @@ mod support;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use support::{
     fixture_config, run_tty_invocation_with_blocked_stdout_signal, spawn_launcher,
@@ -980,6 +981,11 @@ fn explicit_capture_view_receives_typed_query_state() {
     let output = wait_for_text(&process.master, "from-option");
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("from-option"));
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible.lines().any(|line| line.trim() == "core:direct"),
+        "screen: {visible}"
+    );
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
@@ -1097,6 +1103,91 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         "output: {:?}",
         output
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn btop_fixture_route_tab_and_escape_restore_the_empty_default() {
+    let root = temporary_root();
+    let marker = root.join("resource-marker");
+    let bin = root.join("bin");
+    let user_config = root.join("xdg-config").join("btop");
+    let fake_btop = bin.join("btop");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&user_config).unwrap();
+    fs::write(
+        user_config.join("btop.conf"),
+        "shown_boxes = \"cpu mem\"\nupdate_ms = 777\n",
+    )
+    .unwrap();
+    fs::write(
+        &fake_btop,
+        "#!/bin/sh\nset -eu\nprintf '%s|%s\\n' \"$(sed -n '/^shown_boxes = /p' \"$2\")\" \"$(sed -n '/^update_ms = /p' \"$2\")\" >> \"$MONITOR_MARKER\"\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let mut process = spawn_launcher_with_args_and_env(
+        &fixture_config(),
+        &[],
+        &[
+            ("MONITOR_MARKER", marker.to_str().unwrap()),
+            ("PATH", &path),
+            ("XDG_CONFIG_HOME", root.join("xdg-config").to_str().unwrap()),
+        ],
+    );
+    wait_for_ready(&process.master);
+    process.master.write_all(b"btop:main ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "btop / cpu");
+    let initial = wait_for_nonempty_file(&marker);
+    assert!(initial.contains("shown_boxes = ") && initial.contains("cpu"));
+    assert!(
+        !initial.contains("cpu mem"),
+        "user box selection leaked: {initial}"
+    );
+    assert!(initial.contains("update_ms = 777"), "marker: {initial}");
+
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let switched = loop {
+        let contents = fs::read_to_string(&marker).unwrap_or_default();
+        if contents.lines().count() >= 2 {
+            break contents;
+        }
+        assert!(Instant::now() < deadline, "Tab did not restart the monitor");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let switched_line = switched.lines().nth(1).unwrap();
+    assert!(switched_line.contains("shown_boxes = ") && switched_line.contains("mem"));
+    assert!(
+        !switched_line.contains("cpu mem"),
+        "user box selection leaked: {switched}"
+    );
+    assert!(
+        switched_line.contains("update_ms = 777"),
+        "marker: {switched}"
+    );
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Enter Open");
+    let output = String::from_utf8_lossy(&output);
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible
+            .lines()
+            .nth(1)
+            .is_some_and(|line| line.trim().is_empty()),
+        "screen: {visible}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1927,7 +2018,7 @@ fn feed_owners_apply_independent_query_defaults() {
 }
 
 #[test]
-fn route_input_escape_removes_the_route_tag() {
+fn picker_back_clears_routed_query_before_returning_to_default() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1979,11 +2070,21 @@ fn route_input_escape_removes_the_route_tag() {
     process
         .master
         .write_all(b"\x1b")
-        .expect("could not write route escape");
+        .expect("could not clear the routed query");
     process
         .master
         .flush()
-        .expect("could not flush route escape");
+        .expect("could not flush the routed query clear");
+    wait_for_ready(&process.master);
+
+    process
+        .master
+        .write_all(b"\x1b")
+        .expect("could not return from the routed picker");
+    process
+        .master
+        .flush()
+        .expect("could not flush the routed picker return");
     let _ = wait_for_text(&process.master, "Item");
     process
         .master
@@ -1999,7 +2100,7 @@ fn route_input_escape_removes_the_route_tag() {
 }
 
 #[test]
-fn deleting_route_input_returns_to_parent_before_switching_aliases() {
+fn empty_picker_input_returns_to_parent_before_a_new_root_route() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2057,19 +2158,19 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
     process
         .master
         .write_all(b"\x7f")
-        .expect("could not delete route tag");
+        .expect("could not return from the empty child picker");
     process
         .master
         .flush()
-        .expect("could not flush route tag deletion");
+        .expect("could not flush the child picker return");
     process
         .master
         .write_all(b"\x7f\x7f\x7f")
-        .expect("could not delete input after route tag removal");
+        .expect("could not backspace at the empty default root");
     process
         .master
         .flush()
-        .expect("could not flush input deletion after route tag removal");
+        .expect("could not flush default root backspace");
     process
         .master
         .write_all(b"sys ")
@@ -2300,7 +2401,7 @@ fn failed_capture_cannot_copy_its_diagnostic_text() {
 }
 
 #[test]
-fn capture_keeps_global_footer_bindings_available() {
+fn capture_keeps_session_commands_available() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2311,12 +2412,12 @@ fn capture_keeps_global_footer_bindings_available() {
         [defaults.capture.bindings]
         copy = ["ctrl+k"]
 
-        [chrome.footer.bindings.details]
+        [commands.bindings.details]
         key = "ctrl+k"
         label = "Details"
         type = "call"
 
-        [chrome.footer.bindings.details.payload]
+        [commands.bindings.details.payload]
         target = "core:details"
 
         [plugins.core.views.default.engine]

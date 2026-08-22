@@ -83,7 +83,6 @@ impl Engine for PickerEngine {
             &context.request.view_ref,
             context.tasks.clone(),
             Arc::new(context.config.clone()),
-            context.request.route_child,
             keymap,
             options,
         );

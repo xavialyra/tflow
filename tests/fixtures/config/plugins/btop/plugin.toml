@@ -1,0 +1,33 @@
+[plugin]
+api = 1
+name = "btop resource monitor"
+
+[views.main]
+alias = "btop"
+
+[views.main.engine]
+type = "embedded"
+
+[views.main.engine.config]
+command = ["sh", "scripts/btop.sh", "{{ view.query.resource }}"]
+title = "btop / {{ view.query.resource }}"
+escape-cancels = true
+
+[views.main.query]
+type = "object"
+input_order = []
+resource = { type = "string", default = "cpu" }
+next = { type = "object", default = { resource = "memory", next = { resource = "network", next = { resource = "processes", next = { resource = "cpu" } } } } }
+
+[views.main.commands.next]
+key = "tab"
+label = "Next resource"
+scope = "view"
+requires = "input"
+passthrough = true
+type = "navigate"
+
+[views.main.commands.next.payload]
+target = "btop:main"
+query = "{{ view.query.next }}"
+replace = true

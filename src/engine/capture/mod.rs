@@ -156,11 +156,7 @@ struct CaptureView {
 impl CaptureView {
     fn command_owns_key(&self, host: &EngineHost<'_>, key: Key) -> bool {
         command::find_command_for_key(host.config, &self.view_ref, key).is_some()
-            || key.binding_name().is_some_and(|key| {
-                host.config.chrome.footer.bindings.values().any(|binding| {
-                    crate::config::normalize_key(&binding.key).ok().as_deref() == Some(&key)
-                })
-            })
+            || command::find_session_command_for_key(host.config, &self.view_ref, key).is_some()
     }
 }
 

@@ -9,7 +9,6 @@ use crate::engine::{
     EngineHost, InputRefreshPolicy, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
 };
 use crate::input::{DecodedInput, Key};
-use crate::router::Router;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
@@ -72,8 +71,6 @@ pub(crate) struct PickerView {
     pub(super) feed_contexts: BTreeMap<FeedId, FeedContext>,
     options: PickerOptions,
     started: bool,
-    route_child: bool,
-    router: Router,
     pub(super) keymap: PickerKeymap,
     preview: Option<PickerPreview>,
 }
@@ -83,7 +80,6 @@ impl PickerView {
         view: &str,
         tasks: TaskScheduler,
         config: Arc<Config>,
-        route_child: bool,
         keymap: PickerKeymap,
         options: PickerOptions,
     ) -> Self {
@@ -101,8 +97,6 @@ impl PickerView {
             feed_contexts: BTreeMap::new(),
             options,
             started: false,
-            route_child,
-            router: Router::new(&config),
             keymap,
             preview,
         }
@@ -496,9 +490,7 @@ impl ViewInstance for PickerView {
     ) -> Option<ResolvedLauncherAction> {
         let action = match self.keymap.action(key) {
             Some(super::keymap::PickerAction::Exit) => LauncherAction::Exit,
-            Some(super::keymap::PickerAction::Back)
-                if self.route_child || host.input.raw.is_empty() =>
-            {
+            Some(super::keymap::PickerAction::Back) if host.input.raw.is_empty() => {
                 LauncherAction::Back
             }
             Some(super::keymap::PickerAction::Back) => {
@@ -573,18 +565,10 @@ impl ViewInstance for PickerView {
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         let status = selection_count(self.frame.selected, self.frame.items.len());
         let commands = self.visible_commands(host.config, &host.input.raw);
-        let mut presentation = crate::chrome::ChromePresentation::default();
-        if let Some(end) = self
-            .router
-            .recognized_prefix_end(&self.frame.view, &host.input.raw)
-        {
-            presentation = presentation.with_recognized_input_prefix(end);
-        }
         crate::chrome::EngineChrome {
             title: None,
             status: Some(status),
             commands,
-            presentation,
             ..crate::chrome::EngineChrome::default()
         }
     }
@@ -648,7 +632,6 @@ mod tests {
             "core:default",
             tasks,
             Arc::clone(&config),
-            false,
             PickerKeymap::from_values(None, None).unwrap(),
             PickerOptions {
                 show_prefix: false,
@@ -681,7 +664,6 @@ mod tests {
             "core:default",
             tasks,
             Arc::clone(&config),
-            false,
             PickerKeymap::from_values(None, None).unwrap(),
             PickerOptions {
                 show_prefix: false,
