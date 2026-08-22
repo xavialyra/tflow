@@ -1,11 +1,11 @@
 use super::PendingAction;
-use crate::cancellation::CancellationToken;
 use crate::config::{
     Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ResolvedScriptSource, SessionScope,
 };
-use crate::script_runner::{ensure_script_success, run_script};
+use crate::execution::{ensure_script_success, run_script};
+use crate::lifecycle::CancellationToken;
 use crate::state::StateInstance;
-use crate::text::sanitize_text;
+use crate::terminal::sanitize_text;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -76,10 +76,10 @@ pub(crate) struct ItemsEvent {
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
     pub(crate) failure: Option<String>,
-    pub(crate) pending_action: Option<PendingAction>,
+    pub(super) pending_action: Option<PendingAction>,
 }
 
-pub(crate) type ItemsTaskHandle = crate::engine::TaskHandle;
+pub(crate) type ItemsTaskHandle = super::tasks::TaskHandle;
 
 pub(crate) fn load_items_for_page(
     config: &Config,
@@ -499,7 +499,7 @@ mod tests {
     fn feed_owner_and_active_page_are_distinct_dynamic_roots() {
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -568,7 +568,7 @@ mod tests {
     fn evaluated_items_require_json_arrays() {
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -591,7 +591,7 @@ mod tests {
     fn dynamic_item_labels_are_evaluated_recursively() {
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -629,13 +629,13 @@ mod tests {
 
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
             .config
             .items = Some("{{ page.query }}".into());
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "apps": {
                     "views": {
@@ -647,9 +647,11 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        config.plugin_roots.insert("apps".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("apps".to_string(), root.clone());
         let result = load_items(
             &config,
             "core:default",
@@ -697,7 +699,7 @@ mod tests {
 
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -706,7 +708,7 @@ mod tests {
             "items.sh",
             Some(toml::Value::Array(vec!["{{ view.query }}".into()])),
         ));
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "core": {
                     "views": {
@@ -724,9 +726,11 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        config.plugin_roots.insert("apps".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
             &config,
@@ -771,7 +775,7 @@ mod tests {
 
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -783,7 +787,7 @@ mod tests {
                 "{{ view.query.text }}".into(),
             ])),
         ));
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "apps": {
                     "views": {
@@ -800,9 +804,11 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        config.plugin_roots.insert("apps".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
             &config,
@@ -848,7 +854,7 @@ mod tests {
         .unwrap();
 
         let mut config = test_config();
-        config.views.insert(
+        config.test_views_mut().insert(
             "sys:main".to_string(),
             View {
                 engine: EngineSpec {
@@ -870,14 +876,14 @@ mod tests {
             },
         );
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
             .config
             .items = Some(script_source("invalid-items.sh", None));
         config
-            .views
+            .test_views_mut()
             .get_mut("core:default")
             .unwrap()
             .engine
@@ -890,7 +896,7 @@ mod tests {
                 view: "sys:main".to_string(),
             },
         ];
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "apps": {
                     "views": {
@@ -920,10 +926,14 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        config.plugin_roots.insert("apps".to_string(), root.clone());
-        config.plugin_roots.insert("sys".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("apps".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("sys".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
             &config,
@@ -958,13 +968,13 @@ mod tests {
     fn nonempty_binding_does_not_run_a_feed_without_ordered_fields() {
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
             .config
             .items = Some("{{ page.query.provider_should_not_run }}".into());
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "apps": {
                     "views": {
@@ -981,7 +991,7 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         let page_state = config.instantiate_state("core:default").unwrap();
 
@@ -1005,7 +1015,7 @@ mod tests {
     #[test]
     fn feeds_merge_items_in_config_order() {
         let mut config = test_config();
-        config.views.insert(
+        config.test_views_mut().insert(
             "sys:main".to_string(),
             View {
                 engine: EngineSpec {
@@ -1031,7 +1041,7 @@ mod tests {
             },
         );
         config
-            .views
+            .test_views_mut()
             .get_mut("core:default")
             .unwrap()
             .engine
@@ -1079,7 +1089,7 @@ mod tests {
 
         let mut config = test_config();
         config
-            .views
+            .test_views_mut()
             .get_mut("apps:main")
             .unwrap()
             .engine
@@ -1088,7 +1098,7 @@ mod tests {
             "items.sh",
             Some(toml::Value::Array(vec!["query={{ view.query }}".into()])),
         ));
-        config.config_value = serde_json::json!({
+        *config.test_config_value_mut() = serde_json::json!({
             "plugins": {
                 "apps": {
                     "views": {
@@ -1105,9 +1115,11 @@ mod tests {
                 }
             }
         });
-        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.test_rebuild_state_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        config.plugin_roots.insert("apps".to_string(), root.clone());
+        config
+            .test_plugin_roots_mut()
+            .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
             &config,

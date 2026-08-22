@@ -3,11 +3,12 @@ use super::items::{FeedContext, FeedId, Item, ItemsEvent, ItemsRequest, ItemsTas
 use super::keymap::PickerKeymap;
 use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
+use super::tasks::{TaskCompletion, TaskScheduler};
+use crate::command::{EditorAction, LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::Config;
-use crate::engine::api::{EditorAction, LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::engine::{
-    EngineHost, InputActionBinding, InputRefreshPolicy, SelectionBindingState, TaskCompletion,
-    TaskScheduler, ViewEffect, ViewInputMode, ViewInstance,
+    EngineHost, InputActionBinding, InputRefreshPolicy, SelectionBindingState, ViewEffect,
+    ViewInputMode, ViewInstance,
 };
 use crate::input::{DecodedInput, Key};
 use crate::terminal::Terminal;
@@ -36,7 +37,7 @@ pub(crate) struct PickerFrame {
     pub(crate) results_input: String,
     pub(crate) results_valid: bool,
     pub(crate) items_pending: bool,
-    pub(crate) pending_action: Option<PendingAction>,
+    pending_action: Option<PendingAction>,
     pub(crate) pending_selection: isize,
 }
 
@@ -134,7 +135,7 @@ impl PickerView {
         &self.frame.view
     }
 
-    pub(crate) fn queue_pending_action(&mut self, action: PendingAction) {
+    fn queue_pending_action(&mut self, action: PendingAction) {
         self.frame.pending_action = Some(action);
     }
 
@@ -697,7 +698,7 @@ fn key_display(key: Key) -> String {
 mod tests {
     use super::*;
     use crate::chrome::InputBuffer;
-    use crate::engine::RuntimeStore;
+    use crate::runtime::RuntimeStore;
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {
         let config = Arc::new(crate::config::load_test_fixture().unwrap());
@@ -751,7 +752,7 @@ mod tests {
         picker.frame.results_valid = true;
         picker.request_items("core:default", "A", "A", state.clone());
         let first_generation = picker.request_generation;
-        let mut runtime_log = crate::runtime_log::RuntimeLog::disabled();
+        let mut runtime_log = crate::diagnostics::RuntimeLog::disabled();
         let mut active_error = None;
         let mut active_error_deadline = None;
         let theme = crate::theme::Theme::terminal();

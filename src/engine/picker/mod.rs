@@ -5,6 +5,7 @@ mod preview;
 mod render;
 mod runtime;
 mod session;
+mod tasks;
 
 use self::keymap::PickerKeymap;
 use self::session::PickerOptions;
@@ -16,7 +17,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub(crate) use items::{Item, ItemsRequest, ItemsResponse, load_items_for_page};
+pub(crate) use items::Item;
+pub(crate) use tasks::TaskScheduler;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PendingAction {

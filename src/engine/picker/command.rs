@@ -1,6 +1,6 @@
 use super::{Item, PickerView};
+use crate::command;
 use crate::config::{CommandRequirement, CommandScope, Config};
-use crate::engine::command;
 use crate::engine::{
     CommandContext, CommandExecution, CommandInvocation, CommandOwnerContext,
     CommandSelectionContext, EngineHost, ViewOutput, ViewOutputItem,

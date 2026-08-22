@@ -1,5 +1,5 @@
-use crate::engine::keymap::{ActionBindings, KeymapAction};
 use crate::input::Key;
+use crate::input::keymap::{ActionBindings, KeymapAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum PickerAction {

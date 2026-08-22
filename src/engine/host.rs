@@ -1,8 +1,8 @@
 use crate::chrome::InputBuffer;
+use crate::command::CommandInvocation;
 use crate::config::Config;
-use crate::engine::api::CommandInvocation;
-use crate::engine::runtime::RuntimeStore;
-use crate::runtime_log::{LogLevel, LogRecord, RuntimeLog};
+use crate::diagnostics::{LogLevel, LogRecord, RuntimeLog};
+use crate::runtime::RuntimeStore;
 use crate::state::StateInstance;
 use crate::theme::ResolvedTheme;
 use std::time::{Duration, Instant};

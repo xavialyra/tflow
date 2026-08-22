@@ -9,13 +9,13 @@ use super::{
     ViewInstance, ViewOutput, evaluate_field, evaluate_optional_string, require_field,
     validate_fields,
 };
+use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::{
     ConfigSource, Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View,
     toml_to_json,
 };
-use crate::engine::api::{LauncherOutcome, ResolvedInputAction, ViewAction};
+use crate::execution::{ensure_script_success, run_script};
 use crate::expression::EvaluationStage;
-use crate::script_runner::{ensure_script_success, run_script};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};

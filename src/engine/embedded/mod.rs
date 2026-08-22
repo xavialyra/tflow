@@ -1,19 +1,22 @@
 mod pty;
 mod session;
+mod terminal;
 
 pub(crate) use self::pty::EmbeddedOutcome;
 use self::pty::EmbeddedPoll;
 use self::session::EmbeddedSession;
+pub(crate) use self::terminal::EmbeddedTerminal;
 
-use super::api::{LauncherOutcome, ResolvedInputAction, ViewAction};
-use super::keymap::{ActionBindings, KeymapAction};
 use super::{
     EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputActionBinding, InputFocus,
-    PreparedProcess, ViewContext, ViewEffect, ViewInputMode, ViewInstance, ViewReturn,
-    evaluate_field, evaluate_optional_string, require_field, validate_fields,
+    ViewContext, ViewEffect, ViewInputMode, ViewInstance, ViewReturn, evaluate_field,
+    evaluate_optional_string, require_field, validate_fields,
 };
+use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::{ENGINE_EMBEDDED, View};
+use crate::execution::PreparedProcess;
 use crate::expression::{Template, is_dynamic_string};
+use crate::input::keymap::{ActionBindings, KeymapAction};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};

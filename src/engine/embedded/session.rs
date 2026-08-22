@@ -1,8 +1,8 @@
-use crate::cancellation::CancellationToken;
-use crate::embedded_terminal::EmbeddedTerminal;
 use crate::engine::EmbeddedResultConfig;
-use crate::engine::PreparedProcess;
+use crate::engine::EmbeddedTerminal;
 use crate::engine::embedded::pty::{EmbeddedPoll, EmbeddedRuntime};
+use crate::execution::PreparedProcess;
+use crate::lifecycle::CancellationToken;
 use anyhow::Result;
 
 pub(crate) struct EmbeddedSession {

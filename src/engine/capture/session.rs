@@ -1,4 +1,4 @@
-use crate::text::sanitize_text;
+use crate::terminal::sanitize_text;
 
 pub(crate) struct CaptureSession {
     title: String,

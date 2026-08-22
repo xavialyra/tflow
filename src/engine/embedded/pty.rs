@@ -1,9 +1,7 @@
-use crate::cancellation::CancellationToken;
-use crate::embedded_terminal::EmbeddedTerminal;
-use crate::engine::process::MANAGED_ENVIRONMENT;
-use crate::engine::{
-    EmbeddedResultConfig, EmbeddedResultFormat, PreparedProcess, ProcessGroupGuard, ViewOutput,
-};
+use crate::engine::EmbeddedTerminal;
+use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat, ViewOutput};
+use crate::execution::{MANAGED_ENVIRONMENT, PreparedProcess, ProcessGroupGuard};
+use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
