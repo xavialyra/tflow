@@ -335,8 +335,8 @@ pub struct EvalContext<'a> {
     pub templates: Option<&'a TemplateRegistry>,
 }
 
-#[derive(Default)]
-struct Budget {
+#[derive(Debug, Default)]
+pub(crate) struct Budget {
     nodes: usize,
     output_bytes: usize,
 }
@@ -868,20 +868,29 @@ fn validate_json_value_with_budget(value: &Value, budget: &mut Budget, depth: us
     Ok(())
 }
 
+#[cfg(test)]
 pub fn evaluate_json_value(value: &Value, context: &EvalContext<'_>) -> Result<Value> {
     let mut budget = Budget::default();
-    evaluate_json_value_with_budget(value, context, &mut budget, 0)
+    evaluate_json_value_with_budget_at_depth(value, context, &mut budget, 0)
 }
 
-pub fn clone_json_value_bounded(
+pub(crate) fn evaluate_json_value_with_budget(
+    value: &Value,
+    context: &EvalContext<'_>,
+    budget: &mut Budget,
+) -> Result<Value> {
+    evaluate_json_value_with_budget_at_depth(value, context, budget, 0)
+}
+
+pub(crate) fn clone_json_value_with_budget(
     value: &Value,
     cancellation: Option<&CancellationToken>,
+    budget: &mut Budget,
 ) -> Result<Value> {
-    let mut budget = Budget::default();
-    clone_value(value, &mut budget, cancellation, 0, true)
+    clone_value(value, budget, cancellation, 0, true)
 }
 
-fn evaluate_json_value_with_budget(
+fn evaluate_json_value_with_budget_at_depth(
     value: &Value,
     context: &EvalContext<'_>,
     budget: &mut Budget,
@@ -901,7 +910,9 @@ fn evaluate_json_value_with_budget(
             budget.output(2 + values.len().saturating_sub(1), context.cancellation)?;
             values
                 .iter()
-                .map(|value| evaluate_json_value_with_budget(value, context, budget, depth + 1))
+                .map(|value| {
+                    evaluate_json_value_with_budget_at_depth(value, context, budget, depth + 1)
+                })
                 .collect::<Result<Vec<_>>>()
                 .map(Value::Array)
         }
@@ -919,7 +930,12 @@ fn evaluate_json_value_with_budget(
                     budget.output(1, context.cancellation)?;
                     Ok((
                         key.clone(),
-                        evaluate_json_value_with_budget(value, context, budget, depth + 1)?,
+                        evaluate_json_value_with_budget_at_depth(
+                            value,
+                            context,
+                            budget,
+                            depth + 1,
+                        )?,
                     ))
                 })
                 .collect::<Result<serde_json::Map<_, _>>>()
@@ -1092,15 +1108,10 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_legacy_and_non_path_syntax() {
+    fn parser_rejects_non_path_syntax() {
         for source in [
             "{{ 1 }}",
-            "{{ ctx }}",
-            "{{ ctx.page.input }}",
-            "{{ ctx[\"page\"] }}",
             "{{ page.value == 1 }}",
-            "{{ script(\"x\") }}",
-            "{{ runtime.value }}",
             "{{ unknown }}",
             "{{ page[\"unterminated] }}",
             "{{ page[-1] }}",

@@ -107,7 +107,7 @@ pub(crate) fn finish(
         })?;
     let crate::config::CommandAction::Return { payload } = &command.action else {
         anyhow::bail!(
-            "command {:?} for view {:?} is no longer a return command",
+            "command {:?} for view {:?} is not a return command",
             adapter.command.id,
             adapter.command.view
         );
@@ -140,9 +140,12 @@ pub(crate) fn finish(
     let handler_target = handler_value
         .as_str()
         .context("return handler must evaluate to a string")?;
-    let plugin_root = config
-        .plugin_root(&adapter.command.view)
-        .unwrap_or_else(|| Path::new("."));
+    let plugin_root = config.plugin_root(&adapter.command.view).with_context(|| {
+        format!(
+            "return handler for command {:?} has no plugin root",
+            adapter.command.id
+        )
+    })?;
     let arguments = config.evaluate_argv(
         payload.args.as_ref(),
         &snapshot,

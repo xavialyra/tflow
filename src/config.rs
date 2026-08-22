@@ -1,7 +1,10 @@
 use crate::cancellation::CancellationToken;
+#[cfg(test)]
+use crate::expression::evaluate_json_value;
 use crate::expression::{
-    ContextRequirements, EvalContext, EvaluationStage, Namespace, Template, TemplateRegistry,
-    clone_json_value_bounded, evaluate_json_value, is_dynamic_string,
+    Budget, ContextRequirements, EvalContext, EvaluationStage, Namespace, Template,
+    TemplateRegistry, clone_json_value_with_budget, evaluate_json_value_with_budget,
+    is_dynamic_string,
 };
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
@@ -13,6 +16,7 @@ use serde_json::Value;
 use std::ops::DerefMut;
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs,
     ops::Deref,
@@ -30,7 +34,7 @@ pub(crate) struct Config {
     pub default_view: Option<ViewRef>,
     pub(crate) image_protocol: ImageProtocol,
     pub(crate) log_file: Option<PathBuf>,
-    pub(crate) chrome: ChromeConfig,
+    pub(crate) commands: CommandConfig,
     pub(crate) input_value: Value,
     pub(crate) invocation_state: StateInstance,
     compiled: CompiledConfig,
@@ -83,12 +87,13 @@ impl<'a> InvocationScope<'a> {
         self,
         requirements: &ContextRequirements,
         cancellation: Option<&CancellationToken>,
+        budget: &mut Budget,
         context: &mut serde_json::Map<String, Value>,
     ) -> Result<()> {
         if requirements.requires(Namespace::Input) {
             context.insert(
                 Namespace::Input.name().to_string(),
-                clone_json_value_bounded(self.input, cancellation)?,
+                clone_json_value_with_budget(self.input, cancellation, budget)?,
             );
         }
         Ok(())
@@ -110,12 +115,13 @@ impl<'a> SessionScope<'a> {
         self,
         requirements: &ContextRequirements,
         cancellation: Option<&CancellationToken>,
+        budget: &mut Budget,
         context: &mut serde_json::Map<String, Value>,
     ) -> Result<()> {
         if requirements.requires(Namespace::Page) {
             context.insert(
                 Namespace::Page.name().to_string(),
-                public_page_context(self.runtime, requirements, cancellation)?,
+                public_page_context(self.runtime, requirements, cancellation, budget)?,
             );
         }
         if requirements.requires(Namespace::Selection) {
@@ -126,13 +132,13 @@ impl<'a> SessionScope<'a> {
                 .unwrap_or(&default);
             context.insert(
                 Namespace::Selection.name().to_string(),
-                clone_json_value_bounded(selection, cancellation)?,
+                clone_json_value_with_budget(selection, cancellation, budget)?,
             );
         }
         if requirements.requires(Namespace::Session) {
             context.insert(
                 Namespace::Session.name().to_string(),
-                public_session_context(self.runtime, requirements, cancellation)?,
+                public_session_context(self.runtime, requirements, cancellation, budget)?,
             );
         }
         Ok(())
@@ -165,13 +171,14 @@ impl<'a> OwnerViewScope<'a> {
         config: &Config,
         requirements: &ContextRequirements,
         cancellation: Option<&CancellationToken>,
+        budget: &mut Budget,
         context: &mut serde_json::Map<String, Value>,
     ) -> Result<()> {
         if requirements.requires(Namespace::View) {
             let view = config.view_value(self.state, self.binding_raw)?;
             context.insert(
                 Namespace::View.name().to_string(),
-                clone_json_value_bounded(&view, cancellation)?,
+                clone_json_value_with_budget(&view, cancellation, budget)?,
             );
         }
         Ok(())
@@ -193,12 +200,13 @@ impl<'a> ReturnScope<'a> {
         self,
         requirements: &ContextRequirements,
         cancellation: Option<&CancellationToken>,
+        budget: &mut Budget,
         context: &mut serde_json::Map<String, Value>,
     ) -> Result<()> {
         if requirements.requires(Namespace::Result) {
             context.insert(
                 Namespace::Result.name().to_string(),
-                clone_json_value_bounded(self.value, cancellation)?,
+                clone_json_value_with_budget(self.value, cancellation, budget)?,
             );
         }
         Ok(())
@@ -209,13 +217,14 @@ impl<'a> ReturnScope<'a> {
 ///
 /// ConfigSource selects raw configuration independently. The owner scope can
 /// therefore differ from the active session page while a feed is evaluated.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct EvaluationSnapshot<'a> {
     invocation: InvocationScope<'a>,
     session: SessionScope<'a>,
     owner: Option<OwnerViewScope<'a>>,
     returned: Option<ReturnScope<'a>>,
     cancellation: Option<&'a CancellationToken>,
+    budget: RefCell<Budget>,
 }
 
 impl<'a> EvaluationSnapshot<'a> {
@@ -231,6 +240,7 @@ impl<'a> EvaluationSnapshot<'a> {
             owner,
             returned: None,
             cancellation,
+            budget: RefCell::new(Budget::default()),
         }
     }
 
@@ -253,19 +263,25 @@ impl<'a> EvaluationSnapshot<'a> {
         &self,
         config: &Config,
         requirements: &ContextRequirements,
+        budget: &mut Budget,
     ) -> Result<Value> {
         let mut context = serde_json::Map::new();
         self.invocation
-            .populate(requirements, self.cancellation, &mut context)?;
+            .populate(requirements, self.cancellation, budget, &mut context)?;
         self.session
-            .populate(requirements, self.cancellation, &mut context)?;
+            .populate(requirements, self.cancellation, budget, &mut context)?;
         if requirements.requires(Namespace::View) {
-            self.owner_scope()?
-                .populate(config, requirements, self.cancellation, &mut context)?;
+            self.owner_scope()?.populate(
+                config,
+                requirements,
+                self.cancellation,
+                budget,
+                &mut context,
+            )?;
         }
         if requirements.requires(Namespace::Result) {
             self.return_scope()?
-                .populate(requirements, self.cancellation, &mut context)?;
+                .populate(requirements, self.cancellation, budget, &mut context)?;
         }
         Ok(Value::Object(context))
     }
@@ -645,6 +661,9 @@ pub struct NavigatePayload {
     pub target: toml::Value,
     #[serde(default)]
     pub query: Option<toml::Value>,
+    /// Replace the current View instead of pushing a new stack entry.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -687,7 +706,7 @@ pub struct InvokePayload {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ChromeBindingVisibility {
+pub(crate) enum CommandBindingVisibility {
     #[default]
     Always,
     Overflow,
@@ -696,37 +715,87 @@ pub(crate) enum ChromeBindingVisibility {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ChromeConfig {
+pub(crate) struct CommandConfig {
     #[serde(default)]
-    pub(crate) footer: ChromeRegionConfig,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ChromeRegionConfig {
-    #[serde(default)]
-    pub(crate) bindings: BTreeMap<String, ChromeBinding>,
+    pub(crate) bindings: BTreeMap<String, CommandBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ChromeBinding {
-    pub(crate) key: String,
-    pub(crate) label: String,
+pub(crate) struct CommandBinding {
     #[serde(default)]
-    pub(crate) visibility: ChromeBindingVisibility,
+    pub(crate) key: Option<String>,
+    #[serde(default)]
+    pub(crate) label: Option<String>,
+    #[serde(default)]
+    pub(crate) visibility: Option<CommandBindingVisibility>,
     #[serde(flatten)]
-    pub(crate) action: CommandAction,
+    pub(crate) action: Option<CommandAction>,
 }
 
-impl ChromeBinding {
-    pub(crate) fn as_command(&self) -> Command {
-        Command {
-            key: self.key.clone(),
-            label: self.label.clone(),
+impl CommandBinding {
+    pub(crate) fn builtin_commands() -> Self {
+        Self {
+            key: None,
+            label: None,
+            visibility: None,
+            action: None,
+        }
+    }
+
+    pub(crate) fn key(&self, id: &str) -> Option<&str> {
+        self.key
+            .as_deref()
+            .or_else(|| (id == "commands").then_some("ctrl+k"))
+    }
+
+    pub(crate) fn label(&self, id: &str) -> Option<&str> {
+        self.label
+            .as_deref()
+            .or_else(|| (id == "commands").then_some("Commands"))
+    }
+
+    pub(crate) fn visibility(&self, id: &str) -> Option<CommandBindingVisibility> {
+        Some(self.visibility.unwrap_or(if id == "commands" {
+            CommandBindingVisibility::Overflow
+        } else {
+            CommandBindingVisibility::Always
+        }))
+    }
+
+    pub(crate) fn command_action(&self, id: &str) -> Option<CommandAction> {
+        if let Some(action) = &self.action {
+            return Some(action.clone());
+        }
+        if id != "commands" {
+            return None;
+        }
+        let mut query = toml::map::Map::new();
+        query.insert(
+            "commands".to_string(),
+            toml::Value::String("{{ page.commands }}".to_string()),
+        );
+        Some(CommandAction::Call {
+            payload: CallPayload {
+                target: toml::Value::String("selectors:commands".to_string()),
+                query: Some(toml::Value::Table(query)),
+                then: Some(Box::new(CommandAction::Invoke {
+                    payload: InvokePayload {
+                        command: toml::Value::String("{{ result.output.value }}".to_string()),
+                    },
+                })),
+            },
+        })
+    }
+
+    pub(crate) fn as_command(&self, id: &str) -> Option<Command> {
+        Some(Command {
+            key: self.key(id)?.to_string(),
+            label: self.label(id)?.to_string(),
             scope: CommandScope::View,
             requires: CommandRequirement::Input,
-            action: self.action.clone(),
-        }
+            passthrough: false,
+            action: self.command_action(id)?,
+        })
     }
 }
 
@@ -738,6 +807,8 @@ pub struct Command {
     pub scope: CommandScope,
     #[serde(default)]
     pub requires: CommandRequirement,
+    #[serde(default)]
+    pub passthrough: bool,
     #[serde(flatten)]
     pub action: CommandAction,
 }
@@ -756,15 +827,13 @@ struct RawConfig {
     #[serde(default)]
     log_file: Option<PathBuf>,
     #[serde(default)]
-    chrome: ChromeConfig,
+    commands: CommandConfig,
     #[serde(default)]
     theme: Option<String>,
     #[serde(default)]
     plugins: BTreeMap<String, Plugin>,
     #[serde(default)]
     defaults: Defaults,
-    #[serde(default)]
-    viewtypes: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -949,6 +1018,9 @@ impl Config {
             .with_context(|| format!("cannot parse config {}", user_path.display()))?;
         reject_root_plugins(&user_config)?;
         let disabled_plugins = disabled_plugins(Some(&user_config))?;
+        if let Some(table) = user_config.as_table_mut() {
+            table.remove("disabled_plugins");
+        }
         remove_disabled_plugins(&mut user_config, &disabled_plugins);
         normalize_keymap_tables(&mut user_config)
             .with_context(|| format!("invalid keymap in {}", user_path.display()))?;
@@ -1057,13 +1129,10 @@ impl Config {
     }
 
     fn from_raw(
-        raw: RawConfig,
+        mut raw: RawConfig,
         plugin_roots: BTreeMap<String, PathBuf>,
-        config_value: Value,
+        mut config_value: Value,
     ) -> Result<Self> {
-        if raw.viewtypes.is_some() {
-            bail!("viewtypes are no longer supported; configure the engine directly on each view");
-        }
         let default_view = raw.default_view;
         let mut views = BTreeMap::new();
         let mut plugins = BTreeMap::new();
@@ -1080,6 +1149,13 @@ impl Config {
             plugins.insert(package_id, metadata);
         }
         expand_feed_patterns(&mut views)?;
+        if views.contains_key("selectors:commands") {
+            raw.commands
+                .bindings
+                .entry("commands".to_string())
+                .or_insert_with(CommandBinding::builtin_commands);
+            inject_builtin_commands_value(&mut config_value);
+        }
         let compiled =
             CompiledConfig::build(views, plugins, raw.defaults, plugin_roots, config_value)?;
         validate_optional_string_requirements(
@@ -1092,7 +1168,7 @@ impl Config {
             default_view,
             image_protocol: raw.image_protocol,
             log_file: raw.log_file,
-            chrome: raw.chrome,
+            commands: raw.commands,
             input_value: Value::Null,
             invocation_state: StateInstance::default(),
             compiled,
@@ -1105,8 +1181,15 @@ impl Config {
         views: BTreeMap<ViewRef, View>,
         plugins: BTreeMap<String, PluginMetadata>,
         plugin_roots: BTreeMap<String, PathBuf>,
-        config_value: Value,
+        mut config_value: Value,
     ) -> Result<Self> {
+        let mut commands = CommandConfig::default();
+        if views.contains_key("selectors:commands") {
+            commands
+                .bindings
+                .insert("commands".to_string(), CommandBinding::builtin_commands());
+            inject_builtin_commands_value(&mut config_value);
+        }
         let compiled = CompiledConfig::build(
             views,
             plugins,
@@ -1118,7 +1201,7 @@ impl Config {
             default_view,
             image_protocol: ImageProtocol::default(),
             log_file: None,
-            chrome: ChromeConfig::default(),
+            commands,
             input_value: Value::Null,
             invocation_state: StateInstance::default(),
             compiled,
@@ -1179,54 +1262,73 @@ impl Config {
             }
         }
 
-        let mut footer_keys = BTreeMap::new();
-        let mut footer_overflow = 0;
-        for (id, binding) in &self.chrome.footer.bindings {
-            if !matches!(binding.action, CommandAction::Call { .. }) {
-                bail!("chrome footer binding {id:?} must use a call action");
+        let mut command_keys = BTreeMap::new();
+        let mut overflow_commands = 0;
+        for (id, binding) in &self.commands.bindings {
+            if id == "commands"
+                && (binding.action.is_some()
+                    || binding.label.is_some()
+                    || binding.visibility.is_some())
+            {
+                bail!("session command \"commands\" is built in; configure only its key");
             }
-            validate_optional_string_requirements(
+            let action = binding.command_action(id).with_context(|| {
+                format!("session command binding {id:?} must define a call action")
+            })?;
+            if !matches!(action, CommandAction::Call { .. }) {
+                bail!("session command binding {id:?} must use a call action");
+            }
+            let key_source = binding
+                .key(id)
+                .with_context(|| format!("session command binding {id:?} has no key"))?;
+            let label = binding
+                .label(id)
+                .with_context(|| format!("session command binding {id:?} has no label"))?;
+            let visibility = binding
+                .visibility(id)
+                .with_context(|| format!("session command binding {id:?} has no visibility"))?;
+            validate_string_requirements(
                 &self.template_registry,
-                Some(&binding.key),
+                key_source,
                 EvaluationStage::Bootstrap,
-                &format!("chrome footer binding {id:?} key"),
+                &format!("session command binding {id:?} key"),
             )?;
-            validate_optional_string_requirements(
+            validate_string_requirements(
                 &self.template_registry,
-                Some(&binding.label),
+                label,
                 EvaluationStage::Bootstrap,
-                &format!("chrome footer binding {id:?} label"),
+                &format!("session command binding {id:?} label"),
             )?;
-            let key = normalize_key(&binding.key)?;
-            if let Some(previous) = footer_keys.insert(key.clone(), id) {
+            let key = normalize_key(key_source)?;
+            if let Some(previous) = command_keys.insert(key.clone(), id) {
                 bail!(
-                    "chrome footer bindings {:?} and {:?} both use key {:?}",
+                    "session command bindings {:?} and {:?} both use key {:?}",
                     previous,
                     id,
                     key
                 );
             }
-            if binding.visibility == ChromeBindingVisibility::Overflow {
-                footer_overflow += 1;
+            if visibility == CommandBindingVisibility::Overflow {
+                overflow_commands += 1;
             }
             validate_command_action(
                 self.default_view.as_deref().unwrap_or("<root>"),
-                &format!("chrome:footer:{id}"),
-                &binding.action,
+                &format!("session:command:{id}"),
+                &action,
                 &self.views,
                 None,
                 0,
             )?;
             validate_command_action_requirements(
                 &self.template_registry,
-                &binding.action,
+                &action,
                 EvaluationStage::Operation,
-                &format!("chrome footer binding {id:?}"),
+                &format!("session command binding {id:?}"),
                 0,
             )?;
         }
-        if footer_overflow > 1 {
-            bail!("chrome footer can define at most one overflow binding");
+        if overflow_commands > 1 {
+            bail!("session commands can define at most one overflow binding");
         }
 
         let mut aliases = BTreeMap::<&str, &str>::new();
@@ -1503,17 +1605,18 @@ impl Config {
     ) -> Result<Value> {
         let requirements = self.template_registry.requirements_for_value(value)?;
         requirements.validate_stage(stage, "runtime configuration value")?;
+        let mut budget = snapshot.budget.borrow_mut();
         let root = if requirements.is_empty() {
             Value::Null
         } else {
-            snapshot.expression_context(self, &requirements)?
+            snapshot.expression_context(self, &requirements, &mut budget)?
         };
         let evaluator = EvalContext {
             root: &root,
             cancellation: snapshot.cancellation,
             templates: Some(&self.template_registry),
         };
-        evaluate_json_value(value, &evaluator)
+        evaluate_json_value_with_budget(value, &evaluator, &mut budget)
     }
 
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
@@ -1637,6 +1740,7 @@ fn public_page_context(
     runtime: &Value,
     requirements: &ContextRequirements,
     cancellation: Option<&CancellationToken>,
+    budget: &mut Budget,
 ) -> Result<Value> {
     let current = runtime.pointer("/view/current").and_then(Value::as_object);
     let mut page = serde_json::Map::new();
@@ -1657,7 +1761,7 @@ fn public_page_context(
                 .unwrap_or(&default);
             page.insert(
                 field.to_string(),
-                clone_json_value_bounded(value, cancellation)?,
+                clone_json_value_with_budget(value, cancellation, budget)?,
             );
         }
     }
@@ -1668,7 +1772,7 @@ fn public_page_context(
             .unwrap_or(&default);
         page.insert(
             "commands".to_string(),
-            clone_json_value_bounded(value, cancellation)?,
+            clone_json_value_with_budget(value, cancellation, budget)?,
         );
     }
     Ok(Value::Object(page))
@@ -1678,6 +1782,7 @@ fn public_session_context(
     runtime: &Value,
     requirements: &ContextRequirements,
     cancellation: Option<&CancellationToken>,
+    budget: &mut Budget,
 ) -> Result<Value> {
     let session = runtime.get("session").and_then(Value::as_object);
     let mut public = serde_json::Map::new();
@@ -1688,7 +1793,7 @@ fn public_session_context(
             .unwrap_or(&default);
         public.insert(
             "input".to_string(),
-            clone_json_value_bounded(value, cancellation)?,
+            clone_json_value_with_budget(value, cancellation, budget)?,
         );
     }
     if requirements.requires_field(Namespace::Session, "views") {
@@ -1698,7 +1803,7 @@ fn public_session_context(
             .unwrap_or(&default);
         public.insert(
             "views".to_string(),
-            clone_json_value_bounded(value, cancellation)?,
+            clone_json_value_with_budget(value, cancellation, budget)?,
         );
     }
     Ok(Value::Object(public))
@@ -1808,9 +1913,6 @@ fn disabled_plugins(user_config: Option<&toml::Value>) -> Result<BTreeSet<String
         return Ok(disabled);
     };
 
-    if table.contains_key("plugin_dirs") {
-        bail!("plugin_dirs is no longer supported; use the config directory plugins/ path");
-    }
     if let Some(value) = table.get("disabled_plugins") {
         let entries = value
             .as_array()
@@ -2030,6 +2132,52 @@ fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
 
 pub(crate) fn toml_to_json(value: &toml::Value) -> Result<Value> {
     serde_json::to_value(value).context("could not convert TOML to JSON")
+}
+
+fn inject_builtin_commands_value(config: &mut Value) {
+    let Some(root) = config.as_object_mut() else {
+        return;
+    };
+    let commands = root
+        .entry("commands".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(commands) = commands.as_object_mut() else {
+        return;
+    };
+    let bindings = commands
+        .entry("bindings".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(bindings) = bindings.as_object_mut() else {
+        return;
+    };
+    let commands = bindings
+        .entry("commands".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(commands) = commands.as_object_mut() else {
+        return;
+    };
+    commands
+        .entry("key".to_string())
+        .or_insert_with(|| Value::String("ctrl+k".to_string()));
+    commands
+        .entry("label".to_string())
+        .or_insert_with(|| Value::String("Commands".to_string()));
+    commands
+        .entry("visibility".to_string())
+        .or_insert_with(|| Value::String("overflow".to_string()));
+    commands
+        .entry("type".to_string())
+        .or_insert_with(|| Value::String("call".to_string()));
+    commands.entry("payload".to_string()).or_insert_with(|| {
+        serde_json::json!({
+            "target": "selectors:commands",
+            "query": {"commands": "{{ page.commands }}"},
+            "then": {
+                "type": "invoke",
+                "payload": {"command": "{{ result.output.value }}"}
+            }
+        })
+    });
 }
 
 fn normalize_engine_configs(config: &mut Value) {
@@ -2325,6 +2473,8 @@ fn validate_result_handler(
         Template::parse(handler)?;
         return Ok(());
     }
+    let root =
+        script_root.with_context(|| format!("{} result handler has no plugin root", owner))?;
     let path = Path::new(handler);
     if handler.trim().is_empty()
         || path.is_absolute()
@@ -2334,10 +2484,8 @@ fn validate_result_handler(
     {
         bail!("{} has invalid result handler {:?}", owner, handler);
     }
-    if let Some(root) = script_root {
-        crate::script_runner::validate_script_target(root, handler)
-            .with_context(|| format!("{} has an invalid result handler target", owner))?;
-    }
+    crate::script_runner::validate_script_target(root, handler)
+        .with_context(|| format!("{} has an invalid result handler target", owner))?;
     Ok(())
 }
 
@@ -2379,7 +2527,12 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
             let spec = ScriptSourceSpec::parse(value)
                 .context("items must be an array or a script source object")?;
             spec.validate_picker_source()?;
-            if let Some(root) = root {
+            if spec
+                .file
+                .as_str()
+                .is_some_and(|file| !is_dynamic_string(file))
+            {
+                let root = root.context("script items source has no plugin root")?;
                 spec.validate_target(root)?;
             }
             Ok(())
@@ -2600,25 +2753,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_viewtypes_are_rejected() {
-        let value: toml::Value = toml::from_str(
-            r#"
-            [viewtypes.picker.engine]
-            type = "picker"
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
-"#,
-        )
-        .unwrap();
-        let raw: RawConfig = value.try_into().unwrap();
-        let error = Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new()))
-            .expect_err("legacy viewtypes should be rejected");
-        assert!(error.to_string().contains("no longer supported"));
-    }
-
-    #[test]
     fn engine_rejects_unknown_view_fields() {
         let config = config(
             r#"
@@ -2802,32 +2936,6 @@ mod tests {
             .validate()
             .expect_err("feeds+items should be rejected");
         assert!(error.to_string().contains("cannot define items"));
-    }
-
-    #[test]
-    fn legacy_sources_field_is_rejected() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [plugins.core.views.default]
-            [plugins.core.views.default.engine]
-            type = "picker"
-            [plugins.core.views.default.engine.config]
-            sources = ["apps:main"]
-            [plugins.apps.views.main]
-            [plugins.apps.views.main.engine]
-            type = "picker"
-            [plugins.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        let error = config
-            .validate()
-            .expect_err("legacy sources should be rejected");
-        assert!(
-            error.to_string().contains("unsupported field \"sources\""),
-            "error={error}"
-        );
     }
 
     #[test]
@@ -3403,7 +3511,8 @@ mod tests {
                 "items": (0..100_001).collect::<Vec<_>>()
             }}
         });
-        let page = public_page_context(&runtime, &requirements, None).unwrap();
+        let mut budget = Budget::default();
+        let page = public_page_context(&runtime, &requirements, None, &mut budget).unwrap();
         assert_eq!(page["input"], "query");
         assert!(page.get("items").is_none());
     }

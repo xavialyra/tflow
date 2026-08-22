@@ -2,7 +2,12 @@ use crate::cancellation::CancellationToken;
 use crate::command_runner::run_bounded_command_with_stdin;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output};
 use std::time::Duration;
@@ -12,6 +17,7 @@ const DEFAULT_MAX_SCRIPT_STDOUT: usize = 1024 * 1024;
 pub(crate) const MAX_CONFIGURABLE_SCRIPT_STDOUT: usize = 64 * 1024 * 1024;
 const MAX_SCRIPT_STDERR: usize = 64 * 1024;
 const MAX_SCRIPT_ARGS: usize = 64 * 1024;
+const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 
 /// Run a plugin-relative script with argv arguments and return its raw output.
 ///
@@ -30,9 +36,18 @@ pub(crate) fn run_script(
     }
     validate_max_output_bytes(max_output_bytes)?;
     let max_output_bytes = max_output_bytes.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
-    let path = resolve_script_path(root, target)?;
-    let mut process = ProcessCommand::new("sh");
-    process.arg(&path).args(args).current_dir(root);
+    let (path, file) = open_confined_script(root, target)?;
+    #[cfg(target_os = "linux")]
+    let script_path = {
+        clear_close_on_exec(file.as_raw_fd())?;
+        format!("/proc/self/fd/{}", file.as_raw_fd())
+    };
+    #[cfg(not(target_os = "linux"))]
+    let script_path = path.to_string_lossy().into_owned();
+    #[cfg(not(target_os = "linux"))]
+    let _file = file;
+    let mut process = ProcessCommand::new("/bin/sh");
+    process.arg(script_path).args(args).current_dir(root);
     run_bounded_command_with_stdin(
         process,
         None,
@@ -102,15 +117,35 @@ pub(crate) fn validate_max_output_bytes(max_output_bytes: Option<usize>) -> Resu
 }
 
 pub(crate) fn validate_script_target(root: &Path, target: &str) -> Result<()> {
-    resolve_script_path(root, target).map(|_| ())
+    open_confined_script(root, target).map(|_| ())
 }
 
 pub(crate) fn read_script(root: &Path, target: &str) -> Result<String> {
-    let path = resolve_script_path(root, target)?;
-    fs::read_to_string(&path).with_context(|| format!("could not read script {}", path.display()))
+    let (path, bytes) = read_script_bytes(root, target)?;
+    String::from_utf8(bytes)
+        .with_context(|| format!("script {} is not valid UTF-8", path.display()))
 }
 
-pub(crate) fn resolve_script_path(root: &Path, target: &str) -> Result<PathBuf> {
+fn read_script_bytes(root: &Path, target: &str) -> Result<(PathBuf, Vec<u8>)> {
+    let (path, file) = open_confined_script(root, target)?;
+    let read_limit = u64::try_from(MAX_SCRIPT_SOURCE_BYTES)
+        .context("script source size limit does not fit in u64")?
+        .checked_add(1)
+        .context("script source size limit overflow")?;
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("could not read script {}", path.display()))?;
+    if bytes.len() > MAX_SCRIPT_SOURCE_BYTES {
+        bail!(
+            "script source exceeded maximum size of {MAX_SCRIPT_SOURCE_BYTES} bytes: {}",
+            path.display()
+        );
+    }
+    Ok((path, bytes))
+}
+
+fn open_confined_script(root: &Path, target: &str) -> Result<(PathBuf, File)> {
     let relative = Path::new(target);
     if relative.is_absolute()
         || relative
@@ -131,13 +166,56 @@ pub(crate) fn resolve_script_path(root: &Path, target: &str) -> Result<PathBuf> 
     if !canonical_path.starts_with(&canonical_root) {
         bail!("script path {:?} escapes {}", target, root.display());
     }
-    if !fs::metadata(&canonical_path)
+    let file = open_script_file(&canonical_path)
+        .with_context(|| format!("could not read script {}", canonical_path.display()))?;
+    if !file
+        .metadata()
         .with_context(|| format!("could not inspect script {}", canonical_path.display()))?
         .is_file()
     {
         bail!("script path {:?} is not a regular file", target);
     }
-    Ok(canonical_path)
+    #[cfg(target_os = "linux")]
+    {
+        let opened_path = fs::canonicalize(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .with_context(|| {
+                format!(
+                    "could not inspect opened script {}",
+                    canonical_path.display()
+                )
+            })?;
+        if !opened_path.starts_with(&canonical_root) {
+            bail!("script path {:?} escapes {}", target, root.display());
+        }
+    }
+    Ok((canonical_path, file))
+}
+
+#[cfg(target_os = "linux")]
+fn clear_close_on_exec(fd: std::os::fd::RawFd) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("could not inspect script file descriptor");
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("could not prepare script file descriptor");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_script_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_script_file(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 #[cfg(test)]
@@ -252,6 +330,46 @@ mod tests {
     }
 
     #[test]
+    fn script_source_size_is_bounded_before_returning_contents() {
+        let root = test_root();
+        let exact = "x".repeat(MAX_SCRIPT_SOURCE_BYTES);
+        write_script(&root, "exact-handler.sh", &exact);
+        assert_eq!(read_script(&root, "exact-handler.sh").unwrap(), exact);
+
+        write_script(
+            &root,
+            "large-handler.sh",
+            &"x".repeat(MAX_SCRIPT_SOURCE_BYTES + 1),
+        );
+        let error = read_script(&root, "large-handler.sh").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("script source exceeded maximum size")
+        );
+
+        fs::write(root.join("invalid-handler.sh"), [0xff]).unwrap();
+        let error = read_script(&root, "invalid-handler.sh").unwrap_err();
+        assert!(error.to_string().contains("not valid UTF-8"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_invalid_script_reports_the_size_limit_first() {
+        let root = test_root();
+        let mut bytes = vec![b'x'; MAX_SCRIPT_SOURCE_BYTES + 1];
+        bytes[MAX_SCRIPT_SOURCE_BYTES] = 0xff;
+        fs::write(root.join("oversized-invalid.sh"), bytes).unwrap();
+        let error = read_script(&root, "oversized-invalid.sh").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("script source exceeded maximum size")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn paths_stay_below_the_root_and_must_be_files() {
         let root = test_root();
         write_script(&root, "ok.sh", "printf 'null'\n");
@@ -260,6 +378,21 @@ mod tests {
         assert!(validate_script_target(&root, "/tmp/outside.sh").is_err());
         fs::create_dir(root.join("directory")).unwrap();
         assert!(validate_script_target(&root, "directory").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn special_files_are_rejected_without_blocking_open() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = test_root();
+        let fifo = root.join("pipe.sh");
+        let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        let result = unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o644) };
+        assert_eq!(result, 0);
+        assert!(validate_script_target(&root, "pipe.sh").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
