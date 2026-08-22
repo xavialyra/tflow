@@ -300,7 +300,8 @@ impl ViewInstance for EmbeddedView {
     }
 
     fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
-        self.provides_passthrough_input().then_some(40)
+        // Keep passthrough input responsive while the embedded process redraws.
+        self.provides_passthrough_input().then_some(10)
     }
 
     fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
