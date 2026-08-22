@@ -1696,7 +1696,7 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
 }
 
 #[test]
-fn unknown_input_closes_route_completion_before_retrying() {
+fn unknown_input_closes_route_completion_before_escape() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(

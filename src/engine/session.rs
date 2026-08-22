@@ -152,17 +152,9 @@ enum InputGrammar {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputFallback {
-    View,
-    ForwardRaw,
-    PopAndRetry,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InputContext {
     id: InputContextId,
     grammar: InputGrammar,
-    fallback: InputFallback,
 }
 
 const ACTION_PRIORITY: i16 = 100;
@@ -407,12 +399,10 @@ impl<'a> AppSession<'a> {
             ViewInputMode::Keymap => InputContext {
                 id: entry.input_layers.context,
                 grammar: InputGrammar::Decoded,
-                fallback: InputFallback::View,
             },
             ViewInputMode::Passthrough => InputContext {
                 id: entry.input_layers.context,
                 grammar: InputGrammar::Raw,
-                fallback: InputFallback::ForwardRaw,
             },
         })
     }
@@ -422,7 +412,6 @@ impl<'a> AppSession<'a> {
             return Ok(InputContext {
                 id: completion.input_context,
                 grammar: InputGrammar::Decoded,
-                fallback: InputFallback::PopAndRetry,
             });
         }
         self.current_view_input_context()
@@ -636,90 +625,7 @@ impl<'a> AppSession<'a> {
                 }
             }
             while let Some(queued) = self.command_session.pop_input() {
-                self.refresh_active_bindings()?;
-                let input_context = self.active_input_context()?;
-                let Some(key) = queued.key else {
-                    if input_context.fallback == InputFallback::PopAndRetry {
-                        self.close_route_completion();
-                        self.refresh_active_bindings()?;
-                        self.command_session.push_front(queued);
-                    }
-                    continue;
-                };
-                let captures_editor_input = self
-                    .views
-                    .last()
-                    .context("session has no active view")?
-                    .instance
-                    .captures_editor_input();
-                let binding = self.resolve_key_binding(key);
-                if binding.is_none() && input_context.fallback == InputFallback::PopAndRetry {
-                    self.close_route_completion();
-                    self.refresh_active_bindings()?;
-                    self.command_session.push_front(queued);
-                    continue;
-                }
-                if binding.is_none()
-                    && input_context.fallback == InputFallback::View
-                    && key == Key::Tab
-                    && self.route_input_available()
-                {
-                    self.open_route_completion()?;
-                    self.refresh_active_bindings()?;
-                    continue;
-                }
-                let outcome = match binding {
-                    Some(InputBinding::ViewCommand(binding_key)) => self
-                        .dispatch_registered_view_binding(
-                            binding_key,
-                            queued.clone(),
-                            false,
-                            true,
-                        )?,
-                    Some(InputBinding::PendingViewCommand(binding_key)) => self
-                        .dispatch_registered_view_binding(
-                            binding_key,
-                            queued.clone(),
-                            true,
-                            true,
-                        )?,
-                    Some(InputBinding::SessionCommand(binding_key)) => {
-                        self.dispatch_session_binding(binding_key, queued.clone(), true)?
-                    }
-                    Some(InputBinding::Action(ResolvedInputAction::Edit(action))) => {
-                        self.dispatch_editor_action(action)?
-                    }
-                    Some(InputBinding::Action(ResolvedInputAction::View(action))) => {
-                        self.dispatch_view_action(action, queued.clone(), true)?
-                    }
-                    Some(InputBinding::Route(action)) => {
-                        self.handle_route_action(action)?;
-                        if matches!(action, RouteAction::Accept)
-                            && let Some(effect) = self.reconcile_input()?
-                        {
-                            LauncherOutcome::Effect(Box::new(effect))
-                        } else {
-                            LauncherOutcome::Continue
-                        }
-                    }
-                    Some(InputBinding::Disabled) => LauncherOutcome::Continue,
-                    None => {
-                        if !captures_editor_input
-                            && let Some(changed) = {
-                                let entry = self
-                                    .views
-                                    .last_mut()
-                                    .context("session has no active view")?;
-                                apply_editor_key(&mut entry.input, key)
-                            }
-                            && changed
-                        {
-                            self.mark_input_changed()?;
-                        }
-                        LauncherOutcome::Continue
-                    }
-                };
-                match outcome {
+                match self.dispatch_decoded_input(queued)? {
                     LauncherOutcome::Continue => {}
                     LauncherOutcome::Effect(effect) => return Ok(*effect),
                 }
@@ -727,6 +633,79 @@ impl<'a> AppSession<'a> {
         }
 
         Ok(self.reconcile_input()?.unwrap_or(ViewEffect::Continue))
+    }
+
+    fn dispatch_decoded_input(&mut self, queued: DecodedInput) -> Result<LauncherOutcome> {
+        self.refresh_active_bindings()?;
+        let route_active = self.route_completion.is_some();
+        let captures_editor_input = self
+            .views
+            .last()
+            .context("session has no active view")?
+            .instance
+            .captures_editor_input();
+        let Some(key) = queued.key else {
+            if !route_active {
+                return Ok(LauncherOutcome::Continue);
+            }
+            self.close_route_completion();
+            self.refresh_active_bindings()?;
+            return self.dispatch_unbound_input(&queued.raw);
+        };
+        let binding = self.resolve_key_binding(key);
+        if route_active && binding.is_none() {
+            self.close_route_completion();
+            self.refresh_active_bindings()?;
+            return self.dispatch_route_unbound(key, captures_editor_input);
+        }
+        if binding.is_none() && !route_active && key == Key::Tab && self.route_input_available() {
+            self.open_route_completion()?;
+            self.refresh_active_bindings()?;
+            return Ok(LauncherOutcome::Continue);
+        }
+        match binding {
+            Some(InputBinding::ViewCommand(binding_key)) => {
+                self.dispatch_registered_view_binding(binding_key, queued, false, true)
+            }
+            Some(InputBinding::PendingViewCommand(binding_key)) => {
+                self.dispatch_registered_view_binding(binding_key, queued, true, true)
+            }
+            Some(InputBinding::SessionCommand(binding_key)) => {
+                self.dispatch_session_binding(binding_key, queued, true)
+            }
+            Some(InputBinding::Action(ResolvedInputAction::Edit(action))) => {
+                self.dispatch_editor_action(action)
+            }
+            Some(InputBinding::Action(ResolvedInputAction::View(action))) => {
+                self.dispatch_view_action(action, queued, true)
+            }
+            Some(InputBinding::Route(action)) => {
+                self.handle_route_action(action)?;
+                if matches!(action, RouteAction::Accept)
+                    && let Some(effect) = self.reconcile_input()?
+                {
+                    Ok(LauncherOutcome::Effect(Box::new(effect)))
+                } else {
+                    Ok(LauncherOutcome::Continue)
+                }
+            }
+            Some(InputBinding::Disabled) => Ok(LauncherOutcome::Continue),
+            None => {
+                if !captures_editor_input
+                    && let Some(changed) = {
+                        let entry = self
+                            .views
+                            .last_mut()
+                            .context("session has no active view")?;
+                        apply_editor_key(&mut entry.input, key)
+                    }
+                    && changed
+                {
+                    self.mark_input_changed()?;
+                }
+                Ok(LauncherOutcome::Continue)
+            }
+        }
     }
 
     fn poll_background_views(&mut self, terminal: &mut Terminal) -> Result<ViewEffect> {
@@ -971,6 +950,34 @@ impl<'a> AppSession<'a> {
             }
         };
         if edited {
+            self.mark_input_changed()?;
+        }
+        Ok(LauncherOutcome::Continue)
+    }
+
+    fn dispatch_route_unbound(
+        &mut self,
+        key: Key,
+        captures_editor_input: bool,
+    ) -> Result<LauncherOutcome> {
+        if captures_editor_input {
+            return Ok(LauncherOutcome::Continue);
+        }
+        match self.resolve_key_binding(key) {
+            Some(InputBinding::Action(ResolvedInputAction::Edit(action))) => {
+                return self.dispatch_editor_action(action);
+            }
+            Some(_) => return Ok(LauncherOutcome::Continue),
+            None => {}
+        }
+        let edited = {
+            let entry = self
+                .views
+                .last_mut()
+                .context("session has no active view")?;
+            apply_editor_key(&mut entry.input, key)
+        };
+        if edited == Some(true) {
             self.mark_input_changed()?;
         }
         Ok(LauncherOutcome::Continue)
@@ -2244,6 +2251,18 @@ mod tests {
             Ok(())
         }
 
+        fn handle_unbound_input(
+            &mut self,
+            _host: &mut EngineHost<'_>,
+            bytes: &[u8],
+        ) -> Result<LauncherOutcome> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("unbound:{bytes:?}"));
+            Ok(LauncherOutcome::Continue)
+        }
+
         fn step(
             &mut self,
             _host: &mut EngineHost<'_>,
@@ -2979,6 +2998,97 @@ mod tests {
                 .footer
                 .contains("Commands")
         );
+    }
+
+    #[test]
+    fn route_completion_consumes_unbound_control_without_replaying_view_binding() {
+        let mut config = crate::config::load_test_fixture().unwrap();
+        config.commands.bindings.get_mut("commands").unwrap().key = Some("ctrl+k".to_string());
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        session.refresh_active_bindings().unwrap();
+        session.open_route_completion().unwrap();
+        assert!(session.resolve_key_binding(Key::Ctrl('k')).is_none());
+        assert!(matches!(
+            session
+                .dispatch_decoded_input(DecodedInput {
+                    key: Some(Key::Ctrl('k')),
+                    raw: vec![0x0b],
+                })
+                .unwrap(),
+            LauncherOutcome::Continue
+        ));
+        assert!(session.route_completion.is_none());
+        assert!(matches!(
+            session.resolve_key_binding(Key::Ctrl('k')),
+            Some(InputBinding::SessionCommand(Key::Ctrl('k')))
+        ));
+    }
+
+    #[test]
+    fn route_completion_hands_editor_actions_to_the_restored_view() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        session.views.last_mut().unwrap().input = InputBuffer::new("two words");
+
+        for (key, raw, expected) in [
+            (Key::Backspace, vec![0x7f], "two word"),
+            (Key::Ctrl('w'), vec![0x17], "two "),
+            (Key::Ctrl('u'), vec![0x15], ""),
+        ] {
+            session.open_route_completion().unwrap();
+            assert!(matches!(
+                session
+                    .dispatch_decoded_input(DecodedInput {
+                        key: Some(key),
+                        raw,
+                    })
+                    .unwrap(),
+                LauncherOutcome::Continue
+            ));
+            assert!(session.route_completion.is_none());
+            assert_eq!(session.views.last().unwrap().input.raw, expected);
+        }
+    }
+
+    #[test]
+    fn only_route_completion_hands_opaque_input_to_the_view() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        session.views.last_mut().unwrap().instance = Box::new(RecordingView {
+            events: events.clone(),
+        });
+        let opaque = DecodedInput {
+            key: None,
+            raw: b"\x1b[999~".to_vec(),
+        };
+
+        session.open_route_completion().unwrap();
+        session.dispatch_decoded_input(opaque.clone()).unwrap();
+        assert!(session.route_completion.is_none());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["unbound:[27, 91, 57, 57, 57, 126]"]
+        );
+
+        events.lock().unwrap().clear();
+        session.dispatch_decoded_input(opaque).unwrap();
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[test]
