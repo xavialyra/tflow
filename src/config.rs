@@ -1,6 +1,7 @@
 use crate::cancellation::CancellationToken;
 use crate::expression::{
-    EvalContext, ExpressionMethods, Template, TreeReferences, evaluate_json_value,
+    ContextRequirements, EvalContext, EvaluationStage, Namespace, Template, TemplateRegistry,
+    clone_json_value_bounded, evaluate_json_value, is_dynamic_string,
 };
 use crate::input::Key;
 use crate::state::{StateInstance, StateRegistry};
@@ -8,9 +9,13 @@ use crate::theme::{ResolvedTheme, ThemeLoadOptions};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
+#[cfg(test)]
+use std::ops::DerefMut;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
+    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -21,34 +26,249 @@ pub const ENGINE_CAPTURE: &str = "capture";
 pub const ENGINE_EMBEDDED: &str = "embedded";
 
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     pub default_view: Option<ViewRef>,
     pub(crate) image_protocol: ImageProtocol,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) chrome: ChromeConfig,
-    pub views: BTreeMap<ViewRef, View>,
-    pub plugins: BTreeMap<String, PluginMetadata>,
-    pub(crate) defaults: Defaults,
-    pub plugin_roots: BTreeMap<String, PathBuf>,
-    pub(crate) config_value: Value,
     pub(crate) input_value: Value,
-    pub(crate) state_registry: StateRegistry,
     pub(crate) invocation_state: StateInstance,
+    compiled: CompiledConfig,
 }
 
-pub(crate) enum ConfigScope<'a> {
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledConfig {
+    pub(crate) views: BTreeMap<ViewRef, View>,
+    pub(crate) plugins: BTreeMap<String, PluginMetadata>,
+    pub(crate) defaults: Defaults,
+    pub(crate) plugin_roots: BTreeMap<String, PathBuf>,
+    pub(crate) config_value: Value,
+    pub(crate) template_registry: TemplateRegistry,
+    pub(crate) state_registry: StateRegistry,
+}
+
+impl Deref for Config {
+    type Target = CompiledConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.compiled
+    }
+}
+
+#[cfg(test)]
+impl DerefMut for Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.compiled
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ConfigSource<'a> {
     Root,
-    View(&'a StateInstance),
+    View(&'a str),
 }
 
-pub(crate) struct ConfigReadContext<'a> {
-    pub scope: ConfigScope<'a>,
-    pub runtime: &'a Value,
-    pub input: &'a Value,
-    pub cancellation: Option<CancellationToken>,
-    /// When set, `this.input` / `this.raw_input` use this binding string
-    /// instead of rendering the owner query state (feed default binding).
-    pub binding_raw: Option<&'a str>,
+/// Immutable invocation data captured before the session starts.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InvocationScope<'a> {
+    input: &'a Value,
+}
+
+impl<'a> InvocationScope<'a> {
+    pub(crate) fn new(input: &'a Value) -> Self {
+        Self { input }
+    }
+
+    fn populate(
+        self,
+        requirements: &ContextRequirements,
+        cancellation: Option<&CancellationToken>,
+        context: &mut serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        if requirements.requires(Namespace::Input) {
+            context.insert(
+                Namespace::Input.name().to_string(),
+                clone_json_value_bounded(self.input, cancellation)?,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Immutable active-session data captured for one evaluation operation.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionScope<'a> {
+    runtime: &'a Value,
+}
+
+impl<'a> SessionScope<'a> {
+    pub(crate) fn new(runtime: &'a Value) -> Self {
+        Self { runtime }
+    }
+
+    fn populate(
+        self,
+        requirements: &ContextRequirements,
+        cancellation: Option<&CancellationToken>,
+        context: &mut serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        if requirements.requires(Namespace::Page) {
+            context.insert(
+                Namespace::Page.name().to_string(),
+                public_page_context(self.runtime, requirements, cancellation)?,
+            );
+        }
+        if requirements.requires(Namespace::Selection) {
+            let default = Value::Null;
+            let selection = self
+                .runtime
+                .pointer("/view/current/selected_item")
+                .unwrap_or(&default);
+            context.insert(
+                Namespace::Selection.name().to_string(),
+                clone_json_value_bounded(selection, cancellation)?,
+            );
+        }
+        if requirements.requires(Namespace::Session) {
+            context.insert(
+                Namespace::Session.name().to_string(),
+                public_session_context(self.runtime, requirements, cancellation)?,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The View that owns the configuration value being evaluated.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OwnerViewScope<'a> {
+    state: &'a StateInstance,
+    /// Feed defaults retain the coordinating page's committed raw binding.
+    binding_raw: Option<&'a str>,
+}
+
+impl<'a> OwnerViewScope<'a> {
+    pub(crate) fn new(state: &'a StateInstance) -> Self {
+        Self {
+            state,
+            binding_raw: None,
+        }
+    }
+
+    pub(crate) fn with_binding_raw(mut self, binding_raw: Option<&'a str>) -> Self {
+        self.binding_raw = binding_raw;
+        self
+    }
+
+    fn populate(
+        self,
+        config: &Config,
+        requirements: &ContextRequirements,
+        cancellation: Option<&CancellationToken>,
+        context: &mut serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        if requirements.requires(Namespace::View) {
+            let view = config.view_value(self.state, self.binding_raw)?;
+            context.insert(
+                Namespace::View.name().to_string(),
+                clone_json_value_bounded(&view, cancellation)?,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A returned value exposed only while preparing a continuation or result handler.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReturnScope<'a> {
+    value: &'a Value,
+}
+
+impl<'a> ReturnScope<'a> {
+    pub(crate) fn new(value: &'a Value) -> Self {
+        Self { value }
+    }
+
+    fn populate(
+        self,
+        requirements: &ContextRequirements,
+        cancellation: Option<&CancellationToken>,
+        context: &mut serde_json::Map<String, Value>,
+    ) -> Result<()> {
+        if requirements.requires(Namespace::Result) {
+            context.insert(
+                Namespace::Result.name().to_string(),
+                clone_json_value_bounded(self.value, cancellation)?,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Immutable scope composition captured for one configuration operation.
+///
+/// ConfigSource selects raw configuration independently. The owner scope can
+/// therefore differ from the active session page while a feed is evaluated.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EvaluationSnapshot<'a> {
+    invocation: InvocationScope<'a>,
+    session: SessionScope<'a>,
+    owner: Option<OwnerViewScope<'a>>,
+    returned: Option<ReturnScope<'a>>,
+    cancellation: Option<&'a CancellationToken>,
+}
+
+impl<'a> EvaluationSnapshot<'a> {
+    pub(crate) fn new(
+        invocation: InvocationScope<'a>,
+        session: SessionScope<'a>,
+        owner: Option<OwnerViewScope<'a>>,
+        cancellation: Option<&'a CancellationToken>,
+    ) -> Self {
+        Self {
+            invocation,
+            session,
+            owner,
+            returned: None,
+            cancellation,
+        }
+    }
+
+    pub(crate) fn with_return_scope(mut self, returned: Option<ReturnScope<'a>>) -> Self {
+        self.returned = returned;
+        self
+    }
+
+    fn owner_scope(&self) -> Result<OwnerViewScope<'a>> {
+        self.owner
+            .context("dynamic namespace \"view\" is unavailable without an owning View")
+    }
+
+    fn return_scope(&self) -> Result<ReturnScope<'a>> {
+        self.returned
+            .context("dynamic namespace \"result\" is unavailable in this operation")
+    }
+
+    fn expression_context(
+        &self,
+        config: &Config,
+        requirements: &ContextRequirements,
+    ) -> Result<Value> {
+        let mut context = serde_json::Map::new();
+        self.invocation
+            .populate(requirements, self.cancellation, &mut context)?;
+        self.session
+            .populate(requirements, self.cancellation, &mut context)?;
+        if requirements.requires(Namespace::View) {
+            self.owner_scope()?
+                .populate(config, requirements, self.cancellation, &mut context)?;
+        }
+        if requirements.requires(Namespace::Result) {
+            self.return_scope()?
+                .populate(requirements, self.cancellation, &mut context)?;
+        }
+        Ok(Value::Object(context))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +309,7 @@ pub(crate) struct CaptureDefaults {
     pub(crate) bindings: Option<toml::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct EngineSpec {
     #[serde(rename = "type", default = "default_engine_type")]
     pub engine_type: String,
@@ -97,13 +317,224 @@ pub struct EngineSpec {
     pub config: EngineOptions,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedSpec {
     pub view: ViewRef,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+/// A file-backed script source descriptor shared by data-source engines and
+/// `run` commands. Script contents are never part of the configuration tree.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptSourceSpec {
+    source: toml::Value,
+    file: toml::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    args: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_output_bytes: Option<toml::Value>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedScriptSource {
+    pub(crate) file: String,
+    pub(crate) args: Option<Value>,
+    pub(crate) max_output_bytes: Option<usize>,
+}
+
+impl ScriptSourceSpec {
+    #[cfg(test)]
+    pub(crate) fn script_file(file: impl Into<String>) -> Self {
+        Self {
+            source: toml::Value::String("script".to_string()),
+            file: toml::Value::String(file.into()),
+            args: None,
+            max_output_bytes: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_toml_value(&self) -> toml::Value {
+        let mut table = toml::map::Map::new();
+        table.insert("source".to_string(), self.source.clone());
+        table.insert("file".to_string(), self.file.clone());
+        if let Some(args) = &self.args {
+            table.insert("args".to_string(), args.clone());
+        }
+        if let Some(max_output_bytes) = &self.max_output_bytes {
+            table.insert("max_output_bytes".to_string(), max_output_bytes.clone());
+        }
+        toml::Value::Table(table)
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_script_source_name(&self.source)?;
+        validate_script_source_file(&self.file)?;
+        validate_script_source_args(self.args.as_ref())?;
+        validate_script_source_limit(self.max_output_bytes.as_ref())?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_picker_source(&self) -> Result<()> {
+        self.validate()
+    }
+
+    pub(crate) fn validate_capture_source(&self) -> Result<()> {
+        self.validate()
+    }
+
+    pub(crate) fn validate_command_handler(&self) -> Result<()> {
+        self.validate()?;
+        if self.args.is_some() {
+            bail!("run command handler source cannot define args; configure payload args");
+        }
+        if self.max_output_bytes.is_some() {
+            bail!("run command handler source cannot define max_output_bytes");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_target(&self, root: &Path) -> Result<()> {
+        let Some(file) = self.file.as_str() else {
+            return Ok(());
+        };
+        if is_dynamic_string(file) {
+            return Ok(());
+        }
+        crate::script_runner::validate_script_target(root, file)
+    }
+
+    pub(crate) fn parse(value: &toml::Value) -> Result<Self> {
+        let spec: Self = value
+            .clone()
+            .try_into()
+            .context("script source must match the source schema")?;
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolvedScriptSourceConfig {
+    source: String,
+    file: String,
+    #[serde(default)]
+    args: Option<Value>,
+    #[serde(default)]
+    max_output_bytes: Option<usize>,
+}
+
+impl ResolvedScriptSource {
+    pub(crate) fn is_candidate(value: &Value) -> bool {
+        value
+            .as_object()
+            .is_some_and(|fields| fields.contains_key("source"))
+    }
+
+    pub(crate) fn parse(value: &Value) -> Result<Self> {
+        let source: ResolvedScriptSourceConfig = serde_json::from_value(value.clone())
+            .context("script source must resolve to an object with source and file fields")?;
+        if source.source != "script" {
+            bail!("unsupported script source {:?}", source.source);
+        }
+        if source.file.is_empty() {
+            bail!("script source file must be non-empty");
+        }
+        crate::script_runner::validate_max_output_bytes(source.max_output_bytes)?;
+        Ok(Self {
+            file: source.file,
+            args: source.args,
+            max_output_bytes: source.max_output_bytes,
+        })
+    }
+
+    pub(crate) fn script_args(&self, label: &str) -> Result<Vec<String>> {
+        crate::script_runner::resolve_argv(self.args.as_ref(), label)
+    }
+
+    pub(crate) fn command_file(&self) -> Result<&str> {
+        anyhow::ensure!(
+            self.args.is_none(),
+            "run command handler source cannot define args; configure payload args"
+        );
+        anyhow::ensure!(
+            self.max_output_bytes.is_none(),
+            "run command handler source cannot define max_output_bytes"
+        );
+        Ok(&self.file)
+    }
+}
+
+fn validate_script_source_name(value: &toml::Value) -> Result<()> {
+    let source = value
+        .as_str()
+        .context("script source must be a string or dynamic path")?;
+    if is_dynamic_string(source) {
+        Template::parse(source)?;
+    } else if source != "script" {
+        bail!("unsupported script source {:?}", source);
+    }
+    Ok(())
+}
+
+fn validate_script_source_file(value: &toml::Value) -> Result<()> {
+    let file = value
+        .as_str()
+        .context("script source file must be a string or dynamic path")?;
+    if file.is_empty() {
+        bail!("script source file must be non-empty");
+    }
+    if is_dynamic_string(file) {
+        Template::parse(file)?;
+    }
+    Ok(())
+}
+
+fn validate_script_source_args(value: Option<&toml::Value>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    match value {
+        toml::Value::String(source) => {
+            anyhow::ensure!(
+                Template::parse(source)?.is_complete_path(),
+                "script args must be an array or complete dynamic path"
+            );
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                validate_templates(value)?;
+            }
+        }
+        _ => bail!("script args must be an array or complete dynamic path"),
+    }
+    Ok(())
+}
+
+fn validate_script_source_limit(value: Option<&toml::Value>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    match value {
+        toml::Value::Integer(value) => {
+            let value = usize::try_from(*value)
+                .context("script max_output_bytes must be a non-negative integer")?;
+            crate::script_runner::validate_max_output_bytes(Some(value))
+        }
+        toml::Value::String(source) => {
+            anyhow::ensure!(
+                Template::parse(source)?.is_complete_path(),
+                "script max_output_bytes must be an integer or complete dynamic path"
+            );
+            Ok(())
+        }
+        _ => bail!("script max_output_bytes must be an integer or complete dynamic path"),
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct EngineOptions {
     #[serde(default)]
     pub feeds: Vec<FeedSpec>,
@@ -113,7 +544,7 @@ pub struct EngineOptions {
     pub fields: toml::Table,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
     pub engine: EngineSpec,
@@ -196,7 +627,12 @@ pub enum CommandAction {
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunPayload {
-    pub handler: String,
+    pub handler: toml::Value,
+    /// Positional arguments passed to the file-backed handler after dynamic
+    /// evaluation. The handler retains terminal stdin/stdout rather than using
+    /// the bounded non-interactive script runner.
+    #[serde(default)]
+    pub args: Option<toml::Value>,
     #[serde(default)]
     pub shell: Option<String>,
     #[serde(default)]
@@ -218,8 +654,6 @@ pub struct CallPayload {
     #[serde(default)]
     pub query: Option<toml::Value>,
     #[serde(default)]
-    pub args: Option<toml::Value>,
-    #[serde(default)]
     pub then: Option<Box<CommandAction>>,
 }
 
@@ -229,9 +663,12 @@ pub struct ReturnPayload {
     #[serde(default)]
     pub value: Option<toml::Value>,
     #[serde(default)]
-    pub handler: Option<String>,
+    pub handler: Option<toml::Value>,
+    /// Positional arguments passed to the file-backed return handler after
+    /// dynamic evaluation. Return handlers receive no JSON on stdin; their
+    /// stdout, stderr, and exit status remain the invocation result.
     #[serde(default)]
-    pub params: toml::Table,
+    pub args: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -293,7 +730,7 @@ impl ChromeBinding {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Command {
     pub key: String,
     pub label: String,
@@ -345,9 +782,142 @@ struct PluginHeader {
     name: String,
 }
 
+impl CompiledConfig {
+    fn build(
+        views: BTreeMap<ViewRef, View>,
+        plugins: BTreeMap<String, PluginMetadata>,
+        defaults: Defaults,
+        plugin_roots: BTreeMap<String, PathBuf>,
+        config_value: Value,
+    ) -> Result<Self> {
+        let template_value = if config_value
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            views_config_value(&views, &plugins)?
+        } else {
+            config_value.clone()
+        };
+        let template_registry = TemplateRegistry::compile_json_tree(&template_value)?;
+        validate_view_bootstrap_requirements(&views, &template_registry)?;
+        let state_registry = if config_value.get("plugins").is_some() {
+            StateRegistry::compile_with_templates(&config_value, &template_registry)?
+        } else {
+            StateRegistry::default()
+        };
+        Ok(Self {
+            views,
+            plugins,
+            defaults,
+            plugin_roots,
+            config_value,
+            template_registry,
+            state_registry,
+        })
+    }
+}
+
+fn validate_json_requirements(
+    templates: &TemplateRegistry,
+    value: &Value,
+    stage: EvaluationStage,
+    consumer: &str,
+) -> Result<()> {
+    templates
+        .requirements_for_value(value)?
+        .validate_stage(stage, consumer)
+}
+
+fn validate_toml_requirements(
+    templates: &TemplateRegistry,
+    value: &toml::Value,
+    stage: EvaluationStage,
+    consumer: &str,
+) -> Result<()> {
+    let value = toml_to_json(value)?;
+    validate_json_requirements(templates, &value, stage, consumer)
+}
+
+fn validate_string_requirements(
+    templates: &TemplateRegistry,
+    value: &str,
+    stage: EvaluationStage,
+    consumer: &str,
+) -> Result<()> {
+    validate_json_requirements(
+        templates,
+        &Value::String(value.to_string()),
+        stage,
+        consumer,
+    )
+}
+
+fn validate_optional_string_requirements(
+    templates: &TemplateRegistry,
+    value: Option<&str>,
+    stage: EvaluationStage,
+    consumer: &str,
+) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    validate_string_requirements(templates, value, stage, consumer)
+}
+
+fn validate_view_bootstrap_requirements(
+    views: &BTreeMap<ViewRef, View>,
+    templates: &TemplateRegistry,
+) -> Result<()> {
+    for (view_ref, view) in views {
+        validate_string_requirements(
+            templates,
+            view.selected_engine_type(),
+            EvaluationStage::Bootstrap,
+            &format!("view {view_ref:?} engine type"),
+        )?;
+        validate_optional_string_requirements(
+            templates,
+            view.alias.as_deref(),
+            EvaluationStage::Bootstrap,
+            &format!("view {view_ref:?} alias"),
+        )?;
+        if let Some(query) = &view.query {
+            validate_toml_requirements(
+                templates,
+                &toml::Value::Table(query.clone()),
+                EvaluationStage::Bootstrap,
+                &format!("view {view_ref:?} query schema"),
+            )?;
+        }
+        for feed in view.selected_feeds() {
+            validate_string_requirements(
+                templates,
+                &feed.view,
+                EvaluationStage::Bootstrap,
+                &format!("view {view_ref:?} feed target"),
+            )?;
+        }
+        for (command_id, command) in &view.commands {
+            validate_string_requirements(
+                templates,
+                &command.key,
+                EvaluationStage::Bootstrap,
+                &format!("view {view_ref:?} command {command_id:?} key"),
+            )?;
+            validate_string_requirements(
+                templates,
+                &command.label,
+                EvaluationStage::Bootstrap,
+                &format!("view {view_ref:?} command {command_id:?} label"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl Config {
     #[allow(dead_code)]
-    pub fn load(user_path: &Path) -> Result<Self> {
+    pub(crate) fn load(user_path: &Path) -> Result<Self> {
         let engines = crate::engine::EngineRegistry::new();
         Self::load_with_engines(user_path, &engines)
     }
@@ -409,11 +979,9 @@ impl Config {
         let mut config_value =
             toml_to_json(&merged).context("merged configuration cannot be represented as JSON")?;
         normalize_engine_configs(&mut config_value);
-        let config = Self::from_raw(raw, plugin_roots)?;
-        let mut config = config;
+        let mut config = Self::from_raw(raw, plugin_roots, config_value)
+            .context("could not compile dynamic configuration values")?;
         config.log_file = log_file;
-        config.config_value = config_value;
-        config.state_registry = StateRegistry::compile(&config.config_value)?;
         config.validate_with_engines(engines)?;
         Ok(LoadedApp { config, theme })
     }
@@ -429,6 +997,19 @@ impl Config {
     pub(crate) fn set_invocation(&mut self, input: Value, state: StateInstance) {
         self.input_value = input;
         self.invocation_state = state;
+    }
+
+    pub(crate) fn items_value(
+        &self,
+        view_ref: &str,
+        snapshot: &EvaluationSnapshot<'_>,
+    ) -> Result<Option<Value>> {
+        self.get(
+            ConfigSource::View(view_ref),
+            snapshot,
+            EvaluationStage::Operation,
+            &["items"],
+        )
     }
 
     pub(crate) fn instantiate_state(&self, view_ref: &str) -> Result<StateInstance> {
@@ -475,10 +1056,15 @@ impl Config {
             .with_context(|| format!("view {:?} configuration disappeared", view_ref))
     }
 
-    fn from_raw(raw: RawConfig, plugin_roots: BTreeMap<String, PathBuf>) -> Result<Self> {
+    fn from_raw(
+        raw: RawConfig,
+        plugin_roots: BTreeMap<String, PathBuf>,
+        config_value: Value,
+    ) -> Result<Self> {
         if raw.viewtypes.is_some() {
             bail!("viewtypes are no longer supported; configure the engine directly on each view");
         }
+        let default_view = raw.default_view;
         let mut views = BTreeMap::new();
         let mut plugins = BTreeMap::new();
         for (package_id, plugin) in raw.plugins {
@@ -494,21 +1080,66 @@ impl Config {
             plugins.insert(package_id, metadata);
         }
         expand_feed_patterns(&mut views)?;
-
+        let compiled =
+            CompiledConfig::build(views, plugins, raw.defaults, plugin_roots, config_value)?;
+        validate_optional_string_requirements(
+            &compiled.template_registry,
+            default_view.as_deref(),
+            EvaluationStage::Bootstrap,
+            "default_view",
+        )?;
         Ok(Self {
-            default_view: raw.default_view,
+            default_view,
             image_protocol: raw.image_protocol,
             log_file: raw.log_file,
             chrome: raw.chrome,
+            input_value: Value::Null,
+            invocation_state: StateInstance::default(),
+            compiled,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_new(
+        default_view: Option<ViewRef>,
+        views: BTreeMap<ViewRef, View>,
+        plugins: BTreeMap<String, PluginMetadata>,
+        plugin_roots: BTreeMap<String, PathBuf>,
+        config_value: Value,
+    ) -> Result<Self> {
+        let compiled = CompiledConfig::build(
             views,
             plugins,
-            defaults: raw.defaults,
+            Defaults::default(),
             plugin_roots,
-            config_value: Value::Object(serde_json::Map::new()),
+            config_value,
+        )?;
+        Ok(Self {
+            default_view,
+            image_protocol: ImageProtocol::default(),
+            log_file: None,
+            chrome: ChromeConfig::default(),
             input_value: Value::Null,
-            state_registry: StateRegistry::default(),
             invocation_state: StateInstance::default(),
+            compiled,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebuild_template_registry(&mut self) -> Result<()> {
+        self.test_rebuild_compiled()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_rebuild_compiled(&mut self) -> Result<()> {
+        self.compiled = CompiledConfig::build(
+            self.compiled.views.clone(),
+            self.compiled.plugins.clone(),
+            self.compiled.defaults.clone(),
+            self.compiled.plugin_roots.clone(),
+            self.compiled.config_value.clone(),
+        )?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -526,7 +1157,22 @@ impl Config {
         }
 
         engines.validate_defaults(&self.defaults)?;
-
+        if let Some(bindings) = &self.defaults.picker.bindings {
+            validate_toml_requirements(
+                &self.template_registry,
+                bindings,
+                EvaluationStage::Operation,
+                "root picker defaults",
+            )?;
+        }
+        if let Some(bindings) = &self.defaults.capture.bindings {
+            validate_toml_requirements(
+                &self.template_registry,
+                bindings,
+                EvaluationStage::Operation,
+                "root capture defaults",
+            )?;
+        }
         for (package_id, plugin) in &self.plugins {
             if plugin.name.trim().is_empty() {
                 bail!("plugin package {:?} has an empty name", package_id);
@@ -539,6 +1185,18 @@ impl Config {
             if !matches!(binding.action, CommandAction::Call { .. }) {
                 bail!("chrome footer binding {id:?} must use a call action");
             }
+            validate_optional_string_requirements(
+                &self.template_registry,
+                Some(&binding.key),
+                EvaluationStage::Bootstrap,
+                &format!("chrome footer binding {id:?} key"),
+            )?;
+            validate_optional_string_requirements(
+                &self.template_registry,
+                Some(&binding.label),
+                EvaluationStage::Bootstrap,
+                &format!("chrome footer binding {id:?} label"),
+            )?;
             let key = normalize_key(&binding.key)?;
             if let Some(previous) = footer_keys.insert(key.clone(), id) {
                 bail!(
@@ -556,6 +1214,14 @@ impl Config {
                 &format!("chrome:footer:{id}"),
                 &binding.action,
                 &self.views,
+                None,
+                0,
+            )?;
+            validate_command_action_requirements(
+                &self.template_registry,
+                &binding.action,
+                EvaluationStage::Operation,
+                &format!("chrome footer binding {id:?}"),
                 0,
             )?;
         }
@@ -589,6 +1255,7 @@ impl Config {
             }
             let engine = self.engine(view_ref)?;
             engines.validate_config(view_ref, view)?;
+            self.validate_view_operation_requirements(view_ref, view)?;
             if engine != ENGINE_PICKER && (!feeds.is_empty() || items.is_some()) {
                 bail!(
                     "view {:?} using engine {:?} cannot provide picker items",
@@ -597,12 +1264,30 @@ impl Config {
                 );
             }
             if let Some(items) = items {
-                validate_templates(items).with_context(|| {
-                    format!("view {:?} has invalid items configuration", view_ref)
-                })?;
+                validate_toml_requirements(
+                    &self.template_registry,
+                    items,
+                    EvaluationStage::Operation,
+                    &format!("view {view_ref:?} items"),
+                )?;
+                validate_items_source_config(items, self.plugin_root(view_ref)).with_context(
+                    || format!("view {:?} has invalid items source configuration", view_ref),
+                )?;
             }
-            if let Some(shell) = &view.run_shell {
-                validate_script(shell, "run_shell", view_ref)?;
+            if engine == ENGINE_CAPTURE
+                && let Some(output) = view.engine_field("output")
+                && output.is_table()
+            {
+                let spec = ScriptSourceSpec::parse(output)
+                    .with_context(|| format!("view {:?} has invalid capture source", view_ref))?;
+                spec.validate_capture_source()
+                    .with_context(|| format!("view {:?} has invalid capture source", view_ref))?;
+                let root = self
+                    .plugin_root(view_ref)
+                    .with_context(|| format!("view {:?} has no plugin root", view_ref))?;
+                spec.validate_target(root).with_context(|| {
+                    format!("view {:?} has invalid capture source target", view_ref)
+                })?;
             }
 
             let mut seen_feeds = BTreeSet::new();
@@ -651,10 +1336,52 @@ impl Config {
                 if keys.insert(key.clone(), command_id).is_some() {
                     bail!("view {:?} has duplicate command key {:?}", view_ref, key);
                 }
-                validate_command_action(view_ref, command_id, &command.action, &self.views, 0)?;
+                validate_command_action(
+                    view_ref,
+                    command_id,
+                    &command.action,
+                    &self.views,
+                    self.plugin_root(view_ref),
+                    0,
+                )?;
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_view_operation_requirements(&self, view_ref: &str, view: &View) -> Result<()> {
+        for (field, value) in view.selected_engine_config() {
+            validate_toml_requirements(
+                &self.template_registry,
+                value,
+                EvaluationStage::Operation,
+                &format!("view {view_ref:?} engine field {field:?}"),
+            )?;
+        }
+        if let Some(keymap) = &view.keymap {
+            validate_toml_requirements(
+                &self.template_registry,
+                keymap,
+                EvaluationStage::Operation,
+                &format!("view {view_ref:?} keymap"),
+            )?;
+        }
+        validate_optional_string_requirements(
+            &self.template_registry,
+            view.run_shell.as_deref(),
+            EvaluationStage::Operation,
+            &format!("view {view_ref:?} run_shell"),
+        )?;
+        for (command_id, command) in &view.commands {
+            validate_command_action_requirements(
+                &self.template_registry,
+                &command.action,
+                EvaluationStage::Operation,
+                &format!("view {view_ref:?} command {command_id:?}"),
+                0,
+            )?;
+        }
         Ok(())
     }
 
@@ -694,115 +1421,99 @@ impl Config {
 
     pub(crate) fn get(
         &self,
-        context: ConfigReadContext<'_>,
+        source: ConfigSource<'_>,
+        snapshot: &EvaluationSnapshot<'_>,
+        stage: EvaluationStage,
         path: &[&str],
     ) -> Result<Option<Value>> {
-        self.get_with_references(context, path, None, None)
-    }
-
-    pub(crate) fn get_with_references(
-        &self,
-        context: ConfigReadContext<'_>,
-        path: &[&str],
-        request: Option<&Value>,
-        returned: Option<&Value>,
-    ) -> Result<Option<Value>> {
-        let fallback;
-        let (raw, this, script_root) = match context.scope {
-            ConfigScope::Root => (&self.config_value, Value::Null, Path::new(".")),
-            ConfigScope::View(state) => {
-                let raw = match self.view_config(state.view_ref()) {
-                    Ok(raw) => raw,
-                    Err(_)
-                        if self
-                            .config_value
-                            .as_object()
-                            .is_some_and(|value| value.is_empty()) =>
-                    {
-                        let view = self.view(state.view_ref()).with_context(|| {
-                            format!("view {:?} is not configured", state.view_ref())
-                        })?;
-                        let mut values = serde_json::Map::new();
-                        if let Some(keymap) = &view.keymap {
-                            values.insert("keymap".to_string(), toml_to_json(keymap)?);
-                        }
-                        if let Some(items) = view.selected_items() {
-                            values.insert("items".to_string(), toml_to_json(items)?);
-                        }
-                        for (name, value) in view.selected_engine_config() {
-                            values.insert(name.clone(), toml_to_json(value)?);
-                        }
-                        fallback = Value::Object(values);
-                        &fallback
-                    }
-                    Err(error) => return Err(error),
-                };
-                (
-                    raw,
-                    self.this_value(state, context.binding_raw)?,
-                    self.plugin_root(state.view_ref())
-                        .unwrap_or_else(|| Path::new(".")),
-                )
-            }
-        };
+        let raw = self.source_config_value(source)?;
         let Some(value) = path
             .iter()
-            .try_fold(raw, |value, segment| value.get(segment))
+            .try_fold(raw.as_ref(), |value, segment| value.get(segment))
         else {
             return Ok(None);
         };
-        let references = TreeReferences {
-            config: &self.config_value,
-            this: &this,
-            runtime: context.runtime,
-            input: context.input,
-            request,
-            returned,
-        };
-        let cancellation = context.cancellation.unwrap_or_else(CancellationToken::new);
-        let mut methods = ExpressionMethods::with_cancellation(script_root, cancellation);
-        let mut evaluator = EvalContext {
-            references: &references,
-            methods: &mut methods,
-        };
-        evaluate_json_value(value, &mut evaluator).map(Some)
+        self.resolve_json_value(snapshot, stage, value).map(Some)
     }
 
     pub(crate) fn evaluate_value(
         &self,
-        context: ConfigReadContext<'_>,
+        snapshot: &EvaluationSnapshot<'_>,
+        stage: EvaluationStage,
         value: &toml::Value,
-        request: Option<&Value>,
-        returned: Option<&Value>,
     ) -> Result<Value> {
-        let this;
-        let script_root = match context.scope {
-            ConfigScope::Root => {
-                this = Value::Null;
-                Path::new(".")
-            }
-            ConfigScope::View(state) => {
-                this = self.this_value(state, context.binding_raw)?;
-                self.plugin_root(state.view_ref())
-                    .unwrap_or_else(|| Path::new("."))
-            }
-        };
         let value = toml_to_json(value)?;
-        let references = TreeReferences {
-            config: &self.config_value,
-            this: &this,
-            runtime: context.runtime,
-            input: context.input,
-            request,
-            returned,
+        self.resolve_json_value(snapshot, stage, &value)
+    }
+
+    pub(crate) fn evaluate_argv(
+        &self,
+        configured: Option<&toml::Value>,
+        snapshot: &EvaluationSnapshot<'_>,
+        stage: EvaluationStage,
+        label: &str,
+    ) -> Result<Vec<String>> {
+        let Some(configured) = configured else {
+            return Ok(Vec::new());
         };
-        let cancellation = context.cancellation.unwrap_or_else(CancellationToken::new);
-        let mut methods = ExpressionMethods::with_cancellation(script_root, cancellation);
-        let mut evaluator = EvalContext {
-            references: &references,
-            methods: &mut methods,
+        let value = self.evaluate_value(snapshot, stage, configured)?;
+        crate::script_runner::resolve_argv(Some(&value), label)
+    }
+
+    fn source_config_value(&self, source: ConfigSource<'_>) -> Result<Cow<'_, Value>> {
+        match source {
+            ConfigSource::Root => Ok(Cow::Borrowed(&self.config_value)),
+            ConfigSource::View(view_ref) => match self.view_config(view_ref) {
+                Ok(value) => Ok(Cow::Borrowed(value)),
+                Err(_)
+                    if self
+                        .config_value
+                        .as_object()
+                        .is_some_and(|value| value.is_empty()) =>
+                {
+                    Ok(Cow::Owned(self.fallback_view_config_value(view_ref)?))
+                }
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    fn fallback_view_config_value(&self, view_ref: &str) -> Result<Value> {
+        let view = self
+            .view(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?;
+        let mut values = serde_json::Map::new();
+        if let Some(keymap) = &view.keymap {
+            values.insert("keymap".to_string(), toml_to_json(keymap)?);
+        }
+        if let Some(items) = view.selected_items() {
+            values.insert("items".to_string(), toml_to_json(items)?);
+        }
+        for (name, value) in view.selected_engine_config() {
+            values.insert(name.clone(), toml_to_json(value)?);
+        }
+        Ok(Value::Object(values))
+    }
+
+    fn resolve_json_value(
+        &self,
+        snapshot: &EvaluationSnapshot<'_>,
+        stage: EvaluationStage,
+        value: &Value,
+    ) -> Result<Value> {
+        let requirements = self.template_registry.requirements_for_value(value)?;
+        requirements.validate_stage(stage, "runtime configuration value")?;
+        let root = if requirements.is_empty() {
+            Value::Null
+        } else {
+            snapshot.expression_context(self, &requirements)?
         };
-        evaluate_json_value(&value, &mut evaluator)
+        let evaluator = EvalContext {
+            root: &root,
+            cancellation: snapshot.cancellation,
+            templates: Some(&self.template_registry),
+        };
+        evaluate_json_value(value, &evaluator)
     }
 
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
@@ -835,14 +1546,14 @@ impl Config {
             .collect()
     }
 
-    pub(crate) fn this_value(
+    pub(crate) fn view_value(
         &self,
         state: &StateInstance,
         binding_raw: Option<&str>,
     ) -> Result<Value> {
         // Feed default binding must expose the coordinating page's committed
         // raw string (including ""). Rendering the owner state would replace
-        // empty input with schema defaults and break this.raw_input == R.
+        // empty input with schema defaults and break view.raw_input == R.
         let input = match binding_raw {
             Some(raw) => raw.to_string(),
             None => self.render_query_input(state)?,
@@ -869,10 +1580,128 @@ impl Config {
     }
 }
 
+fn views_config_value(
+    views: &BTreeMap<ViewRef, View>,
+    plugins: &BTreeMap<String, PluginMetadata>,
+) -> Result<Value> {
+    let mut plugin_values = serde_json::Map::new();
+    for (package, metadata) in plugins {
+        plugin_values.insert(
+            package.clone(),
+            serde_json::json!({"name": metadata.name, "views": {}}),
+        );
+    }
+    for (view_ref, view) in views {
+        let (package, name) = view_ref
+            .split_once(':')
+            .with_context(|| format!("test view {:?} is not namespaced", view_ref))?;
+        let plugin = plugin_values
+            .entry(package.to_string())
+            .or_insert_with(|| serde_json::json!({"name": package, "views": {}}));
+        let views = plugin
+            .get_mut("views")
+            .and_then(Value::as_object_mut)
+            .context("test plugin views must be an object")?;
+        views.insert(name.to_string(), serde_json::to_value(view)?);
+    }
+    let mut value = serde_json::json!({"plugins": plugin_values});
+    remove_null_fields(&mut value);
+    normalize_engine_configs(&mut value);
+    Ok(value)
+}
+
+fn remove_null_fields(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remove_null_fields(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                remove_null_fields(value);
+            }
+            values.retain(|_, value| !value.is_null());
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn load_test_fixture() -> Result<Config> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml");
     Config::load(&path)
+}
+
+fn public_page_context(
+    runtime: &Value,
+    requirements: &ContextRequirements,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Value> {
+    let current = runtime.pointer("/view/current").and_then(Value::as_object);
+    let mut page = serde_json::Map::new();
+    let fields = [
+        ("ref", Value::Null),
+        ("input", Value::String(String::new())),
+        ("raw_input", Value::String(String::new())),
+        ("query", Value::Null),
+        ("state_revision", Value::Null),
+        ("items", serde_json::json!([])),
+        ("selected_item", Value::Null),
+        ("command_owner", Value::Null),
+    ];
+    for (field, default) in fields {
+        if requirements.requires_field(Namespace::Page, field) {
+            let value = current
+                .and_then(|values| values.get(field))
+                .unwrap_or(&default);
+            page.insert(
+                field.to_string(),
+                clone_json_value_bounded(value, cancellation)?,
+            );
+        }
+    }
+    if requirements.requires_field(Namespace::Page, "commands") {
+        let default = Value::Array(Vec::new());
+        let value = current
+            .and_then(|values| values.get("command").or_else(|| values.get("commands")))
+            .unwrap_or(&default);
+        page.insert(
+            "commands".to_string(),
+            clone_json_value_bounded(value, cancellation)?,
+        );
+    }
+    Ok(Value::Object(page))
+}
+
+fn public_session_context(
+    runtime: &Value,
+    requirements: &ContextRequirements,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Value> {
+    let session = runtime.get("session").and_then(Value::as_object);
+    let mut public = serde_json::Map::new();
+    if requirements.requires_field(Namespace::Session, "input") {
+        let default = Value::Object(serde_json::Map::new());
+        let value = session
+            .and_then(|values| values.get("input"))
+            .unwrap_or(&default);
+        public.insert(
+            "input".to_string(),
+            clone_json_value_bounded(value, cancellation)?,
+        );
+    }
+    if requirements.requires_field(Namespace::Session, "views") {
+        let default = Value::Array(Vec::new());
+        let value = session
+            .and_then(|values| values.get("views"))
+            .unwrap_or(&default);
+        public.insert(
+            "views".to_string(),
+            clone_json_value_bounded(value, cancellation)?,
+        );
+    }
+    Ok(Value::Object(public))
 }
 
 fn package_id(view_ref: &str) -> &str {
@@ -892,6 +1721,16 @@ fn expand_feed_patterns(views: &mut BTreeMap<ViewRef, View>) -> Result<()> {
     for (owner_ref, owner) in views.iter_mut() {
         let mut expanded = Vec::new();
         for feed in &owner.engine.config.feeds {
+            if is_dynamic_string(&feed.view) {
+                let value = Value::String(feed.view.clone());
+                let templates = TemplateRegistry::compile_json_tree(&value)?;
+                validate_json_requirements(
+                    &templates,
+                    &value,
+                    EvaluationStage::Bootstrap,
+                    &format!("view {owner_ref:?} feed target"),
+                )?;
+            }
             if let Some(view_name) = feed.view.strip_prefix("*:") {
                 if view_name.is_empty() || view_name.contains(':') {
                     bail!(
@@ -1087,7 +1926,6 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
     let mut views = table
         .remove("views")
         .with_context(|| format!("plugin {:?} is missing [views.*]", plugin_id))?;
-    expand_script_refs(&mut views, root, plugin_id)?;
     normalize_view_keymaps(&mut views, plugin_id)?;
 
     let mut plugin_table = toml::map::Map::new();
@@ -1098,66 +1936,6 @@ fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Value)> {
     let mut package_table = toml::map::Map::new();
     package_table.insert("plugins".to_string(), toml::Value::Table(plugins_table));
     Ok((plugin_id.to_string(), toml::Value::Table(package_table)))
-}
-
-fn expand_script_refs(value: &mut toml::Value, root: &Path, owner: &str) -> Result<()> {
-    match value {
-        toml::Value::Table(table) => {
-            let keys = table.keys().cloned().collect::<Vec<_>>();
-            for key in keys {
-                let child = table.get_mut(&key).expect("key collected from table");
-                if (key == "run" || key == "handler")
-                    && let Some(file) = child
-                        .as_table()
-                        .and_then(|script| script.get("file"))
-                        .and_then(toml::Value::as_str)
-                {
-                    let text = read_plugin_script(root, file, owner, &key)?;
-                    *child = toml::Value::String(text);
-                    continue;
-                }
-                expand_script_refs(child, root, owner)?;
-            }
-        }
-        toml::Value::Array(values) => {
-            for value in values {
-                expand_script_refs(value, root, owner)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn read_plugin_script(root: &Path, relative: &str, owner: &str, field: &str) -> Result<String> {
-    let relative_path = Path::new(relative);
-    if relative_path.is_absolute()
-        || relative_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        bail!(
-            "plugin {:?} {} script path {:?} must stay below the plugin directory",
-            owner,
-            field,
-            relative
-        );
-    }
-    let canonical_root = fs::canonicalize(root)
-        .with_context(|| format!("could not resolve plugin directory {}", root.display()))?;
-    let path = root.join(relative_path);
-    let canonical_path = fs::canonicalize(&path)
-        .with_context(|| format!("could not read plugin script {}", path.display()))?;
-    if !canonical_path.starts_with(&canonical_root) {
-        bail!(
-            "plugin {:?} {} script path {:?} escapes the plugin directory",
-            owner,
-            field,
-            relative
-        );
-    }
-    fs::read_to_string(&canonical_path)
-        .with_context(|| format!("could not read plugin script {}", canonical_path.display()))
 }
 
 fn remove_disabled_plugins(value: &mut toml::Value, disabled: &BTreeSet<String>) {
@@ -1294,9 +2072,135 @@ fn validate_plugin_id(plugin_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_script(script: &str, kind: &str, owner: &str) -> Result<()> {
-    if script.trim().is_empty() {
-        bail!("{} has an empty {} script", owner, kind);
+fn validate_run_handler(
+    handler: &toml::Value,
+    script_root: Option<&Path>,
+    owner: &str,
+) -> Result<()> {
+    let spec = match handler {
+        toml::Value::Table(_) => {
+            let spec = ScriptSourceSpec::parse(handler)
+                .with_context(|| format!("{} has an invalid command handler source", owner))?;
+            spec.validate_command_handler()
+                .with_context(|| format!("{} has an invalid command handler source", owner))?;
+            spec
+        }
+        toml::Value::String(source) if is_dynamic_string(source) => {
+            let template = Template::parse(source)
+                .with_context(|| format!("{} has an invalid command handler source", owner))?;
+            anyhow::ensure!(
+                template.is_complete_path(),
+                "{} command handler must be a script source table or complete dynamic path",
+                owner
+            );
+            return Ok(());
+        }
+        _ => {
+            bail!(
+                "{} command handler must be a script source table or complete dynamic path",
+                owner
+            )
+        }
+    };
+    let Some(file) = spec.file.as_str() else {
+        bail!(
+            "{} command handler file must be a string or dynamic path",
+            owner
+        );
+    };
+    if file.trim().is_empty() {
+        bail!("{} has an empty command handler file", owner);
+    }
+    if is_dynamic_string(file) {
+        return Ok(());
+    }
+    let root = script_root
+        .with_context(|| format!("{} file-backed command handler has no plugin root", owner))?;
+    spec.validate_target(root)
+        .with_context(|| format!("{} has an invalid command handler file", owner))
+}
+
+fn validate_argv_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {
+    validate_script_source_args(Some(arguments))
+        .with_context(|| format!("{} args must be an array or complete dynamic path", owner))
+}
+
+fn validate_run_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {
+    validate_argv_arguments(arguments, &format!("{} command", owner))
+}
+
+fn validate_command_action_requirements(
+    templates: &TemplateRegistry,
+    action: &CommandAction,
+    stage: EvaluationStage,
+    consumer: &str,
+    depth: usize,
+) -> Result<()> {
+    if depth > 16 {
+        bail!("{consumer} action nesting exceeds 16 levels");
+    }
+    let validate = |value: &toml::Value, label: &str, value_stage: EvaluationStage| {
+        validate_toml_requirements(templates, value, value_stage, label)
+    };
+    match action {
+        CommandAction::Run { payload } => {
+            validate(&payload.handler, &format!("{consumer} handler"), stage)?;
+            if let Some(args) = &payload.args {
+                validate(args, &format!("{consumer} args"), stage)?;
+            }
+            if let Some(shell) = &payload.shell {
+                validate(
+                    &toml::Value::String(shell.clone()),
+                    &format!("{consumer} shell"),
+                    stage,
+                )?;
+            }
+        }
+        CommandAction::Navigate { payload } => {
+            validate(&payload.target, &format!("{consumer} target"), stage)?;
+            if let Some(query) = &payload.query {
+                validate(query, &format!("{consumer} query"), stage)?;
+            }
+        }
+        CommandAction::Call { payload } => {
+            validate(&payload.target, &format!("{consumer} target"), stage)?;
+            if let Some(query) = &payload.query {
+                validate(query, &format!("{consumer} query"), stage)?;
+            }
+            if let Some(then) = &payload.then {
+                validate_command_action_requirements(
+                    templates,
+                    then,
+                    EvaluationStage::Return,
+                    &format!("{consumer} continuation"),
+                    depth + 1,
+                )?;
+            }
+        }
+        CommandAction::Return { payload } => {
+            if let Some(value) = &payload.value {
+                validate(value, &format!("{consumer} value"), stage)?;
+            }
+            if let Some(handler) = &payload.handler {
+                validate(
+                    handler,
+                    &format!("{consumer} handler"),
+                    EvaluationStage::Return,
+                )?;
+            }
+            if let Some(args) = &payload.args {
+                validate(args, &format!("{consumer} args"), EvaluationStage::Return)?;
+            }
+        }
+        CommandAction::EditInput { payload } => {
+            validate(&payload.value, &format!("{consumer} value"), stage)?;
+            if let Some(cursor) = &payload.cursor {
+                validate(cursor, &format!("{consumer} cursor"), stage)?;
+            }
+        }
+        CommandAction::Invoke { payload } => {
+            validate(&payload.command, &format!("{consumer} command"), stage)?;
+        }
     }
     Ok(())
 }
@@ -1306,6 +2210,7 @@ fn validate_command_action(
     command_id: &str,
     action: &CommandAction,
     views: &BTreeMap<ViewRef, View>,
+    script_root: Option<&Path>,
     depth: usize,
 ) -> Result<()> {
     if depth > 16 {
@@ -1318,7 +2223,10 @@ fn validate_command_action(
     let owner = format!("{}:{}", view_ref, command_id);
     match action {
         CommandAction::Run { payload } => {
-            validate_script(&payload.handler, "command handler", &owner)?;
+            validate_run_handler(&payload.handler, script_root, &owner)?;
+            if let Some(args) = &payload.args {
+                validate_run_arguments(args, &owner)?;
+            }
         }
         CommandAction::Navigate { payload } => {
             validate_target(view_ref, command_id, "navigation", &payload.target, views)?;
@@ -1328,24 +2236,24 @@ fn validate_command_action(
         }
         CommandAction::Call { payload } => {
             validate_target(view_ref, command_id, "call", &payload.target, views)?;
-            for value in [&payload.query, &payload.args].into_iter().flatten() {
+            if let Some(value) = &payload.query {
                 validate_templates(value)?;
             }
             if let Some(then) = &payload.then {
-                validate_command_action(view_ref, command_id, then, views, depth + 1)?;
+                validate_command_action(view_ref, command_id, then, views, script_root, depth + 1)?;
             }
         }
         CommandAction::Return { payload } => {
-            if depth > 0 && (payload.handler.is_some() || !payload.params.is_empty()) {
+            if depth > 0 && (payload.handler.is_some() || payload.args.is_some()) {
                 bail!(
-                    "view {:?} command {:?} continuation return cannot define handler or params",
+                    "view {:?} command {:?} continuation return cannot define handler or args",
                     view_ref,
                     command_id
                 );
             }
-            if payload.handler.is_none() && !payload.params.is_empty() {
+            if payload.handler.is_none() && payload.args.is_some() {
                 bail!(
-                    "view {:?} command {:?} return params require a handler",
+                    "view {:?} command {:?} return args require a handler",
                     view_ref,
                     command_id
                 );
@@ -1354,14 +2262,14 @@ fn validate_command_action(
                 validate_templates(value)?;
             }
             if let Some(handler) = &payload.handler {
-                validate_result_handler(handler, &owner)?;
+                validate_result_handler(handler, &owner, script_root)?;
             }
-            validate_templates(&toml::Value::Table(payload.params.clone())).with_context(|| {
-                format!(
-                    "view {:?} command {:?} has invalid return params",
-                    view_ref, command_id
-                )
-            })?;
+            if let Some(args) = &payload.args {
+                validate_argv_arguments(
+                    args,
+                    &format!("view {:?} command {:?}", view_ref, command_id),
+                )?;
+            }
         }
         CommandAction::EditInput { payload } => {
             validate_templates(&payload.value)?;
@@ -1389,12 +2297,12 @@ fn validate_target(
     })?;
     let target = target
         .as_str()
-        .with_context(|| format!("{} target must be a string or expression", kind))?;
+        .with_context(|| format!("{} target must be a string or dynamic path", kind))?;
     let configured = views.contains_key(target)
         || views
             .values()
             .any(|view| view.alias.as_deref() == Some(target));
-    if !target.contains("{{") && !configured {
+    if !is_dynamic_string(target) && !configured {
         bail!(
             "view {:?} command {:?} references missing view {:?}",
             view_ref,
@@ -1405,7 +2313,18 @@ fn validate_target(
     Ok(())
 }
 
-fn validate_result_handler(handler: &str, owner: &str) -> Result<()> {
+fn validate_result_handler(
+    handler: &toml::Value,
+    owner: &str,
+    script_root: Option<&Path>,
+) -> Result<()> {
+    let handler = handler
+        .as_str()
+        .with_context(|| format!("{} result handler must be a string or dynamic path", owner))?;
+    if is_dynamic_string(handler) {
+        Template::parse(handler)?;
+        return Ok(());
+    }
     let path = Path::new(handler);
     if handler.trim().is_empty()
         || path.is_absolute()
@@ -1414,6 +2333,10 @@ fn validate_result_handler(handler: &str, owner: &str) -> Result<()> {
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         bail!("{} has invalid result handler {:?}", owner, handler);
+    }
+    if let Some(root) = script_root {
+        crate::script_runner::validate_script_target(root, handler)
+            .with_context(|| format!("{} has an invalid result handler target", owner))?;
     }
     Ok(())
 }
@@ -1439,6 +2362,30 @@ fn validate_templates(value: &toml::Value) -> Result<()> {
         | toml::Value::Integer(_) => {}
     }
     Ok(())
+}
+
+fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Result<()> {
+    match value {
+        toml::Value::Array(_) => Ok(()),
+        toml::Value::String(source) => {
+            let template = Template::parse(source)?;
+            if template.is_complete_path() {
+                Ok(())
+            } else {
+                bail!("items must be an array, complete dynamic path, or script source object")
+            }
+        }
+        toml::Value::Table(_) => {
+            let spec = ScriptSourceSpec::parse(value)
+                .context("items must be an array or a script source object")?;
+            spec.validate_picker_source()?;
+            if let Some(root) = root {
+                spec.validate_target(root)?;
+            }
+            Ok(())
+        }
+        _ => bail!("items must be an array, complete dynamic path, or script source object"),
+    }
 }
 
 fn resolve_config_path(config_path: &Path, path: &Path) -> PathBuf {
@@ -1469,7 +2416,7 @@ mod tests {
     fn config(source: &str) -> Config {
         let value: toml::Value = toml::from_str(source).unwrap();
         let raw: RawConfig = value.try_into().unwrap();
-        Config::from_raw(raw, BTreeMap::new()).unwrap()
+        Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new())).unwrap()
     }
 
     #[test]
@@ -1619,7 +2566,7 @@ mod tests {
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         assert_eq!(config.default_view.as_deref(), Some("core:default"));
@@ -1666,7 +2613,7 @@ mod tests {
         )
         .unwrap();
         let raw: RawConfig = value.try_into().unwrap();
-        let error = Config::from_raw(raw, BTreeMap::new())
+        let error = Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new()))
             .expect_err("legacy viewtypes should be rejected");
         assert!(error.to_string().contains("no longer supported"));
     }
@@ -1760,12 +2707,12 @@ mod tests {
             type = "run"
 
             [plugins.core.views.default.commands.open.payload]
-            handler = ":"
+            handler = { source = "script", file = "{{ view.query.script }}" }
             [plugins.apps.views.main]
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         config
@@ -1794,7 +2741,7 @@ mod tests {
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         let error = config
@@ -1814,12 +2761,12 @@ mod tests {
             [plugins.core.views.default.engine.config]
             [[plugins.core.views.default.engine.config.feeds]]
             view = "apps:main"
-            raw = "{{ this:input }}"
+            raw = "{{ view.input }}"
             [plugins.apps.views.main]
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         let value = value.expect("toml should parse");
@@ -1841,14 +2788,14 @@ mod tests {
             [plugins.core.views.default.engine]
             type = "picker"
             [plugins.core.views.default.engine.config]
-            items = "[]"
+            items = []
             [[plugins.core.views.default.engine.config.feeds]]
             view = "apps:main"
             [plugins.apps.views.main]
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         let error = config
@@ -1871,7 +2818,7 @@ mod tests {
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
 "#,
         );
         let error = config
@@ -1957,9 +2904,9 @@ mod tests {
             [plugins.core.views.default.commands.open.payload.then]
             type = "return"
             [plugins.core.views.default.commands.open.payload.then.payload]
-            value = "{{ return:output.value }}"
+            value = "{{ result.output.value }}"
             handler = "scripts/result.sh"
-            params = { result = "{{ return:$ }}" }
+            args = ["{{ result }}"]
             [plugins.forms.views.main]
             [plugins.forms.views.main.engine]
             type = "picker"
@@ -1973,12 +2920,12 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("continuation return cannot define handler or params")
+                .contains("continuation return cannot define handler or args")
         );
     }
 
     #[test]
-    fn return_params_require_a_handler() {
+    fn return_args_require_a_handler() {
         let config = config(
             r#"
             default_view = "core:default"
@@ -1992,18 +2939,14 @@ mod tests {
             type = "return"
             [plugins.core.views.default.commands.accept.payload]
             value = "accepted"
-            params = { ignored = true }
+            args = ["ignored"]
             "#,
         );
 
         let error = config
             .validate()
-            .expect_err("return params without a handler should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("return params require a handler")
-        );
+            .expect_err("return args without a handler should be rejected");
+        assert!(error.to_string().contains("return args require a handler"));
     }
 
     #[test]
@@ -2051,15 +2994,15 @@ mod tests {
             [plugins.apps.views.main.engine]
             type = "picker"
             [plugins.apps.views.main.engine.config]
-            items = "[]"
+            items = []
             [plugins.apps.views.default.engine]
             type = "picker"
             [plugins.apps.views.default.engine.config]
-            items = "[]"
+            items = []
             [plugins.sys.views.main.engine]
             type = "picker"
             [plugins.sys.views.main.engine.config]
-            items = "[]"
+            items = []
             [plugins.shell.views.main.engine]
             type = "embedded"
             [plugins.shell.views.main.engine.config]
@@ -2172,15 +3115,16 @@ mod tests {
             alias = "file"
             [views.main.engine]
             type = "picker"
-            [views.main.engine.config]
-            items = '{{ script("scripts/items.sh") }}'
+            [views.main.engine.config.items]
+            source = "script"
+            file = "scripts/items.sh"
             [views.main.commands.run]
             key = "enter"
             label = "Run"
             type = "run"
 
             [views.main.commands.run.payload]
-            handler = { file = "scripts/run.sh" }
+            handler = { source = "script", file = "scripts/run.sh" }
             "#,
         )
         .unwrap();
@@ -2213,20 +3157,30 @@ mod tests {
         fs::write(&config_path, default_source).unwrap();
 
         let config = Config::load(&config_path).unwrap();
+        let items = config.views["filetest:main"]
+            .engine
+            .config
+            .items
+            .as_ref()
+            .and_then(toml::Value::as_table)
+            .expect("script items table");
         assert_eq!(
-            config.views["filetest:main"]
-                .engine
-                .config
-                .items
-                .as_ref()
-                .and_then(toml::Value::as_str),
-            Some("{{ script(\"scripts/items.sh\") }}")
+            items.get("source").and_then(toml::Value::as_str),
+            Some("script")
+        );
+        assert_eq!(
+            items.get("file").and_then(toml::Value::as_str),
+            Some("scripts/items.sh")
         );
         let CommandAction::Run { payload } = &config.views["filetest:main"].commands["run"].action
         else {
             panic!("file command did not deserialize as a run action");
         };
-        assert_eq!(payload.handler, "printf 'run\\n'\\n");
+        assert_eq!(
+            payload.handler,
+            toml::from_str::<toml::Value>("source = \"script\"\nfile = \"scripts/run.sh\"\n")
+                .unwrap()
+        );
         assert_eq!(
             config.plugin_root("filetest:main"),
             Some(plugin_root.as_path())
@@ -2235,7 +3189,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_config_exposes_the_merged_json_tree() {
+    fn loaded_config_contains_the_merged_json_tree() {
         let root = env::temp_dir().join(format!("tui-launcher-config-json-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
@@ -2268,10 +3222,190 @@ mod tests {
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(
-            crate::expression::apply_path(config.config_value.clone(), "$.aa.*.bb").unwrap(),
-            serde_json::json!([1, 2])
+            config
+                .config_value
+                .pointer("/aa/a/bb")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            config
+                .config_value
+                .pointer("/aa/b/bb")
+                .and_then(Value::as_i64),
+            Some(2)
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dynamic_script_source_fields_resolve_with_one_evaluator() {
+        let source: toml::Value = toml::from_str(
+            r#"
+            source = "{{ page.query.source }}"
+            file = "{{ page.query.file }}"
+            max_output_bytes = "{{ page.query.limit }}"
+            args = ["{{ page.query }}"]
+            "#,
+        )
+        .unwrap();
+        ScriptSourceSpec::parse(&source).unwrap();
+        let source_json = toml_to_json(&source).unwrap();
+        let registry = TemplateRegistry::compile_json_tree(&source_json).unwrap();
+        let root = serde_json::json!({
+            "page": {
+                "query": {
+                    "source": "script",
+                    "file": "scripts/items.sh",
+                    "limit": 128,
+                }
+            }
+        });
+        let resolved_value = evaluate_json_value(
+            &source_json,
+            &EvalContext {
+                root: &root,
+                cancellation: None,
+                templates: Some(&registry),
+            },
+        )
+        .unwrap();
+        let resolved = ResolvedScriptSource::parse(&resolved_value).unwrap();
+        assert_eq!(resolved.file, "scripts/items.sh");
+        assert_eq!(resolved.max_output_bytes, Some(128));
+        assert_eq!(
+            resolved.args,
+            Some(serde_json::json!([
+                {
+                    "source": "script",
+                    "file": "scripts/items.sh",
+                    "limit": 128,
+                }
+            ]))
+        );
+    }
+
+    #[test]
+    fn root_source_resolves_against_the_consuming_view_owner() {
+        let mut config = load_test_fixture().unwrap();
+        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
+            "exit": ["{{ view.ref }}"]
+        });
+        config.rebuild_template_registry().unwrap();
+        let owner = config.instantiate_state("apps:main").unwrap();
+        let runtime = serde_json::json!({
+            "view": {"current": {"ref": "core:default"}}
+        });
+        let snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(&owner)),
+            None,
+        );
+        let value = config
+            .get(
+                ConfigSource::Root,
+                &snapshot,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["exit"][0], "apps:main");
+
+        let missing_owner = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            None,
+            None,
+        );
+        let error = config
+            .get(
+                ConfigSource::Root,
+                &missing_owner,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("namespace \"view\" is unavailable")
+        );
+    }
+
+    #[test]
+    fn scope_capabilities_distinguish_an_unavailable_result_from_null_selection() {
+        let mut config = load_test_fixture().unwrap();
+        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
+            "exit": ["{{ result }}"],
+            "back": ["{{ selection }}"],
+        });
+        config.rebuild_template_registry().unwrap();
+        let owner = config.instantiate_state("apps:main").unwrap();
+        let runtime = serde_json::json!({
+            "view": {"current": {"ref": "core:default"}}
+        });
+        let missing_return_scope = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(&owner)),
+            None,
+        );
+        let error = config
+            .get(
+                ConfigSource::Root,
+                &missing_return_scope,
+                EvaluationStage::Return,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("namespace \"result\" is unavailable")
+        );
+
+        let returned = Value::Null;
+        let snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(&owner)),
+            None,
+        )
+        .with_return_scope(Some(ReturnScope::new(&returned)));
+        let value = config
+            .get(
+                ConfigSource::Root,
+                &snapshot,
+                EvaluationStage::Return,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap()
+            .unwrap();
+        assert!(value["exit"][0].is_null());
+        assert!(value["back"][0].is_null());
+    }
+
+    #[test]
+    fn dynamic_context_projects_only_requested_page_fields() {
+        let source = serde_json::json!("{{ page.input }}");
+        let registry = TemplateRegistry::compile_json_tree(&source).unwrap();
+        let requirements = registry.requirements_for_value(&source).unwrap();
+        assert!(requirements.requires(Namespace::Page));
+        assert!(requirements.requires_field(Namespace::Page, "input"));
+        assert!(!requirements.requires_field(Namespace::Page, "items"));
+        assert!(!requirements.requires(Namespace::Session));
+
+        let runtime = serde_json::json!({
+            "view": {"current": {
+                "input": "query",
+                "items": (0..100_001).collect::<Vec<_>>()
+            }}
+        });
+        let page = public_page_context(&runtime, &requirements, None).unwrap();
+        assert_eq!(page["input"], "query");
+        assert!(page.get("items").is_none());
     }
 
     #[test]
@@ -2349,7 +3483,8 @@ mod tests {
         assert_eq!(keymap.get("escape"), Some(&toml::Value::Boolean(false)));
 
         let raw: RawConfig = base.try_into().unwrap();
-        let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
+        let config =
+            Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new())).unwrap();
         config.validate().unwrap();
         assert_eq!(
             config.views["base:main"]
@@ -2389,20 +3524,21 @@ mod tests {
             [plugins.base.views.main.engine]
             type = "picker"
             [plugins.base.views.main.engine.config]
-            items = "{{ runtime:view.current.items }}"
+            items = "{{ page.items }}"
 "#,
         )
         .unwrap();
         let overlay: toml::Value = toml::from_str(
             r#"
             [plugins.base.views.main.engine.config]
-            items = "{{ config:items }}"
+            items = "{{ view.query }}"
             "#,
         )
         .unwrap();
         merge_values(&mut base, overlay);
         let raw: RawConfig = base.try_into().unwrap();
-        let config = Config::from_raw(raw, BTreeMap::new()).unwrap();
+        let config =
+            Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new())).unwrap();
         assert_eq!(
             config.views["base:main"]
                 .engine
@@ -2410,7 +3546,7 @@ mod tests {
                 .items
                 .as_ref()
                 .and_then(toml::Value::as_str),
-            Some("{{ config:items }}")
+            Some("{{ view.query }}")
         );
     }
 }

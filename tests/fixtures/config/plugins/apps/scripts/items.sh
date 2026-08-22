@@ -1,8 +1,7 @@
 #!/bin/sh
 command -v fzf >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
-input=$(cat)
-query=$(printf '%s\n' "$input" | jq -r '. // empty' 2>/dev/null)
+query=${1:-}
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tui-launcher"
 cache_file="$cache_dir/desktop-apps-v2.list"
 refresh=true

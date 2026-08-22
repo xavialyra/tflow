@@ -99,7 +99,6 @@ impl PickerView {
             page,
             selection,
             runtime: host.runtime.snapshot().clone(),
-            request: host.request.clone(),
             output,
         })
     }

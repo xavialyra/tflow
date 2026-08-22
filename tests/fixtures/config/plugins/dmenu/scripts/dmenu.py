@@ -306,12 +306,25 @@ def result_mode(context):
 
 def main():
     try:
-        context = json.load(sys.stdin)
-        if len(sys.argv) != 2:
+        if len(sys.argv) < 2:
             raise DmenuError("expected items or result mode")
         if sys.argv[1] == "items":
+            if len(sys.argv) != 4:
+                raise DmenuError("items mode requires input and query arguments")
+            context = {
+                "input": json.loads(sys.argv[2]),
+                "query": json.loads(sys.argv[3]),
+            }
             return item_mode(context)
         if sys.argv[1] == "result":
+            if len(sys.argv) != 6:
+                raise DmenuError("result mode requires options, stdin, selection, and input arguments")
+            context = {
+                "options": json.loads(sys.argv[2]),
+                "stdin": json.loads(sys.argv[3]),
+                "selected": json.loads(sys.argv[4]),
+                "typed": sys.argv[5],
+            }
             return result_mode(context)
         raise DmenuError(f"unsupported mode {sys.argv[1]!r}")
     except (DmenuError, OSError, json.JSONDecodeError) as error:

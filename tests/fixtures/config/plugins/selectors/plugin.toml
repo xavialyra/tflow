@@ -9,8 +9,18 @@ alias = "commands"
 type = "picker"
 
 [views.commands.engine.config]
-items = '{{ script("scripts/commands.sh", {commands = request:args.commands, query = this:query}) }}'
 show_prefix = true
+
+[views.commands.engine.config.items]
+source = "script"
+file = "scripts/commands.sh"
+args = ["{{ view.query.commands }}", "{{ view.query.search }}"]
+
+[views.commands.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+commands = { type = "array<object>", default = [] }
 
 [views.commands.commands.accept]
 key = "enter"
@@ -20,4 +30,4 @@ requires = "items"
 type = "return"
 
 [views.commands.commands.accept.payload]
-value = "{{ runtime:view.current.selected_item.metadata.command }}"
+value = "{{ selection.metadata.command }}"

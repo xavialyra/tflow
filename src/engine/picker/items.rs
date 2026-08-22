@@ -1,9 +1,12 @@
 use super::PendingAction;
 use crate::cancellation::CancellationToken;
-use crate::config::{Config, ConfigReadContext, ConfigScope};
+use crate::config::{
+    Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ResolvedScriptSource, SessionScope,
+};
+use crate::script_runner::{ensure_script_success, run_script};
 use crate::state::StateInstance;
 use crate::text::sanitize_text;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -59,7 +62,6 @@ pub(crate) struct ItemsRequest {
     pub(crate) binding_raw: String,
     /// Coordinating page state for single-source pickers; ignored for feeds pages.
     pub(crate) page_state: StateInstance,
-    pub(crate) request: Option<Value>,
 }
 
 pub(crate) struct ItemsResponse {
@@ -84,7 +86,6 @@ pub(crate) fn load_items_for_page(
     view_ref: &str,
     page_state: &StateInstance,
     binding_raw: &str,
-    request: Option<&Value>,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
@@ -131,18 +132,22 @@ pub(crate) fn load_items_for_page(
                 binding_raw: binding_raw.to_string(),
             },
         );
-        let value = match config.get_with_references(
-            ConfigReadContext {
-                scope: ConfigScope::View(&state),
-                runtime,
-                input: &config.input_value,
-                cancellation: Some(cancellation.clone()),
-                binding_raw: this_binding_raw,
-            },
-            &["items"],
-            request,
-            None,
-        ) {
+        let owner_scope = OwnerViewScope::new(&state).with_binding_raw(this_binding_raw);
+        let snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(runtime),
+            Some(owner_scope),
+            Some(cancellation),
+        );
+        let value = match config.items_value(&owner_ref, &snapshot) {
+            Ok(Some(value)) if ResolvedScriptSource::is_candidate(&value) => {
+                ResolvedScriptSource::parse(&value)
+                    .and_then(|source| run_items_source(config, &owner_ref, &source, cancellation))
+                    .map(Some)
+            }
+            value => value,
+        };
+        let value = match value {
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(error) => {
@@ -150,7 +155,7 @@ pub(crate) fn load_items_for_page(
                 continue;
             }
         };
-        append_items(
+        append_items_value(
             &mut result,
             &owner_ref,
             &feed_id,
@@ -173,19 +178,32 @@ fn load_items(
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
+    let mut config = config.clone();
+    config.test_rebuild_compiled()?;
     let page_state = config.instantiate_state(view_ref)?;
-    load_items_for_page(
-        config,
-        view_ref,
-        &page_state,
-        "",
-        None,
-        runtime,
-        cancellation,
-    )
+    load_items_for_page(&config, view_ref, &page_state, "", runtime, cancellation)
 }
 
-fn append_items(
+fn append_items_value(
+    result: &mut ItemsResult,
+    source_ref: &str,
+    feed_id: &FeedId,
+    prefix: &str,
+    value: Value,
+    cancellation: &CancellationToken,
+) {
+    if !value.is_array() {
+        result.errors.push(format!(
+            "{}: items must resolve to an array or a script source, got {}",
+            source_ref,
+            value_type(&value)
+        ));
+        return;
+    }
+    append_items_array(result, source_ref, feed_id, prefix, value, cancellation);
+}
+
+fn append_items_array(
     result: &mut ItemsResult,
     source_ref: &str,
     feed_id: &FeedId,
@@ -195,7 +213,7 @@ fn append_items(
 ) {
     let Value::Array(items) = value else {
         result.errors.push(format!(
-            "{}: items must evaluate to a JSON array",
+            "{}: items source must produce a JSON array",
             source_ref
         ));
         return;
@@ -244,15 +262,73 @@ fn append_items(
 }
 
 #[cfg(test)]
+fn append_items(
+    result: &mut ItemsResult,
+    source_ref: &str,
+    feed_id: &FeedId,
+    prefix: &str,
+    value: Value,
+    cancellation: &CancellationToken,
+) {
+    append_items_array(result, source_ref, feed_id, prefix, value, cancellation);
+}
+
+fn run_items_source(
+    config: &Config,
+    source_ref: &str,
+    source: &ResolvedScriptSource,
+    cancellation: &CancellationToken,
+) -> Result<Value> {
+    let root = config
+        .plugin_root(source_ref)
+        .with_context(|| format!("items source {:?} has no plugin root", source_ref))?;
+    let args = source.script_args("picker script args")?;
+    let output = run_script(
+        root,
+        &source.file,
+        &args,
+        source.max_output_bytes,
+        cancellation,
+    )?;
+    ensure_script_success(&output)?;
+    if output.stdout.is_empty() {
+        bail!("script produced no JSON output");
+    }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("script {} did not produce valid JSON", source.file))
+}
+
+fn value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
-        Command, CommandAction, Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, FeedSpec,
-        PluginMetadata, View,
+        Command, CommandAction, ENGINE_PICKER, EngineOptions, EngineSpec, FeedSpec, PluginMetadata,
+        View,
     };
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
+
+    fn script_source(file: &str, args: Option<toml::Value>) -> toml::Value {
+        let mut source = toml::Table::new();
+        source.insert("source".to_string(), "script".into());
+        source.insert("file".to_string(), file.into());
+        if let Some(args) = args {
+            source.insert("args".to_string(), args);
+        }
+        toml::Value::Table(source)
+    }
 
     fn test_config() -> Config {
         let mut views = BTreeMap::new();
@@ -282,7 +358,7 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ runtime:view.current.items }}".into()),
+                        items: Some("{{ page.items }}".into()),
                         ..Default::default()
                     },
                 },
@@ -300,7 +376,11 @@ mod tests {
                         requires: crate::config::CommandRequirement::Items,
                         action: CommandAction::Run {
                             payload: crate::config::RunPayload {
-                                handler: ":".to_string(),
+                                handler: crate::config::ScriptSourceSpec::script_file(
+                                    "scripts/run.sh",
+                                )
+                                .as_toml_value(),
+                                args: None,
                                 shell: None,
                                 exit: false,
                             },
@@ -309,13 +389,10 @@ mod tests {
                 )]),
             },
         );
-        Config {
-            default_view: Some("core:default".to_string()),
-            image_protocol: crate::config::ImageProtocol::default(),
-            log_file: None,
-            chrome: crate::config::ChromeConfig::default(),
+        Config::test_new(
+            Some("core:default".to_string()),
             views,
-            plugins: BTreeMap::from([
+            BTreeMap::from([
                 (
                     "core".to_string(),
                     PluginMetadata {
@@ -329,13 +406,10 @@ mod tests {
                     },
                 ),
             ]),
-            defaults: Defaults::default(),
-            plugin_roots: BTreeMap::new(),
-            config_value: Value::Object(serde_json::Map::new()),
-            input_value: Value::Null,
-            state_registry: crate::state::StateRegistry::default(),
-            invocation_state: crate::state::StateInstance::default(),
-        }
+            BTreeMap::new(),
+            Value::Object(serde_json::Map::new()),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -421,36 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn called_picker_items_can_read_request_args() {
-        let config = crate::config::load_test_fixture().unwrap();
-        let state = config.instantiate_state("selectors:commands").unwrap();
-        let request = serde_json::json!({
-            "args": {
-                "commands": [{
-                    "ref": {"view": "apps:main", "id": "open"},
-                    "owner": "apps:main",
-                    "key": "enter",
-                    "label": "Open",
-                }],
-            }
-        });
-        let result = load_items_for_page(
-            &config,
-            "selectors:commands",
-            &state,
-            "open",
-            Some(&request),
-            &serde_json::json!({}),
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert!(result.items.iter().any(|item| item.metadata["command"]
-            == serde_json::json!({"view": "apps:main", "id": "open"})));
-    }
-
-    #[test]
-    fn called_feed_providers_receive_the_page_request_args() {
+    fn feed_owner_and_active_page_are_distinct_dynamic_roots() {
         let mut config = test_config();
         config
             .views
@@ -458,27 +503,64 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ request:args.items }}".into());
-        let state = config.instantiate_state("core:default").unwrap();
-        let request = serde_json::json!({
-            "args": {"items": [{"label": "Delegated"}]}
-        });
-
-        let result = load_items_for_page(
+            .items = Some(toml::Value::Array(vec![toml::Value::Table(
+            [(
+                "label".to_string(),
+                "{{ view.ref }} <- {{ page.ref }}".into(),
+            )]
+            .into_iter()
+            .collect(),
+        )]));
+        let result = load_items(
             &config,
             "core:default",
+            &serde_json::json!({
+                "view": {
+                    "current": {
+                        "ref": "core:default",
+                        "input": "",
+                        "raw_input": "",
+                        "query": "",
+                        "items": []
+                    }
+                }
+            }),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.items[0].text, "apps:main <- core:default");
+    }
+
+    #[test]
+    fn called_picker_items_read_declared_query_values() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let mut state = config.instantiate_state("selectors:commands").unwrap();
+        config
+            .update_query_value(
+                &mut state,
+                &serde_json::json!({
+                    "commands": [{
+                        "ref": {"view": "apps:main", "id": "open"},
+                        "owner": "apps:main",
+                        "key": "enter",
+                        "label": "Open",
+                    }],
+                }),
+            )
+            .unwrap();
+        let result = load_items_for_page(
+            &config,
+            "selectors:commands",
             &state,
-            "",
-            Some(&request),
+            "open",
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
         .unwrap();
-
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert_eq!(result.items.len(), 1);
-        assert_eq!(result.items[0].text, "Delegated");
-        assert_eq!(result.items[0].source_view, "apps:main");
+        assert!(result.items.iter().any(|item| item.metadata["command"]
+            == serde_json::json!({"view": "apps:main", "id": "open"})));
     }
 
     #[test]
@@ -490,7 +572,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ runtime:view.current.query }}".into());
+            .items = Some("{{ page.query }}".into());
         let result = load_items(
             &config,
             "core:default",
@@ -501,7 +583,84 @@ mod tests {
         )
         .unwrap();
         assert!(result.items.is_empty());
-        assert!(result.errors[0].contains("must evaluate to a JSON array"));
+        assert!(result.errors[0].contains("items must resolve to an array"));
+    }
+
+    #[test]
+    fn dynamic_item_labels_are_evaluated_recursively() {
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some(toml::Value::Array(vec![toml::Value::Table(
+            [("label".to_string(), "{{ page.input }}".into())]
+                .into_iter()
+                .collect(),
+        )]));
+
+        let result = load_items(
+            &config,
+            "core:default",
+            &serde_json::json!({"view": {"current": {"input": "dynamic"}}}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.items[0].text, "dynamic");
+    }
+
+    #[test]
+    fn path_results_can_become_script_sources() {
+        let root = env::temp_dir().join(format!(
+            "tui-launcher-items-dynamic-source-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.sh"),
+            "printf '%s\\n' '[{\"label\":\"manufactured source\"}]'\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config
+            .views
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ page.query }}".into());
+        config.config_value = serde_json::json!({
+            "plugins": {
+                "apps": {
+                    "views": {
+                        "main": {
+                            "type": "picker",
+                            "items": "{{ page.query }}"
+                        }
+                    }
+                }
+            }
+        });
+        config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
+        config.plugin_roots.insert("apps".to_string(), root.clone());
+        let result = load_items(
+            &config,
+            "core:default",
+            &serde_json::json!({
+                "view": {"current": {"query": {"source": "script", "file": "items.sh"}}}
+            }),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.items[0].text, "manufactured source");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -524,14 +683,14 @@ mod tests {
     }
 
     #[test]
-    fn item_expressions_pass_this_query_to_scripts() {
+    fn dynamic_source_args_pass_view_query_to_scripts() {
         let root =
             env::temp_dir().join(format!("tui-launcher-items-script-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "jq -cn --arg label \"$(cat | jq -r .)\" '[{label: $label}]'\n",
+            "jq -cn --arg label \"$1\" '[{label: $label}]'\n",
         )
         .unwrap();
 
@@ -542,7 +701,10 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"items.sh\", this:query) }}".into());
+            .items = Some(script_source(
+            "items.sh",
+            Some(toml::Value::Array(vec!["{{ view.query }}".into()])),
+        ));
         config.config_value = serde_json::json!({
             "plugins": {
                 "core": {
@@ -555,13 +717,14 @@ mod tests {
                         "main": {
                             "type": "picker",
                             "alias": "app",
-                            "items": "{{ script(\"items.sh\", this:query) }}"
+                            "items": {"source": "script", "file": "items.sh", "args": ["{{ view.query }}"]}
                         }
                     }
                 }
             }
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
@@ -569,7 +732,6 @@ mod tests {
             "core:default",
             &page_state,
             "fire",
-            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -590,16 +752,15 @@ mod tests {
     }
 
     #[test]
-    fn feed_this_raw_input_keeps_empty_binding() {
+    fn feed_binding_raw_input_keeps_empty_binding() {
         let root = env::temp_dir().join(format!("tui-launcher-items-raw-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
             concat!(
-                "payload=$(cat)\n",
-                "raw=$(printf '%s' \"$payload\" | jq -r .raw)\n",
-                "text=$(printf '%s' \"$payload\" | jq -r .text)\n",
+                "raw=$1\n",
+                "text=$2\n",
                 "jq -cn --arg raw \"$raw\" --arg text \"$text\" \
 ",
                 "  '[{label:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
@@ -614,9 +775,13 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some(
-            "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}".into(),
-        );
+            .items = Some(script_source(
+            "items.sh",
+            Some(toml::Value::Array(vec![
+                "{{ view.raw_input }}".into(),
+                "{{ view.query.text }}".into(),
+            ])),
+        ));
         config.config_value = serde_json::json!({
             "plugins": {
                 "apps": {
@@ -628,13 +793,14 @@ mod tests {
                                 "input_order": ["text"],
                                 "text": {"type": "string", "default": "source-default"}
                             },
-                            "items": "{{ script(\"items.sh\", {raw = this:raw_input, text = this:query.text}) }}"
+                            "items": {"source": "script", "file": "items.sh", "args": ["{{ view.raw_input }}", "{{ view.query.text }}"]}
                         }
                     }
                 }
             }
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
@@ -642,7 +808,6 @@ mod tests {
             "core:default",
             &page_state,
             "",
-            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -672,7 +837,7 @@ mod tests {
         fs::write(
             root.join("items.sh"),
             concat!(
-                "payload=$(cat)\n",
+                "payload=$1\n",
                 "raw=$(printf '%s' \"$payload\" | jq -r .raw_input)\n",
                 "text=$(printf '%s' \"$payload\" | jq -r .query.text)\n",
                 "jq -cn --arg raw \"$raw\" --arg text \"$text\" ",
@@ -688,7 +853,10 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ script(\"items.sh\", this:$) }}".into()),
+                        items: Some(script_source(
+                            "items.sh",
+                            Some(toml::Value::Array(vec!["{{ view }}".into()])),
+                        )),
                         ..Default::default()
                     },
                 },
@@ -706,7 +874,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"invalid-items.sh\") }}".into());
+            .items = Some(script_source("invalid-items.sh", None));
         config
             .views
             .get_mut("core:default")
@@ -732,7 +900,7 @@ mod tests {
                                 "input_order": [],
                                 "token": {"type": "string"}
                             },
-                            "items": "{{ script(\"invalid-items.sh\") }}"
+                            "items": {"source": "script", "file": "invalid-items.sh"}
                         }
                     }
                 },
@@ -745,13 +913,14 @@ mod tests {
                                 "input_order": ["text"],
                                 "text": {"type": "string", "default": "later-default"}
                             },
-                            "items": "{{ script(\"items.sh\", this:$) }}"
+                            "items": {"source": "script", "file": "items.sh", "args": ["{{ view }}"]}
                         }
                     }
                 }
             }
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
         config.plugin_roots.insert("sys".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
@@ -760,7 +929,6 @@ mod tests {
             "core:default",
             &page_state,
             "",
-            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -794,7 +962,7 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ runtime:provider_should_not_run }}".into());
+            .items = Some("{{ page.query.provider_should_not_run }}".into());
         config.config_value = serde_json::json!({
             "plugins": {
                 "apps": {
@@ -806,13 +974,14 @@ mod tests {
                                 "input_order": [],
                                 "token": {"type": "string", "default": "fixed"}
                             },
-                            "items": "{{ runtime:provider_should_not_run }}"
+                            "items": "{{ page.query.provider_should_not_run }}"
                         }
                     }
                 }
             }
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
         let page_state = config.instantiate_state("core:default").unwrap();
 
         let result = load_items_for_page(
@@ -820,7 +989,6 @@ mod tests {
             "core:default",
             &page_state,
             "needle",
-            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )
@@ -842,7 +1010,14 @@ mod tests {
                 engine: EngineSpec {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
-                        items: Some("{{ runtime:sys_items }}".into()),
+                        items: Some(toml::Value::Array(vec![toml::Value::Table(
+                            [(
+                                "label".to_string(),
+                                toml::Value::String("SysItem".to_string()),
+                            )]
+                            .into_iter()
+                            .collect(),
+                        )])),
                         ..Default::default()
                     },
                 },
@@ -873,7 +1048,6 @@ mod tests {
             "core:default",
             &serde_json::json!({
                 "view": {"current": {"items": [{"label": "AppItem"}]}},
-                "sys_items": [{"label": "SysItem"}]
             }),
             &CancellationToken::new(),
         )
@@ -898,7 +1072,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "jq -cn --arg label \"$(cat | jq -r .text)\" '[{label:(\"VALUE:\" + $label)}]'\n",
+            "payload=${1#query=}\njq -cn --arg label \"$(printf '%s' \"$payload\" | jq -r .text)\" '[{label:(\"VALUE:\" + $label)}]'\n",
         )
         .unwrap();
 
@@ -909,7 +1083,10 @@ mod tests {
             .unwrap()
             .engine
             .config
-            .items = Some("{{ script(\"items.sh\", this:query) }}".into());
+            .items = Some(script_source(
+            "items.sh",
+            Some(toml::Value::Array(vec!["query={{ view.query }}".into()])),
+        ));
         config.config_value = serde_json::json!({
             "plugins": {
                 "apps": {
@@ -921,13 +1098,14 @@ mod tests {
                                 "input_order": ["text"],
                                 "text": {"type": "string", "default": "source-default"}
                             },
-                            "items": "{{ script(\"items.sh\", this:query) }}"
+                            "items": {"source": "script", "file": "items.sh", "args": ["query={{ view.query }}"]}
                         }
                     }
                 }
             }
         });
         config.state_registry = crate::state::StateRegistry::compile(&config.config_value).unwrap();
+        config.rebuild_template_registry().unwrap();
         config.plugin_roots.insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_state("core:default").unwrap();
         let result = load_items_for_page(
@@ -935,7 +1113,6 @@ mod tests {
             "core:default",
             &page_state,
             "",
-            None,
             &serde_json::json!({}),
             &CancellationToken::new(),
         )

@@ -1,5 +1,5 @@
 use crate::engine::keymap::{apply_patch, static_bindings, static_patch, validate_patch};
-use crate::expression::Template;
+use crate::expression::{Template, is_dynamic_string};
 use crate::input::{BindingKey, Key};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -63,10 +63,10 @@ impl CaptureKeymap {
             return Ok(());
         };
         if let Some(source) = value.as_str() {
-            if Template::parse(source)?.is_complete_expression() {
+            if Template::parse(source)?.is_complete_path() {
                 return Ok(());
             }
-            bail!("capture bindings must be an object or complete expression");
+            bail!("capture bindings must be an object or complete dynamic path");
         }
         let bindings = value
             .as_object()
@@ -81,7 +81,7 @@ impl CaptureKeymap {
                 let source = value.as_str().with_context(|| {
                     format!("capture binding {:?} entries must be strings", name)
                 })?;
-                if source.contains("{{") {
+                if is_dynamic_string(source) {
                     Template::parse(source)?;
                 } else {
                     Key::parse_binding(source)
@@ -222,15 +222,15 @@ mod tests {
     }
 
     #[test]
-    fn validation_accepts_binding_expressions() {
-        CaptureKeymap::validate_value(Some(&json!("{{ config:keymaps.capture }}"))).unwrap();
+    fn validation_accepts_dynamic_binding_paths() {
+        CaptureKeymap::validate_value(Some(&json!("{{ view.input }}"))).unwrap();
         CaptureKeymap::validate_value(Some(&json!({
-            "copy": ["{{ config:keymaps.copy }}"]
+            "copy": ["{{ view.input }}"]
         })))
         .unwrap();
         CaptureKeymap::validate_keymap_value(Some(&json!({
             "escape": false,
-            "ctrl+y": "{{ config:keymaps.action }}"
+            "ctrl+y": "{{ view.input }}"
         })))
         .unwrap();
     }

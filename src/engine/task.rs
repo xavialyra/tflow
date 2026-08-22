@@ -179,7 +179,6 @@ fn worker_loop(registry: Arc<TaskRegistry>) {
                 &job.request.view,
                 &job.request.page_state,
                 &job.request.binding_raw,
-                job.request.request.as_ref(),
                 &job.runtime,
                 &job.cancellation,
             )

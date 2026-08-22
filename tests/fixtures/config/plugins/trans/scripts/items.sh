@@ -1,5 +1,5 @@
 #!/bin/sh
-query=$(cat)
+query=${1:-{}}
 source=$(printf '%s\n' "$query" | jq -r '.source // empty' 2>/dev/null)
 target=$(printf '%s\n' "$query" | jq -r '.target // empty' 2>/dev/null)
 text=$(printf '%s\n' "$query" | jq -r '.text // empty' 2>/dev/null)

@@ -9,7 +9,10 @@ alias = "app"
 type = "picker"
 
 [views.main.engine.config]
-items = '{{ script("scripts/items.sh", this:query) }}'
+[views.main.engine.config.items]
+source = "script"
+file = "scripts/items.sh"
+args = ["{{ view.query }}"]
 
 [views.main.commands.open]
 key = "enter"
@@ -17,4 +20,5 @@ label = "Open"
 type = "run"
 
 [views.main.commands.open.payload]
-handler = { file = "scripts/open.sh" }
+handler = { source = "script", file = "scripts/open.sh" }
+args = ["{{ selection.value }}"]

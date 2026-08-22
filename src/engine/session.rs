@@ -5,7 +5,7 @@ use super::{
 };
 use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
-use crate::config::Config;
+use crate::config::{Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, SessionScope};
 use crate::engine::api::{EditorAction, InputEdit, LauncherOutcome, ResolvedLauncherAction};
 use crate::input::{DecodedInput, InputDecoder, Key};
 use crate::runtime_log::{LogRecord, RuntimeLog};
@@ -47,7 +47,6 @@ struct ViewEntry {
     input_dirty: bool,
     input_deadline: Option<Instant>,
     state: StateInstance,
-    request: Option<serde_json::Value>,
     call_boundary: Option<CallBoundary>,
     instance: Box<dyn ViewInstance>,
 }
@@ -146,10 +145,13 @@ impl<'a> AppSession<'a> {
             .default_view
             .clone()
             .context("no default_view configured for the session")?;
-        let state = config.instantiate_state(&view_ref)?;
+        let state = if config.invocation_state.view_ref() == view_ref {
+            config.invocation_state.clone()
+        } else {
+            config.instantiate_state(&view_ref)?
+        };
         let initial_input = sanitize_terminal_text(&config.render_query_input(&state)?);
         let request = NavigationRequest::new(&view_ref, initial_input);
-        let request_value = request.reference_value();
         let input = input_buffer_from_seed(
             request
                 .input
@@ -158,12 +160,19 @@ impl<'a> AppSession<'a> {
         );
         publish_location(&mut runtime, config, &view_ref, &input, &state)?;
         publish_view_catalog(&mut runtime, config)?;
+        let runtime_snapshot = runtime.snapshot().clone();
+        let evaluation = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime_snapshot),
+            Some(OwnerViewScope::new(&state)),
+            Some(cancellation),
+        );
         let root_context = ViewContext {
             config,
             request: &request,
             input: &input,
             state: &state,
-            runtime: runtime.handle(),
+            evaluation,
             tasks: tasks.clone(),
             cancellation: cancellation.clone(),
         };
@@ -179,7 +188,6 @@ impl<'a> AppSession<'a> {
                 input_dirty: false,
                 input_deadline: None,
                 state,
-                request: request_value,
                 call_boundary: None,
                 instance: root,
             }],
@@ -212,7 +220,6 @@ impl<'a> AppSession<'a> {
         let state = config.invocation_state.clone();
         let input = sanitize_terminal_text(&config.render_query_input(&state)?);
         let request = NavigationRequest::new(view_ref, input);
-        let request_value = request.reference_value();
         let input = input_buffer_from_seed(
             request
                 .input
@@ -221,12 +228,19 @@ impl<'a> AppSession<'a> {
         );
         publish_location(&mut runtime, config, view_ref, &input, &state)?;
         publish_view_catalog(&mut runtime, config)?;
+        let runtime_snapshot = runtime.snapshot().clone();
+        let evaluation = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime_snapshot),
+            Some(OwnerViewScope::new(&state)),
+            Some(cancellation),
+        );
         let root = engines.create_view(ViewContext {
             config,
             request: &request,
             input: &input,
             state: &state,
-            runtime: runtime.handle(),
+            evaluation,
             tasks: tasks.clone(),
             cancellation: cancellation.clone(),
         })?;
@@ -241,7 +255,6 @@ impl<'a> AppSession<'a> {
                 input_dirty: false,
                 input_deadline: None,
                 state,
-                request: request_value,
                 call_boundary: None,
                 instance: root,
             }],
@@ -359,7 +372,7 @@ impl<'a> AppSession<'a> {
             return Ok(effect);
         }
 
-        let effect = {
+        let (effect, pending_input) = {
             let entry = self
                 .views
                 .last_mut()
@@ -369,14 +382,23 @@ impl<'a> AppSession<'a> {
                 theme: self.theme,
                 input: &mut entry.input,
                 state: &mut entry.state,
-                request: &entry.request,
                 runtime: &mut self.runtime,
                 runtime_log: &mut self.runtime_log,
                 active_error: &mut self.active_error,
                 active_error_deadline: &mut self.active_error_deadline,
             };
-            entry.instance.step(&mut host, terminal)?
+            let effect = entry.instance.step(&mut host, terminal)?;
+            let pending_input = entry.instance.take_pending_terminal_input();
+            (effect, pending_input)
         };
+        if !pending_input.is_empty() {
+            self.pending_inputs.extend(
+                self.decoder
+                    .feed(&pending_input)
+                    .into_iter()
+                    .map(QueuedInput::new),
+            );
+        }
         if !matches!(effect, ViewEffect::Continue) {
             return Ok(effect);
         }
@@ -392,7 +414,6 @@ impl<'a> AppSession<'a> {
                 theme: self.theme,
                 input: &mut entry.input,
                 state: &mut entry.state,
-                request: &entry.request,
                 runtime: &mut self.runtime,
                 runtime_log: &mut self.runtime_log,
                 active_error: &mut self.active_error,
@@ -403,6 +424,13 @@ impl<'a> AppSession<'a> {
                 (engine, input) => engine.or(input),
             }
         };
+        let owns_terminal_input = self
+            .views
+            .last()
+            .is_some_and(|entry| entry.instance.owns_terminal_input());
+        if owns_terminal_input {
+            return self.step_owned_terminal_input(terminal, timeout.unwrap_or(40));
+        }
         if let Some(timeout) = timeout {
             if self.pending_inputs.is_empty() {
                 match terminal.read_input(timeout)? {
@@ -444,7 +472,6 @@ impl<'a> AppSession<'a> {
                         theme: self.theme,
                         input: &mut entry.input,
                         state: &mut entry.state,
-                        request: &entry.request,
                         runtime: &mut self.runtime,
                         runtime_log: &mut self.runtime_log,
                         active_error: &mut self.active_error,
@@ -462,7 +489,6 @@ impl<'a> AppSession<'a> {
                         theme: self.theme,
                         input: &mut entry.input,
                         state: &mut entry.state,
-                        request: &entry.request,
                         runtime: &mut self.runtime,
                         runtime_log: &mut self.runtime_log,
                         active_error: &mut self.active_error,
@@ -506,7 +532,6 @@ impl<'a> AppSession<'a> {
                             theme: self.theme,
                             input: &mut entry.input,
                             state: &mut entry.state,
-                            request: &entry.request,
                             runtime: &mut self.runtime,
                             runtime_log: &mut self.runtime_log,
                             active_error: &mut self.active_error,
@@ -558,7 +583,6 @@ impl<'a> AppSession<'a> {
                                     theme: self.theme,
                                     input: &mut entry.input,
                                     state: &mut entry.state,
-                                    request: &entry.request,
                                     runtime: &mut self.runtime,
                                     runtime_log: &mut self.runtime_log,
                                     active_error: &mut self.active_error,
@@ -598,6 +622,76 @@ impl<'a> AppSession<'a> {
         Ok(self.reconcile_input()?.unwrap_or(ViewEffect::Continue))
     }
 
+    fn step_owned_terminal_input(
+        &mut self,
+        terminal: &mut Terminal,
+        timeout: i32,
+    ) -> Result<ViewEffect> {
+        let mut initial = Vec::new();
+        while let Some(queued) = self.pending_inputs.pop_front() {
+            initial.extend(queued.input.raw);
+        }
+        initial.extend(self.decoder.take_pending_raw());
+        if !initial.is_empty() {
+            let outcome = self.dispatch_owned_terminal_input(&initial)?;
+            if let LauncherOutcome::Effect(effect) = outcome {
+                return Ok(*effect);
+            }
+        }
+
+        match terminal.read_input(timeout)? {
+            InputRead::Data(bytes) if !bytes.is_empty() => {
+                if let LauncherOutcome::Effect(effect) =
+                    self.dispatch_owned_terminal_input(&bytes)?
+                {
+                    return Ok(*effect);
+                }
+            }
+            InputRead::Eof => {
+                let outcome = {
+                    let entry = self
+                        .views
+                        .last_mut()
+                        .context("session has no active view")?;
+                    let mut host = EngineHost {
+                        config: self.config,
+                        theme: self.theme,
+                        input: &mut entry.input,
+                        state: &mut entry.state,
+                        runtime: &mut self.runtime,
+                        runtime_log: &mut self.runtime_log,
+                        active_error: &mut self.active_error,
+                        active_error_deadline: &mut self.active_error_deadline,
+                    };
+                    entry.instance.handle_terminal_eof(&mut host)?
+                };
+                if let LauncherOutcome::Effect(effect) = outcome {
+                    return Ok(*effect);
+                }
+            }
+            InputRead::Data(_) | InputRead::Timeout => {}
+        }
+        Ok(ViewEffect::Continue)
+    }
+
+    fn dispatch_owned_terminal_input(&mut self, bytes: &[u8]) -> Result<LauncherOutcome> {
+        let entry = self
+            .views
+            .last_mut()
+            .context("session has no active view")?;
+        let mut host = EngineHost {
+            config: self.config,
+            theme: self.theme,
+            input: &mut entry.input,
+            state: &mut entry.state,
+            runtime: &mut self.runtime,
+            runtime_log: &mut self.runtime_log,
+            active_error: &mut self.active_error,
+            active_error_deadline: &mut self.active_error_deadline,
+        };
+        entry.instance.handle_terminal_input(&mut host, bytes)
+    }
+
     fn process_effect(
         &mut self,
         mut effect: ViewEffect,
@@ -635,11 +729,6 @@ impl<'a> AppSession<'a> {
                         ViewEffect::Continue
                     }
                 }
-                ViewEffect::RunEmbedded {
-                    prepared,
-                    result,
-                    escape_cancels,
-                } => self.run_embedded(prepared, result, escape_cancels, terminal)?,
                 ViewEffect::EditInput(edit) => {
                     self.apply_input_edit(edit)?;
                     self.reconcile_input()?.unwrap_or(ViewEffect::Continue)
@@ -667,90 +756,6 @@ impl<'a> AppSession<'a> {
         anyhow::bail!("command action recursion exceeded 64 effects")
     }
 
-    fn run_embedded(
-        &mut self,
-        prepared: super::PreparedProcess,
-        result: Option<super::EmbeddedResultConfig>,
-        escape_cancels: bool,
-        terminal: &mut Terminal,
-    ) -> Result<ViewEffect> {
-        let chrome = self.current_chrome(terminal.size().0 as usize)?;
-        let content_size = |columns, rows| {
-            let area = chrome.content_area(Rect::new(0, 0, columns, rows));
-            (area.width.max(1), area.height.max(1))
-        };
-        let theme = self.theme;
-        let mut render =
-            |terminal: &mut Terminal, screen: &crate::embedded_terminal::EmbeddedTerminal| {
-                terminal.draw(|frame| {
-                    let area = chrome.render_chrome(frame, &theme);
-                    frame.render_widget(screen.widget(), area);
-                    if let Some((column, row)) = screen.cursor()
-                        && column < area.width as usize
-                        && row < area.height as usize
-                    {
-                        frame.set_cursor_position((
-                            area.x.saturating_add(column as u16),
-                            area.y.saturating_add(row as u16),
-                        ));
-                    }
-                })
-            };
-        let mut initial_input = Vec::new();
-        for queued in self.pending_inputs.drain(..) {
-            initial_input.extend(queued.input.raw);
-        }
-        initial_input.extend(self.decoder.take_pending_raw());
-        let embedded = super::embedded::run(
-            &prepared,
-            result,
-            escape_cancels,
-            initial_input,
-            terminal,
-            &self.cancellation,
-            &content_size,
-            &mut render,
-        )?;
-        self.pending_inputs.extend(
-            self.decoder
-                .feed(&embedded.remaining_input)
-                .into_iter()
-                .map(QueuedInput::new),
-        );
-        let outcome = embedded.outcome;
-        let message = super::embedded::embedded_status_message(&outcome);
-        let success = super::embedded::embedded_succeeded(&outcome);
-        let entry = self
-            .views
-            .last_mut()
-            .context("session has no active view")?;
-        let view_ref = entry.view_ref.clone();
-        {
-            let mut host = EngineHost {
-                config: self.config,
-                theme: self.theme,
-                input: &mut entry.input,
-                state: &mut entry.state,
-                request: &entry.request,
-                runtime: &mut self.runtime,
-                runtime_log: &mut self.runtime_log,
-                active_error: &mut self.active_error,
-                active_error_deadline: &mut self.active_error_deadline,
-            };
-            host.record_view_status(&view_ref, &message, success);
-        }
-        match outcome {
-            super::embedded::EmbeddedOutcome::Returned(output) => {
-                Ok(ViewEffect::Return(ViewReturn {
-                    source_view: view_ref,
-                    output,
-                    adapter: None,
-                }))
-            }
-            _ => Ok(ViewEffect::Back(None)),
-        }
-    }
-
     fn record_command_result(
         &mut self,
         invocation: &CommandInvocation,
@@ -765,7 +770,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -831,7 +835,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -885,7 +888,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -963,7 +965,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1066,7 +1067,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1093,7 +1093,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1133,12 +1132,19 @@ impl<'a> AppSession<'a> {
             &input,
             &state,
         )?;
+        let runtime_snapshot = self.runtime.snapshot().clone();
+        let evaluation = EvaluationSnapshot::new(
+            InvocationScope::new(&self.config.input_value),
+            SessionScope::new(&runtime_snapshot),
+            Some(OwnerViewScope::new(&state)),
+            Some(&self.cancellation),
+        );
         let view = self.engines.create_view(ViewContext {
             config: self.config,
             request: &request,
             input: &input,
             state: &state,
-            runtime: self.runtime.handle(),
+            evaluation,
             tasks: self.tasks.clone(),
             cancellation: self.cancellation.clone(),
         });
@@ -1163,7 +1169,6 @@ impl<'a> AppSession<'a> {
         if mode == NavigationMode::Replace {
             self.views.pop();
         }
-        let request_value = request.reference_value();
         self.views.push(ViewEntry {
             view_ref: request.view_ref,
             route_child: request.route_child,
@@ -1171,7 +1176,6 @@ impl<'a> AppSession<'a> {
             input_dirty: false,
             input_deadline: None,
             state,
-            request: request_value,
             call_boundary: boundary.or(transferred_boundary),
             instance: view,
         });
@@ -1212,13 +1216,8 @@ impl<'a> AppSession<'a> {
         let Some(then) = boundary.then else {
             return Ok(ReturnTransition::Effect(Box::new(ViewEffect::Continue)));
         };
-        let entry = self
-            .views
-            .last()
-            .context("session has no restored caller")?;
         let mut context = boundary.context;
         context.runtime = self.runtime.snapshot().clone();
-        context.request = entry.request.clone();
         let returned_value = crate::engine::command::return_value(&returned);
         let cancellation = self.cancellation.clone();
         let action = crate::engine::command::prepare_continuation(
@@ -1297,7 +1296,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1336,7 +1334,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &mut entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1357,7 +1354,6 @@ impl<'a> AppSession<'a> {
             theme: self.theme,
             input: &entry.input,
             state: &mut entry.state,
-            request: &entry.request,
             runtime: &mut self.runtime,
             runtime_log: &mut self.runtime_log,
             active_error: &mut self.active_error,
@@ -1565,15 +1561,6 @@ fn publish_active_input(
         ("/view/current/raw_input", json!(input.raw)),
         ("/view/current/query", json!(input.params)),
         (
-            "/view/current/request",
-            json!({
-                "input": input.params,
-                "raw_input": input.raw,
-                "query": input.params,
-                "cursor": input.cursor,
-            }),
-        ),
-        (
             "/session/input",
             json!({"raw": input.raw, "params": input.params, "cursor": input.cursor}),
         ),
@@ -1603,12 +1590,6 @@ fn publish_location(
             "items": [],
             "command": commands,
             "command_owner": view_ref,
-            "request": {
-                "input": input.params,
-                "raw_input": input.raw,
-                "query": input.params,
-                "cursor": input.cursor,
-            }
         }
     });
     let input = json!({
@@ -1697,6 +1678,27 @@ mod tests {
             _area: ratatui::layout::Rect,
         ) {
         }
+    }
+
+    #[test]
+    fn default_session_reuses_bound_invocation_state() {
+        let mut config = crate::config::load_test_fixture().unwrap();
+        config.default_view = Some("trans:main".to_string());
+        let state = config
+            .bind_invocation_state("trans:main", &["--source=bound".to_string()])
+            .unwrap();
+        config.set_invocation(Value::Null, state);
+        let session = AppSession::new(
+            &config,
+            crate::runtime_log::RuntimeLog::disabled(),
+            EngineRegistry::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            config.query_value(&session.views[0].state).unwrap()["source"],
+            "bound"
+        );
+        assert_eq!(session.views[0].input.raw, "bound '' ''");
     }
 
     #[test]
@@ -1810,7 +1812,6 @@ mod tests {
             },
             selection: None,
             runtime: session.runtime.snapshot().clone(),
-            request: entry.request.clone(),
             output: None,
         }
     }
@@ -1835,7 +1836,7 @@ mod tests {
                 context,
                 then: Some(Box::new(crate::config::CommandAction::EditInput {
                     payload: crate::config::EditInputPayload {
-                        value: toml::Value::String("{{ return:output.value }}".to_string()),
+                        value: toml::Value::String("{{ result.output.value }}".to_string()),
                         cursor: None,
                     },
                 })),

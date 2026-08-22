@@ -10,8 +10,13 @@ cancel_exit_code = 1
 type = "picker"
 
 [views.main.engine.config]
-items = '''{{ script("scripts/items.sh", {input = input:$, query = this:query}, 67108864) }}'''
 show_prefix = false
+
+[views.main.engine.config.items]
+source = "script"
+file = "scripts/items.sh"
+args = ["{{ input }}", "{{ view.query }}"]
+max_output_bytes = 67108864
 
 [views.main.query]
 type = "object"
@@ -34,9 +39,9 @@ type = "return"
 
 [views.main.commands.accept.payload]
 handler = "scripts/result.sh"
-
-[views.main.commands.accept.payload.params]
-options = "{{ this:query }}"
-stdin = "{{ input:stdin }}"
-selected = "{{ runtime:view.current.selected_item }}"
-typed = "{{ runtime:view.current.input }}"
+args = [
+  "{{ view.query }}",
+  "{{ input.stdin }}",
+  "{{ selection }}",
+  "{{ page.input }}",
+]

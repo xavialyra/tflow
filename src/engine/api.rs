@@ -1,17 +1,16 @@
 use super::host::EngineHost;
 use super::process::PreparedProcess;
-use super::runtime::RuntimeHandle;
 use super::task::TaskScheduler;
 use crate::cancellation::CancellationToken;
 use crate::chrome::InputBuffer;
-use crate::config::{Command, CommandAction, Config, Defaults, View};
+use crate::config::{Command, CommandAction, Config, Defaults, EvaluationSnapshot, View};
 use crate::input::{DecodedInput, Key};
 use crate::state::StateInstance;
 use crate::terminal::Terminal;
 use anyhow::{Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +46,6 @@ pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
     pub(crate) query: Option<Value>,
-    pub(crate) args: Option<Value>,
     pub(crate) route_child: bool,
 }
 
@@ -57,7 +55,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::new(input)),
             query: None,
-            args: None,
             route_child: false,
         }
     }
@@ -67,7 +64,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: None,
             query: None,
-            args: None,
             route_child: false,
         }
     }
@@ -81,7 +77,6 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::routed(query, cursor)),
             query: None,
-            args: None,
             route_child: true,
         }
     }
@@ -90,15 +85,6 @@ impl NavigationRequest {
         self.input = None;
         self.query = Some(query);
         self
-    }
-
-    pub(crate) fn with_args(mut self, args: Value) -> Self {
-        self.args = Some(args);
-        self
-    }
-
-    pub(crate) fn reference_value(&self) -> Option<Value> {
-        self.args.as_ref().map(|args| json!({"args": args}))
     }
 }
 
@@ -266,7 +252,6 @@ pub(crate) struct CommandContext {
     pub(crate) page: CommandOwnerContext,
     pub(crate) selection: Option<CommandSelectionContext>,
     pub(crate) runtime: Value,
-    pub(crate) request: Option<Value>,
     pub(crate) output: Option<ViewOutput>,
 }
 
@@ -313,11 +298,6 @@ pub(crate) enum ViewEffect {
         invocation: CommandInvocation,
         prepared: PreparedProcess,
         exit: bool,
-    },
-    RunEmbedded {
-        prepared: PreparedProcess,
-        result: Option<EmbeddedResultConfig>,
-        escape_cancels: bool,
     },
 }
 
@@ -385,6 +365,28 @@ pub(crate) trait ViewInstance {
         false
     }
 
+    /// Whether this View owns raw terminal bytes instead of the session decoder.
+    /// Embedded PTY Views use this to preserve escape sequences and byte order.
+    fn owns_terminal_input(&self) -> bool {
+        false
+    }
+
+    fn handle_terminal_input(
+        &mut self,
+        _host: &mut EngineHost<'_>,
+        _bytes: &[u8],
+    ) -> Result<LauncherOutcome> {
+        Ok(LauncherOutcome::Continue)
+    }
+
+    fn handle_terminal_eof(&mut self, _host: &mut EngineHost<'_>) -> Result<LauncherOutcome> {
+        Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)))
+    }
+
+    fn take_pending_terminal_input(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
+
     fn resolve_view_command(&self, host: &EngineHost<'_>, key: Key) -> Option<CommandInvocation> {
         crate::engine::command::find_command_for_key(host.config, host.state.view_ref(), key)
     }
@@ -402,7 +404,6 @@ pub(crate) trait ViewInstance {
             },
             selection: None,
             runtime: host.runtime.snapshot().clone(),
-            request: host.request.clone(),
             output: self.view_command_output(),
         })
     }
@@ -463,7 +464,7 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) request: &'a NavigationRequest,
     pub(crate) input: &'a InputBuffer,
     pub(crate) state: &'a StateInstance,
-    pub(crate) runtime: RuntimeHandle,
+    pub(crate) evaluation: EvaluationSnapshot<'a>,
     pub(crate) tasks: TaskScheduler,
     pub(crate) cancellation: CancellationToken,
 }

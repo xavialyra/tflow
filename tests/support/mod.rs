@@ -79,10 +79,6 @@ pub struct RunResult {
 
 static DMENU_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-const TEST_CONFIG: &str = r#"
-test_items = {items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]}
-"#;
-
 struct PreparedExec {
     _command: Vec<CString>,
     argv: Vec<*const libc::c_char>,
@@ -153,7 +149,7 @@ fn exec_prepared(prepared: &PreparedExec) -> ! {
 }
 
 fn with_test_config(source: &str) -> String {
-    format!("{TEST_CONFIG}\n{source}")
+    source.to_string()
 }
 
 pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {

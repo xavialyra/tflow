@@ -22,7 +22,7 @@ fn redirected_stdout_contains_only_the_default_return_result() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
@@ -63,7 +63,7 @@ fn requires_input_return_uses_the_latest_committed_input() {
         type = "return"
 
         [plugins.core.views.default.commands.accept.payload]
-        value = "{{ this:raw_input }}"
+        value = "{{ view.raw_input }}"
         "#,
     )
     .unwrap();
@@ -80,7 +80,7 @@ fn requires_input_return_uses_the_latest_committed_input() {
 }
 
 #[test]
-fn called_picker_fields_and_commands_can_read_request_args() {
+fn called_picker_fields_and_commands_read_declared_query_values() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -92,7 +92,7 @@ fn called_picker_fields_and_commands_can_read_request_args() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.open]
         key = "enter"
@@ -101,20 +101,26 @@ fn called_picker_fields_and_commands_can_read_request_args() {
 
         [plugins.core.views.default.commands.open.payload]
         target = "forms:main"
-        args = { show_prefix = true, result = { name = "Ada" } }
+        query = { show_prefix = true, result = { name = "Ada" } }
 
         [plugins.core.views.default.commands.open.payload.then]
         type = "return"
 
         [plugins.core.views.default.commands.open.payload.then.payload]
-        value = "{{ return:output.value }}"
+        value = "{{ result.output.value }}"
 
         [plugins.forms.views.main]
         [plugins.forms.views.main.engine]
         type = "picker"
         [plugins.forms.views.main.engine.config]
-        show_prefix = "{{ request:args.show_prefix }}"
-        items = "{{ config:test_items.items }}"
+        show_prefix = "{{ view.query.show_prefix }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+
+        [plugins.forms.views.main.query]
+        type = "object"
+        input_order = []
+        show_prefix = { type = "boolean", default = false }
+        result = { type = "object", default = {} }
 
         [plugins.forms.views.main.commands.accept]
         key = "enter"
@@ -122,7 +128,7 @@ fn called_picker_fields_and_commands_can_read_request_args() {
         type = "return"
 
         [plugins.forms.views.main.commands.accept.payload]
-        value = "{{ request:args.result }}"
+        value = "{{ view.query.result }}"
         "#,
     )
     .unwrap();
@@ -136,7 +142,49 @@ fn called_picker_fields_and_commands_can_read_request_args() {
 }
 
 #[test]
-fn request_namespace_is_unavailable_at_the_root() {
+fn picker_layout_preview_and_prefix_resolve_from_the_operation_scope() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        show_prefix = { type = "boolean", default = true }
+        layout = { type = "object", default = { direction = "horizontal", gap = 1, panes = [{ slot = "items", grow = 1, min = 1 }, { slot = "preview", size = 12, min = 1 }] } }
+        preview = { type = "object", default = { blocks = [{ type = "separator" }] } }
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        show_prefix = "{{ view.query.show_prefix }}"
+        layout = "{{ view.query.layout }}"
+        preview = "{{ view.query.preview }}"
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "return"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\r");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"value\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn request_namespace_is_rejected_at_configuration_load() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -148,7 +196,7 @@ fn request_namespace_is_unavailable_at_the_root() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.accept]
         key = "enter"
@@ -156,7 +204,42 @@ fn request_namespace_is_unavailable_at_the_root() {
         type = "return"
 
         [plugins.core.views.default.commands.accept.payload]
-        value = "{{ request:args }}"
+        value = "{{ request.args }}"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\r");
+
+    assert_eq!(result.status, 1);
+    assert!(result.stdout.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn result_namespace_is_rejected_outside_a_return_consumption_stage() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        type = "return"
+
+        [plugins.core.views.default.commands.accept.payload]
+        value = "{{ result }}"
         "#,
     )
     .unwrap();
@@ -219,7 +302,7 @@ fn failed_capture_is_not_available_as_implicit_return_output() {
         type = "capture"
 
         [plugins.core.views.default.engine.config]
-        output = "{{ runtime:missing }}"
+        output = "{{ selection.missing }}"
 
         [plugins.core.views.default.commands.accept]
         key = "enter"
@@ -387,7 +470,7 @@ fn embedded_successful_exit_returns_json_to_the_caller() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.form]
         key = "enter"
@@ -396,13 +479,12 @@ fn embedded_successful_exit_returns_json_to_the_caller() {
 
         [plugins.core.views.default.commands.form.payload]
         target = "forms:profile"
-        args = { initial = "Ada" }
 
         [plugins.core.views.default.commands.form.payload.then]
         type = "return"
 
         [plugins.core.views.default.commands.form.payload.then.payload]
-        value = "{{ return:output.value }}"
+        value = "{{ result.output.value }}"
 
         [plugins.forms.views.profile]
         [plugins.forms.views.profile.engine]
@@ -468,7 +550,7 @@ fn pending_launcher_bytes_are_transferred_to_embedded_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.form]
         key = "enter"
@@ -482,7 +564,7 @@ fn pending_launcher_bytes_are_transferred_to_embedded_input() {
         type = "return"
 
         [plugins.core.views.default.commands.form.payload.then.payload]
-        value = "{{ return:output.value }}"
+        value = "{{ result.output.value }}"
 
         [plugins.forms.views.main]
         [plugins.forms.views.main.engine]
@@ -532,6 +614,42 @@ fn embedded_result_is_returned_from_a_direct_invocation() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"{\"source\":\"process\"}\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_options_resolve_from_the_operation_scope() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        escape_cancels = { type = "boolean", default = false }
+        result_config = { type = "object", default = { format = "text", required = true } }
+
+        [plugins.core.views.default.engine]
+        type = "embedded"
+
+        [plugins.core.views.default.engine.config]
+        command = ["sh", "-c", "printf dynamic-result"]
+        escape-cancels = "{{ view.query.escape_cancels }}"
+        result = "{{ view.query.result_config }}"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"dynamic-result\n");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -594,7 +712,7 @@ fn embedded_result_pipe_enforces_its_byte_limit() {
 }
 
 #[test]
-fn return_handler_receives_explicit_params_and_controls_raw_output_and_status() {
+fn return_handler_receives_argv_and_controls_raw_output_and_status() {
     let root = temporary_root();
     let config = root.join("config.toml");
     let plugin = root.join("plugins/custom");
@@ -620,7 +738,7 @@ fn return_handler_receives_explicit_params_and_controls_raw_output_and_status() 
         [views.default.engine]
         type = "picker"
         [views.default.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "selected-value"}]
         [views.default.query]
         type = "object"
         tag = { type = "string", nullable = true }
@@ -632,21 +750,31 @@ fn return_handler_receives_explicit_params_and_controls_raw_output_and_status() 
 
         [views.default.commands.accept.payload]
         handler = "scripts/result.sh"
-
-        [views.default.commands.accept.payload.params]
-        options = "{{ this:query }}"
-        stdin = "{{ input:stdin }}"
-        selected = "{{ runtime:view.current.selected_item }}"
+        args = [
+            "--options={{ view.query }}",
+            "{{ input.stdin }}",
+            "{{ selection }}",
+            "{{ page.input }}",
+            "{{ result }}",
+        ]
         "#,
     )
     .unwrap();
     fs::write(
         plugin.join("scripts/result.sh"),
         r#"#!/bin/sh
-payload=$(cat)
-printf '%s' "$payload" | grep -q '"options":{' || exit 3
-printf '%s' "$payload" | grep -q '"tag":"value"' || exit 3
-printf '%s' "$payload" | grep -q '"value":"selected-value"' || exit 3
+options=${1#--options=}
+stdin_info=$2
+selected=$3
+typed=$4
+returned=$5
+[ "$#" -eq 5 ] || exit 3
+if read -r unexpected; then exit 3; fi
+printf '%s' "$options" | grep -q '"tag":"value"' || exit 3
+printf '%s' "$stdin_info" | grep -q '"is_tty":false' || exit 3
+printf '%s' "$selected" | grep -q '"value":"selected-value"' || exit 3
+printf '%s' "$returned" | grep -q '"source":"custom:default"' || exit 3
+printf '%s' "$typed" >/dev/null
 printf 'handled-output'
 printf 'handled-warning\n' >&2
 exit 7
@@ -691,7 +819,7 @@ fn signal_exit_terminates_a_running_return_handler() {
         [views.main.engine]
         type = "picker"
         [views.main.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "selected-value"}]
         [views.main.commands.accept]
         key = "enter"
         label = "Accept"
@@ -754,7 +882,7 @@ fn return_handler_belongs_to_the_returning_command() {
         [views.default.engine]
         type = "picker"
         [views.default.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "selected-value"}]
         [views.default.commands.next]
         key = "enter"
         label = "Next"
@@ -767,7 +895,7 @@ fn return_handler_belongs_to_the_returning_command() {
         [views.child.engine]
         type = "picker"
         [views.child.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "selected-value"}]
         [views.child.commands.accept]
         key = "enter"
         label = "Accept"
@@ -775,17 +903,15 @@ fn return_handler_belongs_to_the_returning_command() {
 
         [views.child.commands.accept.payload]
         handler = "scripts/result.sh"
-
-        [views.child.commands.accept.payload.params]
-        selected = "{{ runtime:view.current.selected_item }}"
+        args = ["{{ selection }}"]
         "#,
     )
     .unwrap();
     fs::write(
         plugin.join("scripts/result.sh"),
         r#"#!/bin/sh
-payload=$(cat)
-printf '%s' "$payload" | grep -q '"value":"selected-value"' || exit 3
+selected=$1
+printf '%s' "$selected" | grep -q '"value":"selected-value"' || exit 3
 printf 'child-command'
 "#,
     )
@@ -846,7 +972,7 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
         [views.main.engine]
         type = "picker"
         [views.main.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "selected-value"}]
 
         [views.main.query]
         type = "object"
@@ -860,21 +986,23 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
 
         [views.main.commands.accept.payload]
         handler = "scripts/result.sh"
-
-        [views.main.commands.accept.payload.params]
-        query = "{{ this:query }}"
-        raw = "{{ this:raw_input }}"
-        selected = "{{ runtime:view.current.selected_item }}"
+        args = [
+            "{{ view.query }}",
+            "{{ view.raw_input }}",
+            "{{ selection }}",
+        ]
         "#,
     )
     .unwrap();
     fs::write(
         plugin.join("scripts/result.sh"),
         r#"#!/bin/sh
-payload=$(cat)
-printf '%s' "$payload" | grep -q '"text":"owner-default"' || exit 3
-printf '%s' "$payload" | grep -q '"raw":""' || exit 3
-printf '%s' "$payload" | grep -q '"value":"selected-value"' || exit 3
+query=$1
+raw=$2
+selected=$3
+printf '%s' "$query" | grep -q '"text":"owner-default"' || exit 3
+[ -z "$raw" ] || exit 3
+printf '%s' "$selected" | grep -q '"value":"selected-value"' || exit 3
 printf 'feed-owner'
 "#,
     )

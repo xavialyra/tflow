@@ -1,3 +1,4 @@
+use crate::expression::{EvaluationStage, TemplateRegistry};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -138,7 +139,16 @@ pub(crate) struct StateRegistry {
 }
 
 impl StateRegistry {
+    #[cfg(test)]
     pub(crate) fn compile(config: &Value) -> Result<Self> {
+        let templates = TemplateRegistry::compile_json_tree(config)?;
+        Self::compile_with_templates(config, &templates)
+    }
+
+    pub(crate) fn compile_with_templates(
+        config: &Value,
+        templates: &TemplateRegistry,
+    ) -> Result<Self> {
         let plugins = config
             .get("plugins")
             .and_then(Value::as_object)
@@ -151,6 +161,12 @@ impl StateRegistry {
                 .with_context(|| format!("plugin {:?} views must be an object", plugin_id))?;
             for (view_name, view) in view_values {
                 let view_ref = format!("{plugin_id}:{view_name}");
+                if let Some(query) = view.get("query") {
+                    templates.requirements_for_value(query)?.validate_stage(
+                        EvaluationStage::Bootstrap,
+                        &format!("view {view_ref:?} query schema"),
+                    )?;
+                }
                 views.insert(
                     view_ref,
                     ViewQuerySchema {

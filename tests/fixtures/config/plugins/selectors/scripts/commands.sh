@@ -1,10 +1,13 @@
 #!/bin/sh
-python3 -c '
-import json, sys
-request = json.load(sys.stdin)
-tokens = str(request.get("query", "")).casefold().split()
+python3 - "$@" <<'PY'
+import json
+import sys
+
+commands = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
+query = sys.argv[2] if len(sys.argv) > 2 else ""
+tokens = str(query).casefold().split()
 items = []
-for command in request.get("commands", []):
+for command in commands:
     ref = command.get("ref")
     if not isinstance(ref, dict):
         continue
@@ -20,4 +23,5 @@ for command in request.get("commands", []):
         "metadata": {"command": ref},
     })
 json.dump(items, sys.stdout, separators=(",", ":"))
-'
+print()
+PY

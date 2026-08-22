@@ -1,4 +1,4 @@
-use crate::expression::Template;
+use crate::expression::{Template, is_dynamic_string};
 use crate::input::{BindingKey, Key};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -18,10 +18,10 @@ where
         return Ok(());
     };
     if let Some(source) = value.as_str() {
-        if Template::parse(source)?.is_complete_expression() {
+        if Template::parse(source)?.is_complete_path() {
             return Ok(());
         }
-        bail!("{label} keymap must be an object or complete expression");
+        bail!("{label} keymap must be an object or complete dynamic path");
     }
     let patch = value
         .as_object()
@@ -44,7 +44,7 @@ where
                 source
             )
         })?;
-        if action.contains("{{") {
+        if is_dynamic_string(action) {
             Template::parse(action)?;
         } else {
             parse_action(action)
@@ -63,7 +63,7 @@ pub(crate) fn static_bindings(value: Option<&Value>) -> Option<Value> {
         let values = values.as_array()?;
         let values = values
             .iter()
-            .filter(|value| !value.as_str().is_some_and(|source| source.contains("{{")))
+            .filter(|value| !value.as_str().is_some_and(is_dynamic_string))
             .cloned()
             .collect();
         static_bindings.insert(action.clone(), Value::Array(values));
@@ -77,7 +77,7 @@ pub(crate) fn static_patch(value: Option<&Value>) -> Option<Value> {
     };
     let patch = patch
         .iter()
-        .filter(|(_, value)| !value.as_str().is_some_and(|source| source.contains("{{")))
+        .filter(|(_, value)| !value.as_str().is_some_and(is_dynamic_string))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     Some(Value::Object(patch))

@@ -70,7 +70,6 @@ pub(crate) struct PickerView {
     requested_page_state: Option<crate::state::StateInstance>,
     request_generation: u64,
     pub(super) feed_contexts: BTreeMap<FeedId, FeedContext>,
-    request: Option<serde_json::Value>,
     options: PickerOptions,
     started: bool,
     route_child: bool,
@@ -85,7 +84,6 @@ impl PickerView {
         tasks: TaskScheduler,
         config: Arc<Config>,
         route_child: bool,
-        request: Option<serde_json::Value>,
         keymap: PickerKeymap,
         options: PickerOptions,
     ) -> Self {
@@ -101,7 +99,6 @@ impl PickerView {
             requested_page_state: None,
             request_generation: 0,
             feed_contexts: BTreeMap::new(),
-            request,
             options,
             started: false,
             route_child,
@@ -207,7 +204,6 @@ impl PickerView {
                 input: input.to_string(),
                 binding_raw: binding_raw.to_string(),
                 page_state,
-                request: self.request.clone(),
             },
         ));
     }
@@ -653,7 +649,6 @@ mod tests {
             tasks,
             Arc::clone(&config),
             false,
-            None,
             PickerKeymap::from_values(None, None).unwrap(),
             PickerOptions {
                 show_prefix: false,
@@ -687,7 +682,6 @@ mod tests {
             tasks,
             Arc::clone(&config),
             false,
-            None,
             PickerKeymap::from_values(None, None).unwrap(),
             PickerOptions {
                 show_prefix: false,
@@ -703,7 +697,6 @@ mod tests {
         let mut runtime_log = crate::runtime_log::RuntimeLog::disabled();
         let mut active_error = None;
         let mut active_error_deadline = None;
-        let request = None;
         let theme = crate::theme::Theme::terminal();
 
         config.update_query_input(&mut state, "AB").unwrap();
@@ -714,7 +707,6 @@ mod tests {
                 theme,
                 input: &input,
                 state: &state,
-                request: &request,
                 runtime: &mut runtime,
                 runtime_log: &mut runtime_log,
                 active_error: &mut active_error,
@@ -731,7 +723,6 @@ mod tests {
                 theme,
                 input: &input,
                 state: &state,
-                request: &request,
                 runtime: &mut runtime,
                 runtime_log: &mut runtime_log,
                 active_error: &mut active_error,
@@ -753,7 +744,6 @@ mod tests {
                 theme,
                 input: &input,
                 state: &state,
-                request: &request,
                 runtime: &mut runtime,
                 runtime_log: &mut runtime_log,
                 active_error: &mut active_error,

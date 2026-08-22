@@ -8,11 +8,16 @@ use super::{
     Engine, EngineHost, InputFocus, ViewContext, ViewEffect, ViewInstance, ViewOutput, command,
     evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
-use crate::config::{ConfigReadContext, ConfigScope, Defaults, ENGINE_CAPTURE, View, toml_to_json};
+use crate::config::{
+    ConfigSource, Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View,
+    toml_to_json,
+};
 use crate::engine::api::{LauncherAction, LauncherOutcome, ResolvedLauncherAction};
+use crate::expression::EvaluationStage;
 use crate::input::Key;
+use crate::script_runner::{ensure_script_success, run_script};
 use crate::terminal::Terminal;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 
 pub(crate) struct CaptureEngine;
@@ -25,16 +30,20 @@ impl Engine for CaptureEngine {
     fn validate_config(&self, name: &str, view: &View) -> Result<()> {
         validate_fields(name, view, &["output", "title"])?;
         require_field(name, view, "output")?;
-        for field in ["output", "title"] {
-            if let Some(value) = view.engine_field(field)
-                && !value.is_str()
-            {
-                anyhow::bail!(
-                    "view {:?} capture field {:?} must be a string expression",
-                    name,
-                    field
-                );
-            }
+        if let Some(title) = view.engine_field("title")
+            && !title.is_str()
+        {
+            anyhow::bail!("view {:?} capture title must be a string or template", name);
+        }
+        let output = view
+            .engine_field("output")
+            .expect("required capture output was checked");
+        if !output.is_str() {
+            let source = ScriptSourceSpec::parse(output)
+                .with_context(|| format!("view {:?} capture output", name))?;
+            source
+                .validate_capture_source()
+                .with_context(|| format!("view {:?} capture output", name))?;
         }
         Ok(())
     }
@@ -56,42 +65,26 @@ impl Engine for CaptureEngine {
     }
 
     fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
-        let runtime = context.runtime.read();
         let default_bindings = context.config.get(
-            ConfigReadContext {
-                scope: ConfigScope::Root,
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: Some(context.cancellation.clone()),
-                binding_raw: None,
-            },
+            ConfigSource::Root,
+            &context.evaluation,
+            EvaluationStage::Operation,
             &["defaults", "capture", "bindings"],
         )?;
-        let view_keymap = context.config.get_with_references(
-            ConfigReadContext {
-                scope: ConfigScope::View(context.state),
-                runtime: &runtime,
-                input: &context.config.input_value,
-                cancellation: Some(context.cancellation.clone()),
-                binding_raw: None,
-            },
+        let view_keymap = context.config.get(
+            ConfigSource::View(context.state.view_ref()),
+            &context.evaluation,
+            EvaluationStage::Operation,
             &["keymap"],
-            context.request.reference_value().as_ref(),
-            None,
         )?;
-        drop(runtime);
         let keymap = CaptureKeymap::from_values(default_bindings, view_keymap)?;
 
         let default_title = context.request.view_ref.clone();
         let evaluated = (|| {
             let title = evaluate_optional_string(&context, "title")?
                 .unwrap_or_else(|| default_title.clone());
-            let output = evaluate_field(&context, "output")?
-                .context("capture engine requires an output field")?;
-            let output = output
-                .as_str()
-                .context("capture output must evaluate to a string")?;
-            Ok::<_, anyhow::Error>((title, output.to_string()))
+            let output = evaluate_output(&context)?;
+            Ok::<_, anyhow::Error>((title, output))
         })();
         let (title, output, status, success) = match evaluated {
             Ok((title, output)) => (title, output, "finished successfully".to_string(), true),
@@ -111,6 +104,44 @@ impl Engine for CaptureEngine {
             reported: false,
         }))
     }
+}
+
+fn evaluate_output(context: &ViewContext<'_>) -> Result<String> {
+    let output =
+        evaluate_field(context, "output")?.context("capture engine requires an output field")?;
+    if let Some(output) = output.as_str() {
+        return Ok(output.to_string());
+    }
+
+    let source = ResolvedScriptSource::parse(&output)
+        .context("capture output must evaluate to a string or script source")?;
+    let root = context
+        .config
+        .plugin_root(&context.request.view_ref)
+        .with_context(|| {
+            format!(
+                "capture source {:?} has no plugin root",
+                context.request.view_ref
+            )
+        })?;
+    let args = source.script_args("capture script args")?;
+    let output = run_script(
+        root,
+        &source.file,
+        &args,
+        source.max_output_bytes,
+        &context.cancellation,
+    )?;
+    ensure_script_success(&output)?;
+    if output.stdout.is_empty() {
+        bail!("script produced no JSON output");
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("script {} did not produce valid JSON", source.file))?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .context("capture script source must produce a JSON string")
 }
 
 struct CaptureView {

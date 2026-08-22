@@ -1,1 +1,1 @@
-gio launch "$LAUNCHER_VALUE"
+gio launch "$@"

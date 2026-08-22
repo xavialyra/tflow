@@ -9,7 +9,10 @@ alias = "tr"
 type = "picker"
 
 [views.main.engine.config]
-items = '''{{ script("scripts/items.sh", this:query) }}'''
+[views.main.engine.config.items]
+source = "script"
+file = "scripts/items.sh"
+args = ["{{ view.query }}"]
 
 [views.main.query]
 type = "object"

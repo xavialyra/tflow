@@ -1,13 +1,15 @@
 use crate::cancellation::CancellationToken;
 use crate::config::{
-    Command, CommandAction, CommandScope, Config, ConfigReadContext, ConfigScope, NavigatePayload,
-    RunPayload, normalize_key,
+    Command, CommandAction, CommandScope, Config, EvaluationSnapshot, InvocationScope,
+    NavigatePayload, OwnerViewScope, ResolvedScriptSource, ReturnScope, RunPayload, SessionScope,
+    normalize_key,
 };
 use crate::engine::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     CommandOwnerContext, CommandRef, NavigationRequest, PreparedProcess, ReturnAdapter, ViewOutput,
     ViewReturn,
 };
+use crate::expression::EvaluationStage;
 use crate::input::Key;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -93,9 +95,30 @@ fn prepare_action(
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let owner = command_owner(&context, invocation.source_view())?;
+    let owner_scope = OwnerViewScope::new(&owner.state).with_binding_raw(Some(&owner.binding_raw));
+    let snapshot = EvaluationSnapshot::new(
+        InvocationScope::new(&config.input_value),
+        SessionScope::new(&context.runtime),
+        Some(owner_scope),
+        Some(cancellation),
+    )
+    .with_return_scope(returned.map(ReturnScope::new));
+    let stage = if returned.is_some() {
+        EvaluationStage::Return
+    } else {
+        EvaluationStage::Operation
+    };
     match action {
         CommandAction::Run { payload } => {
-            let prepared = prepare_run_command(config, payload, &invocation, &context, owner)?;
+            let prepared = prepare_run_command(
+                config,
+                payload,
+                &invocation,
+                &context,
+                owner,
+                &snapshot,
+                stage,
+            )?;
             Ok(PreparedAction::Execute {
                 invocation,
                 prepared,
@@ -103,8 +126,7 @@ fn prepare_action(
             })
         }
         CommandAction::Navigate { payload } => {
-            let (target, query) =
-                evaluate_target(config, payload, &context, owner, returned, cancellation)?;
+            let (target, query) = evaluate_target(config, payload, &snapshot, stage)?;
             let request = match query {
                 Some(query) => NavigationRequest::new(target, "").with_query(query),
                 None => NavigationRequest::with_defaults(target),
@@ -112,34 +134,20 @@ fn prepare_action(
             Ok(PreparedAction::Navigate(request))
         }
         CommandAction::Call { payload } => {
-            let target = evaluate_value(
-                config,
-                &payload.target,
-                &context,
-                owner,
-                returned,
-                cancellation,
-            )?
-            .as_str()
-            .context("call target must evaluate to a string")?
-            .to_string();
+            let target = evaluate_value(config, &snapshot, stage, &payload.target)?
+                .as_str()
+                .context("call target must evaluate to a string")?
+                .to_string();
             let target = config.resolve_view(&target)?;
             let query = payload
                 .query
                 .as_ref()
-                .map(|value| evaluate_value(config, value, &context, owner, returned, cancellation))
+                .map(|value| evaluate_value(config, &snapshot, stage, value))
                 .transpose()?;
-            let args = payload
-                .args
-                .as_ref()
-                .map(|value| evaluate_value(config, value, &context, owner, returned, cancellation))
-                .transpose()?
-                .unwrap_or(Value::Null);
             let request = match query {
                 Some(query) => NavigationRequest::new(target, "").with_query(query),
                 None => NavigationRequest::with_defaults(target),
-            }
-            .with_args(args);
+            };
             Ok(PreparedAction::Call(CallRequest {
                 request,
                 origin: invocation.origin(),
@@ -150,7 +158,7 @@ fn prepare_action(
         CommandAction::Return { payload } => {
             let output = match &payload.value {
                 Some(value) => ViewOutput::Value {
-                    value: evaluate_value(config, value, &context, owner, returned, cancellation)?,
+                    value: evaluate_value(config, &snapshot, stage, value)?,
                 },
                 None => context.output.clone().context(
                     "return command has no engine output; configure payload.value explicitly",
@@ -174,25 +182,16 @@ fn prepare_action(
             }))
         }
         CommandAction::EditInput { payload } => {
-            let value = evaluate_value(
-                config,
-                &payload.value,
-                &context,
-                owner,
-                returned,
-                cancellation,
-            )?
-            .as_str()
-            .context("edit-input value must evaluate to a string")?
-            .to_string();
+            let value = evaluate_value(config, &snapshot, stage, &payload.value)?
+                .as_str()
+                .context("edit-input value must evaluate to a string")?
+                .to_string();
             let cursor = match &payload.cursor {
-                Some(cursor) => {
-                    evaluate_value(config, cursor, &context, owner, returned, cancellation)?
-                        .as_u64()
-                        .context("edit-input cursor must evaluate to a non-negative integer")?
-                        .try_into()
-                        .context("edit-input cursor does not fit in usize")?
-                }
+                Some(cursor) => evaluate_value(config, &snapshot, stage, cursor)?
+                    .as_u64()
+                    .context("edit-input cursor must evaluate to a non-negative integer")?
+                    .try_into()
+                    .context("edit-input cursor does not fit in usize")?,
                 None => value.len(),
             };
             if cursor > value.len() || !value.is_char_boundary(cursor) {
@@ -201,14 +200,7 @@ fn prepare_action(
             Ok(PreparedAction::EditInput { value, cursor })
         }
         CommandAction::Invoke { payload } => {
-            let value = evaluate_value(
-                config,
-                &payload.command,
-                &context,
-                owner,
-                returned,
-                cancellation,
-            )?;
+            let value = evaluate_value(config, &snapshot, stage, &payload.command)?;
             let reference: CommandRef = serde_json::from_value(value)
                 .context("invoke command must evaluate to {view, id}")?;
             let invocation = resolve_visible_command(config, &context, &reference)?;
@@ -243,51 +235,47 @@ fn command_owner<'a>(
 fn evaluate_target(
     config: &Config,
     payload: &NavigatePayload,
-    context: &CommandContext,
-    owner: &CommandOwnerContext,
-    returned: Option<&Value>,
-    cancellation: &CancellationToken,
+    snapshot: &EvaluationSnapshot<'_>,
+    stage: EvaluationStage,
 ) -> Result<(String, Option<Value>)> {
-    let target = evaluate_value(
-        config,
-        &payload.target,
-        context,
-        owner,
-        returned,
-        cancellation,
-    )?
-    .as_str()
-    .context("navigation target must evaluate to a string")?
-    .to_string();
+    let target = evaluate_value(config, snapshot, stage, &payload.target)?
+        .as_str()
+        .context("navigation target must evaluate to a string")?
+        .to_string();
     let target = config.resolve_view(&target)?;
     let query = payload
         .query
         .as_ref()
-        .map(|value| evaluate_value(config, value, context, owner, returned, cancellation))
+        .map(|value| evaluate_value(config, snapshot, stage, value))
         .transpose()?;
     Ok((target, query))
 }
 
 fn evaluate_value(
     config: &Config,
+    snapshot: &EvaluationSnapshot<'_>,
+    stage: EvaluationStage,
     value: &toml::Value,
-    context: &CommandContext,
-    owner: &CommandOwnerContext,
-    returned: Option<&Value>,
-    cancellation: &CancellationToken,
 ) -> Result<Value> {
-    config.evaluate_value(
-        ConfigReadContext {
-            scope: ConfigScope::View(&owner.state),
-            runtime: &context.runtime,
-            input: &config.input_value,
-            cancellation: Some(cancellation.clone()),
-            binding_raw: Some(&owner.binding_raw),
-        },
-        value,
-        context.request.as_ref(),
-        returned,
-    )
+    config.evaluate_value(snapshot, stage, value)
+}
+
+fn evaluate_string_value(
+    config: &Config,
+    source: &str,
+    snapshot: &EvaluationSnapshot<'_>,
+    stage: EvaluationStage,
+    label: &str,
+) -> Result<String> {
+    evaluate_value(
+        config,
+        snapshot,
+        stage,
+        &toml::Value::String(source.to_string()),
+    )?
+    .as_str()
+    .map(str::to_string)
+    .with_context(|| format!("{label} must evaluate to a string"))
 }
 
 fn prepare_run_command(
@@ -296,15 +284,35 @@ fn prepare_run_command(
     invocation: &CommandInvocation,
     context: &CommandContext,
     owner: &CommandOwnerContext,
+    snapshot: &EvaluationSnapshot<'_>,
+    stage: EvaluationStage,
 ) -> Result<PreparedProcess> {
     let view = config
         .view(invocation.source_view())
         .with_context(|| format!("view {:?} disappeared", invocation.source_view()))?;
-    let shell = payload
+    let shell_source = payload
         .shell
         .as_deref()
         .or(view.run_shell.as_deref())
         .unwrap_or("sh");
+    let shell = evaluate_string_value(config, shell_source, snapshot, stage, "command shell")?;
+    let handler_value = config.evaluate_value(snapshot, stage, &payload.handler)?;
+    let handler_source = ResolvedScriptSource::parse(&handler_value)
+        .context("command handler must resolve to a script source")?;
+    let handler_file = handler_source.command_file()?;
+    let root = config
+        .plugin_root(invocation.source_view())
+        .with_context(|| {
+            format!(
+                "command {:?} has a file handler but no plugin root",
+                invocation.id()
+            )
+        })?;
+    let handler = crate::script_runner::read_script(root, handler_file)?;
+    if shell.is_empty() {
+        bail!("command shell must not be empty");
+    }
+    let arguments = config.evaluate_argv(payload.args.as_ref(), snapshot, stage, "command args")?;
     let item = context.selection.as_ref().map(|selection| &selection.item);
     let value = item
         .and_then(|item| item.value.as_deref())
@@ -353,13 +361,13 @@ fn prepare_run_command(
     {
         environment.push(("LAUNCHER_STDIN_FILE".to_string(), path.to_string()));
     }
+    let mut argv = vec![shell, "-c".to_string(), handler, "tui-launcher".to_string()];
+    // With `sh -c SOURCE tui-launcher ARG...`, the fixed fourth argument is
+    // `$0` inside SOURCE and configured values become `$1`, `$2`, and `"$@"`.
+    // They are appended as process arguments, not interpolated into SOURCE.
+    argv.extend(arguments);
     Ok(PreparedProcess {
-        argv: vec![
-            shell.to_string(),
-            "-c".to_string(),
-            payload.handler.clone(),
-            "tui-launcher".to_string(),
-        ],
+        argv,
         environment,
         current_dir: plugin_root,
     })
@@ -508,7 +516,6 @@ mod tests {
             },
             selection: None,
             runtime: serde_json::json!({}),
-            request: None,
             output: None,
         };
         let invocation = CommandInvocation::view(
@@ -523,7 +530,9 @@ mod tests {
                 requires: crate::config::CommandRequirement::Input,
                 action: CommandAction::Run {
                     payload: crate::config::RunPayload {
-                        handler: "printf '%s' \"${LAUNCHER_LOG_FILE-unset}\"".to_string(),
+                        handler: crate::config::ScriptSourceSpec::script_file("scripts/items.sh")
+                            .as_toml_value(),
+                        args: None,
                         shell: None,
                         exit: false,
                     },
@@ -569,7 +578,6 @@ mod tests {
             },
             selection: None,
             runtime: serde_json::json!({}),
-            request: None,
             output: None,
         };
         let action = CommandAction::EditInput {
@@ -622,7 +630,6 @@ mod tests {
             },
             selection: None,
             runtime: serde_json::json!({}),
-            request: None,
             output: None,
         };
         let action = CommandAction::EditInput {
@@ -662,7 +669,6 @@ mod tests {
             },
             selection: None,
             runtime: serde_json::json!({}),
-            request: None,
             output: None,
         };
         let forged = CommandRef {

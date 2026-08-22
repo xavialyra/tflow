@@ -1,153 +1,866 @@
-mod methods;
-mod path;
-mod script;
+use crate::cancellation::CancellationToken;
+use anyhow::{Context, Result, bail};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 
-pub(crate) use methods::ExpressionMethods;
-#[cfg(test)]
-pub(crate) use path::apply_path;
+const MAX_TEMPLATE_BYTES: usize = 1024 * 1024;
+const MAX_EXPRESSION_BYTES: usize = 256 * 1024;
+const MAX_DEPTH: usize = 128;
+const MAX_NODES: usize = 1_000_000;
+const MAX_PATH_SEGMENTS: usize = 128;
+const MAX_COLLECTION_ELEMENTS: usize = 100_000;
+const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_COMPILED_TEMPLATES: usize = 4096;
+const MAX_IDENTIFIER_BYTES: usize = 128;
 
-use anyhow::{Result, bail};
-use serde_json::{Map, Number, Value};
-use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Literal(Value),
-    Ref {
-        namespace: String,
-        path: String,
-    },
-    Call {
-        name: String,
-        args: Vec<Expr>,
-        named_args: BTreeMap<String, Expr>,
-    },
-    Array(Vec<Expr>),
-    Object(BTreeMap<String, Expr>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum Namespace {
+    View,
+    Page,
+    Selection,
+    Input,
+    Result,
+    Session,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Namespace {
+    const ALL: [Self; 6] = [
+        Self::Input,
+        Self::Page,
+        Self::Selection,
+        Self::Session,
+        Self::View,
+        Self::Result,
+    ];
+
+    pub(crate) fn parse(source: &str) -> Option<Self> {
+        match source {
+            "view" => Some(Self::View),
+            "page" => Some(Self::Page),
+            "selection" => Some(Self::Selection),
+            "input" => Some(Self::Input),
+            "result" => Some(Self::Result),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Page => "page",
+            Self::Selection => "selection",
+            Self::Input => "input",
+            Self::Result => "result",
+            Self::Session => "session",
+        }
+    }
+}
+
+/// The earliest lifecycle stage at which a configuration consumer can resolve
+/// a value. Later stages inherit the capabilities of earlier stages.
+///
+/// This is a static contract for a consumer, not a second evaluator. The
+/// runtime snapshot remains responsible for supplying the actual scope data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvaluationStage {
+    /// Configuration topology is being bound; no dynamic scope exists yet.
+    Bootstrap,
+    /// Immutable invocation input has been captured.
+    Invocation,
+    /// A View and active session operation have been captured.
+    Operation,
+    /// A return continuation or result handler additionally has `result`.
+    Return,
+}
+
+impl EvaluationStage {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Bootstrap => "bootstrap",
+            Self::Invocation => "invocation",
+            Self::Operation => "operation",
+            Self::Return => "return",
+        }
+    }
+
+    pub(crate) const fn allows(self, namespace: Namespace) -> bool {
+        match self {
+            Self::Bootstrap => false,
+            Self::Invocation => matches!(namespace, Namespace::Input),
+            Self::Operation => {
+                Self::Invocation.allows(namespace)
+                    || matches!(
+                        namespace,
+                        Namespace::Page
+                            | Namespace::Selection
+                            | Namespace::Session
+                            | Namespace::View
+                    )
+            }
+            Self::Return => {
+                Self::Operation.allows(namespace) || matches!(namespace, Namespace::Result)
+            }
+        }
+    }
+
+    fn available_names(self) -> String {
+        let names = Namespace::ALL
+            .into_iter()
+            .filter(|namespace| self.allows(*namespace))
+            .map(Namespace::name)
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            "none".to_string()
+        } else {
+            names.join(", ")
+        }
+    }
+}
+
+const VIEW_FIELDS: &[&str] = &["ref", "query", "input", "raw_input", "state_revision"];
+const PAGE_FIELDS: &[&str] = &[
+    "ref",
+    "state_revision",
+    "input",
+    "raw_input",
+    "query",
+    "items",
+    "selected_item",
+    "command_owner",
+    "commands",
+];
+const SESSION_FIELDS: &[&str] = &["input", "views"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    Member(String),
+    Index(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Path {
+    source: String,
+    segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone)]
 pub enum TemplatePart {
     Text(String),
-    Expr(Expr),
+    Expression(Path),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Template {
     parts: Vec<TemplatePart>,
 }
 
-pub trait ReferenceResolver {
-    fn resolve_reference(&self, namespace: &str, path: &str) -> Result<Value>;
+#[derive(Debug, Clone)]
+enum RequiredFields {
+    All,
+    Fields(HashSet<String>),
 }
 
-pub trait MethodResolver {
-    fn call_method(
-        &mut self,
-        name: &str,
-        args: Vec<Value>,
-        named_args: BTreeMap<String, Value>,
-    ) -> Result<Value>;
+#[derive(Debug, Default)]
+pub struct ContextRequirements {
+    namespaces: HashMap<Namespace, RequiredFields>,
+}
+
+impl ContextRequirements {
+    fn add_path(&mut self, path: &Path) {
+        let PathSegment::Member(name) = &path.segments[0] else {
+            return;
+        };
+        let namespace =
+            Namespace::parse(name).expect("compiled dynamic path has an unsupported namespace");
+        let field = match path.segments.get(1) {
+            Some(PathSegment::Member(field)) => Some(field),
+            Some(PathSegment::Index(_)) | None => None,
+        };
+        match (self.namespaces.get_mut(&namespace), field) {
+            (Some(RequiredFields::All), _) => {}
+            (Some(RequiredFields::Fields(fields)), Some(field)) => {
+                fields.insert(field.clone());
+            }
+            (Some(required), None) => *required = RequiredFields::All,
+            (None, Some(field)) => {
+                self.namespaces.insert(
+                    namespace,
+                    RequiredFields::Fields(HashSet::from([field.clone()])),
+                );
+            }
+            (None, None) => {
+                self.namespaces.insert(namespace, RequiredFields::All);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.namespaces.is_empty()
+    }
+
+    pub(crate) fn requires(&self, namespace: Namespace) -> bool {
+        self.namespaces.contains_key(&namespace)
+    }
+
+    pub(crate) fn requires_field(&self, namespace: Namespace, field: &str) -> bool {
+        match self.namespaces.get(&namespace) {
+            Some(RequiredFields::All) => true,
+            Some(RequiredFields::Fields(fields)) => fields.contains(field),
+            None => false,
+        }
+    }
+
+    /// Reject a template whose required scopes do not exist when `consumer`
+    /// runs. This is deliberately namespace-based: schema validation of a
+    /// namespace's contents remains separate from scope availability.
+    pub(crate) fn validate_stage(&self, stage: EvaluationStage, consumer: &str) -> Result<()> {
+        let unavailable = Namespace::ALL
+            .into_iter()
+            .filter(|namespace| self.requires(*namespace) && !stage.allows(*namespace))
+            .map(Namespace::name)
+            .collect::<Vec<_>>();
+        if unavailable.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "{consumer} is consumed during the {} evaluation stage and cannot reference dynamic namespace{} {}; available namespaces: {}",
+            stage.name(),
+            if unavailable.len() == 1 { "" } else { "s" },
+            unavailable
+                .iter()
+                .map(|namespace| format!("{namespace:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            stage.available_names(),
+        );
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TemplateRegistry {
+    templates: HashMap<String, Template>,
+}
+
+impl TemplateRegistry {
+    pub fn compile_json_tree(value: &Value) -> Result<Self> {
+        let mut registry = Self::default();
+        registry.compile_value(value, 0)?;
+        Ok(registry)
+    }
+
+    fn compile_value(&mut self, value: &Value, depth: usize) -> Result<()> {
+        if depth > MAX_DEPTH {
+            bail!("dynamic value exceeded maximum depth of {MAX_DEPTH}");
+        }
+        match value {
+            Value::String(source) if is_dynamic_string(source) => {
+                let template = parse_template(source)?;
+                if self.templates.len() >= MAX_COMPILED_TEMPLATES
+                    && !self.templates.contains_key(source)
+                {
+                    bail!(
+                        "dynamic configuration exceeded maximum compiled template count of {MAX_COMPILED_TEMPLATES}"
+                    );
+                }
+                self.templates.entry(source.clone()).or_insert(template);
+            }
+            Value::Array(values) => {
+                for value in values {
+                    self.compile_value(value, depth + 1)?;
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    self.compile_value(value, depth + 1)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn get(&self, source: &str) -> Result<&Template> {
+        self.templates.get(source).ok_or_else(|| {
+            anyhow::anyhow!(
+                "dynamic template was not compiled during configuration validation: {source:?}"
+            )
+        })
+    }
+
+    pub fn requirements_for_value(&self, value: &Value) -> Result<ContextRequirements> {
+        let mut requirements = ContextRequirements::default();
+        self.collect_requirements(value, &mut requirements)?;
+        Ok(requirements)
+    }
+
+    fn collect_requirements(
+        &self,
+        value: &Value,
+        requirements: &mut ContextRequirements,
+    ) -> Result<()> {
+        match value {
+            Value::String(source) if is_dynamic_string(source) => {
+                for part in &self.get(source)?.parts {
+                    if let TemplatePart::Expression(path) = part {
+                        requirements.add_path(path);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    self.collect_requirements(value, requirements)?;
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    self.collect_requirements(value, requirements)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+pub fn is_dynamic_string(source: &str) -> bool {
+    find_unescaped_open(source, 0).is_some()
 }
 
 pub struct EvalContext<'a> {
-    pub references: &'a dyn ReferenceResolver,
-    pub methods: &'a mut dyn MethodResolver,
+    pub root: &'a Value,
+    pub cancellation: Option<&'a CancellationToken>,
+    pub templates: Option<&'a TemplateRegistry>,
 }
 
-pub struct TreeReferences<'a> {
-    pub config: &'a Value,
-    pub this: &'a Value,
-    pub runtime: &'a Value,
-    pub input: &'a Value,
-    pub request: Option<&'a Value>,
-    pub returned: Option<&'a Value>,
+#[derive(Default)]
+struct Budget {
+    nodes: usize,
+    output_bytes: usize,
 }
 
-impl ReferenceResolver for TreeReferences<'_> {
-    fn resolve_reference(&self, namespace: &str, path: &str) -> Result<Value> {
-        let root = match namespace {
-            "config" => self.config,
-            "this" => self.this,
-            "runtime" => self.runtime,
-            "input" => self.input,
-            "request" => self
-                .request
-                .ok_or_else(|| anyhow::anyhow!("request references are not available here"))?,
-            "return" => self
-                .returned
-                .ok_or_else(|| anyhow::anyhow!("return references are not available here"))?,
-            _ => bail!("unknown reference namespace {:?}", namespace),
-        };
-        lookup_path(root, path)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("reference {:?}:{:?} was not found", namespace, path))
+impl Budget {
+    fn visit(&mut self, depth: usize, cancellation: Option<&CancellationToken>) -> Result<()> {
+        check_cancelled(cancellation)?;
+        if depth > MAX_DEPTH {
+            bail!("dynamic value exceeded maximum depth of {MAX_DEPTH}");
+        }
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("dynamic value node budget overflow"))?;
+        if self.nodes > MAX_NODES {
+            bail!("dynamic value exceeded maximum node count of {MAX_NODES}");
+        }
+        Ok(())
     }
+
+    fn path_segment(&mut self, cancellation: Option<&CancellationToken>) -> Result<()> {
+        check_cancelled(cancellation)?;
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("dynamic path budget overflow"))?;
+        if self.nodes > MAX_NODES {
+            bail!("dynamic value exceeded maximum node count of {MAX_NODES}");
+        }
+        Ok(())
+    }
+
+    fn output(&mut self, bytes: usize, cancellation: Option<&CancellationToken>) -> Result<()> {
+        check_cancelled(cancellation)?;
+        self.output_bytes = self
+            .output_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| anyhow::anyhow!("dynamic output budget overflow"))?;
+        if self.output_bytes > MAX_RESULT_BYTES {
+            bail!("dynamic value exceeded maximum output size of {MAX_RESULT_BYTES} bytes");
+        }
+        Ok(())
+    }
+
+    fn serialized<T: Serialize>(
+        &mut self,
+        value: &T,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<()> {
+        let (failure, result) = {
+            let mut writer = BudgetWriter {
+                budget: self,
+                cancellation,
+                failure: None,
+            };
+            let result = serde_json::to_writer(&mut writer, value);
+            (writer.failure, result)
+        };
+        match failure {
+            Some(BudgetWriterFailure::Cancelled) => {
+                bail!("dynamic value evaluation cancelled")
+            }
+            Some(BudgetWriterFailure::OutputLimit) => {
+                bail!("dynamic value exceeded maximum output size of {MAX_RESULT_BYTES} bytes")
+            }
+            None => result
+                .map_err(|error| anyhow::anyhow!("could not serialize dynamic value: {error}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BudgetWriterFailure {
+    Cancelled,
+    OutputLimit,
+}
+
+struct BudgetWriter<'a> {
+    budget: &'a mut Budget,
+    cancellation: Option<&'a CancellationToken>,
+    failure: Option<BudgetWriterFailure>,
+}
+
+impl Write for BudgetWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.failure.is_some() {
+            return Err(io::Error::other("dynamic output budget exhausted"));
+        }
+        if self
+            .cancellation
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            self.failure = Some(BudgetWriterFailure::Cancelled);
+            return Err(io::Error::other("dynamic value evaluation cancelled"));
+        }
+        let Some(total) = self.budget.output_bytes.checked_add(bytes.len()) else {
+            self.failure = Some(BudgetWriterFailure::OutputLimit);
+            return Err(io::Error::other("dynamic output budget overflow"));
+        };
+        if total > MAX_RESULT_BYTES {
+            self.failure = Some(BudgetWriterFailure::OutputLimit);
+            return Err(io::Error::other("dynamic value output limit exceeded"));
+        }
+        self.budget.output_bytes = total;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn check_cancelled(cancellation: Option<&CancellationToken>) -> Result<()> {
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        bail!("dynamic value evaluation cancelled");
+    }
+    Ok(())
 }
 
 impl Template {
     pub fn parse(source: &str) -> Result<Self> {
-        let mut parts = Vec::new();
-        let mut cursor = 0;
-        while let Some(open) = find_unescaped_open(source, cursor) {
-            if open > cursor {
-                parts.push(TemplatePart::Text(source[cursor..open].to_string()));
-            }
-            let close = find_closing_delimiter(source, open)
-                .ok_or_else(|| anyhow::anyhow!("unclosed expression starting at byte {open}"))?;
-            let expression = parse_expression(&source[open + 2..close])?;
-            parts.push(TemplatePart::Expr(expression));
-            cursor = close + 2;
-        }
-        if cursor < source.len() {
-            parts.push(TemplatePart::Text(source[cursor..].to_string()));
-        }
-        if parts.is_empty() {
-            parts.push(TemplatePart::Text(String::new()));
-        }
-        Ok(Self { parts })
+        parse_template(source)
     }
 
-    pub fn is_complete_expression(&self) -> bool {
-        matches!(self.parts.as_slice(), [TemplatePart::Expr(_)])
+    pub fn is_complete_path(&self) -> bool {
+        matches!(self.parts.as_slice(), [TemplatePart::Expression(_)])
     }
 
     #[cfg(test)]
-    pub fn evaluate_value(&self, context: &mut EvalContext<'_>) -> Result<Value> {
-        if let [TemplatePart::Expr(expression)] = self.parts.as_slice() {
-            return evaluate_expression(expression, context, &mut BTreeSet::new());
-        }
-        self.evaluate_text(context).map(Value::String)
+    pub fn evaluate_value(&self, context: &EvalContext<'_>) -> Result<Value> {
+        let mut budget = Budget::default();
+        self.evaluate(&mut budget, context, 0)
     }
 
-    pub fn evaluate_text(&self, context: &mut EvalContext<'_>) -> Result<String> {
-        let mut result = String::new();
+    fn evaluate(
+        &self,
+        budget: &mut Budget,
+        context: &EvalContext<'_>,
+        depth: usize,
+    ) -> Result<Value> {
+        budget.visit(depth, context.cancellation)?;
+        if let [TemplatePart::Expression(path)] = self.parts.as_slice() {
+            return evaluate_path(
+                path,
+                context.root,
+                budget,
+                context.cancellation,
+                depth + 1,
+                true,
+            );
+        }
+        let mut text = String::new();
         for part in &self.parts {
+            check_cancelled(context.cancellation)?;
             match part {
-                TemplatePart::Text(text) => result.push_str(text),
-                TemplatePart::Expr(expression) => {
-                    let value = evaluate_expression(expression, context, &mut BTreeSet::new())?;
-                    result.push_str(&value_to_text(&value)?);
+                TemplatePart::Text(value) => {
+                    append_text(&mut text, value, context.cancellation)?;
+                }
+                TemplatePart::Expression(path) => {
+                    let value = evaluate_path(
+                        path,
+                        context.root,
+                        budget,
+                        context.cancellation,
+                        depth + 1,
+                        false,
+                    )?;
+                    append_value_to_text(&mut text, &value, context.cancellation)?;
                 }
             }
         }
-        Ok(result)
+        budget.serialized(&text, context.cancellation)?;
+        Ok(Value::String(text))
+    }
+}
+
+fn compiled_template<'a>(source: &str, context: &'a EvalContext<'_>) -> Result<&'a Template> {
+    context
+        .templates
+        .and_then(|registry| registry.get(source).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "dynamic template was not compiled during configuration validation: {source:?}"
+            )
+        })
+}
+
+fn parse_template(source: &str) -> Result<Template> {
+    if source.len() > MAX_TEMPLATE_BYTES {
+        bail!("dynamic template exceeded maximum size of {MAX_TEMPLATE_BYTES} bytes");
+    }
+    let mut parts = Vec::new();
+    let mut cursor = 0;
+    while let Some(open) = find_unescaped_open(source, cursor) {
+        if open > cursor {
+            parts.push(TemplatePart::Text(source[cursor..open].to_string()));
+        }
+        let close = find_closing_delimiter(source, open)
+            .ok_or_else(|| anyhow::anyhow!("unclosed dynamic template at byte {open}"))?;
+        let expression = &source[open + 2..close];
+        if expression.len() > MAX_EXPRESSION_BYTES {
+            bail!("dynamic path exceeded maximum size of {MAX_EXPRESSION_BYTES} bytes");
+        }
+        parts.push(TemplatePart::Expression(parse_path(expression)?));
+        cursor = close + 2;
+    }
+    if cursor < source.len() {
+        parts.push(TemplatePart::Text(source[cursor..].to_string()));
+    }
+    if parts.is_empty() {
+        parts.push(TemplatePart::Text(String::new()));
+    }
+    Ok(Template { parts })
+}
+
+fn parse_path(source: &str) -> Result<Path> {
+    let bytes = source.as_bytes();
+    let mut parser = PathParser {
+        source,
+        bytes,
+        position: 0,
+    };
+    parser.whitespace();
+    let root_start = parser.position;
+    let root = parser.identifier()?;
+    if Namespace::parse(&root).is_none() {
+        bail!("unknown dynamic namespace {root:?} at byte {root_start}");
+    }
+    let mut segments = vec![PathSegment::Member(root)];
+    parser.whitespace();
+    while parser.position < bytes.len() {
+        if segments.len() >= MAX_PATH_SEGMENTS {
+            bail!(
+                "dynamic path exceeded maximum segment count of {MAX_PATH_SEGMENTS} at byte {}",
+                parser.position
+            );
+        }
+        match parser.peek() {
+            Some(b'.') => {
+                parser.position += 1;
+                let member = parser.identifier()?;
+                segments.push(PathSegment::Member(member));
+            }
+            Some(b'[') => {
+                parser.position += 1;
+                parser.whitespace();
+                let segment = if parser.peek() == Some(b'\"') {
+                    let key = parser.quoted_key()?;
+                    PathSegment::Member(key)
+                } else {
+                    let index = parser.index()?;
+                    PathSegment::Index(index)
+                };
+                parser.whitespace();
+                if parser.peek() != Some(b']') {
+                    bail!(
+                        "expected closing ] for path segment at byte {}",
+                        parser.position
+                    );
+                }
+                parser.position += 1;
+                segments.push(segment);
+            }
+            Some(_) => bail!("unexpected path character at byte {}", parser.position),
+            None => break,
+        }
+        parser.whitespace();
+    }
+    let path = Path {
+        source: source.trim().to_string(),
+        segments,
+    };
+    validate_context_schema(&path)?;
+    Ok(path)
+}
+
+struct PathParser<'a> {
+    source: &'a str,
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl PathParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.position).copied()
+    }
+    fn whitespace(&mut self) {
+        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
+            self.position += 1;
+        }
+    }
+    fn identifier(&mut self) -> Result<String> {
+        let start = self.position;
+        if !self
+            .peek()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        {
+            bail!("expected path member at byte {start}");
+        }
+        self.position += 1;
+        while self
+            .peek()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            self.position += 1;
+        }
+        if self.position - start > MAX_IDENTIFIER_BYTES {
+            bail!("path member exceeded maximum size at byte {start}");
+        }
+        Ok(self.source[start..self.position].to_string())
+    }
+    fn quoted_key(&mut self) -> Result<String> {
+        let start = self.position;
+        self.position += 1;
+        let mut escaped = false;
+        while let Some(byte) = self.peek() {
+            self.position += 1;
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'\"' => {
+                    return serde_json::from_str(&self.source[start..self.position]).map_err(
+                        |error| anyhow::anyhow!("invalid quoted path key at byte {start}: {error}"),
+                    );
+                }
+                byte if byte.is_ascii_control() => bail!(
+                    "control character in quoted path key at byte {}",
+                    self.position - 1
+                ),
+                _ => {}
+            }
+        }
+        bail!("unterminated quoted path key at byte {start}")
+    }
+    fn index(&mut self) -> Result<usize> {
+        let start = self.position;
+        let begin = self.position;
+        while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
+            self.position += 1;
+        }
+        if self.position == begin {
+            bail!("expected a non-negative array index at byte {start}");
+        }
+        self.source[begin..self.position]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("array index is too large at byte {start}"))
+    }
+}
+
+fn validate_context_schema(path: &Path) -> Result<()> {
+    let PathSegment::Member(namespace) = &path.segments[0] else {
+        return Ok(());
+    };
+    let Some(PathSegment::Member(field)) = path.segments.get(1) else {
+        return Ok(());
+    };
+    let fields = match Namespace::parse(namespace) {
+        Some(Namespace::View) => VIEW_FIELDS,
+        Some(Namespace::Page) => PAGE_FIELDS,
+        Some(Namespace::Session) => SESSION_FIELDS,
+        Some(Namespace::Selection | Namespace::Input | Namespace::Result) => return Ok(()),
+        None => return Ok(()),
+    };
+    if !fields.contains(&field.as_str()) {
+        bail!(
+            "unknown {namespace} field {field:?}; expected one of {}",
+            fields.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn evaluate_path(
+    path: &Path,
+    root: &Value,
+    budget: &mut Budget,
+    cancellation: Option<&CancellationToken>,
+    depth: usize,
+    account_output: bool,
+) -> Result<Value> {
+    let mut value = root;
+    for (index, segment) in path.segments.iter().enumerate() {
+        budget.path_segment(cancellation)?;
+        value = match segment {
+            PathSegment::Member(key) => {
+                let object = value.as_object().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot read member {key:?} from {} while traversing {} at segment {}",
+                        value_type(value),
+                        path.source,
+                        index + 1
+                    )
+                })?;
+                object.get(key).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing member {key:?} while traversing {} at segment {}",
+                        path.source,
+                        index + 1
+                    )
+                })?
+            }
+            PathSegment::Index(array_index) => {
+                let array = value.as_array().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot index {} while traversing {} at segment {}",
+                        value_type(value),
+                        path.source,
+                        index + 1
+                    )
+                })?;
+                array.get(*array_index).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "array index {array_index} is out of bounds while traversing {} at segment {}",
+                        path.source,
+                        index + 1
+                    )
+                })?
+            }
+        };
+    }
+    check_cancelled(cancellation)?;
+    clone_value(value, budget, cancellation, depth, account_output)
+}
+
+fn clone_value(
+    value: &Value,
+    budget: &mut Budget,
+    cancellation: Option<&CancellationToken>,
+    depth: usize,
+    account_output: bool,
+) -> Result<Value> {
+    budget.visit(depth, cancellation)?;
+    match value {
+        Value::Array(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
+            }
+            if account_output {
+                budget.output(2 + values.len().saturating_sub(1), cancellation)?;
+            }
+            values
+                .iter()
+                .map(|value| clone_value(value, budget, cancellation, depth + 1, account_output))
+                .collect::<Result<Vec<_>>>()
+                .map(Value::Array)
+        }
+        Value::Object(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
+            }
+            if account_output {
+                budget.output(2 + values.len().saturating_sub(1), cancellation)?;
+            }
+            values
+                .iter()
+                .map(|(key, value)| {
+                    if account_output {
+                        budget.serialized(key, cancellation)?;
+                        budget.output(1, cancellation)?;
+                    }
+                    Ok((
+                        key.clone(),
+                        clone_value(value, budget, cancellation, depth + 1, account_output)?,
+                    ))
+                })
+                .collect::<Result<serde_json::Map<_, _>>>()
+                .map(Value::Object)
+        }
+        value => {
+            if account_output {
+                budget.serialized(value, cancellation)?;
+            }
+            Ok(value.clone())
+        }
+    }
+}
+
+fn value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
 pub fn validate_json_value(value: &Value) -> Result<()> {
+    let mut budget = Budget::default();
+    validate_json_value_with_budget(value, &mut budget, 0)
+}
+
+fn validate_json_value_with_budget(value: &Value, budget: &mut Budget, depth: usize) -> Result<()> {
+    budget.visit(depth, None)?;
     match value {
-        Value::String(source) if source.contains("{{") => {
+        Value::String(source) if is_dynamic_string(source) => {
             Template::parse(source)?;
         }
         Value::Array(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
+            }
             for value in values {
-                validate_json_value(value)?;
+                validate_json_value_with_budget(value, budget, depth + 1)?;
             }
         }
         Value::Object(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
+            }
             for value in values.values() {
-                validate_json_value(value)?;
+                validate_json_value_with_budget(value, budget, depth + 1)?;
             }
         }
         _ => {}
@@ -155,151 +868,98 @@ pub fn validate_json_value(value: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn evaluate_json_value(value: &Value, context: &mut EvalContext<'_>) -> Result<Value> {
-    evaluate_json_value_with_stack(value, context, &mut BTreeSet::new())
+pub fn evaluate_json_value(value: &Value, context: &EvalContext<'_>) -> Result<Value> {
+    let mut budget = Budget::default();
+    evaluate_json_value_with_budget(value, context, &mut budget, 0)
 }
 
-#[allow(dead_code)]
-pub fn evaluate_argv(values: &[Template], context: &mut EvalContext<'_>) -> Result<Vec<String>> {
-    values
-        .iter()
-        .map(|value| value.evaluate_text(context))
-        .collect()
-}
-
-fn evaluate_json_value_with_stack(
+pub fn clone_json_value_bounded(
     value: &Value,
-    context: &mut EvalContext<'_>,
-    reference_stack: &mut BTreeSet<String>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<Value> {
+    let mut budget = Budget::default();
+    clone_value(value, &mut budget, cancellation, 0, true)
+}
+
+fn evaluate_json_value_with_budget(
+    value: &Value,
+    context: &EvalContext<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Value> {
+    budget.visit(depth, context.cancellation)?;
     match value {
-        Value::String(source) if source.contains("{{") => {
-            let template = Template::parse(source)?;
-            evaluate_template_with_stack(&template, context, reference_stack)
+        Value::String(source) if is_dynamic_string(source) => {
+            compiled_template(source, context)?.evaluate(budget, context, depth + 1)
         }
-        Value::Array(values) => values
-            .iter()
-            .map(|value| evaluate_json_value_with_stack(value, context, reference_stack))
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array),
-        Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| {
-                Ok((
-                    key.clone(),
-                    evaluate_json_value_with_stack(value, context, reference_stack)?,
-                ))
-            })
-            .collect::<Result<Map<_, _>>>()
-            .map(Value::Object),
-        value => Ok(value.clone()),
-    }
-}
-
-fn evaluate_template_with_stack(
-    template: &Template,
-    context: &mut EvalContext<'_>,
-    reference_stack: &mut BTreeSet<String>,
-) -> Result<Value> {
-    if let [TemplatePart::Expr(expression)] = template.parts.as_slice() {
-        return evaluate_expression(expression, context, reference_stack);
-    }
-    let mut result = String::new();
-    for part in &template.parts {
-        match part {
-            TemplatePart::Text(text) => result.push_str(text),
-            TemplatePart::Expr(expression) => {
-                let value = evaluate_expression(expression, context, reference_stack)?;
-                result.push_str(&value_to_text(&value)?);
+        Value::Array(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
             }
-        }
-    }
-    Ok(Value::String(result))
-}
-
-fn evaluate_expression(
-    expression: &Expr,
-    context: &mut EvalContext<'_>,
-    reference_stack: &mut BTreeSet<String>,
-) -> Result<Value> {
-    match expression {
-        Expr::Literal(value) => Ok(value.clone()),
-        Expr::Ref { namespace, path } => {
-            let key = format!("{namespace}:{path}");
-            if namespace == "config" && !reference_stack.insert(key.clone()) {
-                bail!("cyclic expression reference involving {key:?}");
-            }
-            let value = context.references.resolve_reference(namespace, path)?;
-            let result = if namespace == "config" {
-                evaluate_json_value_with_stack(&value, context, reference_stack)
-            } else {
-                Ok(value)
-            };
-            if namespace == "config" {
-                reference_stack.remove(&key);
-            }
-            result
-        }
-        Expr::Call {
-            name,
-            args,
-            named_args,
-        } => {
-            let args = args
+            budget.output(2 + values.len().saturating_sub(1), context.cancellation)?;
+            values
                 .iter()
-                .map(|argument| evaluate_expression(argument, context, reference_stack))
-                .collect::<Result<Vec<_>>>()?;
-            let named_args = named_args
+                .map(|value| evaluate_json_value_with_budget(value, context, budget, depth + 1))
+                .collect::<Result<Vec<_>>>()
+                .map(Value::Array)
+        }
+        Value::Object(values) => {
+            if values.len() > MAX_COLLECTION_ELEMENTS {
+                bail!(
+                    "dynamic value collection exceeded maximum element count of {MAX_COLLECTION_ELEMENTS}"
+                );
+            }
+            budget.output(2 + values.len().saturating_sub(1), context.cancellation)?;
+            values
                 .iter()
-                .map(|(key, argument)| {
+                .map(|(key, value)| {
+                    budget.serialized(key, context.cancellation)?;
+                    budget.output(1, context.cancellation)?;
                     Ok((
                         key.clone(),
-                        evaluate_expression(argument, context, reference_stack)?,
+                        evaluate_json_value_with_budget(value, context, budget, depth + 1)?,
                     ))
                 })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            context.methods.call_method(name, args, named_args)
+                .collect::<Result<serde_json::Map<_, _>>>()
+                .map(Value::Object)
         }
-        Expr::Array(values) => values
-            .iter()
-            .map(|value| evaluate_expression(value, context, reference_stack))
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array),
-        Expr::Object(values) => values
-            .iter()
-            .map(|(key, value)| {
-                Ok((
-                    key.clone(),
-                    evaluate_expression(value, context, reference_stack)?,
-                ))
-            })
-            .collect::<Result<Map<_, _>>>()
-            .map(Value::Object),
+        value => {
+            budget.serialized(value, context.cancellation)?;
+            Ok(value.clone())
+        }
     }
 }
 
-fn lookup_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    if path.is_empty() || path == "$" {
-        return Some(root);
+fn append_text(
+    text: &mut String,
+    value: &str,
+    cancellation: Option<&CancellationToken>,
+) -> Result<()> {
+    check_cancelled(cancellation)?;
+    let length = text
+        .len()
+        .checked_add(value.len())
+        .ok_or_else(|| anyhow::anyhow!("dynamic value output length overflow"))?;
+    if length > MAX_RESULT_BYTES {
+        bail!("dynamic value exceeded maximum output size of {MAX_RESULT_BYTES} bytes");
     }
-    let mut value = root;
-    for component in path.split('.') {
-        if component.is_empty() {
-            return None;
-        }
-        value = value.get(component)?;
-    }
-    Some(value)
+    text.push_str(value);
+    Ok(())
 }
 
-pub fn value_to_text(value: &Value) -> Result<String> {
+fn append_value_to_text(
+    text: &mut String,
+    value: &Value,
+    cancellation: Option<&CancellationToken>,
+) -> Result<()> {
     match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Null => Ok("null".to_string()),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Number(value) => Ok(value.to_string()),
-        Value::Array(_) | Value::Object(_) => {
-            bail!("cannot interpolate an array or object into a string")
+        Value::String(value) => append_text(text, value, cancellation),
+        value => {
+            let encoded = serde_json::to_string(value)
+                .context("could not JSON-encode an interpolated dynamic value")?;
+            append_text(text, &encoded, cancellation)
         }
     }
 }
@@ -324,577 +984,282 @@ fn find_unescaped_open(source: &str, from: usize) -> Option<usize> {
 
 fn find_closing_delimiter(source: &str, open: usize) -> Option<usize> {
     let mut cursor = open + 2;
-    let mut nested = 0;
-    let mut quote = None;
+    let mut bracket_depth = 0usize;
+    let mut quote = false;
     let mut escaped = false;
     while cursor < source.len() {
-        let remaining = &source[cursor..];
-        let character = remaining.chars().next()?;
+        let character = source[cursor..].chars().next()?;
         let width = character.len_utf8();
-        if let Some(active_quote) = quote {
+        if quote {
             if escaped {
                 escaped = false;
-            } else if character == '\\' && active_quote == '"' {
+            } else if character == '\\' {
                 escaped = true;
-            } else if character == active_quote {
-                quote = None;
+            } else if character == '"' {
+                quote = false;
             }
             cursor += width;
             continue;
         }
-        if character == '"' || character == '\'' {
-            quote = Some(character);
+        if character == '"' {
+            quote = true;
             cursor += width;
             continue;
         }
-        if remaining.starts_with("{{") {
-            nested += 1;
+        if source[cursor..].starts_with("{{") {
             cursor += 2;
-        } else if remaining.starts_with("}}") {
-            if nested == 0 {
-                return Some(cursor);
-            }
-            nested -= 1;
-            cursor += 2;
-        } else {
-            cursor += width;
+            continue;
         }
+        if source[cursor..].starts_with("}}") && bracket_depth == 0 {
+            return Some(cursor);
+        }
+        match character {
+            '[' => bracket_depth += 1,
+            ']' if bracket_depth > 0 => bracket_depth -= 1,
+            _ => {}
+        }
+        cursor += width;
     }
     None
-}
-
-struct Parser<'a> {
-    source: &'a str,
-    position: usize,
-}
-
-fn parse_expression(source: &str) -> Result<Expr> {
-    let mut parser = Parser {
-        source,
-        position: 0,
-    };
-    let expression = parser.parse_value()?;
-    parser.skip_whitespace();
-    if parser.position != source.len() {
-        bail!(
-            "unexpected expression input at byte {}: {:?}",
-            parser.position,
-            &source[parser.position..]
-        );
-    }
-    Ok(expression)
-}
-
-impl Parser<'_> {
-    fn parse_value(&mut self) -> Result<Expr> {
-        self.skip_whitespace();
-        if self.starts_with("{{") {
-            return self.parse_nested_expression();
-        }
-        match self.peek_character() {
-            Some('"') | Some('\'') => self
-                .parse_string()
-                .map(|value| Expr::Literal(Value::String(value))),
-            Some('[') => self.parse_array(),
-            Some('{') => self.parse_object(),
-            Some(character) if character == '-' || character.is_ascii_digit() => {
-                self.parse_number().map(Expr::Literal)
-            }
-            Some(character) if is_identifier_start(character) => self.parse_identifier_value(),
-            Some(character) => bail!("unexpected expression character {:?}", character),
-            None => bail!("expression is empty"),
-        }
-    }
-
-    fn parse_identifier_value(&mut self) -> Result<Expr> {
-        let name = self.parse_identifier()?;
-        self.skip_whitespace();
-        if self.consume_character('(') {
-            return self.parse_call(name);
-        }
-        if self.consume_character(':') {
-            let path = self.parse_path()?;
-            return Ok(Expr::Ref {
-                namespace: name,
-                path,
-            });
-        }
-        match name.as_str() {
-            "true" => Ok(Expr::Literal(Value::Bool(true))),
-            "false" => Ok(Expr::Literal(Value::Bool(false))),
-            "null" => Ok(Expr::Literal(Value::Null)),
-            _ => bail!("bare identifier {:?} is not a reference or method", name),
-        }
-    }
-
-    fn parse_call(&mut self, name: String) -> Result<Expr> {
-        let mut args = Vec::new();
-        let mut named_args = BTreeMap::new();
-        self.skip_whitespace();
-        if self.consume_character(')') {
-            return Ok(Expr::Call {
-                name,
-                args,
-                named_args,
-            });
-        }
-        loop {
-            self.skip_whitespace();
-            let save = self.position;
-            let named = if self.peek_character().is_some_and(is_identifier_start) {
-                let identifier = self.parse_identifier()?;
-                self.skip_whitespace();
-                if self.consume_character('=') {
-                    Some(identifier)
-                } else {
-                    self.position = save;
-                    None
-                }
-            } else {
-                None
-            };
-            let value = self.parse_value()?;
-            if let Some(identifier) = named {
-                if named_args.insert(identifier.clone(), value).is_some() {
-                    bail!("duplicate named argument {:?}", identifier);
-                }
-            } else {
-                args.push(value);
-            }
-            self.skip_whitespace();
-            if self.consume_character(')') {
-                break;
-            }
-            if !self.consume_character(',') {
-                bail!("expected ',' or ')' in method call {:?}", name);
-            }
-        }
-        Ok(Expr::Call {
-            name,
-            args,
-            named_args,
-        })
-    }
-
-    fn parse_array(&mut self) -> Result<Expr> {
-        self.expect_character('[')?;
-        let mut values = Vec::new();
-        self.skip_whitespace();
-        if self.consume_character(']') {
-            return Ok(Expr::Array(values));
-        }
-        loop {
-            values.push(self.parse_value()?);
-            self.skip_whitespace();
-            if self.consume_character(']') {
-                break;
-            }
-            if !self.consume_character(',') {
-                bail!("expected ',' or ']' in array expression");
-            }
-        }
-        Ok(Expr::Array(values))
-    }
-
-    fn parse_object(&mut self) -> Result<Expr> {
-        self.expect_character('{')?;
-        let mut values = BTreeMap::new();
-        self.skip_whitespace();
-        if self.consume_character('}') {
-            return Ok(Expr::Object(values));
-        }
-        loop {
-            self.skip_whitespace();
-            let key = match self.peek_character() {
-                Some('"') | Some('\'') => self.parse_string()?,
-                Some(character) if is_identifier_start(character) => self.parse_identifier()?,
-                _ => bail!(
-                    "object expression keys must be identifiers or strings at byte {} near {:?}",
-                    self.position,
-                    &self.source[self.position..]
-                ),
-            };
-            self.skip_whitespace();
-            self.expect_character('=')?;
-            let value = self.parse_value()?;
-            if values.insert(key.clone(), value).is_some() {
-                bail!("duplicate object expression key {:?}", key);
-            }
-            self.skip_whitespace();
-            if self.consume_character('}') {
-                break;
-            }
-            if !self.consume_character(',') {
-                bail!("expected ',' or '}}' in object expression");
-            }
-        }
-        Ok(Expr::Object(values))
-    }
-
-    fn parse_nested_expression(&mut self) -> Result<Expr> {
-        let open = self.position;
-        let close = find_closing_delimiter(self.source, open)
-            .ok_or_else(|| anyhow::anyhow!("unclosed nested expression at byte {open}"))?;
-        let expression = parse_expression(&self.source[open + 2..close])?;
-        self.position = close + 2;
-        Ok(expression)
-    }
-
-    fn parse_string(&mut self) -> Result<String> {
-        let quote = self
-            .consume_any_character()
-            .ok_or_else(|| anyhow::anyhow!("expected string"))?;
-        let mut value = String::new();
-        loop {
-            let character = self
-                .consume_any_character()
-                .ok_or_else(|| anyhow::anyhow!("unterminated string expression"))?;
-            if character == quote {
-                return Ok(value);
-            }
-            if character == '\\' && quote == '"' {
-                let escaped = self
-                    .consume_any_character()
-                    .ok_or_else(|| anyhow::anyhow!("unterminated string escape"))?;
-                let decoded = match escaped {
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '"' => '"',
-                    '\\' => '\\',
-                    other => bail!("unsupported string escape \\{other}"),
-                };
-                value.push(decoded);
-            } else {
-                value.push(character);
-            }
-        }
-    }
-
-    fn parse_number(&mut self) -> Result<Value> {
-        let start = self.position;
-        while let Some(character) = self.peek_character() {
-            if character.is_ascii_digit() || matches!(character, '-' | '+' | '.' | 'e' | 'E') {
-                self.position += character.len_utf8();
-            } else {
-                break;
-            }
-        }
-        let token = &self.source[start..self.position];
-        if token.contains('.') || token.contains('e') || token.contains('E') {
-            let value = token
-                .parse::<f64>()
-                .map_err(|_| anyhow::anyhow!("invalid numeric literal {:?}", token))?;
-            let number = Number::from_f64(value)
-                .ok_or_else(|| anyhow::anyhow!("invalid numeric literal {:?}", token))?;
-            Ok(Value::Number(number))
-        } else if let Ok(value) = token.parse::<i64>() {
-            Ok(Value::Number(Number::from(value)))
-        } else if let Ok(value) = token.parse::<u64>() {
-            Ok(Value::Number(Number::from(value)))
-        } else {
-            bail!("invalid numeric literal {:?}", token)
-        }
-    }
-
-    fn parse_identifier(&mut self) -> Result<String> {
-        let start = self.position;
-        let first = self
-            .peek_character()
-            .ok_or_else(|| anyhow::anyhow!("expected identifier"))?;
-        if !is_identifier_start(first) {
-            bail!("expected identifier at byte {}", self.position);
-        }
-        self.position += first.len_utf8();
-        while let Some(character) = self.peek_character() {
-            if is_identifier_continue(character) {
-                self.position += character.len_utf8();
-            } else {
-                break;
-            }
-        }
-        Ok(self.source[start..self.position].to_string())
-    }
-
-    fn parse_path(&mut self) -> Result<String> {
-        let start = self.position;
-        while let Some(character) = self.peek_character() {
-            if character.is_whitespace() || matches!(character, ',' | ')' | ']' | '}' | '=') {
-                break;
-            }
-            self.position += character.len_utf8();
-        }
-        Ok(self.source[start..self.position].to_string())
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.peek_character().is_some_and(char::is_whitespace) {
-            let width = self.peek_character().expect("character exists").len_utf8();
-            self.position += width;
-        }
-    }
-
-    fn starts_with(&self, value: &str) -> bool {
-        self.source[self.position..].starts_with(value)
-    }
-
-    fn peek_character(&self) -> Option<char> {
-        self.source[self.position..].chars().next()
-    }
-
-    fn consume_any_character(&mut self) -> Option<char> {
-        let character = self.peek_character()?;
-        self.position += character.len_utf8();
-        Some(character)
-    }
-
-    fn consume_character(&mut self, expected: char) -> bool {
-        if self.peek_character() == Some(expected) {
-            self.position += expected.len_utf8();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect_character(&mut self, expected: char) -> Result<()> {
-        if self.consume_character(expected) {
-            Ok(())
-        } else {
-            bail!("expected {:?} at byte {}", expected, self.position)
-        }
-    }
-}
-
-fn is_identifier_start(character: char) -> bool {
-    character == '_' || character.is_ascii_alphabetic()
-}
-
-fn is_identifier_continue(character: char) -> bool {
-    is_identifier_start(character) || character.is_ascii_digit() || character == '-'
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    struct TestMethods;
+    fn evaluate(source: &str, root: Value) -> Result<Value> {
+        let registry = TemplateRegistry::compile_json_tree(&Value::String(source.to_string()))?;
+        Template::parse(source)?.evaluate_value(&EvalContext {
+            root: &root,
+            cancellation: None,
+            templates: Some(&registry),
+        })
+    }
 
-    impl MethodResolver for TestMethods {
-        fn call_method(
-            &mut self,
-            name: &str,
-            args: Vec<Value>,
-            _named_args: BTreeMap<String, Value>,
-        ) -> Result<Value> {
-            match name {
-                "echo" => Ok(args.into_iter().next().unwrap_or(Value::Null)),
-                _ => bail!("unknown test method {name:?}"),
+    #[test]
+    fn paths_preserve_types_and_support_keys_indexes_and_unicode() {
+        let root = serde_json::json!({
+            "page": {
+                "items": [{"odd-key": true}],
+                "query": {"snow雪": {"quoted\"key": 7}}
             }
+        });
+        assert_eq!(
+            evaluate("{{ page.items[0][\"odd-key\"] }}", root.clone()).unwrap(),
+            true
+        );
+        assert_eq!(
+            evaluate(
+                "{{ page[\"query\"][\"snow\\u96ea\"][\"quoted\\\"key\"] }}",
+                root.clone()
+            )
+            .unwrap(),
+            7
+        );
+        assert_eq!(evaluate("{{ page }}", root.clone()).unwrap(), root["page"]);
+        assert_eq!(
+            evaluate(r"literal \{{ page }}", root).unwrap(),
+            r"literal \{{ page }}"
+        );
+    }
+
+    #[test]
+    fn mixed_templates_stringify_non_strings_as_compact_json() {
+        let root = serde_json::json!({"page": {"query": {
+            "text": "Firefox",
+            "none": null,
+            "enabled": true,
+            "count": 3,
+            "object": {"x": 1},
+            "array": ["one", 2],
+        }}});
+        assert_eq!(
+            evaluate(
+                "{{ page.query.text }} {{ page.query.none }}/{{ page.query.enabled }}/{{ page.query.count }}",
+                root.clone()
+            )
+            .unwrap(),
+            "Firefox null/true/3"
+        );
+        assert_eq!(
+            evaluate(
+                "object={{ page.query.object }}; array={{ page.query.array }}",
+                root,
+            )
+            .unwrap(),
+            r#"object={"x":1}; array=["one",2]"#
+        );
+    }
+
+    #[test]
+    fn parser_rejects_legacy_and_non_path_syntax() {
+        for source in [
+            "{{ 1 }}",
+            "{{ ctx }}",
+            "{{ ctx.page.input }}",
+            "{{ ctx[\"page\"] }}",
+            "{{ page.value == 1 }}",
+            "{{ script(\"x\") }}",
+            "{{ runtime.value }}",
+            "{{ unknown }}",
+            "{{ page[\"unterminated] }}",
+            "{{ page[-1] }}",
+            "{{ page[1.0] }}",
+            "{{ page[] }}",
+        ] {
+            assert!(Template::parse(source).is_err(), "accepted {source}");
         }
     }
 
-    fn context<'a>(
-        config: &'a Value,
-        runtime: &'a Value,
-        methods: &'a mut TestMethods,
-    ) -> EvalContext<'a> {
-        let empty = Box::leak(Box::new(Value::Null));
-        let references = Box::leak(Box::new(TreeReferences {
-            config,
-            this: empty,
-            runtime,
-            input: empty,
-            request: None,
-            returned: None,
-        }));
-        EvalContext {
-            references,
-            methods,
+    #[test]
+    fn stages_allow_only_inherited_scope_capabilities() {
+        let source = serde_json::json!({
+            "invocation": "{{ input }}",
+            "operation": "{{ view.query }} {{ page.input }} {{ selection }} {{ session.input }}",
+            "returned": "{{ result }}",
+        });
+        let registry = TemplateRegistry::compile_json_tree(&source).unwrap();
+
+        let invocation = registry
+            .requirements_for_value(&source["invocation"])
+            .unwrap();
+        invocation
+            .validate_stage(EvaluationStage::Invocation, "test invocation")
+            .unwrap();
+
+        let operation = registry
+            .requirements_for_value(&source["operation"])
+            .unwrap();
+        operation
+            .validate_stage(EvaluationStage::Operation, "test operation")
+            .unwrap();
+        let error = operation
+            .validate_stage(EvaluationStage::Invocation, "test invocation")
+            .unwrap_err();
+        assert!(error.to_string().contains("invocation evaluation stage"));
+        assert!(error.to_string().contains("\"view\""));
+
+        let returned = registry
+            .requirements_for_value(&source["returned"])
+            .unwrap();
+        let error = returned
+            .validate_stage(EvaluationStage::Operation, "test operation")
+            .unwrap_err();
+        assert!(error.to_string().contains("\"result\""));
+        returned
+            .validate_stage(EvaluationStage::Return, "test return")
+            .unwrap();
+    }
+
+    #[test]
+    fn one_compiled_template_resolves_against_each_snapshot() {
+        let source = Value::String("{{ page.ref }}".to_string());
+        let registry = TemplateRegistry::compile_json_tree(&source).unwrap();
+        let template = Template::parse(source.as_str().unwrap()).unwrap();
+        let first = serde_json::json!({"page": {"ref": "core:default"}});
+        let second = serde_json::json!({"page": {"ref": "apps:main"}});
+        let first_value = template
+            .evaluate_value(&EvalContext {
+                root: &first,
+                cancellation: None,
+                templates: Some(&registry),
+            })
+            .unwrap();
+        let second_value = template
+            .evaluate_value(&EvalContext {
+                root: &second,
+                cancellation: None,
+                templates: Some(&registry),
+            })
+            .unwrap();
+        assert_eq!(first_value, "core:default");
+        assert_eq!(second_value, "apps:main");
+    }
+
+    #[test]
+    fn traversal_errors_distinguish_missing_values_and_wrong_types() {
+        let missing = evaluate(
+            "{{ page.query.missing }}",
+            serde_json::json!({"page": {"query": {}}}),
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("missing member"));
+        let wrong_type = evaluate(
+            "{{ page.query.value.name }}",
+            serde_json::json!({"page": {"query": {"value": 1}}}),
+        )
+        .unwrap_err();
+        assert!(wrong_type.to_string().contains("cannot read member"));
+    }
+
+    #[test]
+    fn recursive_native_values_are_evaluated() {
+        let value = serde_json::json!({
+            "array": ["{{ page.query.value }}", {"nested": "v={{ page.query.value }}"}],
+            "static": true
+        });
+        validate_json_value(&value).unwrap();
+        assert_eq!(
+            evaluate_json_value(
+                &value,
+                &EvalContext {
+                    root: &serde_json::json!({"page": {"query": {"value": 4}}}),
+                    cancellation: None,
+                    templates: Some(&TemplateRegistry::compile_json_tree(&value).unwrap()),
+                },
+            )
+            .unwrap(),
+            serde_json::json!({"array": [4, {"nested": "v=4"}], "static": true})
+        );
+    }
+
+    #[test]
+    fn compile_depth_and_path_budgets_are_enforced() {
+        let path = format!("{{{{ page.query{} }}}}", ".value".repeat(MAX_PATH_SEGMENTS));
+        assert!(Template::parse(&path).is_err());
+
+        let mut nested = Value::Null;
+        for _ in 0..=MAX_DEPTH {
+            nested = Value::Array(vec![nested]);
         }
+        assert!(validate_json_value(&nested).is_err());
     }
 
     #[test]
-    fn parses_references_and_calls() {
-        let template = Template::parse("{{ echo(runtime:provider_name) }}").unwrap();
-        assert_eq!(
-            &template.parts,
-            &[TemplatePart::Expr(Expr::Call {
-                name: "echo".to_string(),
-                args: vec![Expr::Ref {
-                    namespace: "runtime".to_string(),
-                    path: "provider_name".to_string(),
-                }],
-                named_args: BTreeMap::new(),
-            })]
-        );
+    fn output_budget_matches_serialized_result_size() {
+        let oversized = "x".repeat(MAX_RESULT_BYTES);
+        let error = evaluate(
+            "{{ page.query.value }}",
+            serde_json::json!({"page": {"query": {"value": oversized}}}),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("output size"));
     }
 
     #[test]
-    fn nested_placeholder_is_syntactic_sugar_for_an_expression_argument() {
-        let direct = Template::parse("{{ echo(runtime:provider_name) }}").unwrap();
-        let nested = Template::parse("{{ echo({{ runtime:provider_name }}) }}").unwrap();
-        assert_eq!(direct, nested);
-    }
-
-    #[test]
-    fn exact_placeholder_preserves_value_type() {
-        let config = serde_json::json!({"command": {"script": "open.sh"}});
-        let runtime = Value::Null;
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        assert_eq!(
-            Template::parse("{{ config:command }}")
-                .unwrap()
-                .evaluate_value(&mut evaluation)
-                .unwrap(),
-            serde_json::json!({"script": "open.sh"})
-        );
-    }
-
-    #[test]
-    fn this_references_resolve_the_explicit_view_instance() {
-        let config = Value::Null;
-        let this = serde_json::json!({"query": {"text": "hello"}});
-        let runtime = Value::Null;
-        let input = Value::Null;
-        let references = TreeReferences {
-            config: &config,
-            this: &this,
-            runtime: &runtime,
-            input: &input,
-            request: None,
-            returned: None,
-        };
-        let mut methods = TestMethods;
-        let mut evaluation = EvalContext {
-            references: &references,
-            methods: &mut methods,
-        };
-        assert_eq!(
-            Template::parse("{{ this:query.text }}")
-                .unwrap()
-                .evaluate_value(&mut evaluation)
-                .unwrap(),
-            Value::String("hello".to_string())
-        );
-    }
-
-    #[test]
-    fn input_references_support_values_and_whole_roots() {
-        let config = Value::Null;
-        let runtime = Value::Null;
-        let input = serde_json::json!({"stdin": {"path": "/tmp/input"}});
-        let references = TreeReferences {
-            config: &config,
-            this: &Value::Null,
-            runtime: &runtime,
-            input: &input,
-            request: None,
-            returned: None,
-        };
-        let mut methods = TestMethods;
-        let mut evaluation = EvalContext {
-            references: &references,
-            methods: &mut methods,
-        };
-
-        assert_eq!(
-            Template::parse("{{ input: }}")
-                .unwrap()
-                .evaluate_value(&mut evaluation)
-                .unwrap(),
-            input
-        );
-    }
-
-    #[test]
-    fn mixed_templates_only_accept_scalar_values() {
-        let config = Value::Null;
-        let runtime = serde_json::json!({"selected": "Firefox"});
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        assert_eq!(
-            Template::parse("run {{ runtime:selected }}")
-                .unwrap()
-                .evaluate_text(&mut evaluation)
-                .unwrap(),
-            "run Firefox"
-        );
-
-        let runtime = serde_json::json!({"selected": {"label": "Firefox"}});
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        let error = Template::parse("run {{ runtime:selected }}")
-            .unwrap()
-            .evaluate_text(&mut evaluation)
-            .expect_err("objects cannot be interpolated into text");
-        assert!(error.to_string().contains("cannot interpolate"));
-    }
-
-    #[test]
-    fn recursive_config_references_are_evaluated() {
-        let config = serde_json::json!({
-            "first": "{{ config:second }}",
-            "second": "ready"
+    fn cancellation_is_checked_during_large_traversal() {
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            cancel.cancel();
         });
-        let runtime = Value::Null;
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        assert_eq!(
-            Template::parse("{{ config:first }}")
-                .unwrap()
-                .evaluate_value(&mut evaluation)
-                .unwrap(),
-            Value::String("ready".to_string())
-        );
-    }
-
-    #[test]
-    fn recursive_config_references_detect_cycles() {
-        let config = serde_json::json!({
-            "first": "{{ config:second }}",
-            "second": "{{ config:first }}"
-        });
-        let runtime = Value::Null;
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        let error = Template::parse("{{ config:first }}")
-            .unwrap()
-            .evaluate_value(&mut evaluation)
-            .expect_err("cyclic references must fail");
-        assert!(error.to_string().contains("cyclic"));
-    }
-
-    #[test]
-    fn calls_receive_evaluated_arguments() {
-        let config = Value::Null;
-        let runtime = serde_json::json!({"provider_name": "aa"});
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        assert_eq!(
-            Template::parse("{{ echo(runtime:provider_name) }}")
-                .unwrap()
-                .evaluate_value(&mut evaluation)
-                .unwrap(),
-            Value::String("aa".to_string())
-        );
-    }
-
-    #[test]
-    fn evaluate_json_tree_preserves_plain_values_and_resolves_templates() {
-        let config = serde_json::json!({"script": "open.sh"});
-        let runtime = serde_json::json!({"selected": "Firefox"});
-        let mut methods = TestMethods;
-        let mut evaluation = context(&config, &runtime, &mut methods);
-        let tree = serde_json::json!({
-            "run": "{{ config:script }} --item {{ runtime:selected }}",
-            "literal": 1
-        });
-        assert_eq!(
-            evaluate_json_value(&tree, &mut evaluation).unwrap(),
-            serde_json::json!({"run": "open.sh --item Firefox", "literal": 1})
-        );
+        let values = (0..MAX_COLLECTION_ELEMENTS)
+            .map(|index| serde_json::json!({"index": index, "padding": "xxxxxxxxxxxxxxxx"}))
+            .collect::<Vec<_>>();
+        let error = evaluate_json_value(
+            &serde_json::json!("{{ page.items }}"),
+            &EvalContext {
+                root: &serde_json::json!({"page": {"items": values}}),
+                cancellation: Some(&token),
+                templates: Some(
+                    &TemplateRegistry::compile_json_tree(&serde_json::json!("{{ page.items }}"))
+                        .unwrap(),
+                ),
+            },
+        )
+        .unwrap_err();
+        thread.join().unwrap();
+        assert!(error.to_string().contains("cancelled"));
     }
 }

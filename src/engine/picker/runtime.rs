@@ -70,9 +70,6 @@ impl PickerView {
         if let Some(value) = base.get("state_revision").filter(|value| !value.is_null()) {
             current.insert("state_revision".to_string(), value.clone());
         }
-        if let Some(value) = base.get("request").filter(|value| !value.is_null()) {
-            current.insert("request".to_string(), value.clone());
-        }
         current.insert(
             "selected_index".to_string(),
             serde_json::json!(frame.selected),

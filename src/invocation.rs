@@ -1,22 +1,20 @@
 use crate::cancellation::CancellationToken;
-use crate::command_runner::run_bounded_command_with_stdin;
-use crate::config::{Config, ConfigReadContext, ConfigScope};
+use crate::config::{
+    Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
+};
 use crate::engine::{SessionOutcome, ViewOutput};
+use crate::expression::EvaluationStage;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 static INPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const RESULT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESULT_STDOUT_LIMIT: usize = 16 * 1024 * 1024;
-const RESULT_STDERR_LIMIT: usize = 64 * 1024;
 
 pub(crate) struct InputArtifact {
     path: Option<PathBuf>,
@@ -114,13 +112,9 @@ pub(crate) fn finish(
             adapter.command.view
         );
     };
-    let Some(handler_config) = payload.handler.as_deref() else {
+    let Some(handler_config) = payload.handler.as_ref() else {
         return Ok(default_result(returned.output));
     };
-    let plugin_root = config
-        .plugin_root(&adapter.command.view)
-        .unwrap_or_else(|| Path::new("."));
-    let handler = resolve_handler(plugin_root, handler_config)?;
     let owner = if adapter.context.page.view_ref == adapter.command.view {
         &adapter.context.page
     } else {
@@ -133,30 +127,36 @@ pub(crate) fn finish(
             .owner
     };
     let returned_value = crate::engine::command::return_value(&returned);
-    let params = config.evaluate_value(
-        ConfigReadContext {
-            scope: ConfigScope::View(&owner.state),
-            runtime: &adapter.context.runtime,
-            input: &config.input_value,
-            cancellation: Some(cancellation.clone()),
-            binding_raw: Some(&owner.binding_raw),
-        },
-        &toml::Value::Table(payload.params.clone()),
-        adapter.context.request.as_ref(),
-        Some(&returned_value),
+    let owner_scope = OwnerViewScope::new(&owner.state).with_binding_raw(Some(&owner.binding_raw));
+    let snapshot = EvaluationSnapshot::new(
+        InvocationScope::new(&config.input_value),
+        SessionScope::new(&adapter.context.runtime),
+        Some(owner_scope),
+        Some(cancellation),
+    )
+    .with_return_scope(Some(ReturnScope::new(&returned_value)));
+    let handler_value =
+        config.evaluate_value(&snapshot, EvaluationStage::Return, handler_config)?;
+    let handler_target = handler_value
+        .as_str()
+        .context("return handler must evaluate to a string")?;
+    let plugin_root = config
+        .plugin_root(&adapter.command.view)
+        .unwrap_or_else(|| Path::new("."));
+    let arguments = config.evaluate_argv(
+        payload.args.as_ref(),
+        &snapshot,
+        EvaluationStage::Return,
+        "return args",
     )?;
-    let input = serde_json::to_vec(&params).context("could not serialize return params")?;
-    let mut command = Command::new("sh");
-    command.arg(&handler).current_dir(plugin_root);
-    let output = run_bounded_command_with_stdin(
-        command,
-        Some(&input),
-        RESULT_TIMEOUT,
-        RESULT_STDOUT_LIMIT,
-        RESULT_STDERR_LIMIT,
+    let output = crate::script_runner::run_script(
+        plugin_root,
+        handler_target,
+        &arguments,
+        Some(RESULT_STDOUT_LIMIT),
         cancellation,
     )
-    .with_context(|| format!("could not run result handler {}", handler.display()))?;
+    .with_context(|| format!("could not run result handler {handler_target:?}"))?;
     Ok(InvocationResult {
         stdout: output.stdout,
         stderr: output.stderr,
@@ -191,34 +191,6 @@ fn default_result(output: ViewOutput) -> InvocationResult {
         stderr: Vec::new(),
         exit_code: 0,
     }
-}
-
-fn resolve_handler(root: &Path, target: &str) -> Result<PathBuf> {
-    let relative = Path::new(target);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-    {
-        bail!(
-            "result handler path {:?} must stay below {}",
-            target,
-            root.display()
-        );
-    }
-    let canonical_root = std::fs::canonicalize(root)
-        .with_context(|| format!("could not resolve plugin root {}", root.display()))?;
-    let path = root.join(relative);
-    let canonical_path = std::fs::canonicalize(&path)
-        .with_context(|| format!("could not read result handler {}", path.display()))?;
-    if !canonical_path.starts_with(&canonical_root) {
-        bail!(
-            "result handler path {:?} escapes {}",
-            target,
-            root.display()
-        );
-    }
-    Ok(canonical_path)
 }
 
 fn create_input_file() -> Result<(PathBuf, File)> {

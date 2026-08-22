@@ -9,7 +9,9 @@ alias = "images"
 type = "picker"
 
 [views.menu.engine.config]
-items = '{{ script("scripts/items.sh") }}'
+[views.menu.engine.config.items]
+source = "script"
+file = "scripts/items.sh"
 
 [views.menu.engine.config.layout]
 direction = "horizontal"

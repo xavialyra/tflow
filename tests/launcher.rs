@@ -2,6 +2,7 @@ mod support;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
 use support::{
@@ -10,6 +11,12 @@ use support::{
     wait_for_launcher_exit, wait_for_launcher_exit_without_reading, wait_for_nonempty_file,
     wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
 };
+
+fn write_plugin_script(root: &Path, plugin: &str, file: &str, source: &str) {
+    let path = root.join("plugins").join(plugin).join(file);
+    fs::create_dir_all(path.parent().expect("script path has no parent")).unwrap();
+    fs::write(path, source).unwrap();
+}
 
 fn assert_termios_eq(left: &libc::termios, right: &libc::termios) {
     assert_eq!(left.c_iflag, right.c_iflag);
@@ -159,82 +166,38 @@ fn terminal_disconnect_exits_with_sighup_without_panicking() {
 }
 
 #[test]
-fn signal_exit_terminates_command_expression_script() {
+fn escaped_dynamic_opener_remains_literal_at_runtime() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
-    let pid_file = root.join("expression.pid");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
-    fs::write(
+    write_test_config(
         &config,
         r#"
-        default_view = "custom:main"
-        [catalog]
-        items = [{label = "Open"}]
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        plugin.join("plugin.toml"),
-        r#"
-        [plugin]
-        api = 1
-        name = "custom"
-        [views.main.engine]
-        type = "picker"
-        [views.main.engine.config]
-        items = "{{ config:catalog.items }}"
-        [views.main.commands.open]
-        key = "enter"
-        label = "Open"
-        type = "navigate"
-        [views.main.commands.open.payload]
-        target = '{{ script("scripts/target.sh") }}'
-        [views.next.engine]
+        default_view = "core:main"
+        [plugins.core.views.main.engine]
         type = "capture"
-        [views.next.engine.config]
-        output = "done"
+        [plugins.core.views.main.engine.config]
+        output = '''literal \{{ page.input }}'''
         "#,
     )
     .unwrap();
-    fs::write(
-        plugin.join("scripts/target.sh"),
-        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"custom:next\"\\n'\n",
-    )
-    .unwrap();
-    let pid_path = pid_file.to_string_lossy().to_string();
-    let mut process =
-        spawn_launcher_with_args_and_env(&config, &[], &[("PID_FILE", pid_path.as_str())]);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    let child_pid = wait_for_nonempty_file(&pid_file)
-        .trim()
-        .parse::<libc::pid_t>()
-        .unwrap();
 
-    process.send_signal(libc::SIGTERM);
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
-    assert_terminal_restored(&process, &output);
-    wait_for_process_exit(child_pid);
+    let mut process = spawn_launcher_with_args(&config, &[]);
+    let output = wait_for_text(&process.master, r"literal \{{ page.input }}");
+    assert!(String::from_utf8_lossy(&output).contains(r"literal \{{ page.input }}"));
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn signal_exit_cancels_view_creation_script() {
+fn capture_script_source_renders_its_json_string() {
     let root = temporary_root();
     let config = root.join("config.toml");
     let plugin = root.join("plugins/custom");
-    let pid_file = root.join("creation.pid");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
-    fs::write(
-        &config,
-        r#"
-        default_view = "custom:main"
-        "#,
-    )
-    .unwrap();
+    fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
         plugin.join("plugin.toml"),
         r#"
@@ -243,14 +206,94 @@ fn signal_exit_cancels_view_creation_script() {
         name = "custom"
         [views.main.engine]
         type = "capture"
-        [views.main.engine.config]
-        output = '{{ script("scripts/output.sh") }}'
+        [views.main.engine.config.output]
+        source = "script"
+        file = "scripts/output.sh"
+        args = ["{{ view.query }}"]
         "#,
     )
     .unwrap();
     fs::write(
         plugin.join("scripts/output.sh"),
-        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"done\"'\n",
+        "printf '\"capture-source-output\"\\n'\n",
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &[]);
+    let output = wait_for_text(&process.master, "capture-source-output");
+    assert!(String::from_utf8_lossy(&output).contains("capture-source-output"));
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dynamic_capture_output_can_resolve_to_a_script_source() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "capture"
+        [views.main.engine.config]
+        output = "{{ view.query }}"
+        [views.main.query]
+        type = "object"
+        source = { type = "string", default = "script" }
+        file = { type = "string", default = "scripts/output.sh" }
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/output.sh"),
+        "printf '%s\\n' '\"dynamic-capture-output\"'\n",
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &[]);
+    let output = wait_for_text(&process.master, "dynamic-capture-output");
+    assert!(String::from_utf8_lossy(&output).contains("dynamic-capture-output"));
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signal_exit_terminates_capture_script_source() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let plugin = root.join("plugins/custom");
+    let pid_file = root.join("capture.pid");
+    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
+    fs::write(
+        plugin.join("plugin.toml"),
+        r#"
+        [plugin]
+        api = 1
+        name = "custom"
+        [views.main.engine]
+        type = "capture"
+        [views.main.engine.config.output]
+        source = "script"
+        file = "scripts/output.sh"
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        plugin.join("scripts/output.sh"),
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"done\"\\n'\n",
     )
     .unwrap();
     let pid_path = pid_file.to_string_lossy().to_string();
@@ -290,8 +333,9 @@ fn signal_exit_waits_for_items_worker_cleanup() {
         name = "custom"
         [views.main.engine]
         type = "picker"
-        [views.main.engine.config]
-        items = '{{ script("scripts/items.sh") }}'
+        [views.main.engine.config.items]
+        source = "script"
+        file = "scripts/items.sh"
         "#,
     )
     .unwrap();
@@ -437,11 +481,12 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         label = "Exit"
         type = "run"
         [plugins.core.views.default.commands.exit.payload]
-        handler = '''printf 'done\\n' '''
+        handler = { source = "script", file = "scripts/exit.sh" }
         exit = true
         "#,
     )
     .unwrap();
+    write_plugin_script(&root, "core", "scripts/exit.sh", "printf 'done\\n'\n");
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
     process.master.write_all(b"\r").unwrap();
@@ -458,7 +503,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
 }
 
 #[test]
-fn loads_items_from_an_expression() {
+fn loads_items_and_runs_a_view_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -471,7 +516,7 @@ fn loads_items_from_an_expression() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Item", value = "value"}]
         [catalog]
         items = [{label = "Item", value = "value"}]
 
@@ -482,11 +527,17 @@ fn loads_items_from_an_expression() {
 
 
         [plugins.core.views.default.commands.run.payload]
-        handler = '''printf 'expression-marker:%s\\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/command.sh" }
         exit = true
         "#,
     )
-    .expect("could not write expression items config");
+    .expect("could not write items command config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/command.sh",
+        "printf 'command-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -507,11 +558,336 @@ fn loads_items_from_an_expression() {
         String::from_utf8_lossy(&output)
     );
     assert!(
-        String::from_utf8_lossy(&output).contains("expression-marker:value"),
-        "launcher output did not contain expression marker: {:?}",
+        String::from_utf8_lossy(&output).contains("command-marker:value"),
+        "launcher output did not contain command marker: {:?}",
         output
     );
-    fs::remove_dir_all(root).expect("could not remove expression items config");
+    fs::remove_dir_all(root).expect("could not remove items command config");
+}
+
+#[test]
+fn dynamic_items_source_metadata_is_resolved_at_execution() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config.items]
+        source = "{{ view.query.source }}"
+        file = "{{ view.query.file }}"
+        max_output_bytes = "{{ view.query.limit }}"
+
+        [plugins.core.views.default.query]
+        type = "object"
+        source = { type = "string", default = "script" }
+        file = { type = "string", default = "scripts/dynamic-items.sh" }
+        limit = { type = "integer", default = 1024 }
+        "#,
+    )
+    .unwrap();
+    let scripts = root.join("plugins/core/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(
+        scripts.join("dynamic-items.sh"),
+        "printf '%s\\n' '[{\"label\":\"Dynamic source\"}]'\n",
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let output = wait_for_text(&process.master, "Dynamic source");
+    assert!(String::from_utf8_lossy(&output).contains("Dynamic source"));
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn run_command_args_resolve_to_exact_positional_arguments() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{ label = "Item", value = "value with spaces", metadata = { option = "selected mode", detail = { kind = "app" } } }]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [plugins.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/args.sh" }
+        args = [
+          "--option={{ selection.metadata.option }}",
+          "{{ selection.value }}",
+          "{{ view.query.extra }}",
+          "--detail={{ selection.metadata.detail }}",
+          "$(printf literal)",
+        ]
+        exit = true
+
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        extra = { type = "string", default = "query value" }
+        "#,
+    )
+    .unwrap();
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/args.sh",
+        r#"
+        printf 'argc=<%s>\n' "$#"
+        for argument in "$@"; do
+          printf 'arg=<%s>\n' "$argument"
+        done
+        "#,
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Item");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    let output = String::from_utf8_lossy(&output);
+    for expected in [
+        "argc=<5>",
+        "arg=<--option=selected mode>",
+        "arg=<value with spaces>",
+        "arg=<query value>",
+        "arg=<--detail={\"kind\":\"app\"}>",
+        "arg=<$(printf literal)>",
+    ] {
+        assert!(
+            output.contains(expected),
+            "missing {expected:?}: {output:?}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{ label = "Item", value = "value" }]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [plugins.core.views.default.commands.run.payload]
+        handler = "{{ view.query.handler }}"
+        exit = true
+
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        handler = { type = "object", default = { source = "script", file = "scripts/object.sh" } }
+        "#,
+    )
+    .unwrap();
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/object.sh",
+        "printf 'object-handler:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Item");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        String::from_utf8_lossy(&output).contains("object-handler:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn complete_dynamic_command_args_resolve_to_an_argv_array() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{ label = "Item", value = "value" }]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [plugins.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/args.sh" }
+        args = "{{ view.query.arguments }}"
+        exit = true
+
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        arguments = { type = "array<string>", default = ["--mode=dynamic", "two words"] }
+        "#,
+    )
+    .unwrap();
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/args.sh",
+        "printf 'argc=<%s> first=<%s> second=<%s>\\n' \"$#\" \"$1\" \"$2\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Item");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        String::from_utf8_lossy(&output)
+            .contains("argc=<2> first=<--mode=dynamic> second=<two words>"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/run.sh" }
+        exit = true
+        "#,
+    )
+    .unwrap();
+    let scripts = root.join("plugins/core/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(
+        scripts.join("run.sh"),
+        "printf '%s:%s\\n' '{{ user_template }}' \"$LAUNCHER_VALUE\"\n",
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        String::from_utf8_lossy(&output).contains("{{ user_template }}:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dynamic_command_handler_source_preserves_literal_template_text() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{ label = "Item", value = "value" }]
+
+        [plugins.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+
+        [plugins.core.views.default.commands.run.payload]
+        handler = { source = "{{ view.query.source }}", file = "{{ view.query.file }}" }
+        exit = true
+
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        source = { type = "string", default = "script" }
+        file = { type = "string", default = "scripts/opaque.sh" }
+        "#,
+    )
+    .expect("could not write opaque handler config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/opaque.sh",
+        "printf '%s:%s\\n' '{{ user_template }}' \"$LAUNCHER_VALUE\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        String::from_utf8_lossy(&output).contains("{{ user_template }}:value"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -535,11 +911,17 @@ fn loads_items_from_a_native_toml_array() {
         type = "run"
 
         [plugins.core.views.default.commands.run.payload]
-        handler = '''printf 'static-marker:%s\\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/static.sh" }
         exit = true
         "#,
     )
     .expect("could not write static items config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/static.sh",
+        "printf 'static-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -581,12 +963,12 @@ fn explicit_capture_view_receives_typed_query_state() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "capture"
         [plugins.core.views.direct.engine.config]
-        output = "{{ this:query.message }}"
+        output = "{{ view.query.message }}"
         [plugins.core.views.direct.query]
         type = "object"
         message = { type = "string" }
@@ -620,12 +1002,12 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "capture"
         [plugins.core.views.direct.engine.config]
-        output = "{{ runtime:view.current.input }}"
+        output = "{{ page.input }}"
         [plugins.core.views.direct.query]
         type = "object"
         input_order = ["text"]
@@ -659,7 +1041,7 @@ fn explicit_embedded_view_receives_typed_query_input() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -696,7 +1078,7 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -731,7 +1113,7 @@ fn embedded_view_removes_stale_launcher_environment() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -779,7 +1161,7 @@ fn waits_for_items_before_running_enter_command() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -787,11 +1169,17 @@ fn waits_for_items_before_running_enter_command() {
 
 
         [plugins.core.views.default.commands.run.payload]
-        handler = '''printf 'picker-marker:%s\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/picker.sh" }
         exit = true
         "#,
     )
     .expect("could not write launcher integration config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/picker.sh",
+        "printf 'picker-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -832,18 +1220,24 @@ fn route_query_and_activate_share_one_input_batch() {
         [plugins.apps.views.main.engine]
         type = "picker"
         [plugins.apps.views.main.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.apps.views.main.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
         [plugins.apps.views.main.commands.run.payload]
-        handler = '''printf 'route-batch:%s:%s\n' "$LAUNCHER_QUERY" "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/route.sh" }
         exit = true
         "#,
     )
     .expect("could not write route batch integration config");
+    write_plugin_script(
+        &root,
+        "apps",
+        "scripts/route.sh",
+        "printf 'route-batch:%s:%s\\n' \"$LAUNCHER_QUERY\" \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -880,7 +1274,7 @@ fn view_commands_accept_unreserved_control_bindings() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "ctrl+r"
         label = "Run"
@@ -888,11 +1282,17 @@ fn view_commands_accept_unreserved_control_bindings() {
 
 
         [plugins.core.views.default.commands.run.payload]
-        handler = '''printf 'ctrl-command:%s\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/ctrl.sh" }
         exit = true
         "#,
     )
     .expect("could not write control command config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/ctrl.sh",
+        "printf 'ctrl-command:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -940,7 +1340,7 @@ fn printable_keymap_action_precedes_picker_editor_input() {
         type = "run"
 
         [plugins.core.views.default.commands.space.payload]
-        handler = '''printf 'hidden-space-command\n' '''
+        handler = { source = "script", file = "scripts/hidden-space.sh" }
         exit = true
 
         [plugins.core.views.default.commands.accept]
@@ -949,11 +1349,23 @@ fn printable_keymap_action_precedes_picker_editor_input() {
         type = "run"
 
         [plugins.core.views.default.commands.accept.payload]
-        handler = '''printf 'space-selection:%s\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/space-selection.sh" }
         exit = true
         "#,
     )
     .expect("could not write printable keymap config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/hidden-space.sh",
+        "printf 'hidden-space-command\\n'\n",
+    );
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/space-selection.sh",
+        "printf 'space-selection:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -996,7 +1408,7 @@ fn unavailable_toggle_preview_consumes_its_key() {
         type = "run"
 
         [plugins.core.views.default.commands.space.payload]
-        handler = '''printf 'space-command\n' '''
+        handler = { source = "script", file = "scripts/space.sh" }
         exit = true
 
         [plugins.core.views.default.commands.inspect]
@@ -1007,11 +1419,23 @@ fn unavailable_toggle_preview_consumes_its_key() {
         type = "run"
 
         [plugins.core.views.default.commands.inspect.payload]
-        handler = '''printf 'toggle-query:%s:end\n' "$LAUNCHER_QUERY"'''
+        handler = { source = "script", file = "scripts/inspect.sh" }
         exit = true
         "#,
     )
     .expect("could not write unavailable preview config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/space.sh",
+        "printf 'space-command\\n'\n",
+    );
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/inspect.sh",
+        "printf 'toggle-query:%s:end\\n' \"$LAUNCHER_QUERY\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1055,11 +1479,17 @@ fn uppercase_printable_keymap_binding_matches_input() {
         type = "run"
 
         [plugins.core.views.default.commands.accept.payload]
-        handler = '''printf 'uppercase-selection:%s\n' "$LAUNCHER_VALUE"'''
+        handler = { source = "script", file = "scripts/uppercase-selection.sh" }
         exit = true
         "#,
     )
     .expect("could not write uppercase keymap config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/uppercase-selection.sh",
+        "printf 'uppercase-selection:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1099,11 +1529,17 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         type = "run"
 
         [plugins.core.views.default.commands.accept.payload]
-        handler = '''printf 'uppercase-input:%s\n' "$LAUNCHER_QUERY"'''
+        handler = { source = "script", file = "scripts/uppercase-input.sh" }
         exit = true
         "#,
     )
     .expect("could not write uppercase input config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/uppercase-input.sh",
+        "printf 'uppercase-input:%s\\n' \"$LAUNCHER_QUERY\"\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1131,7 +1567,7 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.run]
         key = "tab"
@@ -1139,11 +1575,12 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         type = "run"
 
         [plugins.core.views.default.commands.run.payload]
-        handler = "printf tab-command"
+        handler = { source = "script", file = "scripts/tab.sh" }
         exit = true
         "#,
     )
     .expect("could not write Tab command config");
+    write_plugin_script(&root, "core", "scripts/tab.sh", "printf 'tab-command'\n");
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1171,7 +1608,7 @@ fn replacing_items_request_cancels_the_previous_script() {
     fs::write(
         script_root.join("items.sh"),
         format!(
-            r#"query=$(cat | jq -r '.query // empty')
+            r#"query=${{1:-}}
 if [ -z "$query" ]; then
     printf '%s\n' "$$" > "{}"
     sleep 10
@@ -1195,7 +1632,10 @@ fi
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = '{{ script("scripts/items.sh", {query = this:query}) }}'
+        [plugins.core.views.default.engine.config.items]
+        source = "script"
+        file = "scripts/items.sh"
+        args = ["{{ view.query }}"]
 "#,
     )
     .expect("could not write cancellation integration config");
@@ -1242,7 +1682,7 @@ fi
 }
 
 #[test]
-fn ctrl_k_calls_the_command_selector_and_invokes_an_opaque_ref() {
+fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref() {
     let config = fixture_config();
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1338,7 +1778,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items }}"
+        items = "{{ page.query }}"
 "#,
     )
     .expect("could not write error logging config");
@@ -1357,7 +1797,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         record["metadata"]["message"]
             .as_str()
             .unwrap()
-            .contains("items must evaluate to a JSON array")
+            .contains("items must resolve to an array")
     );
 
     process
@@ -1394,20 +1834,20 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         label = "Page"
         type = "run"
         [plugins.core.views.default.commands.page.payload]
-        handler = '''printf 'page-command\n' '''
+        handler = { source = "script", file = "scripts/page.sh" }
         exit = true
 
         [plugins.apps.views.default]
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = [{label = "Row", value = "row"}]
         [plugins.apps.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
         [plugins.apps.views.default.commands.open.payload]
-        handler = '''printf 'owner-command\n' '''
+        handler = { source = "script", file = "scripts/owner.sh" }
         exit = true
 
         [catalog]
@@ -1415,6 +1855,18 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         "#,
     )
     .unwrap();
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/page.sh",
+        "printf 'page-command\\n'\n",
+    );
+    write_plugin_script(
+        &root,
+        "apps",
+        "scripts/owner.sh",
+        "printf 'owner-command\\n'\n",
+    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -1451,14 +1903,13 @@ fn feed_owners_apply_independent_query_defaults() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = "{{ config:catalog.items }}"
+        items = "{{ view.query.items }}"
         [plugins.apps.views.default.query]
         type = "object"
-        input_order = ["text"]
-        text = { type = "string", default = "source-default" }
+        items = { type = "array<object>", default = [{label = "VALUE:source-default"}] }
 
         [catalog]
-        items = [{label = "VALUE:{{ this:query.text }}"}]
+        items = [{label = "VALUE:{{ view.query.text }}"}]
         "#,
     )
     .unwrap();
@@ -1498,13 +1949,13 @@ fn route_input_escape_removes_the_route_tag() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.sys.views.default]
         alias = "sys"
         [plugins.sys.views.default.engine]
         type = "picker"
         [plugins.sys.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
     .expect("could not write route input config");
@@ -1570,13 +2021,13 @@ fn deleting_route_input_returns_to_parent_before_switching_aliases() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.sys.views.default]
         alias = "sys"
         [plugins.sys.views.default.engine]
         type = "picker"
         [plugins.sys.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
     .expect("could not write route editing config");
@@ -1655,7 +2106,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.open]
         key = "enter"
         label = "Open"
@@ -1668,7 +2119,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         [plugins.core.views.capture.engine]
         type = "capture"
         [plugins.core.views.capture.engine.config]
-        output = "{{ this:query.text }}"
+        output = "{{ view.query.text }}"
         [plugins.core.views.capture.query]
         type = "object"
         input_order = ["text"]
@@ -1724,7 +2175,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -1732,14 +2183,14 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default.commands.run.payload]
         target = "core:capture"
-        query = "capture-marker:{{ runtime:view.current.selected_item.value }}"
+        query = "capture-marker:{{ selection.value }}"
 
         [plugins.core.views.capture]
         alias = "cap"
         [plugins.core.views.capture.engine]
         type = "capture"
         [plugins.core.views.capture.engine.config]
-        output = "{{ runtime:view.current.input }}\u001b[31m\n\u4e16\u754c\u001b[0m"
+        output = "{{ page.input }}\u001b[31m\n\u4e16\u754c\u001b[0m"
         title = "Capture"
 
         [plugins.core.views.capture.keymap]
@@ -1816,7 +2267,7 @@ fn failed_capture_cannot_copy_its_diagnostic_text() {
         [plugins.core.views.default.engine]
         type = "capture"
         [plugins.core.views.default.engine.config]
-        output = "{{ runtime:missing }}"
+        output = "{{ selection.missing }}"
         "#,
     )
     .expect("could not write failed capture config");
@@ -1908,6 +2359,41 @@ fn capture_keeps_global_footer_bindings_available() {
 }
 
 #[test]
+fn root_capture_defaults_resolve_against_the_consuming_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [defaults.capture.bindings]
+        back = ["{{ view.query.back_key }}"]
+
+        [plugins.core.views.default.engine]
+        type = "capture"
+        [plugins.core.views.default.engine.config]
+        output = "root-default-owner"
+
+        [plugins.core.views.default.query]
+        type = "object"
+        input_order = []
+        back_key = { type = "string", default = "ctrl+b" }
+        "#,
+    )
+    .expect("could not write dynamic root-default config");
+
+    let mut process = spawn_launcher(&config);
+    let output = wait_for_text(&process.master, "root-default-owner");
+    assert!(String::from_utf8_lossy(&output).contains("root-default-owner"));
+    process.master.write_all(b"\x02").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove dynamic root-default config");
+}
+
+#[test]
 fn embedded_command_returns_to_launcher_and_restores_input() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1921,7 +2407,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         show_prefix = true
-        items = "{{ config:test_items.items }}"
+        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -1929,14 +2415,14 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
 
         [plugins.core.views.default.commands.run.payload]
         target = "core:embedded"
-        query = '''printf 'embedded-marker:%s\n' '{{ runtime:view.current.selected_item.value }}'; exit 0'''
+        query = '''printf 'embedded-marker:%s\n' '{{ selection.value }}'; exit 0'''
 
         [plugins.core.views.embedded]
         alias = "emb"
         [plugins.core.views.embedded.engine]
         type = "embedded"
         [plugins.core.views.embedded.engine.config]
-        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        command = ["sh", "-lc", "{{ page.input }}"]
         title = "Embedded"
 "#,
     )
@@ -1994,7 +2480,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         [plugins.core.views.broken.engine]
         type = "embedded"
         [plugins.core.views.broken.engine.config]
-        command = "{{ runtime:missing }}"
+        command = "{{ selection.missing }}"
 "#,
     )
     .expect("could not write failed navigation integration config");
@@ -2047,7 +2533,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         [plugins.core.views.embedded.engine]
         type = "embedded"
         [plugins.core.views.embedded.engine.config]
-        command = ["sh", "-lc", "{{ runtime:view.current.input }}"]
+        command = ["sh", "-lc", "{{ page.input }}"]
         title = "Embedded"
 "#,
     )

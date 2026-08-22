@@ -10,6 +10,7 @@ mod input;
 mod invocation;
 mod router;
 mod runtime_log;
+mod script_runner;
 mod shutdown;
 mod state;
 mod terminal;

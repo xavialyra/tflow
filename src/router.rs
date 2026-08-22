@@ -217,7 +217,7 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Defaults, ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata, View};
+    use crate::config::{ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata, View};
     use serde_json::Value;
     use std::collections::BTreeMap;
 
@@ -237,17 +237,14 @@ mod tests {
     }
 
     fn config() -> Config {
-        Config {
-            default_view: Some("core:default".to_string()),
-            image_protocol: crate::config::ImageProtocol::default(),
-            log_file: None,
-            chrome: crate::config::ChromeConfig::default(),
-            views: BTreeMap::from([
+        Config::test_new(
+            Some("core:default".to_string()),
+            BTreeMap::from([
                 ("core:default".to_string(), view(None)),
                 ("package-a:default".to_string(), view(Some("temp"))),
                 ("package-a:view2".to_string(), view(Some("detail"))),
             ]),
-            plugins: BTreeMap::from([
+            BTreeMap::from([
                 (
                     "core".to_string(),
                     PluginMetadata {
@@ -261,13 +258,10 @@ mod tests {
                     },
                 ),
             ]),
-            defaults: Defaults::default(),
-            plugin_roots: BTreeMap::new(),
-            config_value: Value::Object(serde_json::Map::new()),
-            input_value: Value::Null,
-            state_registry: crate::state::StateRegistry::default(),
-            invocation_state: crate::state::StateInstance::default(),
-        }
+            BTreeMap::new(),
+            Value::Object(serde_json::Map::new()),
+        )
+        .unwrap()
     }
 
     #[test]

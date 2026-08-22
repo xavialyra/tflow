@@ -1,22 +1,15 @@
 use super::ViewContext;
-use crate::config::{ConfigReadContext, ConfigScope};
+use crate::config::ConfigSource;
+use crate::expression::EvaluationStage;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub(crate) fn field(context: &ViewContext<'_>, name: &str) -> Result<Option<Value>> {
-    let runtime = context.runtime.read();
-    let request = context.request.reference_value();
-    context.config.get_with_references(
-        ConfigReadContext {
-            scope: ConfigScope::View(context.state),
-            runtime: &runtime,
-            input: &context.config.input_value,
-            cancellation: Some(context.cancellation.clone()),
-            binding_raw: None,
-        },
+    context.config.get(
+        ConfigSource::View(context.state.view_ref()),
+        &context.evaluation,
+        EvaluationStage::Operation,
         &[name],
-        request.as_ref(),
-        None,
     )
 }
 

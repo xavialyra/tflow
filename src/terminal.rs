@@ -267,10 +267,6 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn input_fd(&self) -> libc::c_int {
-        self.input_fd
-    }
-
     pub fn size(&self) -> (u16, u16) {
         let mut window: libc::winsize = unsafe { std::mem::zeroed() };
         let result = unsafe { libc::ioctl(self.input_fd, libc::TIOCGWINSZ, &mut window) };

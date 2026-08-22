@@ -10,13 +10,13 @@ type = "call"
 
 [chrome.footer.bindings.commands.payload]
 target = "selectors:commands"
-args = { commands = "{{ runtime:view.current.command }}" }
+query = { commands = "{{ page.commands }}" }
 
 [chrome.footer.bindings.commands.payload.then]
 type = "invoke"
 
 [chrome.footer.bindings.commands.payload.then.payload]
-command = "{{ return:output.value }}"
+command = "{{ result.output.value }}"
 
 [defaults.capture.bindings]
 copy = ["enter"]

@@ -1,21 +1,23 @@
 mod pty;
 mod session;
 
-pub(crate) use self::pty::{EmbeddedOutcome, EmbeddedRunResult};
+pub(crate) use self::pty::EmbeddedOutcome;
+use self::pty::EmbeddedPoll;
 use self::session::EmbeddedSession;
-use crate::cancellation::CancellationToken;
 
+use super::api::LauncherOutcome;
 use super::{
     EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputFocus, PreparedProcess,
-    ViewContext, ViewEffect, ViewInstance, evaluate_field, evaluate_optional_string, require_field,
-    validate_fields,
+    ViewContext, ViewEffect, ViewInstance, ViewReturn, evaluate_field, evaluate_optional_string,
+    require_field, validate_fields,
 };
 use crate::config::{ENGINE_EMBEDDED, View};
-use crate::expression::Template;
+use crate::expression::{Template, is_dynamic_string};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use serde::Deserialize;
+use serde_json::Value;
 
 pub(crate) struct EmbeddedEngine;
 
@@ -47,18 +49,30 @@ fn default_result_limit() -> usize {
     DEFAULT_RESULT_LIMIT
 }
 
-fn parse_escape_cancels(view_ref: &str, value: Option<&toml::Value>) -> Result<bool> {
+fn parse_escape_cancels_value(view_ref: &str, value: Option<Value>) -> Result<bool> {
     value
         .map(|value| {
             value.as_bool().with_context(|| {
                 format!(
-                    "view {:?} embedded escape-cancels must be a boolean",
+                    "view {:?} embedded escape-cancels must evaluate to a boolean",
                     view_ref
                 )
             })
         })
         .transpose()
         .map(|value| value.unwrap_or(true))
+}
+
+fn contains_dynamic(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::String(source) => is_dynamic_string(source),
+        toml::Value::Array(values) => values.iter().any(contains_dynamic),
+        toml::Value::Table(values) => values.values().any(contains_dynamic),
+        toml::Value::Boolean(_)
+        | toml::Value::Datetime(_)
+        | toml::Value::Float(_)
+        | toml::Value::Integer(_) => false,
+    }
 }
 
 fn chrome_commands(escape_cancels: bool) -> Vec<(String, String)> {
@@ -90,25 +104,36 @@ impl Engine for EmbeddedEngine {
         if let Some(title) = view.engine_field("title")
             && !title.is_str()
         {
-            anyhow::bail!("view {:?} embedded title must be a string expression", name);
+            anyhow::bail!(
+                "view {:?} embedded title must be a string or template",
+                name
+            );
         }
-        parse_result_config(name, view.engine_field("result"))?;
-        parse_escape_cancels(name, view.engine_field("escape-cancels"))?;
+        if let Some(result) = view.engine_field("result")
+            && !contains_dynamic(result)
+        {
+            parse_result_config(name, Some(result))?;
+        }
+        if let Some(escape_cancels) = view.engine_field("escape-cancels")
+            && !contains_dynamic(escape_cancels)
+        {
+            parse_escape_cancels_value(name, Some(crate::config::toml_to_json(escape_cancels)?))?;
+        }
         let command = view
             .engine_field("command")
             .expect("required embedded command was checked");
         if let Some(source) = command.as_str() {
-            if Template::parse(source)?.is_complete_expression() {
+            if Template::parse(source)?.is_complete_path() {
                 return Ok(());
             }
             anyhow::bail!(
-                "view {:?} embedded command must be an argv array or complete expression",
+                "view {:?} embedded command must be an argv array or complete dynamic path",
                 name
             );
         }
         let arguments = command.as_array().ok_or_else(|| {
             anyhow::anyhow!(
-                "view {:?} embedded command must be an argv array or expression",
+                "view {:?} embedded command must be an argv array or dynamic path",
                 name
             )
         })?;
@@ -165,42 +190,97 @@ impl Engine for EmbeddedEngine {
                 root.to_string_lossy().to_string(),
             ));
         }
-        let view = context
+        context
             .config
             .view(&context.request.view_ref)
             .context("embedded View disappeared during creation")?;
-        let result = parse_result_config(&context.request.view_ref, view.engine_field("result"))?;
-        let escape_cancels = parse_escape_cancels(
+        let result = parse_result_config_value(
             &context.request.view_ref,
-            view.engine_field("escape-cancels"),
+            evaluate_field(&context, "result")?,
+        )?;
+        let escape_cancels = parse_escape_cancels_value(
+            &context.request.view_ref,
+            evaluate_field(&context, "escape-cancels")?,
         )?;
         Ok(Box::new(EmbeddedView {
+            view_ref: context.request.view_ref.clone(),
             title: title.clone(),
-            result,
             escape_cancels,
-            session: EmbeddedSession::new(PreparedProcess {
-                argv: command,
-                environment,
-                current_dir: plugin_root,
-            }),
+            session: EmbeddedSession::new(
+                PreparedProcess {
+                    argv: command,
+                    environment,
+                    current_dir: plugin_root,
+                },
+                result,
+                escape_cancels,
+                context.cancellation,
+            ),
+            pending_outcome: None,
+            pending_input: Vec::new(),
         }))
     }
 }
 
 struct EmbeddedView {
+    view_ref: String,
     title: String,
-    result: Option<EmbeddedResultConfig>,
     escape_cancels: bool,
     session: EmbeddedSession,
+    pending_outcome: Option<crate::engine::embedded::pty::EmbeddedRunResult>,
+    pending_input: Vec<u8>,
 }
 
 impl ViewInstance for EmbeddedView {
-    fn step(&mut self, _host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
-        Ok(ViewEffect::RunEmbedded {
-            prepared: self.session.prepared(),
-            result: self.result,
-            escape_cancels: self.escape_cancels,
-        })
+    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+        if let Some(result) = self.pending_outcome.take() {
+            let message = embedded_status_message(&result.outcome);
+            let success = embedded_succeeded(&result.outcome);
+            host.record_view_status(&self.view_ref, &message, success);
+            return match result.outcome {
+                EmbeddedOutcome::Returned(output) => Ok(ViewEffect::Return(ViewReturn {
+                    source_view: self.view_ref.clone(),
+                    output,
+                    adapter: None,
+                })),
+                _ => Ok(ViewEffect::Back(None)),
+            };
+        }
+        self.session.start(terminal.size(), &[])?;
+        match self.session.poll(terminal.size())? {
+            EmbeddedPoll::Running => Ok(ViewEffect::Continue),
+            EmbeddedPoll::Finished(result) => {
+                self.pending_input = result.remaining_input.clone();
+                self.pending_outcome = Some(result);
+                Ok(ViewEffect::Continue)
+            }
+        }
+    }
+
+    fn owns_terminal_input(&self) -> bool {
+        self.pending_outcome.is_none() && self.session.is_running()
+    }
+
+    fn handle_terminal_input(
+        &mut self,
+        _host: &mut EngineHost<'_>,
+        bytes: &[u8],
+    ) -> Result<LauncherOutcome> {
+        self.session.push_input(bytes)?;
+        Ok(LauncherOutcome::Continue)
+    }
+
+    fn handle_terminal_eof(&mut self, host: &mut EngineHost<'_>) -> Result<LauncherOutcome> {
+        host.record_view_status(&self.view_ref, "embedded view cancelled", true);
+        Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))))
+    }
+
+    fn take_pending_terminal_input(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_input)
+    }
+
+    fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
+        self.owns_terminal_input().then_some(40)
     }
 
     fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
@@ -212,7 +292,22 @@ impl ViewInstance for EmbeddedView {
         }
     }
 
-    fn render(&mut self, _host: &EngineHost<'_>, _frame: &mut Frame, _area: Rect) {}
+    fn render(&mut self, _host: &EngineHost<'_>, frame: &mut Frame, area: Rect) {
+        self.session
+            .request_resize((area.width.max(1), area.height.max(1)));
+        if let Some(screen) = self.session.screen() {
+            frame.render_widget(screen.widget(), area);
+            if let Some((column, row)) = screen.cursor()
+                && column < area.width as usize
+                && row < area.height as usize
+            {
+                frame.set_cursor_position((
+                    area.x.saturating_add(column as u16),
+                    area.y.saturating_add(row as u16),
+                ));
+            }
+        }
+    }
 
     fn input_focus(&self) -> InputFocus {
         InputFocus::Unfocused
@@ -221,32 +316,6 @@ impl ViewInstance for EmbeddedView {
     fn chrome_footer_enabled(&self) -> bool {
         false
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run(
-    prepared: &PreparedProcess,
-    result: Option<EmbeddedResultConfig>,
-    escape_cancels: bool,
-    initial_input: Vec<u8>,
-    terminal: &mut Terminal,
-    cancellation: &CancellationToken,
-    content_size: &dyn Fn(u16, u16) -> (u16, u16),
-    render: &mut dyn FnMut(
-        &mut Terminal,
-        &crate::embedded_terminal::EmbeddedTerminal,
-    ) -> Result<()>,
-) -> Result<EmbeddedRunResult> {
-    pty::run(
-        prepared,
-        result,
-        escape_cancels,
-        initial_input,
-        terminal,
-        cancellation,
-        content_size,
-        render,
-    )
 }
 
 pub(crate) fn embedded_succeeded(outcome: &EmbeddedOutcome) -> bool {
@@ -275,9 +344,18 @@ fn parse_result_config(
     let Some(value) = value else {
         return Ok(None);
     };
-    let value: ResultConfig = value
-        .clone()
-        .try_into()
+    let value = crate::config::toml_to_json(value)?;
+    parse_result_config_value(view_ref, Some(value))
+}
+
+fn parse_result_config_value(
+    view_ref: &str,
+    value: Option<Value>,
+) -> Result<Option<EmbeddedResultConfig>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value: ResultConfig = serde_json::from_value(value)
         .with_context(|| format!("view {:?} has invalid embedded result config", view_ref))?;
     anyhow::ensure!(
         value.max_bytes > 0 && value.max_bytes <= MAX_RESULT_LIMIT,
@@ -297,21 +375,24 @@ fn parse_result_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{chrome_commands, parse_escape_cancels};
+    use super::{chrome_commands, parse_escape_cancels_value};
 
     #[test]
     fn escape_cancellation_defaults_on_and_requires_a_boolean() {
-        assert!(parse_escape_cancels("core:default", None).unwrap());
-        assert!(!parse_escape_cancels("core:default", Some(&toml::Value::Boolean(false))).unwrap());
-        let error = parse_escape_cancels(
+        assert!(parse_escape_cancels_value("core:default", None).unwrap());
+        assert!(
+            !parse_escape_cancels_value("core:default", Some(serde_json::Value::Bool(false)))
+                .unwrap()
+        );
+        let error = parse_escape_cancels_value(
             "core:default",
-            Some(&toml::Value::String("false".to_string())),
+            Some(serde_json::Value::String("false".to_string())),
         )
         .unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("escape-cancels must be a boolean")
+                .contains("escape-cancels must evaluate to a boolean")
         );
     }
 

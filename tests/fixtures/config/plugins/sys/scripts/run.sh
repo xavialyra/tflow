@@ -1,6 +1,5 @@
 #!/bin/sh
-input=$(cat)
-item=$(printf '%s' "$input" | jq -r '. // empty')
+item=${1-}
 case "$item" in
   "Show date") output=$(date 2>&1) ;;
   "Show system information")

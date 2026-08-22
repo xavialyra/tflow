@@ -151,9 +151,8 @@ mod tests {
         let embedded = view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh'");
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
-        let mixed_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ runtime:view.current.input }}'",
-        );
+        let mixed_embedded =
+            view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ page.input }}'");
         assert!(
             registry
                 .validate_config("mixed-embedded", &mixed_embedded)
