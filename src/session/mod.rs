@@ -29,7 +29,7 @@ use crate::diagnostics::{LogRecord, RuntimeLog};
 use crate::engine::InputEdit;
 use crate::engine::picker::TaskScheduler;
 #[cfg(test)]
-use crate::engine::{EngineHost, ViewInstance};
+use crate::engine::{EngineHost, EngineTerminal, ViewInstance};
 use crate::engine::{EngineRegistry, ViewContext};
 #[cfg(test)]
 use crate::input::DecodedInput;
@@ -337,7 +337,7 @@ mod tests {
             self.events
                 .lock()
                 .unwrap()
-                .push(format!("{event}:{}", host.input.raw));
+                .push(format!("{event}:{}", host.input_raw()));
         }
     }
 
@@ -372,7 +372,7 @@ mod tests {
         fn step(
             &mut self,
             _host: &mut EngineHost<'_>,
-            _terminal: &mut Terminal,
+            _terminal: &mut dyn EngineTerminal,
         ) -> Result<ViewEffect> {
             Ok(ViewEffect::Continue)
         }
@@ -416,7 +416,7 @@ mod tests {
             let view_ref = host.runtime.snapshot()["view"]["current"]["ref"]
                 .as_str()
                 .unwrap_or("missing");
-            self.record(&format!("commit:{view_ref}:{}", host.input.raw));
+            self.record(&format!("commit:{view_ref}:{}", host.input_raw()));
             if self.fail_commit {
                 anyhow::bail!("parent commit failed");
             }
@@ -426,7 +426,7 @@ mod tests {
         fn step(
             &mut self,
             _host: &mut EngineHost<'_>,
-            _terminal: &mut Terminal,
+            _terminal: &mut dyn EngineTerminal,
         ) -> Result<ViewEffect> {
             Ok(ViewEffect::Continue)
         }

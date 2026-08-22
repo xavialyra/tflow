@@ -104,8 +104,7 @@ pub(crate) fn require_field(name: &str, view: &View, field: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{EngineHost, ViewContext, ViewEffect, ViewInstance};
-    use crate::terminal::Terminal;
+    use crate::engine::{EngineHost, EngineTerminal, ViewContext, ViewEffect, ViewInstance};
     use anyhow::Result;
 
     #[test]
@@ -118,7 +117,7 @@ mod tests {
             fn step(
                 &mut self,
                 _host: &mut EngineHost<'_>,
-                _terminal: &mut Terminal,
+                _terminal: &mut dyn EngineTerminal,
             ) -> Result<ViewEffect> {
                 Ok(ViewEffect::Continue)
             }

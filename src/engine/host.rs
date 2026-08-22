@@ -21,6 +21,18 @@ pub(crate) struct EngineHost<'a> {
 }
 
 impl<'a> EngineHost<'a> {
+    pub(crate) fn input_raw(&self) -> &str {
+        &self.input.raw
+    }
+
+    pub(crate) fn input_params(&self) -> &str {
+        &self.input.params
+    }
+
+    pub(crate) fn input_rejected(&self) -> bool {
+        self.input.rejected
+    }
+
     pub(crate) fn record_error(&mut self, invocation: &CommandInvocation, message: &str) {
         self.record_error_message(
             Some(invocation.source_view()),

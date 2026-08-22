@@ -5,9 +5,9 @@ mod session;
 use self::keymap::{CaptureAction, CaptureKeymap};
 use self::session::CaptureSession;
 use super::{
-    Engine, EngineHost, InputActionBinding, InputFocus, ViewContext, ViewEffect, ViewInputMode,
-    ViewInstance, ViewOutput, evaluate_field, evaluate_optional_string, require_field,
-    validate_fields,
+    Engine, EngineHost, EngineTerminal, InputActionBinding, InputFocus, ViewContext, ViewEffect,
+    ViewInputMode, ViewInstance, ViewOutput, evaluate_field, evaluate_optional_string,
+    require_field, validate_fields,
 };
 use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::{
@@ -16,7 +16,6 @@ use crate::config::{
 };
 use crate::execution::{ensure_script_success, run_script};
 use crate::expression::EvaluationStage;
-use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 
@@ -154,7 +153,11 @@ struct CaptureView {
 }
 
 impl ViewInstance for CaptureView {
-    fn step(&mut self, host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
+    fn step(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        _terminal: &mut dyn EngineTerminal,
+    ) -> Result<ViewEffect> {
         if !self.reported {
             self.reported = true;
             host.record_view_status(&self.view_ref, &self.status, self.success);

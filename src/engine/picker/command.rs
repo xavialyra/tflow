@@ -60,7 +60,7 @@ impl PickerView {
         host: &EngineHost<'_>,
         key: Key,
     ) -> Result<Option<CommandExecution>> {
-        let Some(invocation) = self.resolve_command(host.config, key, &host.input.raw) else {
+        let Some(invocation) = self.resolve_command(host.config, key, host.input_raw()) else {
             return Ok(None);
         };
         let context = self.command_context(host)?;
@@ -81,10 +81,10 @@ impl PickerView {
         let page = CommandOwnerContext {
             view_ref: self.current_view_ref().to_string(),
             state: host.state.clone(),
-            binding_raw: host.input.params.clone(),
+            binding_raw: host.input_params().to_string(),
         };
         let selection = self
-            .results_current(&host.input.raw)
+            .results_current(host.input_raw())
             .then(|| self.current().items.get(self.current().selected))
             .flatten()
             .map(|item| self.selection_context(item, &page))

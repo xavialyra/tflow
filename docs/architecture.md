@@ -186,6 +186,9 @@ test domain.
   coordinated by `app/cli.rs` while preserving the `Config::load*` call shapes.
 - Added the narrow `EngineConfigValidator` contract so configuration validation
   no longer depends on the concrete `EngineRegistry` type.
+- Added the narrow `EngineTerminal` capability contract for View stepping;
+  Embedded uses terminal size and Picker Preview uses image output.
+- Restricted EngineHost input reads to named read-only queries.
 - Moved the input editor model to `input/editor.rs`; `ui/chrome/input.rs` keeps
   the stable Chrome re-export while Engine and Session use the input domain.
 - Added a terminal-owned Image Protocol type and perform the config-to-terminal
@@ -241,8 +244,8 @@ test domain.
 
 The remaining `AppSession` implementation in `session/mod.rs` owns
 construction, the main loop, runtime-log presentation, and stable façade
-methods. The main remaining boundary question is whether Engine steps need a
-capability-oriented terminal contract instead of the concrete TTY adapter.
+methods. Engine steps now consume the narrow `EngineTerminal` capability
+contract; the concrete TTY adapter remains outside the Engine protocol.
 
 Each step should keep the same `AppSession` constructors and run the focused
 session tests plus the complete launcher suite.
@@ -254,8 +257,8 @@ session tests plus the complete launcher suite.
 - Do not introduce a generic `common/` catch-all alongside the domain tree.
 - Keep CLI argument parsing and process bootstrap behind `app/`; `main.rs` is
   now a thin binary entry point.
-- Keep the concrete Terminal argument in Engine steps until a second terminal
-  backend or a clear capability contract justifies the additional abstraction.
+- Extend `EngineTerminal` only when a new View requires a distinct terminal
+  capability; do not expose the complete TTY adapter through the Engine API.
 - Keep Router separate from both Session and Chrome because both consume its
   route models.
 
@@ -296,6 +299,8 @@ Tests should follow the invariant they protect:
 - `terminal/` and `lifecycle/`: terminal lifecycle, cancellation, and signal
   restoration.
 - `diagnostics/log.rs`: structured runtime log behavior.
+- `tests/cli.rs`: configuration bootstrap and error ordering, including Theme
+  precedence over dynamic configuration compilation errors.
 - Integration tests: terminal lifecycle, process cleanup, and invocation output.
 
 Before changing a boundary, run:

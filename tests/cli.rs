@@ -876,6 +876,43 @@ fn cli_theme_replaces_the_root_configuration() {
 }
 
 #[test]
+fn theme_errors_precede_dynamic_config_compilation_errors() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        theme = "work"
+        default_view = "{{ page.input }}"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate configuration error ordering");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("could not resolve theme"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("themes/work.toml"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("default_view is consumed during the bootstrap evaluation stage"),
+        "Theme errors must be reported before config compilation: {stderr}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn missing_named_theme_reports_the_theme_path() {
     let root = temporary_root();
     let config = root.join("config.toml");

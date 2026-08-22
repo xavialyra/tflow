@@ -10,7 +10,7 @@ use crate::input::InputBuffer;
 use crate::input::{DecodedInput, Key};
 use crate::lifecycle::CancellationToken;
 use crate::state::StateInstance;
-use crate::terminal::Terminal;
+use crate::terminal::{ImagePicker, Terminal};
 use anyhow::{Result, bail};
 use ratatui::{Frame, layout::Rect};
 
@@ -25,6 +25,21 @@ pub(crate) struct EmbeddedResultConfig {
     pub(crate) format: EmbeddedResultFormat,
     pub(crate) required: bool,
     pub(crate) max_bytes: usize,
+}
+
+pub(crate) trait EngineTerminal {
+    fn size(&self) -> (u16, u16);
+    fn image_picker(&self) -> Option<ImagePicker>;
+}
+
+impl EngineTerminal for Terminal {
+    fn size(&self) -> (u16, u16) {
+        Terminal::size(self)
+    }
+
+    fn image_picker(&self) -> Option<ImagePicker> {
+        Terminal::image_picker(self)
+    }
 }
 
 pub(crate) trait ViewInstance {
@@ -56,14 +71,18 @@ pub(crate) trait ViewInstance {
         Ok(())
     }
 
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect>;
+    fn step(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut dyn EngineTerminal,
+    ) -> Result<ViewEffect>;
 
     /// Poll a suspended View whose runtime must remain alive while another
     /// command mode or overlay is active. Ordinary Views do nothing here.
     fn background_step(
         &mut self,
         _host: &mut EngineHost<'_>,
-        _terminal: &mut Terminal,
+        _terminal: &mut dyn EngineTerminal,
     ) -> Result<ViewEffect> {
         Ok(ViewEffect::Continue)
     }
@@ -113,7 +132,7 @@ pub(crate) trait ViewInstance {
             page: crate::command::CommandOwnerContext {
                 view_ref: host.state.view_ref().to_string(),
                 state: host.state.clone(),
-                binding_raw: host.input.params.clone(),
+                binding_raw: host.input_params().to_string(),
             },
             selection: None,
             runtime: host.runtime.snapshot().clone(),

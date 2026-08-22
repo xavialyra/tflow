@@ -13,7 +13,7 @@ pub(crate) use crate::command::{
     ViewOutputItem, ViewReturn,
 };
 pub(crate) use api::{
-    EmbeddedResultConfig, EmbeddedResultFormat, Engine, ViewContext, ViewInstance,
+    EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineTerminal, ViewContext, ViewInstance,
 };
 pub(crate) use embedded::EmbeddedTerminal;
 pub(crate) use evaluate::{field as evaluate_field, optional_string as evaluate_optional_string};

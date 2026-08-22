@@ -3,7 +3,7 @@ mod image_path;
 
 use self::image_decode::ImageDecodeHandle;
 use super::Item;
-use crate::terminal::Terminal;
+use crate::engine::EngineTerminal;
 use crate::theme::Theme;
 use anyhow::{Context, Result, bail};
 use image::DynamicImage;
@@ -355,7 +355,7 @@ impl PickerPreview {
         &mut self,
         item: Option<&Item>,
         config: &crate::config::Config,
-        terminal: &mut Terminal,
+        terminal: &mut dyn EngineTerminal,
     ) {
         self.collect(terminal);
         let selection = item.and_then(|item| serde_json::to_string(&item_value(item)).ok());
@@ -419,7 +419,7 @@ impl PickerPreview {
         }
     }
 
-    fn collect(&mut self, terminal: &mut Terminal) {
+    fn collect(&mut self, terminal: &mut dyn EngineTerminal) {
         let result = self.task.as_ref().map(|task| task.handle.try_recv());
         match result {
             Some(Ok(batch)) => {

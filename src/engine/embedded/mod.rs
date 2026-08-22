@@ -8,16 +8,15 @@ use self::session::EmbeddedSession;
 pub(crate) use self::terminal::EmbeddedTerminal;
 
 use super::{
-    EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputActionBinding, InputFocus,
-    ViewContext, ViewEffect, ViewInputMode, ViewInstance, ViewReturn, evaluate_field,
-    evaluate_optional_string, require_field, validate_fields,
+    EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, EngineTerminal,
+    InputActionBinding, InputFocus, ViewContext, ViewEffect, ViewInputMode, ViewInstance,
+    ViewReturn, evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
 use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::{ENGINE_EMBEDDED, View};
 use crate::execution::PreparedProcess;
 use crate::expression::{Template, is_dynamic_string};
 use crate::input::keymap::{ActionBindings, KeymapAction};
-use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use serde::Deserialize;
@@ -252,7 +251,7 @@ struct EmbeddedView {
 }
 
 impl EmbeddedView {
-    fn poll_runtime(&mut self, terminal: &Terminal) -> Result<()> {
+    fn poll_runtime(&mut self, terminal: &dyn EngineTerminal) -> Result<()> {
         if self.pending_outcome.is_some() {
             return Ok(());
         }
@@ -282,7 +281,11 @@ impl EmbeddedView {
 }
 
 impl ViewInstance for EmbeddedView {
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+    fn step(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut dyn EngineTerminal,
+    ) -> Result<ViewEffect> {
         if self.pending_outcome.is_some() {
             return self.complete(host);
         }
@@ -293,7 +296,7 @@ impl ViewInstance for EmbeddedView {
     fn background_step(
         &mut self,
         _host: &mut EngineHost<'_>,
-        terminal: &mut Terminal,
+        terminal: &mut dyn EngineTerminal,
     ) -> Result<ViewEffect> {
         self.poll_runtime(terminal).map(|_| ViewEffect::Continue)
     }

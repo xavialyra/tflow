@@ -7,11 +7,10 @@ use super::tasks::{TaskCompletion, TaskScheduler};
 use crate::command::{EditorAction, LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::Config;
 use crate::engine::{
-    EngineHost, InputActionBinding, InputRefreshPolicy, SelectionBindingState, ViewEffect,
-    ViewInputMode, ViewInstance,
+    EngineHost, EngineTerminal, InputActionBinding, InputRefreshPolicy, SelectionBindingState,
+    ViewEffect, ViewInputMode, ViewInstance,
 };
 use crate::input::{DecodedInput, Key};
-use crate::terminal::Terminal;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use std::collections::BTreeMap;
@@ -148,16 +147,16 @@ impl PickerView {
     }
 
     fn request_current(&mut self, host: &mut EngineHost<'_>) -> Result<Option<ViewEffect>> {
-        if host.input.rejected {
+        if host.input_rejected() {
             return Ok(None);
         }
         self.frame.input_pending = false;
 
         let current_view = self.frame.view.clone();
-        let current_input = host.input.raw.clone();
+        let current_input = host.input_raw().to_string();
         // Committed params are the feed default binding raw (successful parse).
-        let binding_raw = host.input.params.clone();
-        self.publish_runtime(host.config, host.runtime, &host.input.raw)?;
+        let binding_raw = host.input_params().to_string();
+        self.publish_runtime(host.config, host.runtime, &current_input)?;
         self.request_items(
             &current_view,
             &current_input,
@@ -297,10 +296,10 @@ impl PickerView {
         host: &mut EngineHost<'_>,
         key: Key,
     ) -> Result<Option<ViewEffect>> {
-        if host.input.rejected {
+        if host.input_rejected() {
             return Ok(Some(ViewEffect::Continue));
         }
-        let current_input = host.input.raw.clone();
+        let current_input = host.input_raw().to_string();
         if self.command_requires_items(host.config, key, &current_input)
             && !self.results_current(&current_input)
         {
@@ -309,7 +308,7 @@ impl PickerView {
             return Ok(None);
         }
 
-        self.publish_runtime(host.config, host.runtime, &host.input.raw)?;
+        self.publish_runtime(host.config, host.runtime, &current_input)?;
         let Some(execution) = self.prepare_command_execution(host, key)? else {
             let view = self.current_view_ref().to_string();
             let message = format!("no command for {}", key_display(key));
@@ -327,7 +326,7 @@ impl PickerView {
         Ok(Some(ViewEffect::DispatchCommand(execution)))
     }
 
-    fn update_preview(&mut self, config: &Config, terminal: &mut Terminal) {
+    fn update_preview(&mut self, config: &Config, terminal: &mut dyn EngineTerminal) {
         let item = self.frame.items.get(self.frame.selected).cloned();
         if let Some(preview) = &mut self.preview {
             preview.update(item.as_ref(), config, terminal);
@@ -382,12 +381,12 @@ impl PickerView {
     }
 
     fn select_item(&mut self, host: &mut EngineHost<'_>, direction: isize) -> Result<()> {
-        if host.input.rejected {
+        if host.input_rejected() {
             self.move_selection(direction);
             return Ok(());
         }
         host.clear_error();
-        let input = host.input.raw.clone();
+        let input = host.input_raw().to_string();
         if !self.results_current(&input) {
             self.frame.pending_selection = self.frame.pending_selection.saturating_add(direction);
             self.request_current(host)?;
@@ -404,11 +403,12 @@ impl PickerView {
 
 impl ViewInstance for PickerView {
     fn activate(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
-        self.publish_runtime(host.config, host.runtime, &host.input.raw)
+        let input = host.input_raw().to_string();
+        self.publish_runtime(host.config, host.runtime, &input)
     }
 
     fn restore_input(&mut self, host: &mut EngineHost<'_>) -> Result<()> {
-        let input = host.input.raw.clone();
+        let input = host.input_raw().to_string();
         self.items_task.take();
         self.frame.input_pending = false;
         self.frame.retry_requested = false;
@@ -432,7 +432,7 @@ impl ViewInstance for PickerView {
 
     fn input_ready(&mut self, host: &mut EngineHost<'_>) -> Result<ViewEffect> {
         self.frame.input_pending = false;
-        if !self.results_current(&host.input.raw)
+        if !self.results_current(host.input_raw())
             && let Some(effect) = self.request_current(host)?
         {
             return Ok(effect);
@@ -461,7 +461,11 @@ impl ViewInstance for PickerView {
         Ok(())
     }
 
-    fn step(&mut self, host: &mut EngineHost<'_>, terminal: &mut Terminal) -> Result<ViewEffect> {
+    fn step(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        terminal: &mut dyn EngineTerminal,
+    ) -> Result<ViewEffect> {
         if !self.started {
             self.started = true;
             if let Some(effect) = self.request_current(host)? {
@@ -493,7 +497,7 @@ impl ViewInstance for PickerView {
                     super::keymap::PickerAction::Exit => {
                         (ResolvedInputAction::View(ViewAction::new("exit")), true)
                     }
-                    super::keymap::PickerAction::Back if host.input.raw.is_empty() => {
+                    super::keymap::PickerAction::Back if host.input_raw().is_empty() => {
                         (ResolvedInputAction::View(ViewAction::new("back")), true)
                     }
                     super::keymap::PickerAction::Back | super::keymap::PickerAction::ClearInput => {
@@ -534,7 +538,7 @@ impl ViewInstance for PickerView {
     }
 
     fn selection_binding_state(&self, host: &EngineHost<'_>) -> SelectionBindingState {
-        if self.results_current(&host.input.raw) {
+        if self.results_current(host.input_raw()) {
             let owner = self
                 .selected_item_owner()
                 .filter(|owner| *owner != self.current_view_ref())
@@ -558,7 +562,7 @@ impl ViewInstance for PickerView {
         host: &EngineHost<'_>,
         key: Key,
     ) -> Option<crate::engine::CommandInvocation> {
-        self.resolve_command(host.config, key, &host.input.raw)
+        self.resolve_command(host.config, key, host.input_raw())
     }
 
     fn handle_view_binding(
@@ -636,7 +640,8 @@ impl ViewInstance for PickerView {
         &self,
         host: &mut EngineHost<'_>,
     ) -> Result<crate::engine::CommandContext> {
-        self.publish_runtime(host.config, host.runtime, &host.input.raw)?;
+        let input = host.input_raw().to_string();
+        self.publish_runtime(host.config, host.runtime, &input)?;
         self.command_context(host)
     }
 
