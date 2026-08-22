@@ -1407,7 +1407,7 @@ fn view_commands_accept_unreserved_control_bindings() {
 }
 
 #[test]
-fn printable_keymap_action_precedes_picker_editor_input() {
+fn view_command_overrides_printable_picker_binding() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1462,14 +1462,14 @@ fn printable_keymap_action_precedes_picker_editor_input() {
     wait_for_ready(&process.master);
     let initial = wait_for_text(&process.master, "First");
     let initial = String::from_utf8_lossy(&initial);
-    assert!(!initial.contains("HiddenSpace"), "output: {initial}");
+    assert!(initial.contains("HiddenSpace"), "output: {initial}");
     assert!(initial.contains("Accept"), "output: {initial}");
-    process.master.write_all(b" \r").unwrap();
+    process.master.write_all(b" ").unwrap();
     process.master.flush().unwrap();
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     assert!(
-        String::from_utf8_lossy(&output).contains("space-selection:second"),
+        String::from_utf8_lossy(&output).contains("hidden-space-command"),
         "output: {:?}",
         output
     );
@@ -1477,7 +1477,35 @@ fn printable_keymap_action_precedes_picker_editor_input() {
 }
 
 #[test]
-fn unavailable_toggle_preview_consumes_its_key() {
+fn queued_keys_observe_dynamic_picker_bindings() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "First", value = "first"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"x\x1b\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unavailable_toggle_preview_consumes_an_unbound_key() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1492,15 +1520,6 @@ fn unavailable_toggle_preview_consumes_its_key() {
         items = [{label = "First", value = "first"}]
         [plugins.core.views.default.keymap]
         space = "toggle_preview"
-
-        [plugins.core.views.default.commands.space]
-        key = "space"
-        label = "SpaceCommand"
-        type = "run"
-
-        [plugins.core.views.default.commands.space.payload]
-        handler = { source = "script", file = "scripts/space.sh" }
-        exit = true
 
         [plugins.core.views.default.commands.inspect]
         key = "enter"
@@ -1518,12 +1537,6 @@ fn unavailable_toggle_preview_consumes_its_key() {
     write_plugin_script(
         &root,
         "core",
-        "scripts/space.sh",
-        "printf 'space-command\\n'\n",
-    );
-    write_plugin_script(
-        &root,
-        "core",
         "scripts/inspect.sh",
         "printf 'toggle-query:%s:end\\n' \"$LAUNCHER_QUERY\"\n",
     );
@@ -1532,7 +1545,6 @@ fn unavailable_toggle_preview_consumes_its_key() {
     wait_for_ready(&process.master);
     let initial = wait_for_text(&process.master, "First");
     let initial = String::from_utf8_lossy(&initial);
-    assert!(!initial.contains("SpaceCommand"), "output: {initial}");
     assert!(initial.contains("Inspect"), "output: {initial}");
 
     process.master.write_all(b" \r").unwrap();
@@ -1680,6 +1692,32 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     assert!(String::from_utf8_lossy(&output).contains("tab-command"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unknown_input_closes_route_completion_before_retrying() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item", value = "value"}]
+        "#,
+    )
+    .expect("could not write route completion config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\t\x1b[999~\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1968,6 +2006,63 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
     assert_eq!(status, 0);
     assert!(
         String::from_utf8_lossy(&output).contains("page-command"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pending_feed_owner_command_overrides_picker_binding() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [plugins.core.views.default.keymap]
+        space = "select_next"
+
+        [plugins.apps.views.default]
+        [plugins.apps.views.default.engine]
+        type = "picker"
+        [plugins.apps.views.default.engine.config]
+        items = [{label = "Row", value = "row"}]
+        [plugins.apps.views.default.commands.open]
+        key = "space"
+        label = "Open"
+        scope = "selection"
+        requires = "input"
+        type = "run"
+        [plugins.apps.views.default.commands.open.payload]
+        handler = { source = "script", file = "scripts/owner.sh" }
+        exit = true
+        "#,
+    )
+    .unwrap();
+    write_plugin_script(
+        &root,
+        "apps",
+        "scripts/owner.sh",
+        "printf 'pending-owner-command:%s\\n' \"$LAUNCHER_VALUE\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b" ").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+
+    assert_eq!(status, 0);
+    assert!(
+        String::from_utf8_lossy(&output).contains("pending-owner-command:row"),
         "output: {:?}",
         output
     );

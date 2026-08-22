@@ -103,20 +103,38 @@ pub(crate) enum EditorAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LauncherAction {
-    Activate,
-    Copy,
-    MoveNext,
-    MovePrevious,
-    Back,
-    Exit,
-    TogglePreview,
+pub(crate) struct ViewAction(&'static str);
+
+impl ViewAction {
+    pub(crate) const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResolvedLauncherAction {
+pub(crate) enum ResolvedInputAction {
     Edit(EditorAction),
-    View(LauncherAction),
+    View(ViewAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InputActionBinding {
+    pub(crate) key: Key,
+    pub(crate) action: ResolvedInputAction,
+    pub(crate) label: Option<String>,
+    pub(crate) mode: ViewInputMode,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectionBindingState {
+    None,
+    Ready(Option<String>),
+    Pending(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +147,13 @@ pub(crate) enum InputRefreshPolicy {
 pub(crate) enum InputFocus {
     Focused,
     Unfocused,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ViewInputMode {
+    #[default]
+    Keymap,
+    Passthrough,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,10 +245,6 @@ impl CommandInvocation {
 
     pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
         self.origin.view_reference()
-    }
-
-    pub(crate) fn is_session_command(&self) -> bool {
-        matches!(self.origin, CommandOrigin::Session { .. })
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -377,13 +398,19 @@ pub(crate) trait ViewInstance {
         false
     }
 
-    /// Whether this View requests the session's raw passthrough input mode.
-    /// The session still owns terminal reads and routes bytes to the View.
-    fn provides_passthrough_input(&self) -> bool {
-        false
+    fn input_mode(&self) -> ViewInputMode {
+        ViewInputMode::Keymap
     }
 
-    fn handle_terminal_input(
+    fn input_action_bindings(&self, _host: &EngineHost<'_>) -> Vec<InputActionBinding> {
+        Vec::new()
+    }
+
+    fn selection_binding_state(&self, _host: &EngineHost<'_>) -> SelectionBindingState {
+        SelectionBindingState::None
+    }
+
+    fn handle_unbound_input(
         &mut self,
         _host: &mut EngineHost<'_>,
         _bytes: &[u8],
@@ -393,17 +420,6 @@ pub(crate) trait ViewInstance {
 
     fn handle_terminal_eof(&mut self, _host: &mut EngineHost<'_>) -> Result<LauncherOutcome> {
         Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)))
-    }
-
-    /// Keys explicitly declared by the active View for its raw passthrough mode.
-    /// Normal View commands are not implicitly active while a PTY owns input.
-    fn passthrough_keys(&self, host: &EngineHost<'_>) -> Vec<Key> {
-        crate::engine::command::passthrough_keys(host.config, host.state.view_ref())
-    }
-
-    /// A mode-specific cancellation key, if the View exposes one.
-    fn passthrough_cancel_key(&self) -> Option<Key> {
-        None
     }
 
     fn resolve_view_command(&self, host: &EngineHost<'_>, key: Key) -> Option<CommandInvocation> {
@@ -446,18 +462,43 @@ pub(crate) trait ViewInstance {
         })
     }
 
-    fn resolve_launcher_action(
-        &self,
-        _host: &EngineHost<'_>,
-        _key: Key,
-    ) -> Option<ResolvedLauncherAction> {
-        None
+    fn handle_view_command(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        invocation: CommandInvocation,
+        _input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        let execution = self.prepare_view_command(host, invocation)?;
+        Ok(LauncherOutcome::Effect(Box::new(
+            ViewEffect::DispatchCommand(execution),
+        )))
     }
 
-    fn handle_launcher_action(
+    fn handle_view_binding(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        key: Key,
+        input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        let Some(invocation) = self.resolve_view_command(host, key) else {
+            return Ok(LauncherOutcome::Continue);
+        };
+        self.handle_view_command(host, invocation, input)
+    }
+
+    fn handle_pending_view_binding(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        key: Key,
+        input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        self.handle_view_binding(host, key, input)
+    }
+
+    fn handle_view_action(
         &mut self,
         _host: &mut EngineHost<'_>,
-        _action: LauncherAction,
+        _action: ViewAction,
         _input: DecodedInput,
     ) -> Result<LauncherOutcome> {
         Ok(LauncherOutcome::Continue)
@@ -471,10 +512,6 @@ pub(crate) trait ViewInstance {
 
     fn input_focus(&self) -> InputFocus {
         InputFocus::Focused
-    }
-
-    fn session_commands_visible(&self) -> bool {
-        true
     }
 }
 

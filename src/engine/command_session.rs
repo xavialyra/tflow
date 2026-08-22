@@ -10,16 +10,6 @@ const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
-/// The session-level input mode. A mode changes the input grammar, not just
-/// the relative priority of individual bindings.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum CommandMode {
-    #[default]
-    Normal,
-    Passthrough,
-    Overlay,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PassthroughEvent {
     Forward(Vec<u8>),
@@ -42,19 +32,22 @@ struct PassthroughMatcher {
 
 impl PassthroughMatcher {
     fn new(keys: impl IntoIterator<Item = Key>) -> Self {
-        let mut bindings = keys
+        let mut matcher = Self::default();
+        matcher.replace_keys(keys);
+        matcher
+    }
+
+    fn replace_keys(&mut self, keys: impl IntoIterator<Item = Key>) {
+        self.bindings = keys
             .into_iter()
             .flat_map(|key| {
                 key_bytes(key)
                     .into_iter()
                     .map(move |bytes| RawBinding { key, bytes })
             })
-            .collect::<Vec<_>>();
-        bindings.sort_by_key(|binding| std::cmp::Reverse(binding.bytes.len()));
-        Self {
-            bindings,
-            ..Self::default()
-        }
+            .collect();
+        self.bindings
+            .sort_by_key(|binding| std::cmp::Reverse(binding.bytes.len()));
     }
 
     fn feed(&mut self, bytes: &[u8]) {
@@ -91,7 +84,14 @@ impl PassthroughMatcher {
                 self.in_bracketed_paste = false;
                 return Some(PassthroughEvent::Forward(self.take_prefix(count)));
             }
-            return self.forward_before_marker(BRACKETED_PASTE_END);
+            let event = self.forward_before_marker(BRACKETED_PASTE_END);
+            if event.is_none() && force {
+                self.in_bracketed_paste = false;
+                return Some(PassthroughEvent::Forward(
+                    self.take_prefix(self.pending.len()),
+                ));
+            }
+            return event;
         }
 
         if self.pending.starts_with(BRACKETED_PASTE_START) {
@@ -102,6 +102,11 @@ impl PassthroughMatcher {
         }
         if BRACKETED_PASTE_START.starts_with(&self.pending) {
             if self.pending.len() > 1 {
+                if force {
+                    return Some(PassthroughEvent::Forward(
+                        self.take_prefix(self.pending.len()),
+                    ));
+                }
                 return None;
             }
             if !self.has_escape_binding() {
@@ -212,9 +217,9 @@ impl PassthroughMatcher {
 pub(crate) struct CommandSession {
     decoder: InputDecoder,
     pending: VecDeque<DecodedInput>,
-    mode: CommandMode,
-    mode_stack: Vec<CommandMode>,
+    passthrough_active: bool,
     passthrough: PassthroughMatcher,
+    passthrough_revision: u64,
     session_commands: BTreeMap<String, CommandBinding>,
 }
 
@@ -231,61 +236,33 @@ impl CommandSession {
         }
     }
 
-    pub(crate) fn mode(&self) -> CommandMode {
-        self.mode
-    }
-
-    pub(crate) fn set_mode(&mut self, mode: CommandMode) {
-        self.mode = mode;
-        if mode != CommandMode::Passthrough {
-            self.passthrough.take_pending();
-        }
-    }
-
-    pub(crate) fn push_mode(&mut self, mode: CommandMode) {
-        let previous = self.mode;
-        if previous == CommandMode::Passthrough && mode != CommandMode::Passthrough {
-            let pending = self.passthrough.take_pending();
-            self.feed_normal(&pending);
-        }
-        self.mode_stack.push(previous);
-        self.set_mode(mode);
-    }
-
-    pub(crate) fn restore_mode(&mut self) {
-        let mode = self.mode_stack.pop().unwrap_or(CommandMode::Normal);
-        let pending = if mode == CommandMode::Passthrough {
-            self.take_all_pending_raw()
-        } else {
-            Vec::new()
-        };
-        self.set_mode(mode);
-        if mode == CommandMode::Passthrough {
-            self.feed_passthrough(&pending);
-        }
+    pub(crate) fn passthrough_active(&self) -> bool {
+        self.passthrough_active
     }
 
     pub(crate) fn enter_passthrough(&mut self, keys: impl IntoIterator<Item = Key>) {
-        if self.mode != CommandMode::Passthrough {
-            self.mode_stack.push(self.mode);
-        }
         self.passthrough = PassthroughMatcher::new(keys);
-        self.mode = CommandMode::Passthrough;
+        self.passthrough_revision = 0;
+        self.passthrough_active = true;
+    }
+
+    pub(crate) fn sync_passthrough_keys(
+        &mut self,
+        revision: u64,
+        keys: impl IntoIterator<Item = Key>,
+    ) {
+        if self.passthrough_revision == revision {
+            return;
+        }
+        self.passthrough.replace_keys(keys);
+        self.passthrough_revision = revision;
     }
 
     pub(crate) fn leave_passthrough(&mut self) -> Vec<u8> {
         let pending = self.passthrough.take_pending();
-        let mode = self.mode_stack.pop().unwrap_or(CommandMode::Normal);
-        self.set_mode(mode);
+        self.passthrough_revision = 0;
+        self.passthrough_active = false;
         pending
-    }
-
-    pub(crate) fn reset_mode(&mut self) {
-        self.mode_stack.clear();
-        self.passthrough.take_pending();
-        self.pending.clear();
-        self.decoder.take_pending_raw();
-        self.mode = CommandMode::Normal;
     }
 
     pub(crate) fn session_command_for_key(
@@ -311,16 +288,6 @@ impl CommandSession {
 
     pub(crate) fn session_commands(&self) -> impl Iterator<Item = (&String, &CommandBinding)> {
         self.session_commands.iter()
-    }
-
-    pub(crate) fn passthrough_keys(&self) -> Vec<Key> {
-        self.session_commands
-            .get("commands")
-            .and_then(|binding| binding.key("commands"))
-            .and_then(|key| normalize_key(key).ok())
-            .and_then(|key| Key::parse_binding(&key).ok())
-            .into_iter()
-            .collect()
     }
 
     pub(crate) fn read_normal(
@@ -549,12 +516,43 @@ mod tests {
     }
 
     #[test]
-    fn command_session_restores_a_previous_mode() {
-        let mut session = CommandSession::default();
-        session.set_mode(CommandMode::Passthrough);
-        session.push_mode(CommandMode::Overlay);
-        assert_eq!(session.mode(), CommandMode::Overlay);
-        session.restore_mode();
-        assert_eq!(session.mode(), CommandMode::Passthrough);
+    fn passthrough_releases_incomplete_paste_markers_on_timeout() {
+        let mut matcher = PassthroughMatcher::new([Key::Ctrl('b')]);
+        matcher.feed(b"\x1b[20");
+        assert_eq!(matcher.next(), None);
+        assert_eq!(
+            matcher.flush_due(),
+            Some(PassthroughEvent::Forward(b"\x1b[20".to_vec()))
+        );
+
+        matcher.feed(b"\x1b[200~paste\x1b[20");
+        assert_eq!(
+            matcher.next(),
+            Some(PassthroughEvent::Forward(b"\x1b[200~".to_vec()))
+        );
+        assert_eq!(
+            matcher.next(),
+            Some(PassthroughEvent::Forward(b"paste".to_vec()))
+        );
+        assert_eq!(matcher.next(), None);
+        assert_eq!(
+            matcher.flush_due(),
+            Some(PassthroughEvent::Forward(b"\x1b[20".to_vec()))
+        );
+    }
+
+    #[test]
+    fn passthrough_key_refresh_preserves_pending_input() {
+        let mut matcher = PassthroughMatcher::new([Key::Ctrl('b')]);
+        matcher.feed(b"\x1b");
+        assert_eq!(matcher.next(), None);
+        matcher.replace_keys([Key::Escape]);
+        assert!(matches!(
+            matcher.flush_due(),
+            Some(PassthroughEvent::Switch(DecodedInput {
+                key: Some(Key::Escape),
+                ..
+            }))
+        ));
     }
 }

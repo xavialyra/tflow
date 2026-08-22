@@ -1,7 +1,4 @@
 use super::{Item, PickerView};
-use crate::config::Config;
-use crate::engine::command;
-use crate::input::Key;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -209,32 +206,6 @@ fn pad_left(text: &str, width: usize) -> String {
 }
 
 impl PickerView {
-    pub(crate) fn visible_commands(&self, config: &Config, input: &str) -> Vec<(String, String)> {
-        let owner = self
-            .results_current(input)
-            .then(|| self.selected_item_owner())
-            .flatten();
-        let mut commands =
-            command::collect_page_owner_commands(config, self.current_view_ref(), owner)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(key, value)| {
-                    let label = value.get("label")?.as_str()?.to_string();
-                    let key = Key::parse_binding(&key).ok()?;
-                    (!self.semantic_key_owns_command(key)).then_some((key.binding_name()?, label))
-                })
-                .collect::<Vec<_>>();
-        commands.sort_by(|left, right| command::compare_bindings(&left.0, &right.0));
-        commands
-    }
-
-    fn semantic_key_owns_command(&self, key: Key) -> bool {
-        !matches!(
-            self.keymap.action(key),
-            None | Some(super::keymap::PickerAction::Activate)
-        )
-    }
-
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
         let (show_prefix, empty_message) = self.list_presentation();

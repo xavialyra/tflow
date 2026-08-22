@@ -407,59 +407,6 @@ pub(crate) fn find_command_for_key(
     find_command(config, view_ref, &key.binding_name()?)
 }
 
-pub(crate) fn find_session_command_for_key(
-    config: &Config,
-    view_ref: &str,
-    key: Key,
-) -> Option<CommandInvocation> {
-    let name = key.binding_name()?;
-    config.commands.bindings.iter().find_map(|(id, binding)| {
-        if binding
-            .key(id)
-            .and_then(|key| normalize_key(key).ok())
-            .as_deref()
-            != Some(name.as_str())
-        {
-            return None;
-        }
-        binding
-            .as_command(id)
-            .map(|command| CommandInvocation::session_command(view_ref, id, command))
-    })
-}
-
-pub(crate) fn find_passthrough_command_for_key(
-    config: &Config,
-    view_ref: &str,
-    key: Key,
-) -> Option<CommandInvocation> {
-    let view = config.view(view_ref)?;
-    view.commands.iter().find_map(|(id, command)| {
-        (command.passthrough
-            && normalize_key(&command.key).ok().as_deref() == key.binding_name().as_deref())
-        .then(|| {
-            CommandInvocation::view(
-                CommandRef {
-                    view: view_ref.to_string(),
-                    id: id.clone(),
-                },
-                command.clone(),
-            )
-        })
-    })
-}
-
-pub(crate) fn passthrough_keys(config: &Config, view_ref: &str) -> Vec<Key> {
-    config
-        .view(view_ref)
-        .into_iter()
-        .flat_map(|view| view.commands.values())
-        .filter(|command| command.passthrough)
-        .filter_map(|command| normalize_key(&command.key).ok())
-        .filter_map(|key| Key::parse_binding(&key).ok())
-        .collect()
-}
-
 pub(crate) fn collect_page_owner_commands(
     config: &Config,
     page_view: &str,

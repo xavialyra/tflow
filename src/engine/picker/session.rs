@@ -4,9 +4,10 @@ use super::keymap::PickerKeymap;
 use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
 use crate::config::Config;
-use crate::engine::api::{EditorAction, LauncherAction, LauncherOutcome, ResolvedLauncherAction};
+use crate::engine::api::{EditorAction, LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::engine::{
-    EngineHost, InputRefreshPolicy, TaskCompletion, TaskScheduler, ViewEffect, ViewInstance,
+    EngineHost, InputActionBinding, InputRefreshPolicy, SelectionBindingState, TaskCompletion,
+    TaskScheduler, ViewEffect, ViewInputMode, ViewInstance,
 };
 use crate::input::{DecodedInput, Key};
 use crate::terminal::Terminal;
@@ -483,73 +484,149 @@ impl ViewInstance for PickerView {
         Some(self.input_timeout(host))
     }
 
-    fn resolve_launcher_action(
+    fn input_action_bindings(&self, host: &EngineHost<'_>) -> Vec<InputActionBinding> {
+        self.keymap
+            .bindings()
+            .map(|(key, action)| {
+                let (action, enabled) = match action {
+                    super::keymap::PickerAction::Exit => {
+                        (ResolvedInputAction::View(ViewAction::new("exit")), true)
+                    }
+                    super::keymap::PickerAction::Back if host.input.raw.is_empty() => {
+                        (ResolvedInputAction::View(ViewAction::new("back")), true)
+                    }
+                    super::keymap::PickerAction::Back | super::keymap::PickerAction::ClearInput => {
+                        (ResolvedInputAction::Edit(EditorAction::ClearInput), true)
+                    }
+                    super::keymap::PickerAction::DeleteBackward => (
+                        ResolvedInputAction::Edit(EditorAction::DeleteBackward),
+                        true,
+                    ),
+                    super::keymap::PickerAction::DeleteWord => {
+                        (ResolvedInputAction::Edit(EditorAction::DeleteWord), true)
+                    }
+                    super::keymap::PickerAction::SelectPrevious => (
+                        ResolvedInputAction::View(ViewAction::new("select_previous")),
+                        true,
+                    ),
+                    super::keymap::PickerAction::SelectNext => (
+                        ResolvedInputAction::View(ViewAction::new("select_next")),
+                        true,
+                    ),
+                    super::keymap::PickerAction::Activate => {
+                        (ResolvedInputAction::View(ViewAction::new("activate")), true)
+                    }
+                    super::keymap::PickerAction::TogglePreview => (
+                        ResolvedInputAction::View(ViewAction::new("toggle_preview")),
+                        self.preview.is_some(),
+                    ),
+                };
+                InputActionBinding {
+                    key,
+                    action,
+                    label: None,
+                    mode: ViewInputMode::Keymap,
+                    enabled,
+                }
+            })
+            .collect()
+    }
+
+    fn selection_binding_state(&self, host: &EngineHost<'_>) -> SelectionBindingState {
+        if self.results_current(&host.input.raw) {
+            let owner = self
+                .selected_item_owner()
+                .filter(|owner| *owner != self.current_view_ref())
+                .map(str::to_string);
+            return SelectionBindingState::Ready(owner);
+        }
+        let owners = host
+            .config
+            .feed_views(self.current_view_ref())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(owner, _)| owner.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        SelectionBindingState::Pending(owners)
+    }
+
+    fn resolve_view_command(
         &self,
         host: &EngineHost<'_>,
         key: Key,
-    ) -> Option<ResolvedLauncherAction> {
-        let action = match self.keymap.action(key) {
-            Some(super::keymap::PickerAction::Exit) => LauncherAction::Exit,
-            Some(super::keymap::PickerAction::Back) if host.input.raw.is_empty() => {
-                LauncherAction::Back
-            }
-            Some(super::keymap::PickerAction::Back) => {
-                return Some(ResolvedLauncherAction::Edit(EditorAction::ClearInput));
-            }
-            Some(super::keymap::PickerAction::DeleteBackward) => {
-                return Some(ResolvedLauncherAction::Edit(EditorAction::DeleteBackward));
-            }
-            Some(super::keymap::PickerAction::ClearInput) => {
-                return Some(ResolvedLauncherAction::Edit(EditorAction::ClearInput));
-            }
-            Some(super::keymap::PickerAction::DeleteWord) => {
-                return Some(ResolvedLauncherAction::Edit(EditorAction::DeleteWord));
-            }
-            Some(super::keymap::PickerAction::SelectPrevious) => LauncherAction::MovePrevious,
-            Some(super::keymap::PickerAction::SelectNext) => LauncherAction::MoveNext,
-            Some(super::keymap::PickerAction::Activate) => LauncherAction::Activate,
-            Some(super::keymap::PickerAction::TogglePreview) => LauncherAction::TogglePreview,
-            None if self
-                .resolve_command(host.config, key, &host.input.raw)
-                .is_some()
-                || self.command_requires_items(host.config, key, &host.input.raw) =>
-            {
-                LauncherAction::Activate
-            }
-            _ => return None,
-        };
-        Some(ResolvedLauncherAction::View(action))
+    ) -> Option<crate::engine::CommandInvocation> {
+        self.resolve_command(host.config, key, &host.input.raw)
     }
 
-    fn handle_launcher_action(
+    fn handle_view_binding(
         &mut self,
         host: &mut EngineHost<'_>,
-        action: LauncherAction,
+        key: Key,
+        _input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        Ok(match self.handle_command_key(host, key)? {
+            Some(effect) => LauncherOutcome::Effect(Box::new(effect)),
+            None => LauncherOutcome::Continue,
+        })
+    }
+
+    fn handle_pending_view_binding(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        key: Key,
+        _input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        self.queue_pending_action(PendingAction::Activate(key));
+        self.request_current(host)?;
+        Ok(LauncherOutcome::Continue)
+    }
+
+    fn handle_view_command(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        _invocation: crate::engine::CommandInvocation,
+        input: DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        let key = input
+            .key
+            .context("picker View command has no decoded key")?;
+        Ok(match self.handle_command_key(host, key)? {
+            Some(effect) => LauncherOutcome::Effect(Box::new(effect)),
+            None => LauncherOutcome::Continue,
+        })
+    }
+
+    fn handle_view_action(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        action: ViewAction,
         input: DecodedInput,
     ) -> Result<LauncherOutcome> {
         let key = input
             .key
             .context("picker launcher action has no decoded key")?;
-        match action {
-            LauncherAction::MoveNext => self.select_item(host, 1)?,
-            LauncherAction::MovePrevious => self.select_item(host, -1)?,
-            LauncherAction::Activate => {
+        match action.name() {
+            "select_next" => self.select_item(host, 1)?,
+            "select_previous" => self.select_item(host, -1)?,
+            "activate" => {
                 if let Some(effect) = self.activate_item(host, key)? {
                     return Ok(LauncherOutcome::Effect(Box::new(effect)));
                 }
             }
-            LauncherAction::TogglePreview => {
+            "toggle_preview" => {
                 if let Some(preview) = &mut self.preview {
                     preview.toggle_visibility();
                 }
             }
-            LauncherAction::Back => {
+            "back" => {
                 return Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))));
             }
-            LauncherAction::Exit => {
+            "exit" => {
                 return Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)));
             }
-            LauncherAction::Copy => unreachable!("picker received a capture-only action"),
+            _ => unreachable!("picker received an unsupported View action"),
         }
         Ok(LauncherOutcome::Continue)
     }
@@ -562,13 +639,11 @@ impl ViewInstance for PickerView {
         self.command_context(host)
     }
 
-    fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         let status = selection_count(self.frame.selected, self.frame.items.len());
-        let commands = self.visible_commands(host.config, &host.input.raw);
         crate::chrome::EngineChrome {
             title: None,
             status: Some(status),
-            commands,
             ..crate::chrome::EngineChrome::default()
         }
     }

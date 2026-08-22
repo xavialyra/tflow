@@ -5,11 +5,12 @@ pub(crate) use self::pty::EmbeddedOutcome;
 use self::pty::EmbeddedPoll;
 use self::session::EmbeddedSession;
 
-use super::api::LauncherOutcome;
+use super::api::{LauncherOutcome, ResolvedInputAction, ViewAction};
+use super::keymap::{ActionBindings, KeymapAction};
 use super::{
-    EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputFocus, PreparedProcess,
-    ViewContext, ViewEffect, ViewInstance, ViewReturn, evaluate_field, evaluate_optional_string,
-    require_field, validate_fields,
+    EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, InputActionBinding, InputFocus,
+    PreparedProcess, ViewContext, ViewEffect, ViewInputMode, ViewInstance, ViewReturn,
+    evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
 use crate::config::{ENGINE_EMBEDDED, View};
 use crate::expression::{Template, is_dynamic_string};
@@ -29,6 +30,37 @@ const MAX_RESULT_LIMIT: usize = 16 * 1024 * 1024;
 enum ResultFormatConfig {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum EmbeddedAction {
+    Cancel,
+}
+
+impl EmbeddedAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cancel => "Cancel",
+        }
+    }
+}
+
+impl KeymapAction for EmbeddedAction {
+    const LABEL: &'static str = "embedded";
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancel",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        (name == "cancel").then_some(Self::Cancel)
+    }
+
+    fn default_bindings() -> &'static [(crate::input::Key, Self)] {
+        &[(crate::input::Key::Escape, Self::Cancel)]
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,14 +104,6 @@ fn contains_dynamic(value: &toml::Value) -> bool {
         | toml::Value::Datetime(_)
         | toml::Value::Float(_)
         | toml::Value::Integer(_) => false,
-    }
-}
-
-fn chrome_commands(escape_cancels: bool) -> Vec<(String, String)> {
-    if escape_cancels {
-        vec![("escape".to_string(), "Cancel".to_string())]
-    } else {
-        Vec::new()
     }
 }
 
@@ -199,7 +223,9 @@ impl Engine for EmbeddedEngine {
         Ok(Box::new(EmbeddedView {
             view_ref: context.request.view_ref.clone(),
             title: title.clone(),
-            escape_cancels,
+            keymap: escape_cancels
+                .then(|| ActionBindings::from_values(None, None))
+                .transpose()?,
             session: EmbeddedSession::new(
                 PreparedProcess {
                     argv: command,
@@ -217,7 +243,7 @@ impl Engine for EmbeddedEngine {
 struct EmbeddedView {
     view_ref: String,
     title: String,
-    escape_cancels: bool,
+    keymap: Option<ActionBindings<EmbeddedAction>>,
     session: EmbeddedSession,
     pending_outcome: Option<crate::engine::embedded::pty::EmbeddedRunResult>,
 }
@@ -269,11 +295,15 @@ impl ViewInstance for EmbeddedView {
         self.poll_runtime(terminal).map(|_| ViewEffect::Continue)
     }
 
-    fn provides_passthrough_input(&self) -> bool {
-        self.pending_outcome.is_none() && self.session.is_running()
+    fn input_mode(&self) -> ViewInputMode {
+        if self.pending_outcome.is_none() && self.session.is_running() {
+            ViewInputMode::Passthrough
+        } else {
+            ViewInputMode::Keymap
+        }
     }
 
-    fn handle_terminal_input(
+    fn handle_unbound_input(
         &mut self,
         _host: &mut EngineHost<'_>,
         bytes: &[u8],
@@ -287,41 +317,41 @@ impl ViewInstance for EmbeddedView {
         Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Back(None))))
     }
 
-    fn passthrough_keys(&self, host: &EngineHost<'_>) -> Vec<crate::input::Key> {
-        let mut keys = crate::engine::command::passthrough_keys(host.config, &self.view_ref);
-        if self.escape_cancels && !keys.contains(&crate::input::Key::Escape) {
-            keys.push(crate::input::Key::Escape);
-        }
-        keys
+    fn input_action_bindings(&self, _host: &EngineHost<'_>) -> Vec<InputActionBinding> {
+        self.keymap
+            .iter()
+            .flat_map(|keymap| keymap.bindings())
+            .map(|(key, action)| InputActionBinding {
+                key,
+                action: ResolvedInputAction::View(ViewAction::new(action.name())),
+                label: Some(action.label().to_string()),
+                mode: ViewInputMode::Passthrough,
+                enabled: true,
+            })
+            .collect()
     }
 
-    fn passthrough_cancel_key(&self) -> Option<crate::input::Key> {
-        self.escape_cancels.then_some(crate::input::Key::Escape)
+    fn handle_view_action(
+        &mut self,
+        host: &mut EngineHost<'_>,
+        action: ViewAction,
+        _input: crate::input::DecodedInput,
+    ) -> Result<LauncherOutcome> {
+        match action.name() {
+            "cancel" => self.handle_terminal_eof(host),
+            _ => unreachable!("embedded received an unsupported View action"),
+        }
     }
 
     fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
         // Keep passthrough input responsive while the embedded process redraws.
-        self.provides_passthrough_input().then_some(10)
+        (self.input_mode() == ViewInputMode::Passthrough).then_some(10)
     }
 
-    fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
-        let mut commands = chrome_commands(self.escape_cancels);
-        if let Some(view) = host.config.view(&self.view_ref) {
-            commands.extend(
-                view.commands
-                    .values()
-                    .filter(|command| command.passthrough)
-                    .filter_map(|command| {
-                        crate::config::normalize_key(&command.key)
-                            .ok()
-                            .map(|key| (key, command.label.clone()))
-                    }),
-            );
-        }
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         crate::chrome::EngineChrome {
             title: Some(format!("embedded: {}", self.title)),
             status: Some("keys pass through".to_string()),
-            commands,
             ..crate::chrome::EngineChrome::default()
         }
     }
@@ -345,10 +375,6 @@ impl ViewInstance for EmbeddedView {
 
     fn input_focus(&self) -> InputFocus {
         InputFocus::Unfocused
-    }
-
-    fn session_commands_visible(&self) -> bool {
-        true
     }
 }
 
@@ -409,7 +435,7 @@ fn parse_result_config_value(
 
 #[cfg(test)]
 mod tests {
-    use super::{chrome_commands, parse_escape_cancels_value};
+    use super::parse_escape_cancels_value;
 
     #[test]
     fn escape_cancellation_defaults_on_and_requires_a_boolean() {
@@ -428,14 +454,5 @@ mod tests {
                 .to_string()
                 .contains("escape-cancels must evaluate to a boolean")
         );
-    }
-
-    #[test]
-    fn chrome_only_advertises_enabled_launcher_controls() {
-        assert_eq!(
-            chrome_commands(true),
-            vec![("escape".to_string(), "Cancel".to_string())]
-        );
-        assert!(chrome_commands(false).is_empty());
     }
 }

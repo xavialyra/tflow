@@ -5,16 +5,16 @@ mod session;
 use self::keymap::{CaptureAction, CaptureKeymap};
 use self::session::CaptureSession;
 use super::{
-    Engine, EngineHost, InputFocus, ViewContext, ViewEffect, ViewInstance, ViewOutput, command,
-    evaluate_field, evaluate_optional_string, require_field, validate_fields,
+    Engine, EngineHost, InputActionBinding, InputFocus, ViewContext, ViewEffect, ViewInputMode,
+    ViewInstance, ViewOutput, evaluate_field, evaluate_optional_string, require_field,
+    validate_fields,
 };
 use crate::config::{
     ConfigSource, Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View,
     toml_to_json,
 };
-use crate::engine::api::{LauncherAction, LauncherOutcome, ResolvedLauncherAction};
+use crate::engine::api::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::expression::EvaluationStage;
-use crate::input::Key;
 use crate::script_runner::{ensure_script_success, run_script};
 use crate::terminal::Terminal;
 use anyhow::{Context, Result, bail};
@@ -153,13 +153,6 @@ struct CaptureView {
     reported: bool,
 }
 
-impl CaptureView {
-    fn command_owns_key(&self, host: &EngineHost<'_>, key: Key) -> bool {
-        command::find_command_for_key(host.config, &self.view_ref, key).is_some()
-            || command::find_session_command_for_key(host.config, &self.view_ref, key).is_some()
-    }
-}
-
 impl ViewInstance for CaptureView {
     fn step(&mut self, host: &mut EngineHost<'_>, _terminal: &mut Terminal) -> Result<ViewEffect> {
         if !self.reported {
@@ -177,33 +170,32 @@ impl ViewInstance for CaptureView {
         true
     }
 
-    fn resolve_launcher_action(
-        &self,
-        host: &EngineHost<'_>,
-        key: Key,
-    ) -> Option<ResolvedLauncherAction> {
-        if self.command_owns_key(host, key) {
-            return None;
-        }
-        let action = match self.keymap.action(key) {
-            Some(CaptureAction::Copy) if self.success => LauncherAction::Copy,
-            Some(CaptureAction::Back) => LauncherAction::Back,
-            Some(CaptureAction::Copy) => return None,
-            None => return None,
-        };
-        Some(ResolvedLauncherAction::View(action))
+    fn input_action_bindings(&self, _host: &EngineHost<'_>) -> Vec<InputActionBinding> {
+        self.keymap
+            .bindings()
+            .map(|(key, action)| InputActionBinding {
+                key,
+                action: ResolvedInputAction::View(ViewAction::new(match action {
+                    CaptureAction::Copy => "copy",
+                    CaptureAction::Back => "back",
+                })),
+                label: Some(action.label().to_string()),
+                mode: ViewInputMode::Keymap,
+                enabled: action != CaptureAction::Copy || self.success,
+            })
+            .collect()
     }
 
-    fn handle_launcher_action(
+    fn handle_view_action(
         &mut self,
         _host: &mut EngineHost<'_>,
-        action: LauncherAction,
+        action: ViewAction,
         _input: crate::input::DecodedInput,
     ) -> Result<LauncherOutcome> {
-        let effect = match action {
-            LauncherAction::Copy => ViewEffect::CopyToClipboard(self.session.output().to_string()),
-            LauncherAction::Back => ViewEffect::Back(None),
-            _ => unreachable!("capture received an unsupported launcher action"),
+        let effect = match action.name() {
+            "copy" => ViewEffect::CopyToClipboard(self.session.output().to_string()),
+            "back" => ViewEffect::Back(None),
+            _ => unreachable!("capture received an unsupported View action"),
         };
         Ok(LauncherOutcome::Effect(Box::new(effect)))
     }
@@ -214,30 +206,10 @@ impl ViewInstance for CaptureView {
         })
     }
 
-    fn chrome(&self, host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
-        let mut commands = host
-            .config
-            .view(&self.view_ref)
-            .into_iter()
-            .flat_map(|view| view.commands.values())
-            .filter_map(|command| {
-                crate::config::normalize_key(&command.key)
-                    .ok()
-                    .map(|key| (key, command.label.clone()))
-            })
-            .collect::<Vec<_>>();
-        commands.extend(self.keymap.bindings().filter_map(|(key, action)| {
-            if self.command_owns_key(host, key) || (action == CaptureAction::Copy && !self.success)
-            {
-                return None;
-            }
-            Some((key.binding_name()?, action.label().to_string()))
-        }));
-        commands.sort_by(|left, right| command::compare_bindings(&left.0, &right.0));
+    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
         crate::chrome::EngineChrome {
             title: Some(format!("capture: {}", self.session.title())),
             status: Some(self.session.status().to_string()),
-            commands,
             ..crate::chrome::EngineChrome::default()
         }
     }

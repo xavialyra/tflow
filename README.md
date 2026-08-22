@@ -179,7 +179,7 @@ command = ["sh", "-lc", "{{ page.input }}"]
 escape-cancels = true
 ```
 
-Unmatched input is forwarded byte-for-byte to the PTY. A timed-out bare `Esc` cancels by default; set `escape-cancels = false` when the child owns `Esc`. Explicit passthrough commands may consume selected keys while all other bytes continue to the child. Opening selectors or overlays does not stop the child process.
+Unmatched input is forwarded byte-for-byte to the PTY. A timed-out bare `Esc` cancels by default; set `escape-cancels = false` when the child owns `Esc`. Explicit passthrough commands override engine bindings on the same key; all unmatched bytes continue to the child. Opening selectors or overlays does not stop the child process.
 
 With `result`, stdout is collected through a bounded result pipe and parsed as text or JSON:
 
@@ -204,7 +204,7 @@ enter = false
 "ctrl+p" = "toggle_preview"
 ```
 
-A false keymap value disables an inherited action. Picker Back clears nonempty input first; empty non-root Picker input returns to its parent. Embedded and capture Views use their own engine-specific input behavior.
+A false keymap value disables an inherited action. Session bindings override View bindings, and View commands override engine keymap actions on the same key. Picker Back clears nonempty input first; empty non-root Picker input returns to its parent. Passthrough mode uses the same binding precedence before forwarding unmatched bytes.
 
 ## Runtime Guarantees
 

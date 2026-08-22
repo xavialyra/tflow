@@ -254,6 +254,41 @@ fn capture_view_commands_use_the_same_return_dispatcher() {
 }
 
 #[test]
+fn passthrough_view_command_remains_available_in_normal_mode() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "capture"
+        [plugins.core.views.default.engine.config]
+        output = "normal-mode"
+
+        [plugins.core.views.default.commands.accept]
+        key = "enter"
+        label = "Accept"
+        passthrough = true
+        type = "return"
+        [plugins.core.views.default.commands.accept.payload]
+        value = "normal-passthrough-command"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\r");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"normal-passthrough-command\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn failed_capture_is_not_available_as_implicit_return_output() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -422,6 +457,42 @@ fn embedded_passthrough_command_consumes_a_switch_key() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"switch-consumed\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_passthrough_view_command_overrides_engine_cancel_binding() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "embedded"
+        [plugins.core.views.default.engine.config]
+        command = ["sh", "-c", "sleep 5"]
+
+        [plugins.core.views.default.commands.finish]
+        key = "escape"
+        label = "Finish"
+        passthrough = true
+        type = "return"
+
+        [plugins.core.views.default.commands.finish.payload]
+        value = "view-overrode-engine"
+        "#,
+    )
+    .unwrap();
+
+    let config = config.to_str().unwrap();
+    let result =
+        run_tty_invocation_with_redirected_stdout(&["--config", config, "core:default"], b"\x1b");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"view-overrode-engine\n");
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -1,9 +1,5 @@
-use crate::engine::keymap::{apply_patch, static_bindings, static_patch, validate_patch};
-use crate::expression::{Template, is_dynamic_string};
-use crate::input::{BindingKey, Key};
-use anyhow::{Context, Result, bail};
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use crate::engine::keymap::{ActionBindings, KeymapAction};
+use crate::input::Key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum CaptureAction {
@@ -14,164 +10,34 @@ pub(super) enum CaptureAction {
 impl CaptureAction {
     const ALL: [Self; 2] = [Self::Copy, Self::Back];
 
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Copy => "copy",
-            Self::Back => "back",
-        }
-    }
-
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Copy => "Copy",
             Self::Back => "Back",
         }
     }
+}
+
+impl KeymapAction for CaptureAction {
+    const LABEL: &'static str = "capture";
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Back => "back",
+        }
+    }
 
     fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|action| action.name() == name)
     }
-}
 
-#[derive(Debug, Clone)]
-pub(super) struct CaptureKeymap {
-    bindings: HashMap<BindingKey, CaptureAction>,
-}
-
-impl CaptureKeymap {
-    #[cfg(test)]
-    pub(super) fn validate_value(value: Option<&Value>) -> Result<()> {
-        Self::validate_shape(value)?;
-        Self::from_values(static_bindings(value), None)?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn validate_keymap_value(value: Option<&Value>) -> Result<()> {
-        validate_patch(value, "capture", CaptureAction::parse)
-    }
-
-    pub(super) fn validate_values(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
-        Self::validate_shape(defaults)?;
-        validate_patch(view, "capture", CaptureAction::parse)?;
-        Self::from_values(static_bindings(defaults), static_patch(view))?;
-        Ok(())
-    }
-
-    fn validate_shape(value: Option<&Value>) -> Result<()> {
-        let Some(value) = value else {
-            return Ok(());
-        };
-        if let Some(source) = value.as_str() {
-            if Template::parse(source)?.is_complete_path() {
-                return Ok(());
-            }
-            bail!("capture bindings must be an object or complete dynamic path");
-        }
-        let bindings = value
-            .as_object()
-            .context("capture bindings must be an object")?;
-        for (name, values) in bindings {
-            CaptureAction::parse(name)
-                .with_context(|| format!("unsupported capture binding action {:?}", name))?;
-            let values = values
-                .as_array()
-                .with_context(|| format!("capture binding {:?} must be an array", name))?;
-            for value in values {
-                let source = value.as_str().with_context(|| {
-                    format!("capture binding {:?} entries must be strings", name)
-                })?;
-                if is_dynamic_string(source) {
-                    Template::parse(source)?;
-                } else {
-                    Key::parse_binding(source)
-                        .with_context(|| format!("capture binding action {:?}", name))?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn from_value(value: Option<Value>) -> Result<Self> {
-        Self::from_values(value, None)
-    }
-
-    pub(super) fn from_values(defaults: Option<Value>, view: Option<Value>) -> Result<Self> {
-        let mut keymap = Self {
-            bindings: default_bindings(),
-        };
-        if let Some(defaults) = defaults {
-            keymap.apply(defaults)?;
-        }
-        if let Some(view) = view {
-            keymap.apply_patch(view)?;
-        }
-        Ok(keymap)
-    }
-
-    fn apply(&mut self, value: Value) -> Result<()> {
-        let overrides = value
-            .as_object()
-            .context("capture bindings must evaluate to an object")?;
-        let mut actions = HashSet::new();
-        for name in overrides.keys() {
-            let action = CaptureAction::parse(name)
-                .with_context(|| format!("unsupported capture binding action {:?}", name))?;
-            actions.insert(action);
-        }
-        self.bindings.retain(|_, action| !actions.contains(action));
-
-        for (name, values) in overrides {
-            let action =
-                CaptureAction::parse(name).expect("capture binding action was validated above");
-            let values = values
-                .as_array()
-                .with_context(|| format!("capture binding {:?} must be an array", name))?;
-            for value in values {
-                let source = value.as_str().with_context(|| {
-                    format!("capture binding {:?} entries must be strings", name)
-                })?;
-                let key = Key::parse_binding(source)
-                    .with_context(|| format!("capture binding action {:?}", name))?
-                    .binding_identity();
-                if let Some(existing) = self.bindings.insert(key, action) {
-                    bail!(
-                        "capture key {:?} is assigned to both {:?} and {:?}",
-                        source,
-                        existing.name(),
-                        action.name()
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_patch(&mut self, value: Value) -> Result<()> {
-        apply_patch(&mut self.bindings, value, "capture", CaptureAction::parse)
-    }
-
-    pub(super) fn action(&self, key: Key) -> Option<CaptureAction> {
-        self.bindings.get(&key.binding_identity()).copied()
-    }
-
-    pub(super) fn bindings(&self) -> impl Iterator<Item = (Key, CaptureAction)> + '_ {
-        self.bindings
-            .iter()
-            .map(|(key, action)| (key.key(), *action))
+    fn default_bindings() -> &'static [(Key, Self)] {
+        &[(Key::Enter, Self::Copy), (Key::Escape, Self::Back)]
     }
 }
 
-fn default_bindings() -> HashMap<BindingKey, CaptureAction> {
-    [
-        (Key::Enter, CaptureAction::Copy),
-        (Key::Escape, CaptureAction::Back),
-    ]
-    .into_iter()
-    .map(|(key, action)| (key.binding_identity(), action))
-    .collect()
-}
+pub(super) type CaptureKeymap = ActionBindings<CaptureAction>;
 
 #[cfg(test)]
 mod tests {
