@@ -155,7 +155,7 @@ handler = { source = "script", file = "scripts/open.sh" }
 args = ["--target={{ selection.value }}"]
 ```
 
-`run` handlers use the command owner's plugin directory. Arguments are passed as argv, not interpolated into shell source. The default command shell is `/bin/sh`; an explicit `shell` or `run_shell` may select another interpreter.
+`run` handlers use the command owner's plugin directory. Arguments are passed as argv, not interpolated into shell source. The default command shell is `/bin/sh`; an explicit `shell` or `run_shell` may select another interpreter. Set `exit = true` for one-shot commands that should close the launcher after the handler returns.
 
 Picker and capture sources use the same source shape:
 

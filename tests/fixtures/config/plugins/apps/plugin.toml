@@ -22,3 +22,4 @@ type = "run"
 [views.main.commands.open.payload]
 handler = { source = "script", file = "scripts/open.sh" }
 args = ["{{ selection.value }}"]
+exit = true

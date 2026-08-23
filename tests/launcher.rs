@@ -684,6 +684,91 @@ fn run_command_args_resolve_to_exact_positional_arguments() {
 }
 
 #[test]
+fn application_launch_detaches_started_process_from_launcher_group() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let app_pid = root.join("app.pid");
+    let gio = root.join("bin/gio");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "apps:main"
+
+        [plugins.apps.views.main]
+        [plugins.apps.views.main.engine]
+        type = "picker"
+        [plugins.apps.views.main.engine.config]
+        items = [{ label = "App", value = "fixture.desktop" }]
+
+        [plugins.apps.views.main.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "run"
+        [plugins.apps.views.main.commands.open.payload]
+        handler = { source = "script", file = "scripts/open.sh" }
+        exit = true
+        "#,
+    )
+    .unwrap();
+    write_plugin_script(
+        &root,
+        "apps",
+        "scripts/open.sh",
+        "exec setsid --wait gio launch \"$@\" </dev/null >/dev/null 2>&1\n",
+    );
+    fs::create_dir_all(gio.parent().unwrap()).unwrap();
+    fs::write(
+        &gio,
+        "#!/bin/sh\nprintf 'gio-log\\n'\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$GIO_APP_PID_FILE\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&gio).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gio, permissions).unwrap();
+    let app_pid = app_pid.to_string_lossy().into_owned();
+    let path = format!(
+        "{}:{}",
+        gio.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut process = spawn_launcher_with_args_and_env(
+        &config,
+        &[],
+        &[
+            ("GIO_APP_PID_FILE", app_pid.as_str()),
+            ("PATH", path.as_str()),
+        ],
+    );
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "App");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        !String::from_utf8_lossy(&output).contains("gio-log"),
+        "application logs leaked into launcher output: {:?}",
+        output
+    );
+    let app_pid = wait_for_nonempty_file(&root.join("app.pid"))
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(app_pid, 0) },
+        0,
+        "launched app was killed"
+    );
+    unsafe {
+        libc::kill(app_pid, libc::SIGKILL);
+    }
+    wait_for_process_exit(app_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
     let root = temporary_root();
     let config = root.join("config.toml");
