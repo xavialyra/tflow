@@ -5,13 +5,13 @@ mod session;
 use self::keymap::{CaptureAction, CaptureKeymap};
 use self::session::CaptureSession;
 use super::{
-    Engine, EngineHost, EngineTerminal, InputActionBinding, InputFocus, ViewContext, ViewEffect,
-    ViewInputMode, ViewInstance, ViewOutput, evaluate_field, evaluate_optional_string,
-    require_field, validate_fields,
+    Engine, EngineHost, EngineTerminal, EngineValidationContext, InputActionBinding, InputFocus,
+    ViewContext, ViewEffect, ViewInputMode, ViewInstance, ViewOutput, evaluate_field,
+    evaluate_optional_string, require_field, validate_fields,
 };
 use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::{
-    ConfigSource, Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View,
+    Config, ConfigSource, Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View,
     toml_to_json,
 };
 use crate::execution::{ensure_script_success, run_script};
@@ -26,7 +26,9 @@ impl Engine for CaptureEngine {
         ENGINE_CAPTURE
     }
 
-    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+    fn validate_config(&self, context: EngineValidationContext<'_>) -> Result<()> {
+        let name = context.view_ref;
+        let view = context.view;
         validate_fields(name, view, &["output", "title"])?;
         require_field(name, view, "output")?;
         if let Some(title) = view.engine_field("title")
@@ -43,6 +45,12 @@ impl Engine for CaptureEngine {
             source
                 .validate_capture_source()
                 .with_context(|| format!("view {:?} capture output", name))?;
+            let root = context
+                .script_root
+                .with_context(|| format!("view {:?} has no plugin root", name))?;
+            source
+                .validate_target(root)
+                .with_context(|| format!("view {:?} has invalid capture source target", name))?;
         }
         Ok(())
     }
@@ -55,6 +63,10 @@ impl Engine for CaptureEngine {
             .map(toml_to_json)
             .transpose()?;
         CaptureKeymap::validate_values(bindings.as_ref(), None).context("capture bindings")
+    }
+
+    fn validate_relations(&self, _config: &Config) -> Result<()> {
+        Ok(())
     }
 
     fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {

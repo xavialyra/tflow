@@ -1,5 +1,4 @@
 use super::host::EngineHost;
-use super::picker::TaskScheduler;
 use crate::command::{
     CommandContext, CommandExecution, CommandInvocation, InputActionBinding, InputFocus,
     InputRefreshPolicy, LauncherOutcome, NavigationRequest, SelectionBindingState, ViewAction,
@@ -10,9 +9,11 @@ use crate::input::InputBuffer;
 use crate::input::{DecodedInput, Key};
 use crate::lifecycle::CancellationToken;
 use crate::state::StateInstance;
+use crate::task::TaskRuntime;
 use crate::terminal::{ImagePicker, Terminal};
 use anyhow::{Result, bail};
 use ratatui::{Frame, layout::Rect};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmbeddedResultFormat {
@@ -218,18 +219,34 @@ pub(crate) struct ViewContext<'a> {
     pub(crate) input: &'a InputBuffer,
     pub(crate) state: &'a StateInstance,
     pub(crate) evaluation: EvaluationSnapshot<'a>,
-    pub(crate) tasks: TaskScheduler,
+    pub(crate) tasks: TaskRuntime,
     pub(crate) cancellation: CancellationToken,
+}
+
+pub(crate) trait ViewFactory {
+    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
+}
+
+pub(crate) struct EngineValidationContext<'a> {
+    pub(crate) view_ref: &'a str,
+    pub(crate) view: &'a View,
+    pub(crate) script_root: Option<&'a Path>,
 }
 
 pub(crate) trait Engine {
     fn engine_type(&self) -> &'static str;
 
-    fn validate_config(&self, name: &str, view: &View) -> Result<()>;
+    fn validate_config(&self, context: EngineValidationContext<'_>) -> Result<()>;
+
+    fn supports_data_sources(&self) -> bool {
+        false
+    }
 
     fn validate_defaults(&self, _defaults: &Defaults) -> Result<()> {
         Ok(())
     }
+
+    fn validate_relations(&self, config: &Config) -> Result<()>;
 
     fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {
         if view.keymap.is_some() {

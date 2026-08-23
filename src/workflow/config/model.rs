@@ -119,7 +119,7 @@ impl ScriptSourceSpec {
         Ok(())
     }
 
-    pub(super) fn file_value(&self) -> Option<&str> {
+    pub(crate) fn file_value(&self) -> Option<&str> {
         self.file.as_str()
     }
 

@@ -3,7 +3,7 @@ use super::items::{FeedContext, FeedId, Item, ItemsEvent, ItemsRequest, ItemsTas
 use super::keymap::PickerKeymap;
 use super::preview::{PickerPreview, PickerPreviewConfig};
 use super::render;
-use super::tasks::{TaskCompletion, TaskScheduler};
+use super::tasks::PickerItemsScheduler;
 use crate::command::{EditorAction, LauncherOutcome, ResolvedInputAction, ViewAction};
 use crate::config::Config;
 use crate::engine::{
@@ -11,6 +11,7 @@ use crate::engine::{
     ViewEffect, ViewInputMode, ViewInstance,
 };
 use crate::input::{DecodedInput, Key};
+use crate::task::TaskCompletion;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use std::collections::BTreeMap;
@@ -61,7 +62,7 @@ impl PickerFrame {
 
 pub(crate) struct PickerView {
     frame: PickerFrame,
-    tasks: TaskScheduler,
+    tasks: PickerItemsScheduler,
     config: Arc<Config>,
     items_task: Option<ItemsTaskHandle>,
     requested_view: String,
@@ -79,7 +80,7 @@ pub(crate) struct PickerView {
 impl PickerView {
     pub(super) fn new(
         view: &str,
-        tasks: TaskScheduler,
+        tasks: PickerItemsScheduler,
         config: Arc<Config>,
         keymap: PickerKeymap,
         options: PickerOptions,
@@ -223,6 +224,19 @@ impl PickerView {
             Ok(TaskCompletion::Cancelled) => {
                 self.frame.items_pending = false;
                 self.schedule_retry();
+                return events;
+            }
+            Ok(TaskCompletion::Failed(error)) => {
+                self.frame.items_pending = false;
+                self.frame.results_valid = false;
+                self.frame.pending_action = None;
+                self.frame.pending_selection = 0;
+                events.push(ItemsEvent {
+                    view: self.requested_view.clone(),
+                    errors: Vec::new(),
+                    failure: Some(error),
+                    pending_action: None,
+                });
                 return events;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -704,11 +718,12 @@ mod tests {
     use super::*;
     use crate::input::InputBuffer;
     use crate::runtime::RuntimeStore;
+    use crate::task::TaskRuntime;
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {
         let config = Arc::new(crate::config::load_test_fixture().unwrap());
         let runtime = RuntimeStore::new();
-        let tasks = TaskScheduler::new(runtime.handle());
+        let tasks = PickerItemsScheduler::new(TaskRuntime::new(runtime.handle()), "core:default");
         let mut picker = PickerView::new(
             "core:default",
             tasks,
@@ -740,7 +755,7 @@ mod tests {
             "view": {"current": {"ref": "core:default"}},
             "session": {"input": {"raw": "A", "params": "A"}}
         }));
-        let tasks = TaskScheduler::new(runtime.handle());
+        let tasks = PickerItemsScheduler::new(TaskRuntime::new(runtime.handle()), "core:default");
         let mut picker = PickerView::new(
             "core:default",
             tasks,

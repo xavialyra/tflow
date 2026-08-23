@@ -100,6 +100,9 @@ src/
     runner.rs               bounded command execution
     script.rs               plugin script execution and path safety
 
+  task/
+    mod.rs                  generic background task lifecycle and scheduling
+
   lifecycle/
     mod.rs                  CancellationToken
     signal.rs               signal guard and final-output state
@@ -109,8 +112,11 @@ src/
     log.rs                   structured runtime logging
 ```
 
-Picker task scheduling is owned by `engine/picker/tasks.rs`; it is tied to
-Picker item loading and no longer has an Engine-level compatibility facade.
+Generic task lifecycle and scheduling is owned by `task/`; it does not know
+about engines or picker items. Task closures have a cooperative cancellation
+contract: shutdown cancels queued and active work, then waits for the worker to
+exit. Latest-wins replacement is lane-scoped; picker-specific item request
+adaptation owns its `picker-items:<view_ref>` lane in `engine/picker/tasks.rs`.
 The other formerly mixed Engine modules have been moved to their owning
 top-level or feature-specific modules.
 
@@ -143,6 +149,7 @@ src/
   ui/                         Chrome and Theme presentation modules
   terminal/                   TTY and terminal-control adapter
   execution/                  external process and script execution
+  task/                       generic background task lifecycle and scheduling
   lifecycle/                  cancellation and signal lifecycle
   diagnostics/                structured runtime logging
 ```
@@ -173,6 +180,20 @@ test domain.
    into `Config::compiled` or `config_value` directly.
 9. New crate-visible fields are not a substitute for an API. Prefer private
    fields with constructors or focused accessors.
+10. `task` owns generic background scheduling, cancellation, and task handles.
+    It must not depend on a concrete engine or on picker item types. Task
+    closures must cooperate with cancellation because runtime shutdown waits
+    for the worker to exit; latest-wins replacement must use an explicit lane.
+11. `session` may depend on the `ViewFactory` and generic `TaskRuntime`
+    contracts, but it must not depend on `EngineRegistry` or
+    `engine::picker` implementation types.
+12. `execution` owns process and script mechanics. It may be used by command
+    preparation and engine-specific task bodies, but it must not own task
+    scheduling or engine semantics.
+13. `workflow/config/validation` orchestrates engine validation through hooks;
+    it must not branch on concrete engine identifiers for engine-specific
+    field or cross-view semantics. Engine relation hooks are required rather
+    than optional no-ops.
 
 ## Migration Order
 
@@ -186,6 +207,12 @@ test domain.
   coordinated by `app/cli.rs` while preserving the `Config::load*` call shapes.
 - Added the narrow `EngineConfigValidator` contract so configuration validation
   no longer depends on the concrete `EngineRegistry` type.
+- Added `EngineValidationContext` and required engine relation validation
+  hooks. Picker items/feed rules and capture script-target rules now live with
+  their engines; `workflow/config/validation.rs` retains only generic
+  validation orchestration.
+- Added owner-based TaskRuntime cleanup and lane-scoped latest-wins scheduling;
+  picker item work is isolated per View ref and shutdown remains cooperative.
 - Added the narrow `EngineTerminal` capability contract for View stepping;
   Embedded uses terminal size and Picker Preview uses image output.
 - Restricted EngineHost input reads to named read-only queries.
@@ -215,8 +242,10 @@ test domain.
 - Grouped runtime diagnostics under `diagnostics/`.
 - Moved Embedded Terminal implementation under `engine/embedded/` and Picker
   image resources under `engine/picker/preview/`.
-- Moved the Picker item scheduler and its task lifecycle ownership to
-  `engine/picker/tasks.rs`.
+- Extracted the generic task runtime to `task/`; picker item request
+  adaptation and latest-wins behavior remain in `engine/picker/tasks.rs`.
+- Added the `ViewFactory` protocol so Session owns an abstract View factory
+  while the application composition root retains the concrete `EngineRegistry`.
 - Moved command models and action preparation to `workflow/command/model.rs` and
   `workflow/command/prepare.rs`.
 - Split theme models, color and scheme resolution, semantic bindings, and file
@@ -237,8 +266,9 @@ test domain.
   façade.
 - Moved compiled configuration construction, view/feed expansion, and state
   registry setup to `workflow/config/compile.rs`.
-- Moved engine-aware configuration validation and dynamic requirement checks to
-  `workflow/config/validation.rs`.
+- Moved generic configuration validation and dynamic requirement checks to
+  `workflow/config/validation.rs`; engine-specific view and relation checks are
+  dispatched through `EngineConfigValidator` hooks to the owning engines.
 - Preserved the existing behavior contract with the current unit and
   integration tests.
 
@@ -274,8 +304,10 @@ Tests should follow the invariant they protect:
 - `workflow/query/schema.rs`: query types, field defaults, and input ordering.
 - `workflow/query/instance.rs`: query state binding, updates, rendering, and
   validation.
-- `workflow/config/validation.rs`: engine-aware schema checks, command nesting, target
-  safety, templates, and source shapes.
+- `workflow/config/validation.rs`: generic schema orchestration, command nesting,
+  target safety, and template requirements.
+- `engine/picker/mod.rs` and `engine/capture/mod.rs`: picker data-source/feed
+  relations and capture script-source policies.
 - `workflow/config/evaluation.rs`: scope composition, allowlisted runtime projections,
   dynamic value resolution, and evaluation budgets.
 - `workflow/config/compile.rs`: compiled configuration construction, feed expansion,
@@ -296,6 +328,8 @@ Tests should follow the invariant they protect:
 - `session/chrome.rs`: Chrome assembly and route completion rendering.
 - `workflow/runtime.rs`: shared runtime revisions and atomic publication.
 - `execution/`: process cleanup, bounded commands, and script safety.
+- `task/mod.rs`: generic task submission, completion, cancellation, and
+  shutdown behavior.
 - `terminal/` and `lifecycle/`: terminal lifecycle, cancellation, and signal
   restoration.
 - `diagnostics/log.rs`: structured runtime log behavior.

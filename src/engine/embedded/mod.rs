@@ -9,11 +9,12 @@ pub(crate) use self::terminal::EmbeddedTerminal;
 
 use super::{
     EmbeddedResultConfig, EmbeddedResultFormat, Engine, EngineHost, EngineTerminal,
-    InputActionBinding, InputFocus, ViewContext, ViewEffect, ViewInputMode, ViewInstance,
-    ViewReturn, evaluate_field, evaluate_optional_string, require_field, validate_fields,
+    EngineValidationContext, InputActionBinding, InputFocus, ViewContext, ViewEffect,
+    ViewInputMode, ViewInstance, ViewReturn, evaluate_field, evaluate_optional_string,
+    require_field, validate_fields,
 };
 use crate::command::{LauncherOutcome, ResolvedInputAction, ViewAction};
-use crate::config::{ENGINE_EMBEDDED, View};
+use crate::config::{Config, ENGINE_EMBEDDED};
 use crate::execution::PreparedProcess;
 use crate::expression::{Template, is_dynamic_string};
 use crate::input::keymap::{ActionBindings, KeymapAction};
@@ -114,7 +115,9 @@ impl Engine for EmbeddedEngine {
         ENGINE_EMBEDDED
     }
 
-    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+    fn validate_config(&self, context: EngineValidationContext<'_>) -> Result<()> {
+        let name = context.view_ref;
+        let view = context.view;
         validate_fields(
             name,
             view,
@@ -163,6 +166,10 @@ impl Engine for EmbeddedEngine {
                 name
             );
         }
+        Ok(())
+    }
+
+    fn validate_relations(&self, _config: &Config) -> Result<()> {
         Ok(())
     }
 

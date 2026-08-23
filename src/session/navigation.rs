@@ -51,7 +51,7 @@ impl AppSession<'_> {
             Some(OwnerViewScope::new(&state)),
             Some(&self.cancellation),
         );
-        let view = self.engines.create_view(ViewContext {
+        let view = self.view_factory.create_view(ViewContext {
             config: self.config,
             request: &request,
             input: &input,

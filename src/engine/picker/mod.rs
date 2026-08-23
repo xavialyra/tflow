@@ -10,15 +10,19 @@ mod tasks;
 use self::keymap::PickerKeymap;
 use self::session::PickerOptions;
 pub(crate) use self::session::PickerView;
-use super::{Engine, ViewContext, ViewInstance, validate_fields};
-use crate::config::{ConfigSource, Defaults, ENGINE_PICKER, View, toml_to_json};
-use crate::expression::{EvaluationStage, Template};
+use self::tasks::PickerItemsScheduler;
+use super::{Engine, EngineValidationContext, ViewContext, ViewInstance, validate_fields};
+use crate::config::{
+    Config, ConfigSource, Defaults, ENGINE_PICKER, ScriptSourceSpec, View, toml_to_json,
+};
+use crate::expression::{EvaluationStage, Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) use items::Item;
-pub(crate) use tasks::TaskScheduler;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PendingAction {
@@ -32,11 +36,69 @@ impl Engine for PickerEngine {
         ENGINE_PICKER
     }
 
-    fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+    fn validate_config(&self, context: EngineValidationContext<'_>) -> Result<()> {
+        let name = context.view_ref;
+        let view = context.view;
         validate_fields(name, view, &["show_prefix", "layout", "preview"])?;
         validate_picker_bool(view.engine_field("show_prefix"), "show_prefix")?;
         validate_picker_table(view.engine_field("layout"), "layout")?;
         validate_picker_table(view.engine_field("preview"), "preview")?;
+        if let Some(items) = view.selected_items() {
+            validate_items_source_config(items, context.script_root).with_context(|| {
+                format!("view {:?} has invalid items source configuration", name)
+            })?;
+        }
+        Ok(())
+    }
+
+    fn supports_data_sources(&self) -> bool {
+        true
+    }
+
+    fn validate_relations(&self, config: &Config) -> Result<()> {
+        for (view_ref, view) in config.iter_views() {
+            if config.engine(view_ref)? != self.engine_type() {
+                continue;
+            }
+            let feeds = view.selected_feeds();
+            if feeds.is_empty() {
+                continue;
+            }
+            if view.selected_items().is_some() {
+                bail!("feeds view {:?} cannot define items", view_ref);
+            }
+            let mut seen_feeds = BTreeSet::new();
+            for feed in feeds {
+                let feed_ref = &feed.view;
+                if !seen_feeds.insert(feed_ref.clone()) {
+                    bail!(
+                        "view {:?} lists feed {:?} more than once",
+                        view_ref,
+                        feed_ref
+                    );
+                }
+                let feed_view = config.view(feed_ref).with_context(|| {
+                    format!("view {:?} references missing feed {:?}", view_ref, feed_ref)
+                })?;
+                if config.engine(feed_ref)? != ENGINE_PICKER {
+                    bail!(
+                        "view {:?} feed {:?} does not use the picker engine",
+                        view_ref,
+                        feed_ref
+                    );
+                }
+                if feed_view.is_feeds_page() {
+                    bail!(
+                        "view {:?} cannot use feeds view {:?} as a feed",
+                        view_ref,
+                        feed_ref
+                    );
+                }
+                if feed_view.selected_items().is_none() {
+                    bail!("view {:?} feed {:?} must define items", view_ref, feed_ref);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -83,12 +145,40 @@ impl Engine for PickerEngine {
         };
         let picker = PickerView::new(
             &context.request.view_ref,
-            context.tasks.clone(),
+            PickerItemsScheduler::new(context.tasks.clone(), &context.request.view_ref),
             Arc::new(context.config.clone()),
             keymap,
             options,
         );
         Ok(Box::new(picker))
+    }
+}
+
+fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Result<()> {
+    match value {
+        toml::Value::Array(_) => Ok(()),
+        toml::Value::String(source) => {
+            let template = Template::parse(source)?;
+            if template.is_complete_path() {
+                Ok(())
+            } else {
+                bail!("items must be an array, complete dynamic path, or script source object")
+            }
+        }
+        toml::Value::Table(_) => {
+            let spec = ScriptSourceSpec::parse(value)
+                .context("items must be an array or a script source object")?;
+            spec.validate_picker_source()?;
+            if spec
+                .file_value()
+                .is_some_and(|file| !is_dynamic_string(file))
+            {
+                let root = root.context("script items source has no plugin root")?;
+                spec.validate_target(root)?;
+            }
+            Ok(())
+        }
+        _ => bail!("items must be an array, complete dynamic path, or script source object"),
     }
 }
 
@@ -153,6 +243,12 @@ mod tests {
             "#,
         )
         .unwrap();
-        PickerEngine.validate_config("core:dynamic", &view).unwrap();
+        PickerEngine
+            .validate_config(EngineValidationContext {
+                view_ref: "core:dynamic",
+                view: &view,
+                script_root: None,
+            })
+            .unwrap();
     }
 }

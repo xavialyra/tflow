@@ -5,6 +5,7 @@ mod execution;
 mod input;
 mod lifecycle;
 mod session;
+mod task;
 mod terminal;
 mod ui;
 mod workflow;

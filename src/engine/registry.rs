@@ -1,8 +1,9 @@
-use super::api::{Engine, ViewContext, ViewInstance};
-use crate::config::{Defaults, EngineConfigValidator, View};
+use super::api::{Engine, EngineValidationContext, ViewContext, ViewFactory, ViewInstance};
+use crate::config::{Config, Defaults, EngineConfigValidator, View};
 use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 pub(crate) struct EngineRegistry {
     engines: BTreeMap<&'static str, Box<dyn Engine>>,
@@ -13,8 +14,12 @@ impl EngineConfigValidator for EngineRegistry {
         EngineRegistry::validate_defaults(self, defaults)
     }
 
-    fn validate_view(&self, name: &str, view: &View) -> Result<()> {
-        EngineRegistry::validate_config(self, name, view)
+    fn validate_view(&self, name: &str, view: &View, script_root: Option<&Path>) -> Result<()> {
+        self.validate_view_with_root(name, view, script_root)
+    }
+
+    fn validate_relations(&self, config: &Config) -> Result<()> {
+        EngineRegistry::validate_relations(self, config)
     }
 }
 
@@ -47,7 +52,17 @@ impl EngineRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_config(&self, name: &str, view: &View) -> Result<()> {
+        self.validate_view_with_root(name, view, None)
+    }
+
+    fn validate_view_with_root(
+        &self,
+        name: &str,
+        view: &View,
+        script_root: Option<&Path>,
+    ) -> Result<()> {
         let engine = self
             .engines
             .get(view.selected_engine_type())
@@ -58,11 +73,33 @@ impl EngineRegistry {
                     view.selected_engine_type()
                 )
             })?;
-        engine.validate_config(name, view)?;
+        if !engine.supports_data_sources()
+            && (view.selected_items().is_some() || !view.selected_feeds().is_empty())
+        {
+            bail!(
+                "view {:?} using engine {:?} cannot provide picker items",
+                name,
+                view.selected_engine_type()
+            );
+        }
+        engine.validate_config(EngineValidationContext {
+            view_ref: name,
+            view,
+            script_root,
+        })?;
         engine.validate_keymap(name, view)
     }
 
-    pub(crate) fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
+    pub(crate) fn validate_relations(&self, config: &Config) -> Result<()> {
+        for engine in self.engines.values() {
+            engine.validate_relations(config)?;
+        }
+        Ok(())
+    }
+}
+
+impl ViewFactory for EngineRegistry {
+    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
         let engine_type = context.config.engine(&context.request.view_ref)?;
         let engine = self
             .engines
@@ -136,7 +173,11 @@ mod tests {
                 "test"
             }
 
-            fn validate_config(&self, _name: &str, _view: &View) -> Result<()> {
+            fn validate_config(&self, _context: EngineValidationContext<'_>) -> Result<()> {
+                Ok(())
+            }
+
+            fn validate_relations(&self, _config: &Config) -> Result<()> {
                 Ok(())
             }
 
@@ -177,6 +218,13 @@ mod tests {
 
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());
+
+        let capture_with_items =
+            view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 'ok'\nitems = []");
+        let error = registry
+            .validate_config("capture-with-items", &capture_with_items)
+            .expect_err("non-picker engines must reject picker data-source fields");
+        assert!(error.to_string().contains("cannot provide picker items"));
 
         let image = view("[engine]\ntype = 'image'\n[engine.config]\npath = 'cover.png'");
         assert!(

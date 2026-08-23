@@ -27,10 +27,9 @@ use crate::config::{Config, EvaluationSnapshot, InvocationScope, OwnerViewScope,
 use crate::diagnostics::{LogRecord, RuntimeLog};
 #[cfg(test)]
 use crate::engine::InputEdit;
-use crate::engine::picker::TaskScheduler;
 #[cfg(test)]
-use crate::engine::{EngineHost, EngineTerminal, ViewInstance};
-use crate::engine::{EngineRegistry, ViewContext};
+use crate::engine::{EngineHost, EngineRegistry, EngineTerminal, ViewInstance};
+use crate::engine::{ViewContext, ViewFactory};
 #[cfg(test)]
 use crate::input::DecodedInput;
 use crate::input::InputBuffer;
@@ -41,6 +40,7 @@ use crate::input::keymap::InputContextId;
 use crate::input::keymap::InputRouter;
 use crate::lifecycle::CancellationToken;
 use crate::state::StateInstance;
+use crate::task::TaskRuntime;
 use crate::terminal::Terminal;
 use crate::terminal::sanitize_terminal_text;
 use crate::theme::ResolvedTheme;
@@ -55,9 +55,9 @@ use std::time::Instant;
 pub(crate) struct AppSession<'a> {
     config: &'a Config,
     theme: ResolvedTheme,
-    engines: EngineRegistry,
+    view_factory: Box<dyn ViewFactory>,
     views: Vec<ViewEntry>,
-    tasks: TaskScheduler,
+    tasks: TaskRuntime,
     runtime: crate::runtime::RuntimeStore,
     runtime_log: RuntimeLog,
     router: Arc<crate::router::Router>,
@@ -79,11 +79,10 @@ pub(crate) enum SessionOutcome {
 
 impl<'a> AppSession<'a> {
     #[cfg(test)]
-    pub(crate) fn new(
-        config: &'a Config,
-        runtime_log: RuntimeLog,
-        engines: EngineRegistry,
-    ) -> Result<Self> {
+    pub(crate) fn new<V>(config: &'a Config, runtime_log: RuntimeLog, engines: V) -> Result<Self>
+    where
+        V: ViewFactory + 'static,
+    {
         let cancellation = CancellationToken::new();
         Self::new_with_theme(
             config,
@@ -94,15 +93,19 @@ impl<'a> AppSession<'a> {
         )
     }
 
-    pub(crate) fn new_with_theme(
+    pub(crate) fn new_with_theme<V>(
         config: &'a Config,
         theme: ResolvedTheme,
         runtime_log: RuntimeLog,
-        engines: EngineRegistry,
+        engines: V,
         cancellation: &CancellationToken,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        V: ViewFactory + 'static,
+    {
+        let view_factory: Box<dyn ViewFactory> = Box::new(engines);
         let mut runtime = crate::runtime::RuntimeStore::new();
-        let tasks = TaskScheduler::new(runtime.handle());
+        let tasks = TaskRuntime::new(runtime.handle());
         let router = Arc::new(crate::router::Router::new(config));
         let view_ref = config
             .default_view
@@ -139,13 +142,19 @@ impl<'a> AppSession<'a> {
             tasks: tasks.clone(),
             cancellation: cancellation.clone(),
         };
-        let root = engines.create_view(root_context)?;
+        let root = match view_factory.create_view(root_context) {
+            Ok(root) => root,
+            Err(error) => {
+                tasks.shutdown_and_wait();
+                return Err(error);
+            }
+        };
         let mut input_router = InputRouter::default();
         let input_layers = mount_view_input_layers(&mut input_router);
         Ok(Self {
             config,
             theme,
-            engines,
+            view_factory,
             views: vec![ViewEntry {
                 view_ref,
                 input,
@@ -172,16 +181,20 @@ impl<'a> AppSession<'a> {
         })
     }
 
-    pub(crate) fn single_root_with_theme(
+    pub(crate) fn single_root_with_theme<V>(
         config: &'a Config,
         theme: ResolvedTheme,
         runtime_log: RuntimeLog,
-        engines: EngineRegistry,
+        engines: V,
         view_ref: &str,
         cancellation: &CancellationToken,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        V: ViewFactory + 'static,
+    {
+        let view_factory: Box<dyn ViewFactory> = Box::new(engines);
         let mut runtime = crate::runtime::RuntimeStore::new();
-        let tasks = TaskScheduler::new(runtime.handle());
+        let tasks = TaskRuntime::new(runtime.handle());
         let router = Arc::new(crate::router::Router::new(config));
         let state = config.invocation_state.clone();
         let input = sanitize_terminal_text(&config.render_query_input(&state)?);
@@ -201,7 +214,7 @@ impl<'a> AppSession<'a> {
             Some(OwnerViewScope::new(&state)),
             Some(cancellation),
         );
-        let root = engines.create_view(ViewContext {
+        let root = match view_factory.create_view(ViewContext {
             config,
             request: &request,
             input: &input,
@@ -209,13 +222,19 @@ impl<'a> AppSession<'a> {
             evaluation,
             tasks: tasks.clone(),
             cancellation: cancellation.clone(),
-        })?;
+        }) {
+            Ok(root) => root,
+            Err(error) => {
+                tasks.shutdown_and_wait();
+                return Err(error);
+            }
+        };
         let mut input_router = InputRouter::default();
         let input_layers = mount_view_input_layers(&mut input_router);
         Ok(Self {
             config,
             theme,
-            engines,
+            view_factory,
             views: vec![ViewEntry {
                 view_ref: view_ref.to_string(),
                 input,

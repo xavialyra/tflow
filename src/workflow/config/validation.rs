@@ -1,18 +1,16 @@
 use super::{
-    CommandAction, CommandBindingVisibility, Config, Defaults, ENGINE_CAPTURE, ENGINE_PICKER,
-    ScriptSourceSpec, View, ViewRef, validate_script_source_args,
+    CommandAction, CommandBindingVisibility, Config, Defaults, ScriptSourceSpec, View, ViewRef,
+    validate_script_source_args,
 };
 use crate::expression::{EvaluationStage, Template, TemplateRegistry, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 pub(crate) trait EngineConfigValidator {
     fn validate_defaults(&self, defaults: &Defaults) -> Result<()>;
-    fn validate_view(&self, name: &str, view: &View) -> Result<()>;
+    fn validate_view(&self, name: &str, view: &View, script_root: Option<&Path>) -> Result<()>;
+    fn validate_relations(&self, config: &Config) -> Result<()>;
 }
 
 pub(super) fn validate_json_requirements(
@@ -354,34 +352,6 @@ pub(crate) fn validate_templates(value: &toml::Value) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Result<()> {
-    match value {
-        toml::Value::Array(_) => Ok(()),
-        toml::Value::String(source) => {
-            let template = Template::parse(source)?;
-            if template.is_complete_path() {
-                Ok(())
-            } else {
-                bail!("items must be an array, complete dynamic path, or script source object")
-            }
-        }
-        toml::Value::Table(_) => {
-            let spec = ScriptSourceSpec::parse(value)
-                .context("items must be an array or a script source object")?;
-            spec.validate_picker_source()?;
-            if spec
-                .file_value()
-                .is_some_and(|file| !is_dynamic_string(file))
-            {
-                let root = root.context("script items source has no plugin root")?;
-                spec.validate_target(root)?;
-            }
-            Ok(())
-        }
-        _ => bail!("items must be an array, complete dynamic path, or script source object"),
-    }
-}
-
 impl Config {
     #[cfg(test)]
     pub fn validate(&self) -> Result<()> {
@@ -508,21 +478,9 @@ impl Config {
                     );
                 }
             }
-            let feeds = view.selected_feeds();
             let items = view.selected_items();
-            if !feeds.is_empty() && items.is_some() {
-                bail!("feeds view {:?} cannot define items", view_ref);
-            }
-            let engine = self.engine(view_ref)?;
-            engines.validate_view(view_ref, view)?;
+            engines.validate_view(view_ref, view, self.plugin_root(view_ref))?;
             self.validate_view_operation_requirements(view_ref, view)?;
-            if engine != ENGINE_PICKER && (!feeds.is_empty() || items.is_some()) {
-                bail!(
-                    "view {:?} using engine {:?} cannot provide picker items",
-                    view_ref,
-                    engine
-                );
-            }
             if let Some(items) = items {
                 validate_toml_requirements(
                     &self.compiled.template_registry,
@@ -530,56 +488,6 @@ impl Config {
                     EvaluationStage::Operation,
                     &format!("view {view_ref:?} items"),
                 )?;
-                validate_items_source_config(items, self.plugin_root(view_ref)).with_context(
-                    || format!("view {:?} has invalid items source configuration", view_ref),
-                )?;
-            }
-            if engine == ENGINE_CAPTURE
-                && let Some(output) = view.engine_field("output")
-                && output.is_table()
-            {
-                let spec = ScriptSourceSpec::parse(output)
-                    .with_context(|| format!("view {:?} has invalid capture source", view_ref))?;
-                spec.validate_capture_source()
-                    .with_context(|| format!("view {:?} has invalid capture source", view_ref))?;
-                let root = self
-                    .plugin_root(view_ref)
-                    .with_context(|| format!("view {:?} has no plugin root", view_ref))?;
-                spec.validate_target(root).with_context(|| {
-                    format!("view {:?} has invalid capture source target", view_ref)
-                })?;
-            }
-
-            let mut seen_feeds = BTreeSet::new();
-            for feed in feeds {
-                let feed_ref = &feed.view;
-                if !seen_feeds.insert(feed_ref.clone()) {
-                    bail!(
-                        "view {:?} lists feed {:?} more than once",
-                        view_ref,
-                        feed_ref
-                    );
-                }
-                let feed_view = self.compiled.views.get(feed_ref).with_context(|| {
-                    format!("view {:?} references missing feed {:?}", view_ref, feed_ref)
-                })?;
-                if self.engine(feed_ref)? != ENGINE_PICKER {
-                    bail!(
-                        "view {:?} feed {:?} does not use the picker engine",
-                        view_ref,
-                        feed_ref
-                    );
-                }
-                if feed_view.is_feeds_page() {
-                    bail!(
-                        "view {:?} cannot use feeds view {:?} as a feed",
-                        view_ref,
-                        feed_ref
-                    );
-                }
-                if feed_view.selected_items().is_none() {
-                    bail!("view {:?} feed {:?} must define items", view_ref, feed_ref);
-                }
             }
 
             let mut keys = BTreeMap::new();
@@ -606,6 +514,7 @@ impl Config {
                 )?;
             }
         }
+        engines.validate_relations(self)?;
 
         Ok(())
     }

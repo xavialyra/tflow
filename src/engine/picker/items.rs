@@ -79,7 +79,7 @@ pub(crate) struct ItemsEvent {
     pub(super) pending_action: Option<PendingAction>,
 }
 
-pub(crate) type ItemsTaskHandle = super::tasks::TaskHandle;
+pub(crate) type ItemsTaskHandle = crate::task::TaskHandle<ItemsResponse>;
 
 pub(crate) fn load_items_for_page(
     config: &Config,
