@@ -116,25 +116,22 @@ pub(crate) fn finish(
     let Some(handler_config) = payload.handler.as_ref() else {
         return Ok(default_result(returned.output));
     };
-    let owner = if adapter.context.page.view_ref == adapter.command.view {
-        &adapter.context.page
-    } else {
-        &adapter
-            .context
-            .selection
-            .as_ref()
-            .filter(|selection| selection.owner.view_ref == adapter.command.view)
-            .context("return command owner is not available in its adapter context")?
-            .owner
-    };
+    let owner = &adapter.context.owner;
+    anyhow::ensure!(
+        owner.view_ref == adapter.command.view,
+        "return command owner is not available in its adapter context"
+    );
     let returned_value = crate::command::return_value(&returned);
-    let owner_scope = OwnerViewScope::new(&owner.state).with_binding_raw(Some(&owner.binding_raw));
+    let owner_scope = OwnerViewScope::new(&owner.view_ref, &owner.parameters)
+        .with_binding_raw(Some(&owner.binding_raw));
     let snapshot = EvaluationSnapshot::new(
         InvocationScope::new(&config.input_value),
         SessionScope::new(&adapter.context.runtime),
         Some(owner_scope),
         Some(cancellation),
     )
+    .with_current(&adapter.context.current)
+    .with_current_fields(adapter.context.current_fields)
     .with_return_scope(Some(ReturnScope::new(&returned_value)));
     let handler_value =
         config.evaluate_value(&snapshot, EvaluationStage::Return, handler_config)?;

@@ -1,32 +1,75 @@
+use std::ops::Range;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct InputBuffer {
+pub(crate) struct EditorBuffer {
     pub(crate) raw: String,
-    pub(crate) params: String,
     pub(crate) cursor: usize,
-    pub(crate) rejected: bool,
+    pub(crate) revision: u64,
 }
 
-impl InputBuffer {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditorSnapshot {
+    pub(crate) raw: String,
+    pub(crate) cursor: usize,
+    pub(crate) revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BufferEditError {
+    RevisionMismatch { expected: u64, actual: u64 },
+    RangeOutOfBounds,
+    NonCharBoundary,
+}
+
+impl std::fmt::Display for BufferEditError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RevisionMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "editor buffer revision is {actual}, expected {expected}"
+                )
+            }
+            Self::RangeOutOfBounds => {
+                formatter.write_str("editor buffer edit range is out of bounds")
+            }
+            Self::NonCharBoundary => {
+                formatter.write_str("editor buffer edit range is not on UTF-8 boundaries")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BufferEditError {}
+
+impl EditorBuffer {
     #[cfg(test)]
     pub(crate) fn new(raw: impl Into<String>) -> Self {
         let raw = raw.into();
         let cursor = raw.len();
         Self {
-            params: raw.clone(),
             raw,
             cursor,
-            rejected: false,
+            revision: 0,
         }
     }
 
-    pub(crate) fn with_params(raw: impl Into<String>, params: impl Into<String>) -> Self {
+    pub(crate) fn from_raw(raw: impl Into<String>, cursor: usize) -> Self {
         let raw = raw.into();
-        let cursor = raw.len();
-        Self {
+        let mut buffer = Self {
             raw,
-            params: params.into(),
-            cursor,
-            rejected: false,
+            cursor: 0,
+            revision: 0,
+        };
+        buffer.set_cursor(cursor);
+        buffer
+    }
+
+    pub(crate) fn snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            raw: self.raw.clone(),
+            cursor: self.cursor,
+            revision: self.revision,
         }
     }
 
@@ -35,16 +78,25 @@ impl InputBuffer {
     }
 
     pub(crate) fn insert(&mut self, character: char) {
-        self.cursor = self.cursor.min(self.raw.len());
-        while !self.raw.is_char_boundary(self.cursor) {
-            self.cursor = self.cursor.saturating_sub(1);
-        }
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         self.raw.insert(self.cursor, character);
         self.cursor += character.len_utf8();
+        self.bump_revision();
+    }
+
+    pub(crate) fn insert_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
+        self.raw.insert_str(self.cursor, text);
+        self.cursor += text.len();
+        self.bump_revision();
+        true
     }
 
     pub(crate) fn move_left(&mut self) {
-        self.cursor = self.cursor.min(self.raw.len());
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         if self.cursor == 0 {
             return;
         }
@@ -56,7 +108,7 @@ impl InputBuffer {
     }
 
     pub(crate) fn move_right(&mut self) {
-        self.cursor = self.cursor.min(self.raw.len());
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         if self.cursor >= self.raw.len() {
             self.cursor = self.raw.len();
             return;
@@ -77,7 +129,7 @@ impl InputBuffer {
     }
 
     pub(crate) fn delete_backward(&mut self) -> bool {
-        self.cursor = self.cursor.min(self.raw.len());
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         if self.cursor == 0 {
             return false;
         }
@@ -89,11 +141,12 @@ impl InputBuffer {
                 .unwrap_or(1);
         self.raw.drain(start..self.cursor);
         self.cursor = start;
+        self.bump_revision();
         true
     }
 
     pub(crate) fn delete_forward(&mut self) -> bool {
-        self.cursor = self.cursor.min(self.raw.len());
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         if self.cursor >= self.raw.len() {
             return false;
         }
@@ -104,11 +157,12 @@ impl InputBuffer {
                 .map(char::len_utf8)
                 .unwrap_or(1);
         self.raw.drain(self.cursor..end);
+        self.bump_revision();
         true
     }
 
     pub(crate) fn delete_word(&mut self) -> bool {
-        self.cursor = self.cursor.min(self.raw.len());
+        self.cursor = previous_char_boundary(&self.raw, self.cursor);
         let previous = self.cursor;
         while self.cursor > 0
             && self.raw[..self.cursor]
@@ -130,6 +184,7 @@ impl InputBuffer {
             return false;
         }
         self.raw.drain(self.cursor..previous);
+        self.bump_revision();
         true
     }
 
@@ -139,7 +194,69 @@ impl InputBuffer {
         }
         self.raw.clear();
         self.cursor = 0;
+        self.bump_revision();
         true
+    }
+
+    pub(crate) fn replace_range(
+        &mut self,
+        expected_revision: u64,
+        range: Range<usize>,
+        replacement: &str,
+        cursor: usize,
+    ) -> Result<(), BufferEditError> {
+        if self.revision != expected_revision {
+            return Err(BufferEditError::RevisionMismatch {
+                expected: expected_revision,
+                actual: self.revision,
+            });
+        }
+        if range.start > range.end
+            || range.end > self.raw.len()
+            || !self.raw.is_char_boundary(range.start)
+            || !self.raw.is_char_boundary(range.end)
+        {
+            return Err(if range.start > range.end || range.end > self.raw.len() {
+                BufferEditError::RangeOutOfBounds
+            } else {
+                BufferEditError::NonCharBoundary
+            });
+        }
+        let new_len = self.raw.len() - (range.end - range.start) + replacement.len();
+        if cursor > new_len {
+            return Err(BufferEditError::RangeOutOfBounds);
+        }
+        let mut candidate = self.raw.clone();
+        candidate.replace_range(range.clone(), replacement);
+        if !candidate.is_char_boundary(cursor) {
+            return Err(BufferEditError::NonCharBoundary);
+        }
+        self.raw = candidate;
+        self.cursor = cursor;
+        self.bump_revision();
+        Ok(())
+    }
+
+    pub(crate) fn replace_all(&mut self, raw: String, cursor: usize) {
+        self.raw = raw;
+        self.set_cursor(cursor);
+        self.bump_revision();
+    }
+
+    pub(crate) fn replaced_all(&self, raw: String, cursor: usize) -> Result<Self, BufferEditError> {
+        if cursor > raw.len() {
+            return Err(BufferEditError::RangeOutOfBounds);
+        }
+        if !raw.is_char_boundary(cursor) {
+            return Err(BufferEditError::NonCharBoundary);
+        }
+        let mut candidate = self.clone();
+        candidate.replace_all(raw, cursor);
+        Ok(candidate)
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 
@@ -149,4 +266,45 @@ pub(crate) fn previous_char_boundary(text: &str, mut index: usize) -> usize {
         index -= 1;
     }
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revision_tracks_text_edits_but_not_cursor_motion() {
+        let mut buffer = EditorBuffer::new("ab");
+        assert_eq!(buffer.revision, 0);
+        buffer.move_left();
+        assert_eq!(buffer.revision, 0);
+        buffer.insert('x');
+        assert_eq!(buffer.raw, "axb");
+        assert_eq!(buffer.revision, 1);
+        assert!(buffer.delete_backward());
+        assert_eq!(buffer.revision, 2);
+    }
+
+    #[test]
+    fn range_edits_require_the_current_revision_and_utf8_boundaries() {
+        let mut buffer = EditorBuffer::new("cafe");
+        assert_eq!(
+            buffer.replace_range(1, 0..1, "C", 1),
+            Err(BufferEditError::RevisionMismatch {
+                expected: 1,
+                actual: 0,
+            })
+        );
+        let mut unicode = EditorBuffer::new("éa");
+        assert_eq!(
+            unicode.replace_range(0, 1..2, "", 1),
+            Err(BufferEditError::NonCharBoundary)
+        );
+        buffer
+            .replace_range(0, 0..4, "café", 5)
+            .expect("valid range edit");
+        assert_eq!(buffer.raw, "café");
+        assert_eq!(buffer.cursor, 5);
+        assert_eq!(buffer.revision, 1);
+    }
 }

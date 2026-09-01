@@ -4,7 +4,7 @@ mod layout;
 
 pub(crate) use frame::ChromeFrame;
 #[allow(unused_imports)]
-pub(crate) use input::InputBuffer;
+pub(crate) use input::EditorBuffer;
 use input::previous_char_boundary;
 use layout::ChromeLayout;
 #[cfg(test)]
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn input_buffer_edits_at_the_cursor() {
-        let mut input = InputBuffer::new("ac");
+        let mut input = EditorBuffer::new("ac");
         input.move_left();
         input.insert('b');
         assert_eq!(input.raw, "abc");
@@ -693,7 +693,8 @@ mod tests {
         terminal
             .draw(|draw| {
                 let area = frame.render_chrome(draw, &theme);
-                draw.render_widget(screen.widget(), area);
+                let snapshot = screen.snapshot();
+                draw.render_widget(snapshot.widget(), area);
             })
             .unwrap();
 

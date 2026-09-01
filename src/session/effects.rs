@@ -1,26 +1,61 @@
+use super::decision::staged_runtime;
 use super::state::{ReturnTransition, prepared_action_effect};
 use super::{AppSession, SessionOutcome};
-use crate::command::{CommandInvocation, ViewEffect};
-use crate::engine::{EngineHost, InputEdit};
+use crate::command::{CommandInvocation, LauncherOutcome, ViewEffect};
+use crate::engine::InputEdit;
 use crate::terminal::Terminal;
 use anyhow::{Context, Result};
-use serde_json::Value;
 use std::time::Instant;
+
+pub(super) struct PreparedInputReady {
+    prepared: crate::session::navigation::PreparedActiveCommit,
+}
+
+struct PreparedParameterPatch {
+    index: usize,
+    mount_id: crate::input::ViewMountId,
+    prepared: crate::session::navigation::PreparedActiveCommit,
+}
 
 impl AppSession<'_> {
     pub(super) fn process_effect(
         &mut self,
-        mut effect: ViewEffect,
+        effect: ViewEffect,
         terminal: &mut Terminal,
     ) -> Result<Option<SessionOutcome>> {
+        let mut consumed_transition = false;
+        match self.process_effect_inner(effect, terminal, &mut consumed_transition) {
+            Err(error) if consumed_transition && !self.cancellation.is_cancelled() => {
+                self.report_consumed_transition_error(error);
+                Ok(None)
+            }
+            result => result,
+        }
+    }
+
+    fn process_effect_inner(
+        &mut self,
+        mut effect: ViewEffect,
+        terminal: &mut Terminal,
+        consumed_transition: &mut bool,
+    ) -> Result<Option<SessionOutcome>> {
         for _ in 0..64 {
+            if let Some(outcome) = self.committed_outcome.take() {
+                return Ok(Some(outcome));
+            }
             effect = match effect {
-                ViewEffect::Continue => return Ok(None),
+                ViewEffect::Continue => match self.deferred_effect.take() {
+                    Some(effect) => effect,
+                    None => return Ok(None),
+                },
                 ViewEffect::CopyToClipboard(value) => {
                     terminal.copy_to_clipboard(&value)?;
                     ViewEffect::Continue
                 }
-                ViewEffect::Exit => return Ok(Some(SessionOutcome::Exited)),
+                ViewEffect::Exit => {
+                    self.exit_session();
+                    return Ok(Some(SessionOutcome::Exited));
+                }
                 ViewEffect::DispatchCommand(execution) => {
                     prepared_action_effect(crate::command::prepare_command_action(
                         self.config,
@@ -61,14 +96,22 @@ impl AppSession<'_> {
                     self.apply_call(call)?;
                     ViewEffect::Continue
                 }
-                ViewEffect::Return(returned) => match self.apply_return(returned)? {
-                    ReturnTransition::Effect(effect) => *effect,
-                    ReturnTransition::Outcome(outcome) => return Ok(Some(outcome)),
-                },
+                ViewEffect::Return(returned) => {
+                    let consumes_boundary =
+                        self.views.iter().any(|entry| entry.call_boundary.is_some());
+                    let transition = self.apply_return(returned)?;
+                    *consumed_transition |= consumes_boundary;
+                    match transition {
+                        ReturnTransition::Effect(effect) => *effect,
+                        ReturnTransition::Outcome(outcome) => return Ok(Some(outcome)),
+                    }
+                }
                 ViewEffect::Back(edit) => {
+                    let consumes_child = self.views.len() > 1;
                     if let Some(outcome) = self.pop_current(edit)? {
                         return Ok(Some(outcome));
                     }
+                    *consumed_transition |= consumes_child;
                     ViewEffect::Continue
                 }
             };
@@ -81,26 +124,35 @@ impl AppSession<'_> {
         invocation: &CommandInvocation,
         status: std::io::Result<std::process::ExitStatus>,
     ) {
-        let entry = self
+        let view_ref = self
             .views
-            .last_mut()
-            .expect("session has no active view while recording a command result");
-        let mut host = EngineHost {
-            config: self.config,
-            theme: self.theme,
-            input: &entry.input,
-            state: &mut entry.state,
-            runtime: &mut self.runtime,
-            runtime_log: &mut self.runtime_log,
-            active_error: &mut self.active_error,
-            active_error_deadline: &mut self.active_error_deadline,
-        };
+            .last()
+            .expect("session has no active view while recording a command result")
+            .view_ref
+            .clone();
         match status {
             Ok(status) => {
                 let message = command_status_message(&status);
-                host.record_command_status(invocation, &message, status.success());
+                if status.success() {
+                    self.active_error = None;
+                    self.active_error_deadline = None;
+                    self.runtime_log.record(
+                        crate::diagnostics::LogLevel::Info,
+                        Some(invocation.source_view()),
+                        Some(invocation.id()),
+                        &message,
+                    );
+                } else {
+                    self.apply_engine_notice(crate::engine::EngineNotice::Error {
+                        view_ref: invocation.source_view().to_string(),
+                        message,
+                    });
+                }
             }
-            Err(error) => host.record_error(invocation, &error.to_string()),
+            Err(error) => self.apply_engine_notice(crate::engine::EngineNotice::Error {
+                view_ref,
+                message: error.to_string(),
+            }),
         }
     }
 
@@ -123,40 +175,54 @@ impl AppSession<'_> {
     }
 
     pub(super) fn mark_input_changed(&mut self) -> Result<()> {
-        let entry = self
-            .views
+        self.views
             .last_mut()
-            .context("session has no active view")?;
-        entry.input_dirty = true;
-        entry.input.rejected = false;
-        self.active_error = None;
-        self.active_error_deadline = None;
+            .context("session has no active view")?
+            .mark_input_changed();
+        self.clear_input_error();
         Ok(())
     }
 
-    pub(super) fn dispatch_input_ready(&mut self) -> Result<ViewEffect> {
-        let entry = self
+    pub(super) fn clear_input_error(&mut self) {
+        self.active_error = None;
+        self.active_error_deadline = None;
+    }
+
+    pub(super) fn dispatch_input_ready(&mut self) -> Result<Option<PreparedInputReady>> {
+        let index = self
             .views
-            .last_mut()
+            .len()
+            .checked_sub(1)
             .context("session has no active view")?;
-        if entry
-            .input_deadline
-            .is_none_or(|deadline| Instant::now() < deadline)
         {
-            return Ok(ViewEffect::Continue);
+            let entry = &self.views[index];
+            if entry
+                .input_deadline
+                .is_none_or(|deadline| Instant::now() < deadline)
+            {
+                return Ok(None);
+            }
         }
-        entry.input_deadline = None;
-        let mut host = EngineHost {
-            config: self.config,
-            theme: self.theme,
-            input: &mut entry.input,
-            state: &mut entry.state,
-            runtime: &mut self.runtime,
-            runtime_log: &mut self.runtime_log,
-            active_error: &mut self.active_error,
-            active_error_deadline: &mut self.active_error_deadline,
-        };
-        entry.instance.input_ready(&mut host)
+        let context = self.current_view_context()?;
+        let mut staged_runtime = staged_runtime(&self.runtime);
+        let prepared = self.dispatch_engine_normal_at(index, &mut staged_runtime, |runtime| {
+            runtime.input_ready(context)
+        })?;
+        let mut source = self.prepared_parent_from_frame(index, false)?;
+        source.input_deadline = None;
+        source.publication = prepared.publication;
+        source.reports = prepared.reports;
+        source.work_pending = true;
+        let prepared =
+            self.prepare_active_commit_at(index, source, prepared.effect, &mut staged_runtime)?;
+        Ok(Some(PreparedInputReady { prepared }))
+    }
+
+    pub(super) fn commit_input_ready(
+        &mut self,
+        prepared: PreparedInputReady,
+    ) -> Result<LauncherOutcome> {
+        Ok(self.commit_active(prepared.prepared))
     }
 
     pub(super) fn apply_input_edit(&mut self, edit: InputEdit) -> Result<()> {
@@ -165,81 +231,122 @@ impl AppSession<'_> {
             .last_mut()
             .context("session has no active view")?;
         match edit {
-            InputEdit::SetBuffer { raw, cursor } => {
-                entry.input.raw = raw;
-                entry.input.set_cursor(cursor);
-            }
+            InputEdit::SetBuffer { raw, cursor } => entry.replace_input(raw, cursor)?,
         }
-        entry.input_dirty = true;
-        entry.input.rejected = false;
-        self.active_error = None;
-        self.active_error_deadline = None;
+        self.clear_input_error();
         Ok(())
     }
 
-    pub(super) fn apply_inactive_parent_edit(
+    pub(super) fn apply_parameter_patch_request(
         &mut self,
-        edit: InputEdit,
-        runtime_snapshot: &Value,
-    ) -> Result<()> {
-        let (input, input_dirty, input_deadline, state) = {
-            let entry = self.views.last().context("session has no parent view")?;
-            (
-                entry.input.clone(),
-                entry.input_dirty,
-                entry.input_deadline,
-                entry.state.clone(),
-            )
-        };
-        let active_error = self.active_error.clone();
-        let active_error_deadline = self.active_error_deadline;
-        self.runtime.replace(runtime_snapshot.clone());
+        request: crate::parameter::ParameterPatchRequest,
+    ) -> Result<LauncherOutcome> {
+        let prepared = self.prepare_parameter_patch_request(request)?;
+        self.commit_parameter_patch(prepared)
+    }
 
-        let transaction = (|| {
-            self.apply_input_edit(edit)?;
-            anyhow::ensure!(
-                self.reconcile_input()?.is_none(),
-                "a parent input edit produced another navigation"
-            );
-            let entry = self
-                .views
-                .last_mut()
-                .context("session has no parent view")?;
-            anyhow::ensure!(!entry.input.rejected, "the parent input edit was rejected");
-            entry.input_deadline = None;
-            Ok(())
-        })();
-        if let Err(error) = transaction {
-            let entry = self
-                .views
-                .last_mut()
-                .context("session has no parent view during rollback")?;
-            entry.input = input;
-            entry.input_dirty = input_dirty;
-            entry.input_deadline = input_deadline;
-            entry.state = state;
-            self.active_error = active_error;
-            self.active_error_deadline = active_error_deadline;
-            self.runtime.replace(runtime_snapshot.clone());
-            let activation = self.activate_current();
-            let restoration = self.restore_current_input();
-            let mut rollback_errors = Vec::new();
-            if let Err(activation_error) = activation {
-                rollback_errors.push(format!("activate failed: {activation_error:#}"));
+    fn prepare_parameter_patch_request(
+        &mut self,
+        request: crate::parameter::ParameterPatchRequest,
+    ) -> Result<PreparedParameterPatch> {
+        let index = self
+            .views
+            .len()
+            .checked_sub(1)
+            .context("session has no active view")?;
+        let entry = &self.views[index];
+        let target = entry.mount_id;
+        anyhow::ensure!(
+            request.target == target,
+            "parameter patch targets mount {:?}, active mount is {:?}",
+            request.target,
+            target
+        );
+
+        let mut state = entry.state.clone();
+        let mut input = entry.input.clone();
+        let mut committed_buffer_projection = entry.committed_buffer_projection.clone();
+        let mut buffer_generation = entry.buffer_generation;
+        let mut input_dirty = entry.input_dirty;
+        let input_deadline = entry.input_deadline;
+        let policy = request.input_policy;
+        self.config.apply_parameter_patch(&mut state, &request)?;
+        let rendered = (policy == crate::parameter::ParameterInputPolicy::Rerender)
+            .then(|| self.config.render_parameter_input(&state))
+            .transpose()?;
+
+        let published_input = match policy {
+            crate::parameter::ParameterInputPolicy::Preserve => {
+                // Preserve publishes the last committed buffer while applying the typed patch.
+                committed_buffer_projection.clone()
             }
-            if let Err(restoration_error) = restoration {
-                rollback_errors.push(format!("input restore failed: {restoration_error:#}"));
+            crate::parameter::ParameterInputPolicy::Rerender => {
+                let raw = rendered.expect("Rerender must render parameter input");
+                let cursor = input.cursor.min(raw.len());
+                input.replace_all(raw, cursor);
+                buffer_generation = buffer_generation.wrapping_add(1);
+                input_dirty = false;
+                state.set_input_rejected(false);
+                committed_buffer_projection = input.clone();
+                input.clone()
             }
-            return if rollback_errors.is_empty() {
-                Err(error)
-            } else {
-                Err(error.context(format!(
-                    "could not fully restore the parent View after its input edit failed: {}",
-                    rollback_errors.join("; ")
-                )))
-            };
-        }
-        Ok(())
+        };
+
+        let mut staged_runtime = super::decision::staged_runtime(&self.runtime);
+        super::publication::publish_active_input(
+            &mut staged_runtime,
+            &published_input,
+            state.raw_input(),
+            &state,
+        )?;
+        let parameters = self.config.parameter_snapshot(
+            &state,
+            crate::input::InputSourceIdentity {
+                frame: target,
+                generation: buffer_generation,
+            },
+        )?;
+
+        let context =
+            self.view_context_at(index, &input, &state, buffer_generation, &staged_runtime)?;
+        let prepared = self.dispatch_engine_normal_at(index, &mut staged_runtime, |runtime| {
+            runtime.parameters(parameters, context.identity())
+        })?;
+        let mut source = self.prepared_parent_from_frame(index, true)?;
+        source.input = input;
+        source.committed_buffer_projection = committed_buffer_projection;
+        source.state = state;
+        source.buffer_generation = buffer_generation;
+        source.input_dirty = input_dirty;
+        source.input_deadline = input_deadline;
+        source.reports = prepared.reports;
+        source.publication = prepared.publication;
+        source.work_pending = true;
+        let prepared =
+            self.prepare_active_commit_at(index, source, prepared.effect, &mut staged_runtime)?;
+
+        Ok(PreparedParameterPatch {
+            index,
+            mount_id: target,
+            prepared,
+        })
+    }
+
+    fn commit_parameter_patch(
+        &mut self,
+        prepared: PreparedParameterPatch,
+    ) -> Result<LauncherOutcome> {
+        assert_eq!(
+            prepared.index + 1,
+            self.views.len(),
+            "parameter patch commit requires the prepared mount to remain active"
+        );
+        assert_eq!(
+            self.views[prepared.index].mount_id, prepared.mount_id,
+            "parameter patch commit target changed after preparation"
+        );
+
+        Ok(self.commit_active(prepared.prepared))
     }
 }
 

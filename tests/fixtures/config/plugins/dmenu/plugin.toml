@@ -35,6 +35,7 @@ nth-delimiter = { type = "string", nullable = true }
 [views.main.commands.accept]
 key = "enter"
 label = "Accept"
+requires = "input"
 type = "return"
 
 [views.main.commands.accept.payload]

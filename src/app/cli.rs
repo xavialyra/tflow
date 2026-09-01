@@ -1,5 +1,7 @@
 use super::{App, InputArtifact, InvocationResult, LoadedApp, finish};
-use crate::config::{Config, EngineConfigValidator, ImageProtocol as ConfigImageProtocol};
+#[cfg(test)]
+use crate::config::EngineConfigValidator;
+use crate::config::{Config, ImageProtocol as ConfigImageProtocol};
 use crate::diagnostics::RuntimeLog;
 use crate::engine::EngineRegistry;
 use crate::lifecycle::SignalGuard;
@@ -48,7 +50,7 @@ struct Args {
 }
 
 impl Config {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn load(user_path: &Path) -> Result<Self> {
         let engines = EngineRegistry::new();
         Self::load_with_engines(user_path, &engines)
@@ -63,7 +65,7 @@ impl Config {
         Ok(LoadedApp { config, theme })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn load_with_engines<V>(user_path: &Path, engines: &V) -> Result<Self>
     where
         V: EngineConfigValidator,
@@ -112,9 +114,9 @@ pub(crate) fn run() -> Result<i32> {
             .clone()
             .context("no default_view configured; specify a View on the command line")?,
     };
-    let state = config.bind_invocation_state(&root_view, &args.view_options)?;
+    let parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
     let input = InputArtifact::capture()?;
-    config.set_invocation(input.value(), state);
+    config.set_invocation(input.value(), parameters);
 
     let runtime_log = RuntimeLog::open(config.log_file.as_deref());
     let signal_guard =

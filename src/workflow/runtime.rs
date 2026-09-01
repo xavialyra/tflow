@@ -1,26 +1,10 @@
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::sync::{Arc, RwLock};
-
-#[derive(Debug, Clone)]
-pub(crate) struct RuntimeHandle {
-    value: Arc<RwLock<Value>>,
-}
-
-impl RuntimeHandle {
-    pub(crate) fn read(&self) -> Value {
-        self.value
-            .read()
-            .expect("runtime handle lock was poisoned")
-            .clone()
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeStore {
     value: Value,
     revision: u64,
-    shared: RuntimeHandle,
 }
 
 impl Default for RuntimeStore {
@@ -31,22 +15,14 @@ impl Default for RuntimeStore {
 
 impl RuntimeStore {
     pub(crate) fn new() -> Self {
-        let value = Value::Object(serde_json::Map::new());
         Self {
-            value: value.clone(),
+            value: Value::Object(serde_json::Map::new()),
             revision: 0,
-            shared: RuntimeHandle {
-                value: Arc::new(RwLock::new(value)),
-            },
         }
     }
 
     pub(crate) fn snapshot(&self) -> &Value {
         &self.value
-    }
-
-    pub(crate) fn handle(&self) -> RuntimeHandle {
-        self.shared.clone()
     }
 
     #[cfg(test)]
@@ -56,7 +32,6 @@ impl RuntimeStore {
 
     pub(crate) fn replace(&mut self, value: Value) -> u64 {
         self.value = value;
-        self.publish_shared();
         self.revision = self.revision.wrapping_add(1);
         self.revision
     }
@@ -80,17 +55,8 @@ impl RuntimeStore {
             return Ok(self.revision);
         }
         self.value = value;
-        self.publish_shared();
         self.revision = self.revision.wrapping_add(1);
         Ok(self.revision)
-    }
-
-    fn publish_shared(&self) {
-        *self
-            .shared
-            .value
-            .write()
-            .expect("runtime handle lock was poisoned") = self.value.clone();
     }
 }
 

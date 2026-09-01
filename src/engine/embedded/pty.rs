@@ -1,7 +1,7 @@
 use crate::engine::EmbeddedTerminal;
 use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat, ViewOutput};
 use crate::execution::{MANAGED_ENVIRONMENT, PreparedProcess, ProcessGroupGuard};
-use crate::lifecycle::CancellationToken;
+use crate::lifecycle::{CancellationObserver, CancellationStatus};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -22,13 +22,16 @@ const PTY_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
 const MAX_PTY_READ_BYTES: usize = 64 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?6c";
 
+#[derive(Clone)]
 pub enum EmbeddedOutcome {
     Cancelled,
     Exited(i32),
     Signaled(i32),
+    Failed(String),
     Returned(ViewOutput),
 }
 
+#[derive(Clone)]
 pub struct EmbeddedRunResult {
     pub outcome: EmbeddedOutcome,
 }
@@ -255,7 +258,22 @@ impl EmbeddedRuntime {
     pub(crate) fn poll(
         &mut self,
         size: (u16, u16),
-        cancellation: &CancellationToken,
+        cancellation: &CancellationObserver,
+    ) -> Result<EmbeddedPoll> {
+        self.poll_with_resize(Some(size), cancellation)
+    }
+
+    pub(crate) fn poll_background(
+        &mut self,
+        cancellation: &CancellationObserver,
+    ) -> Result<EmbeddedPoll> {
+        self.poll_with_resize(None, cancellation)
+    }
+
+    fn poll_with_resize(
+        &mut self,
+        size: Option<(u16, u16)>,
+        cancellation: &CancellationObserver,
     ) -> Result<EmbeddedPoll> {
         if self.finished {
             bail!("embedded runtime was polled after completion");
@@ -263,31 +281,46 @@ impl EmbeddedRuntime {
         if cancellation.is_cancelled() {
             return Ok(EmbeddedPoll::Finished(self.finish_cancelled()));
         }
-        let size = self
-            .requested_size
-            .take()
-            .unwrap_or((size.0.max(1), size.1.max(1)));
-        if size != self.last_size {
-            self.screen.resize(size.0, size.1);
-            resize_pty(self.master, self.process.pid(), size)?;
-            self.last_size = size;
+        if let Some(size) = size {
+            let size = self
+                .requested_size
+                .take()
+                .unwrap_or((size.0.max(1), size.1.max(1)));
+            if size != self.last_size {
+                self.screen.resize(size.0, size.1);
+                resize_pty(self.master, self.process.pid(), size)?;
+                self.last_size = size;
+            }
         }
 
         if let Some(status) = self.process.try_wait_raw()? {
             self.process.cleanup_group();
-            self.drain_output()?;
+            if let Err(error) = self.drain_output() {
+                return Err(self.finish_error(error));
+            }
             return self.finish_status(status).map(EmbeddedPoll::Finished);
         }
 
-        let output_closed = self.drain_output()?;
+        let output_closed = match self.drain_output() {
+            Ok(output_closed) => output_closed,
+            Err(error) => return Err(self.finish_error(error)),
+        };
         if self.result_open
             && let (Some(fd), Some(config)) = (self.result_fd, self.result_config)
-            && drain_result(fd, &mut self.result_bytes, config.max_bytes)?
         {
-            self.result_open = false;
+            let closed = match drain_result(fd, &mut self.result_bytes, config.max_bytes) {
+                Ok(closed) => closed,
+                Err(error) => return Err(self.finish_error(error)),
+            };
+            if closed {
+                self.result_open = false;
+            }
         }
         if output_closed {
-            if let Some(status) = wait_for_pty_exit(&mut self.process)? {
+            if let Some(status) = match wait_for_pty_exit(&mut self.process) {
+                Ok(status) => status,
+                Err(error) => return Err(self.finish_error(error)),
+            } {
                 self.process.cleanup_group();
                 return self.finish_status(status).map(EmbeddedPoll::Finished);
             }
@@ -303,14 +336,13 @@ impl EmbeddedRuntime {
         write_fd(self.master, bytes)
     }
 
-    pub(crate) fn request_resize(&mut self, size: (u16, u16)) {
-        let size = (size.0.max(1), size.1.max(1));
-        self.screen.resize(size.0, size.1);
-        self.requested_size = Some(size);
-    }
-
     pub(crate) fn screen(&self) -> &EmbeddedTerminal {
         &self.screen
+    }
+
+    #[cfg(test)]
+    fn last_size_for_test(&self) -> (u16, u16) {
+        self.last_size
     }
 
     fn drain_output(&mut self) -> Result<bool> {
@@ -323,10 +355,17 @@ impl EmbeddedRuntime {
             self.result_fd,
             self.result_config,
             &mut self.result_bytes,
-        )?;
+        );
         self.close_fds();
         self.finished = true;
-        Ok(EmbeddedRunResult { outcome })
+        Ok(EmbeddedRunResult { outcome: outcome? })
+    }
+
+    fn finish_error(&mut self, error: anyhow::Error) -> anyhow::Error {
+        self.process.force_kill();
+        self.close_fds();
+        self.finished = true;
+        error
     }
 
     fn finish_cancelled(&mut self) -> EmbeddedRunResult {
@@ -676,7 +715,29 @@ fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedResultConfig, EmbeddedResultFormat, TerminalResponder, parse_result};
+    use super::{
+        EmbeddedResultConfig, EmbeddedResultFormat, EmbeddedRuntime, PreparedProcess,
+        TerminalResponder, parse_result,
+    };
+    use crate::lifecycle::CancellationToken;
+
+    #[test]
+    fn background_poll_does_not_resize_the_pty() {
+        let cancellation = CancellationToken::new();
+        let prepared = PreparedProcess {
+            argv: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
+            environment: Vec::new(),
+            current_dir: None,
+        };
+        let mut runtime = EmbeddedRuntime::start(&prepared, None, (20, 10), &[]).unwrap();
+        assert_eq!(runtime.last_size_for_test(), (20, 10));
+
+        runtime.poll_background(&cancellation.observer()).unwrap();
+
+        assert_eq!(runtime.last_size_for_test(), (20, 10));
+        cancellation.cancel();
+        runtime.poll_background(&cancellation.observer()).unwrap();
+    }
 
     #[test]
     fn path_lookup_uses_the_embedded_working_directory() {

@@ -1,19 +1,19 @@
 use crate::terminal::sanitize_text;
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub(crate) struct CaptureSession {
     title: String,
     output: String,
-    lines: Vec<String>,
-    status: String,
+    lines: Arc<[String]>,
 }
 
 impl CaptureSession {
-    pub(crate) fn new(title: &str, output: &str, status: &str) -> Self {
+    pub(crate) fn new(title: &str, output: &str) -> Self {
         Self {
             title: title.to_string(),
             output: output.to_string(),
-            lines: capture_lines(output),
-            status: status.to_string(),
+            lines: capture_lines(output).into(),
         }
     }
 
@@ -25,12 +25,8 @@ impl CaptureSession {
         &self.title
     }
 
-    pub(crate) fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    pub(crate) fn status(&self) -> &str {
-        &self.status
+    pub(crate) fn shared_lines(&self) -> Arc<[String]> {
+        Arc::clone(&self.lines)
     }
 }
 

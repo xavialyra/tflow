@@ -1,14 +1,15 @@
 use super::{
-    CommandBinding, CompiledConfig, Config, Defaults, ENGINE_PICKER, FeedSpec, PluginMetadata,
-    RawConfig, StateInstance, View, ViewRef,
+    CommandBinding, CompiledConfig, Config, Defaults, ENGINE_PICKER, FeedSpec, ParameterState,
+    PluginMetadata, RawConfig, View, ViewRef,
 };
 use crate::expression::{EvaluationStage, TemplateRegistry, is_dynamic_string};
-use crate::state::StateRegistry;
+use crate::parameter::ParameterRegistry;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 impl CompiledConfig {
@@ -29,10 +30,10 @@ impl CompiledConfig {
         };
         let template_registry = TemplateRegistry::compile_json_tree(&template_value)?;
         validate_view_bootstrap_requirements(&views, &template_registry)?;
-        let state_registry = if config_value.get("plugins").is_some() {
-            StateRegistry::compile_with_templates(&config_value, &template_registry)?
+        let parameter_registry = if config_value.get("plugins").is_some() {
+            ParameterRegistry::compile_with_templates(&config_value, &template_registry)?
         } else {
-            StateRegistry::default()
+            ParameterRegistry::default()
         };
         Ok(Self {
             views,
@@ -41,7 +42,7 @@ impl CompiledConfig {
             plugin_roots,
             config_value,
             template_registry,
-            state_registry,
+            parameter_registry: Arc::new(parameter_registry),
         })
     }
 }
@@ -140,7 +141,7 @@ impl Config {
             log_file: raw.log_file,
             commands: raw.commands,
             input_value: Value::Null,
-            invocation_state: StateInstance::default(),
+            invocation_parameters: ParameterState::default(),
             compiled,
         })
     }
@@ -173,7 +174,7 @@ impl Config {
             log_file: None,
             commands,
             input_value: Value::Null,
-            invocation_state: StateInstance::default(),
+            invocation_parameters: ParameterState::default(),
             compiled,
         })
     }

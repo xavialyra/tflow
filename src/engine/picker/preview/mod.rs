@@ -1,28 +1,31 @@
 mod image_decode;
 mod image_path;
+mod image_protocol;
 
 use self::image_decode::ImageDecodeHandle;
+pub(super) use self::image_protocol::ImageProtocolCache;
+use self::image_protocol::{DesiredImageProtocol, ImageProtocolKey};
 use super::Item;
-use crate::engine::EngineTerminal;
 use crate::theme::Theme;
 use anyhow::{Context, Result, bail};
 use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui_image::{StatefulImage, protocol::StatefulProtocol};
+use ratatui_image::StatefulImage;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 #[derive(Clone)]
-pub(super) struct PickerPreviewConfig {
+pub(crate) struct PickerPreviewConfig {
     layout: PickerLayout,
     blocks: Vec<PreviewBlockConfig>,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PickerLayout {
+pub(crate) struct PickerLayout {
     #[serde(default = "default_direction")]
     direction: Direction,
     #[serde(default)]
@@ -32,14 +35,14 @@ struct PickerLayout {
 
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-enum Direction {
+pub(crate) enum Direction {
     Horizontal,
     Vertical,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PaneConfig {
+pub(crate) struct PaneConfig {
     slot: String,
     #[serde(default)]
     size: Option<u16>,
@@ -51,13 +54,13 @@ struct PaneConfig {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PreviewSpec {
+pub(crate) struct PreviewSpec {
     blocks: Vec<PreviewBlockConfig>,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PreviewBlockConfig {
+pub(crate) struct PreviewBlockConfig {
     #[serde(rename = "type")]
     kind: PreviewBlockKind,
     #[serde(default)]
@@ -70,7 +73,7 @@ struct PreviewBlockConfig {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum PreviewBlockKind {
+pub(crate) enum PreviewBlockKind {
     Image,
     Text,
     Separator,
@@ -202,6 +205,14 @@ fn validate_blocks(blocks: &[PreviewBlockConfig]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone)]
+pub(crate) struct PickerPreviewRenderState {
+    pub(crate) config: PickerPreviewConfig,
+    pub(crate) visible: bool,
+    pub(crate) revision: u64,
+    pub(crate) blocks: Vec<PreviewRenderBlockState>,
+}
+
 pub(super) struct PickerPreview {
     config: PickerPreviewConfig,
     visible: bool,
@@ -209,20 +220,126 @@ pub(super) struct PickerPreview {
     selection: Option<String>,
     blocks: Vec<PreviewBlockState>,
     task: Option<ImageTask>,
+    pool: Option<Arc<image_decode::ImageDecodePool>>,
 }
 
 enum PreviewBlockState {
     Empty,
     Text(String),
     Image {
-        protocol: Option<Box<StatefulProtocol>>,
-        image: Option<DynamicImage>,
+        image: Option<Arc<DynamicImage>>,
+        error: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) enum PreviewRenderBlockState {
+    Empty,
+    Text(String),
+    Image {
+        image: Option<Arc<DynamicImage>>,
         error: Option<String>,
     },
 }
 
 struct ImageTask {
     handle: ImageDecodeHandle,
+}
+
+impl Clone for PreviewBlockState {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Text(text) => Self::Text(text.clone()),
+            Self::Image { image, error } => Self::Image {
+                image: image.clone(),
+                error: error.clone(),
+            },
+        }
+    }
+}
+
+impl PickerPreviewRenderState {
+    pub(super) fn areas(&self, area: Rect) -> (Rect, Option<Rect>) {
+        preview_areas(&self.config, self.visible, area)
+    }
+
+    pub(super) fn render_separator(
+        &self,
+        frame: &mut Frame,
+        items: Rect,
+        preview: Rect,
+        theme: &Theme,
+    ) {
+        render_separator(self.config.layout.direction, frame, items, preview, theme);
+    }
+
+    pub(super) fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        picker: Option<crate::terminal::ImagePicker>,
+        protocols: &mut ImageProtocolCache,
+    ) {
+        let areas = block_areas(area, &self.config.blocks);
+        let desired = picker
+            .into_iter()
+            .flat_map(|picker| {
+                self.blocks.iter().zip(&areas).enumerate().filter_map(
+                    move |(block, (state, area))| {
+                        let PreviewRenderBlockState::Image {
+                            image: Some(image), ..
+                        } = state
+                        else {
+                            return None;
+                        };
+                        if area.width == 0 || area.height == 0 {
+                            return None;
+                        }
+                        let key = ImageProtocolKey::new(
+                            self.revision,
+                            block,
+                            image,
+                            ratatui::layout::Size::new(area.width, area.height),
+                            picker,
+                        );
+                        Some(DesiredImageProtocol {
+                            key,
+                            image: Arc::clone(image),
+                            picker,
+                        })
+                    },
+                )
+            })
+            .collect();
+        protocols.update(desired);
+        for (index, ((block, state), area)) in self
+            .config
+            .blocks
+            .iter()
+            .zip(&self.blocks)
+            .zip(areas)
+            .enumerate()
+        {
+            let key = match (picker, state) {
+                (
+                    Some(picker),
+                    PreviewRenderBlockState::Image {
+                        image: Some(image), ..
+                    },
+                ) if area.width > 0 && area.height > 0 => Some(ImageProtocolKey::new(
+                    self.revision,
+                    index,
+                    image,
+                    ratatui::layout::Size::new(area.width, area.height),
+                    picker,
+                )),
+                _ => None,
+            };
+            render_block(frame, area, block, state, theme, protocols, key);
+        }
+    }
 }
 
 impl PickerPreview {
@@ -235,71 +352,22 @@ impl PickerPreview {
             selection: None,
             blocks: (0..count).map(|_| PreviewBlockState::Empty).collect(),
             task: None,
+            pool: None,
         }
     }
 
-    pub(super) fn areas(&self, area: Rect) -> (Rect, Option<Rect>) {
-        if !self.visible {
-            return (area, None);
-        }
-        let items = self
-            .config
-            .layout
-            .panes
-            .iter()
-            .find(|pane| pane.slot == "items")
-            .expect("validated items pane");
-        let preview = self
-            .config
-            .layout
-            .panes
-            .iter()
-            .find(|pane| pane.slot == "preview")
-            .expect("validated preview pane");
-        let (items_length, preview_length) = match pane_lengths(
-            match self.config.layout.direction {
-                Direction::Horizontal => area.width,
-                Direction::Vertical => area.height,
-            },
-            self.config.layout.gap,
-            items,
-            preview,
-        ) {
-            Some(lengths) => lengths,
-            None => return (area, None),
-        };
-        match self.config.layout.direction {
-            Direction::Horizontal => (
-                Rect::new(area.x, area.y, items_length, area.height),
-                Some(Rect::new(
-                    area.x
-                        .saturating_add(items_length)
-                        .saturating_add(self.config.layout.gap),
-                    area.y,
-                    preview_length,
-                    area.height,
-                )),
-            ),
-            Direction::Vertical => (
-                Rect::new(area.x, area.y, area.width, items_length),
-                Some(Rect::new(
-                    area.x,
-                    area.y
-                        .saturating_add(items_length)
-                        .saturating_add(self.config.layout.gap),
-                    area.width,
-                    preview_length,
-                )),
-            ),
-        }
-    }
-
-    pub(super) fn toggle_visibility(&mut self) {
-        self.visible = !self.visible;
+    pub(super) fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
     }
 
     pub(super) fn deactivate(&mut self) {
         self.reset_selection();
+        self.pool.take();
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_pending_task(&self) -> bool {
+        self.task.is_some()
     }
 
     fn reset_selection(&mut self) {
@@ -311,53 +379,8 @@ impl PickerPreview {
             .collect();
     }
 
-    pub(super) fn render_separator(
-        &self,
-        frame: &mut Frame,
-        items: Rect,
-        preview: Rect,
-        theme: &Theme,
-    ) {
-        let area = match self.config.layout.direction {
-            Direction::Horizontal => Rect::new(
-                items.x.saturating_add(items.width),
-                items.y,
-                preview
-                    .x
-                    .saturating_sub(items.x.saturating_add(items.width)),
-                items.height,
-            ),
-            Direction::Vertical => Rect::new(
-                items.x,
-                items.y.saturating_add(items.height),
-                items.width,
-                preview
-                    .y
-                    .saturating_sub(items.y.saturating_add(items.height)),
-            ),
-        };
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        let borders = match self.config.layout.direction {
-            Direction::Horizontal => Borders::LEFT,
-            Direction::Vertical => Borders::TOP,
-        };
-        frame.render_widget(
-            Block::new()
-                .borders(borders)
-                .border_style(theme.preview.border),
-            area,
-        );
-    }
-
-    pub(super) fn update(
-        &mut self,
-        item: Option<&Item>,
-        config: &crate::config::Config,
-        terminal: &mut dyn EngineTerminal,
-    ) {
-        self.collect(terminal);
+    pub(super) fn update(&mut self, item: Option<&Item>, plugin_root: Option<&std::path::Path>) {
+        self.collect();
         let selection = item.and_then(|item| serde_json::to_string(&item_value(item)).ok());
         if selection == self.selection {
             return;
@@ -390,10 +413,8 @@ impl PickerPreview {
                     let Some(path) = value.as_str() else {
                         continue;
                     };
-                    let path =
-                        self::image_path::resolve(config.plugin_root(&item.source_view), path);
+                    let path = self::image_path::resolve(plugin_root, path);
                     self.blocks[index] = PreviewBlockState::Image {
-                        protocol: None,
                         image: None,
                         error: None,
                     };
@@ -405,21 +426,29 @@ impl PickerPreview {
         if images.is_empty() {
             return;
         }
-        match image_decode::submit(self.revision, images) {
-            Ok(handle) => {
-                self.task = Some(ImageTask { handle });
-            }
-            Err(message) => {
-                for state in &mut self.blocks {
-                    if let PreviewBlockState::Image { error, .. } = state {
-                        *error = Some(message.clone());
-                    }
+        let pool = match &self.pool {
+            Some(pool) => Arc::clone(pool),
+            None => match image_decode::new_default_pool() {
+                Ok(pool) => {
+                    self.pool = Some(Arc::clone(&pool));
+                    pool
                 }
-            }
-        }
+                Err(message) => {
+                    for state in &mut self.blocks {
+                        if let PreviewBlockState::Image { error, .. } = state {
+                            *error = Some(message.clone());
+                        }
+                    }
+                    return;
+                }
+            },
+        };
+        self.task = Some(ImageTask {
+            handle: pool.submit(self.revision, images),
+        });
     }
 
-    fn collect(&mut self, terminal: &mut dyn EngineTerminal) {
+    fn collect(&mut self) {
         let result = self.task.as_ref().map(|task| task.handle.try_recv());
         match result {
             Some(Ok(batch)) => {
@@ -432,7 +461,7 @@ impl PickerPreview {
                             &mut self.blocks[decoded.block]
                         {
                             match decoded.result {
-                                Ok(decoded) => *image = Some(decoded),
+                                Ok(decoded) => *image = Some(Arc::new(decoded)),
                                 Err(message) => {
                                     *error = Some(format!(
                                         "could not load {}: {message}",
@@ -449,61 +478,174 @@ impl PickerPreview {
             }
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
         }
-        if self
-            .blocks
-            .iter()
-            .any(|state| matches!(state, PreviewBlockState::Image { image: Some(_), .. }))
-            && let Some(picker) = terminal.image_picker()
-        {
-            for state in &mut self.blocks {
-                if let PreviewBlockState::Image {
-                    protocol, image, ..
-                } = state
-                    && let Some(image) = image.take()
-                {
-                    *protocol = Some(Box::new(picker.new_resize_protocol(image)));
-                }
-            }
-        }
     }
 
-    pub(super) fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let areas = block_areas(area, &self.config.blocks);
-        for ((block, state), area) in self.config.blocks.iter().zip(&mut self.blocks).zip(areas) {
-            if matches!(&block.kind, PreviewBlockKind::Separator) {
+    pub(super) fn render_state(&self) -> PickerPreviewRenderState {
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|state| match state {
+                PreviewBlockState::Empty => PreviewRenderBlockState::Empty,
+                PreviewBlockState::Text(text) => PreviewRenderBlockState::Text(text.clone()),
+                PreviewBlockState::Image { image, error } => PreviewRenderBlockState::Image {
+                    image: image.clone(),
+                    error: error.clone(),
+                },
+            })
+            .collect();
+        PickerPreviewRenderState {
+            config: self.config.clone(),
+            visible: self.visible,
+            revision: self.revision,
+            blocks,
+        }
+    }
+}
+
+fn preview_areas(config: &PickerPreviewConfig, visible: bool, area: Rect) -> (Rect, Option<Rect>) {
+    if !visible {
+        return (area, None);
+    }
+    let items = config
+        .layout
+        .panes
+        .iter()
+        .find(|pane| pane.slot == "items")
+        .expect("validated items pane");
+    let preview = config
+        .layout
+        .panes
+        .iter()
+        .find(|pane| pane.slot == "preview")
+        .expect("validated preview pane");
+    let (items_length, preview_length) = match pane_lengths(
+        match config.layout.direction {
+            Direction::Horizontal => area.width,
+            Direction::Vertical => area.height,
+        },
+        config.layout.gap,
+        items,
+        preview,
+    ) {
+        Some(lengths) => lengths,
+        None => return (area, None),
+    };
+    match config.layout.direction {
+        Direction::Horizontal => (
+            Rect::new(area.x, area.y, items_length, area.height),
+            Some(Rect::new(
+                area.x
+                    .saturating_add(items_length)
+                    .saturating_add(config.layout.gap),
+                area.y,
+                preview_length,
+                area.height,
+            )),
+        ),
+        Direction::Vertical => (
+            Rect::new(area.x, area.y, area.width, items_length),
+            Some(Rect::new(
+                area.x,
+                area.y
+                    .saturating_add(items_length)
+                    .saturating_add(config.layout.gap),
+                area.width,
+                preview_length,
+            )),
+        ),
+    }
+}
+
+fn render_separator(
+    direction: Direction,
+    frame: &mut Frame,
+    items: Rect,
+    preview: Rect,
+    theme: &Theme,
+) {
+    let area = match direction {
+        Direction::Horizontal => Rect::new(
+            items.x.saturating_add(items.width),
+            items.y,
+            preview
+                .x
+                .saturating_sub(items.x.saturating_add(items.width)),
+            items.height,
+        ),
+        Direction::Vertical => Rect::new(
+            items.x,
+            items.y.saturating_add(items.height),
+            items.width,
+            preview
+                .y
+                .saturating_sub(items.y.saturating_add(items.height)),
+        ),
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let borders = match direction {
+        Direction::Horizontal => Borders::LEFT,
+        Direction::Vertical => Borders::TOP,
+    };
+    frame.render_widget(
+        Block::new()
+            .borders(borders)
+            .border_style(theme.preview.border),
+        area,
+    );
+}
+
+fn render_block(
+    frame: &mut Frame,
+    area: Rect,
+    block: &PreviewBlockConfig,
+    state: &PreviewRenderBlockState,
+    theme: &Theme,
+    protocols: &mut ImageProtocolCache,
+    protocol_key: Option<ImageProtocolKey>,
+) {
+    if matches!(&block.kind, PreviewBlockKind::Separator) {
+        frame.render_widget(
+            Block::new()
+                .borders(Borders::TOP)
+                .border_style(theme.preview.border),
+            area,
+        );
+        return;
+    }
+    match state {
+        PreviewRenderBlockState::Empty => {}
+        PreviewRenderBlockState::Text(text) => frame.render_widget(
+            Paragraph::new(text.as_str())
+                .style(theme.preview.text)
+                .wrap(Wrap { trim: false }),
+            area,
+        ),
+        PreviewRenderBlockState::Image { image: Some(_), .. } => {
+            let Some(key) = protocol_key else {
+                return;
+            };
+            if let Some(protocol) = protocols.protocol(key) {
+                frame.render_stateful_widget(StatefulImage::default(), area, protocol);
+            } else if let Some(error) = protocols.error(key) {
                 frame.render_widget(
-                    Block::new()
-                        .borders(Borders::TOP)
-                        .border_style(theme.preview.border),
-                    area,
-                );
-                continue;
-            }
-            match state {
-                PreviewBlockState::Empty => {}
-                PreviewBlockState::Text(text) => frame.render_widget(
-                    Paragraph::new(text.as_str())
-                        .style(theme.preview.text)
-                        .wrap(Wrap { trim: false }),
-                    area,
-                ),
-                PreviewBlockState::Image {
-                    protocol: Some(protocol),
-                    ..
-                } => {
-                    frame.render_stateful_widget(StatefulImage::default(), area, protocol.as_mut())
-                }
-                PreviewBlockState::Image {
-                    error: Some(error), ..
-                } => frame.render_widget(
-                    Paragraph::new(error.as_str())
+                    Paragraph::new(error)
                         .style(theme.preview.error)
                         .wrap(Wrap { trim: false }),
                     area,
-                ),
-                PreviewBlockState::Image { .. } => {}
+                );
             }
         }
+        PreviewRenderBlockState::Image {
+            error: Some(error), ..
+        } => frame.render_widget(
+            Paragraph::new(error.as_str())
+                .style(theme.preview.error)
+                .wrap(Wrap { trim: false }),
+            area,
+        ),
+        PreviewRenderBlockState::Image { .. } => {}
     }
 }
 
@@ -550,7 +692,7 @@ fn block_size(block: &PreviewBlockConfig) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerPreview, PreviewBlockState, block_areas, parse};
+    use super::{ImageProtocolCache, PickerPreview, PreviewBlockState, block_areas, parse};
     use crate::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
     use ratatui::backend::TestBackend;
@@ -661,8 +803,7 @@ mod tests {
         preview.selection = Some("selected".to_string());
         preview.blocks[0] = PreviewBlockState::Text("loaded".to_string());
         preview.blocks[1] = PreviewBlockState::Image {
-            protocol: None,
-            image: Some(image::DynamicImage::new_rgba8(2, 2)),
+            image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
             error: None,
         };
         let revision = preview.revision;
@@ -699,11 +840,13 @@ mod tests {
         theme.preview.text.fg = Some(Color::Magenta);
         theme.preview.text.bg = Some(Color::Green);
         let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
+        let render_state = preview.render_state();
+        let mut protocols = ImageProtocolCache::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                preview.render(frame, area, &theme);
+                render_state.render(frame, area, &theme, None, &mut protocols);
             })
             .unwrap();
 
@@ -727,7 +870,6 @@ mod tests {
         .unwrap();
         let mut preview = PickerPreview::new(config);
         preview.blocks[0] = PreviewBlockState::Image {
-            protocol: None,
             image: None,
             error: Some("image failed".to_string()),
         };
@@ -735,11 +877,13 @@ mod tests {
         theme.preview.error.fg = Some(Color::Magenta);
         theme.preview.error.bg = Some(Color::Green);
         let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
+        let render_state = preview.render_state();
+        let mut protocols = ImageProtocolCache::new();
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                preview.render(frame, area, &theme);
+                render_state.render(frame, area, &theme, None, &mut protocols);
             })
             .unwrap();
 
@@ -763,7 +907,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let preview = PickerPreview::new(config);
-        let (items, preview_area) = preview.areas(Rect::new(0, 0, 80, 10));
+        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
         assert_eq!(items.width, 30);
         assert_eq!(preview_area.unwrap().width, 49);
     }
@@ -782,7 +926,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let preview = PickerPreview::new(config);
-        let (items, preview_area) = preview.areas(Rect::new(0, 0, 80, 10));
+        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
         assert_eq!(items.width, 30);
         assert_eq!(preview_area.unwrap().width, 36);
     }
@@ -804,16 +948,16 @@ mod tests {
         .unwrap();
         let mut preview = PickerPreview::new(config);
 
-        let (items, hidden) = preview.areas(Rect::new(0, 0, 52, 10));
+        let (items, hidden) = preview.render_state().areas(Rect::new(0, 0, 52, 10));
         assert_eq!(items, Rect::new(0, 0, 52, 10));
         assert!(hidden.is_none());
 
-        let (items, preview_area) = preview.areas(Rect::new(0, 0, 80, 10));
+        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
         assert_eq!(items.width, 43);
         assert_eq!(preview_area.unwrap(), Rect::new(44, 0, 36, 10));
 
-        preview.toggle_visibility();
-        let (items, hidden) = preview.areas(Rect::new(0, 0, 80, 10));
+        preview.set_visible(false);
+        let (items, hidden) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
         assert_eq!(items, Rect::new(0, 0, 80, 10));
         assert!(hidden.is_none());
     }

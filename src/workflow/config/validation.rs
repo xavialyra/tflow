@@ -353,12 +353,6 @@ pub(crate) fn validate_templates(value: &toml::Value) -> Result<()> {
 }
 
 impl Config {
-    #[cfg(test)]
-    pub fn validate(&self) -> Result<()> {
-        let engines = crate::engine::EngineRegistry::new();
-        self.validate_with_engines(&engines)
-    }
-
     pub(crate) fn validate_with_engines<V>(&self, engines: &V) -> Result<()>
     where
         V: EngineConfigValidator,

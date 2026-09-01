@@ -1,19 +1,13 @@
-use super::host::EngineHost;
-use crate::command::{
-    CommandContext, CommandExecution, CommandInvocation, InputActionBinding, InputFocus,
-    InputRefreshPolicy, LauncherOutcome, NavigationRequest, SelectionBindingState, ViewAction,
-    ViewEffect, ViewInputMode, ViewOutput,
-};
-use crate::config::{Config, Defaults, EvaluationSnapshot, View};
-use crate::input::InputBuffer;
-use crate::input::{DecodedInput, Key};
-use crate::lifecycle::CancellationToken;
-use crate::state::StateInstance;
-use crate::task::TaskRuntime;
-use crate::terminal::{ImagePicker, Terminal};
-use anyhow::{Result, bail};
+use crate::command::InputActionBinding;
+use crate::config::{Config, View};
+use crate::lifecycle::CancellationObserver;
+use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
-use std::path::Path;
+use serde_json::Value;
+use std::any::Any;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmbeddedResultFormat {
@@ -28,203 +22,153 @@ pub(crate) struct EmbeddedResultConfig {
     pub(crate) max_bytes: usize,
 }
 
-pub(crate) trait EngineTerminal {
-    fn size(&self) -> (u16, u16);
-    fn image_picker(&self) -> Option<ImagePicker>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewIdentity {
+    pub(crate) view_ref: String,
+    pub(crate) engine_type: String,
 }
 
-impl EngineTerminal for Terminal {
-    fn size(&self) -> (u16, u16) {
-        Terminal::size(self)
-    }
-
-    fn image_picker(&self) -> Option<ImagePicker> {
-        Terminal::image_picker(self)
+impl ViewIdentity {
+    pub(crate) fn new(view_ref: impl Into<String>, engine_type: impl Into<String>) -> Self {
+        Self {
+            view_ref: view_ref.into(),
+            engine_type: engine_type.into(),
+        }
     }
 }
 
-pub(crate) trait ViewInstance {
-    fn activate(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EvaluatedEngineConfig {
+    pub(crate) fields: BTreeMap<String, Value>,
+    pub(crate) field_errors: BTreeMap<String, String>,
+    pub(crate) plugin_root: Option<PathBuf>,
+}
+
+impl EvaluatedEngineConfig {
+    pub(crate) fn field(&self, name: &str) -> Option<&Value> {
+        self.fields.get(name)
+    }
+
+    pub(crate) fn field_error(&self, name: &str) -> Option<&str> {
+        self.field_errors.get(name).map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RendererIdentity {
+    pub(crate) view_ref: String,
+    pub(crate) engine_type: String,
+    pub(crate) renderer_type: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EvaluatedBindingConfig {
+    pub(crate) defaults: Option<Value>,
+    pub(crate) view_keymap: Option<Value>,
+    pub(crate) engine_fields: BTreeMap<String, Value>,
+}
+
+impl EvaluatedBindingConfig {
+    pub(crate) fn engine_field(&self, name: &str) -> Option<&Value> {
+        self.engine_fields.get(name)
+    }
+}
+
+/// Engine-specific data prepared for one mount and consumed by that Engine's
+/// runtime factory. The inert task lease used to build it cannot start work.
+
+#[derive(Clone)]
+pub(crate) struct MountRuntimeData(Arc<dyn Any + Send + Sync>);
+
+impl MountRuntimeData {
+    pub(crate) fn new<T: Any + Send + Sync>(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    pub(crate) fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+pub(crate) struct RuntimeFactoryContext {
+    pub(crate) identity: ViewIdentity,
+    pub(crate) config: EvaluatedEngineConfig,
+    pub(crate) parameters: crate::parameter::ParameterSnapshot,
+    pub(crate) cancellation: CancellationObserver,
+    pub(crate) data: Option<MountRuntimeData>,
+}
+
+pub(crate) struct RendererFactoryContext {
+    pub(crate) identity: RendererIdentity,
+}
+
+pub(crate) struct InputBindingFactoryContext {
+    pub(crate) identity: ViewIdentity,
+    pub(crate) bindings: EvaluatedBindingConfig,
+}
+
+struct NullRenderer {
+    expected_kind: String,
+}
+
+impl crate::engine::ViewRenderer for NullRenderer {
+    fn validate_model(&self, model: &crate::engine::RenderModel) -> anyhow::Result<()> {
+        if model.kind() != self.expected_kind {
+            anyhow::bail!(
+                "null renderer/model pairing mismatch: expected {:?}, got {:?}",
+                self.expected_kind,
+                model.kind()
+            );
+        }
         Ok(())
     }
 
-    fn deactivate(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn restore_input(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
-        Ok(())
-    }
-
-    fn input_committed(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
-        Ok(())
-    }
-
-    fn input_refresh_policy(&self) -> InputRefreshPolicy {
-        InputRefreshPolicy::None
-    }
-
-    fn input_ready(&mut self, _host: &mut EngineHost<'_>) -> Result<ViewEffect> {
-        Ok(ViewEffect::Continue)
-    }
-
-    fn input_rejected(&mut self, _host: &mut EngineHost<'_>) -> Result<()> {
-        Ok(())
-    }
-
-    fn step(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        terminal: &mut dyn EngineTerminal,
-    ) -> Result<ViewEffect>;
-
-    /// Poll a suspended View whose runtime must remain alive while another
-    /// command mode or overlay is active. Ordinary Views do nothing here.
-    fn background_step(
-        &mut self,
-        _host: &mut EngineHost<'_>,
-        _terminal: &mut dyn EngineTerminal,
-    ) -> Result<ViewEffect> {
-        Ok(ViewEffect::Continue)
-    }
-
-    fn launcher_input_timeout(&self, _host: &EngineHost<'_>) -> Option<i32> {
-        None
-    }
-
-    fn captures_editor_input(&self) -> bool {
-        false
-    }
-
-    fn input_mode(&self) -> ViewInputMode {
-        ViewInputMode::Keymap
-    }
-
-    fn input_action_bindings(&self, _host: &EngineHost<'_>) -> Vec<InputActionBinding> {
-        Vec::new()
-    }
-
-    fn selection_binding_state(&self, _host: &EngineHost<'_>) -> SelectionBindingState {
-        SelectionBindingState::None
-    }
-
-    fn handle_unbound_input(
-        &mut self,
-        _host: &mut EngineHost<'_>,
-        _bytes: &[u8],
-    ) -> Result<LauncherOutcome> {
-        Ok(LauncherOutcome::Continue)
-    }
-
-    fn handle_terminal_eof(&mut self, _host: &mut EngineHost<'_>) -> Result<LauncherOutcome> {
-        Ok(LauncherOutcome::Effect(Box::new(ViewEffect::Exit)))
-    }
-
-    fn resolve_view_command(&self, host: &EngineHost<'_>, key: Key) -> Option<CommandInvocation> {
-        crate::command::find_command_for_key(host.config, host.state.view_ref(), key)
-    }
-
-    fn view_command_output(&self) -> Option<ViewOutput> {
-        None
-    }
-
-    fn view_command_context(&self, host: &mut EngineHost<'_>) -> Result<CommandContext> {
-        Ok(CommandContext {
-            page: crate::command::CommandOwnerContext {
-                view_ref: host.state.view_ref().to_string(),
-                state: host.state.clone(),
-                binding_raw: host.input_params().to_string(),
-            },
-            selection: None,
-            runtime: host.runtime.snapshot().clone(),
-            output: self.view_command_output(),
-        })
-    }
-
-    fn prepare_view_command(
+    fn render(
         &self,
-        host: &mut EngineHost<'_>,
-        invocation: CommandInvocation,
-    ) -> Result<CommandExecution> {
-        let context = self.view_command_context(host)?;
-        crate::command::resolve_visible_command(
-            host.config,
-            &context,
-            invocation
-                .view_reference()
-                .expect("View command invocation has a footer origin"),
-        )?;
-        Ok(CommandExecution {
-            invocation,
-            context,
-        })
+        _model: &crate::engine::RenderModel,
+        _context: &crate::engine::RenderContext,
+        _frame: &mut Frame,
+        _area: Rect,
+    ) {
     }
-
-    fn handle_view_command(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        invocation: CommandInvocation,
-        _input: DecodedInput,
-    ) -> Result<LauncherOutcome> {
-        let execution = self.prepare_view_command(host, invocation)?;
-        Ok(LauncherOutcome::Effect(Box::new(
-            ViewEffect::DispatchCommand(execution),
-        )))
-    }
-
-    fn handle_view_binding(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        key: Key,
-        input: DecodedInput,
-    ) -> Result<LauncherOutcome> {
-        let Some(invocation) = self.resolve_view_command(host, key) else {
-            return Ok(LauncherOutcome::Continue);
-        };
-        self.handle_view_command(host, invocation, input)
-    }
-
-    fn handle_pending_view_binding(
-        &mut self,
-        host: &mut EngineHost<'_>,
-        key: Key,
-        input: DecodedInput,
-    ) -> Result<LauncherOutcome> {
-        self.handle_view_binding(host, key, input)
-    }
-
-    fn handle_view_action(
-        &mut self,
-        _host: &mut EngineHost<'_>,
-        _action: ViewAction,
-        _input: DecodedInput,
-    ) -> Result<LauncherOutcome> {
-        Ok(LauncherOutcome::Continue)
-    }
-
-    fn chrome(&self, _host: &EngineHost<'_>) -> crate::chrome::EngineChrome {
-        crate::chrome::EngineChrome::default()
-    }
-
-    fn render(&mut self, host: &EngineHost<'_>, frame: &mut Frame, area: Rect);
-
-    fn input_focus(&self) -> InputFocus {
-        InputFocus::Focused
-    }
-}
-
-pub(crate) struct ViewContext<'a> {
-    pub(crate) config: &'a Config,
-    pub(crate) request: &'a NavigationRequest,
-    pub(crate) input: &'a InputBuffer,
-    pub(crate) state: &'a StateInstance,
-    pub(crate) evaluation: EvaluationSnapshot<'a>,
-    pub(crate) tasks: TaskRuntime,
-    pub(crate) cancellation: CancellationToken,
 }
 
 pub(crate) trait ViewFactory {
-    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
+    fn definition(
+        &self,
+        config: &Config,
+        view_ref: &str,
+    ) -> Result<crate::engine::EngineDefinition>;
+
+    fn create_mount_data(
+        &self,
+        _config: &Config,
+        _identity: &ViewIdentity,
+        _task_lease: crate::task::MountTaskLease,
+    ) -> Result<Option<MountRuntimeData>> {
+        Ok(None)
+    }
+
+    fn create_view(
+        &self,
+        context: RuntimeFactoryContext,
+    ) -> Result<Box<dyn crate::engine::EngineRuntime>>;
+
+    fn create_renderer(
+        &self,
+        context: RendererFactoryContext,
+    ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
+        Ok(Box::new(NullRenderer {
+            expected_kind: context.identity.renderer_type,
+        }))
+    }
+
+    fn create_input_bindings(
+        &self,
+        _context: InputBindingFactoryContext,
+    ) -> Result<Vec<InputActionBinding>> {
+        Ok(Vec::new())
+    }
 }
 
 pub(crate) struct EngineValidationContext<'a> {
@@ -233,31 +177,75 @@ pub(crate) struct EngineValidationContext<'a> {
     pub(crate) script_root: Option<&'a Path>,
 }
 
-pub(crate) trait Engine {
-    fn engine_type(&self) -> &'static str;
+#[cfg(test)]
+pub(crate) type RuntimeFactory =
+    Box<dyn Fn(RuntimeFactoryContext) -> Result<Box<dyn crate::engine::EngineRuntime>> + 'static>;
+#[cfg(test)]
+pub(crate) type RendererFactory =
+    Box<dyn Fn(RendererFactoryContext) -> Result<Box<dyn crate::engine::ViewRenderer>> + 'static>;
+#[cfg(test)]
+pub(crate) type InputBindingFactory =
+    Box<dyn Fn(InputBindingFactoryContext) -> Result<Vec<InputActionBinding>> + 'static>;
 
-    fn validate_config(&self, context: EngineValidationContext<'_>) -> Result<()>;
+#[cfg(test)]
+pub(crate) struct EngineRegistration {
+    pub(crate) definition: crate::engine::EngineDefinition,
+    pub(crate) create_runtime: RuntimeFactory,
+    pub(crate) create_renderer: RendererFactory,
+    pub(crate) create_bindings: InputBindingFactory,
+}
 
-    fn supports_data_sources(&self) -> bool {
-        false
-    }
-
-    fn validate_defaults(&self, _defaults: &Defaults) -> Result<()> {
-        Ok(())
-    }
-
-    fn validate_relations(&self, config: &Config) -> Result<()>;
-
-    fn validate_keymap(&self, name: &str, view: &View) -> Result<()> {
-        if view.keymap.is_some() {
-            bail!(
-                "view {:?} using engine {:?} cannot define a keymap",
-                name,
-                self.engine_type()
-            );
+#[cfg(test)]
+impl EngineRegistration {
+    pub(crate) fn new<F>(definition: crate::engine::EngineDefinition, create_runtime: F) -> Self
+    where
+        F: Fn(RuntimeFactoryContext) -> Result<Box<dyn crate::engine::EngineRuntime>> + 'static,
+    {
+        Self {
+            definition,
+            create_runtime: Box::new(create_runtime),
+            create_renderer: Box::new(|context| {
+                Ok(Box::new(NullRenderer {
+                    expected_kind: context.identity.renderer_type,
+                }))
+            }),
+            create_bindings: Box::new(|_| Ok(Vec::new())),
         }
-        Ok(())
     }
 
-    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>>;
+    pub(crate) fn with_renderer_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(RendererFactoryContext) -> Result<Box<dyn crate::engine::ViewRenderer>> + 'static,
+    {
+        self.create_renderer = Box::new(factory);
+        self
+    }
+
+    pub(crate) fn with_input_binding_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(InputBindingFactoryContext) -> Result<Vec<InputActionBinding>> + 'static,
+    {
+        self.create_bindings = Box::new(factory);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_aliases_compile_against_the_narrow_contract() {
+        let _runtime: RuntimeFactory = Box::new(|_context| anyhow::bail!("signature probe"));
+        let _renderer: RendererFactory = Box::new(|context| {
+            Ok(Box::new(NullRenderer {
+                expected_kind: context.identity.renderer_type,
+            }))
+        });
+        let _bindings: InputBindingFactory = Box::new(|_context| Ok(Vec::new()));
+
+        fn accepts_view_factory(_: &dyn ViewFactory) {}
+        let registry = crate::engine::EngineRegistry::new();
+        accepts_view_factory(&registry);
+    }
 }

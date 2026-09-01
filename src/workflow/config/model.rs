@@ -79,7 +79,7 @@ pub struct ScriptSourceSpec {
     max_output_bytes: Option<toml::Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedScriptSource {
     pub(crate) file: String,
     pub(crate) args: Option<Value>,
@@ -301,14 +301,16 @@ pub struct View {
     pub run_shell: Option<String>,
     #[serde(default)]
     pub cancel_exit_code: Option<u8>,
-    #[serde(default)]
-    #[allow(dead_code)]
+    #[serde(default, rename = "query")]
     pub(crate) query: Option<toml::Table>,
     #[serde(default)]
     pub(crate) keymap: Option<toml::Value>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
 }
+
+/// Static composition metadata for one configured View.
+pub(crate) type ViewDefinition = View;
 
 impl View {
     pub(crate) fn selected_engine_type(&self) -> &str {
@@ -580,4 +582,40 @@ pub(super) struct PluginHeader {
     #[serde(default = "default_plugin_api")]
     pub(super) api: u32,
     pub(super) name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::View;
+
+    #[test]
+    fn view_query_deserializes_and_serializes_with_the_compatibility_key() {
+        let view: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [query]
+            type = "string"
+            "#,
+        )
+        .expect("query must deserialize as the compatibility configuration key");
+
+        let serialized = serde_json::to_value(view).expect("View must serialize");
+        assert!(serialized.get("query").is_some());
+        assert!(serialized.get("parameters").is_none());
+    }
+
+    #[test]
+    fn view_parameters_key_is_rejected_as_an_unknown_field() {
+        let error = toml::from_str::<View>(
+            r#"
+            [engine]
+            type = "picker"
+            [parameters]
+            type = "string"
+            "#,
+        )
+        .expect_err("parameters is an internal name, not a configuration key");
+        assert!(error.to_string().contains("unknown field"));
+    }
 }

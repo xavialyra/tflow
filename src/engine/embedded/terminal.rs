@@ -32,8 +32,11 @@ impl EmbeddedTerminal {
         self.vt.resize(columns as usize, rows as usize);
     }
 
-    pub(crate) fn widget(&self) -> EmbeddedTerminalWidget<'_> {
-        EmbeddedTerminalWidget { terminal: self }
+    pub(crate) fn snapshot(&self) -> EmbeddedTerminalSnapshot {
+        EmbeddedTerminalSnapshot {
+            lines: self.vt.view().cloned().collect(),
+            cursor: self.cursor(),
+        }
     }
 
     pub(crate) fn cursor(&self) -> Option<(usize, usize)> {
@@ -41,32 +44,46 @@ impl EmbeddedTerminal {
     }
 }
 
-pub(crate) struct EmbeddedTerminalWidget<'a> {
-    terminal: &'a EmbeddedTerminal,
+#[derive(Clone)]
+pub(crate) struct EmbeddedTerminalSnapshot {
+    lines: Vec<avt::Line>,
+    cursor: Option<(usize, usize)>,
 }
 
-impl Widget for EmbeddedTerminalWidget<'_> {
-    fn render(self, area: Rect, buffer: &mut Buffer) {
-        for (row, line) in self
-            .terminal
-            .vt
-            .view()
-            .take(area.height as usize)
-            .enumerate()
-        {
-            let y = area.y.saturating_add(row as u16);
-            for (column, cell) in line.cells().iter().take(area.width as usize).enumerate() {
-                if cell.width() == 0 {
-                    continue;
-                }
+impl EmbeddedTerminalSnapshot {
+    pub(crate) fn widget(&self) -> EmbeddedTerminalSnapshotWidget<'_> {
+        EmbeddedTerminalSnapshotWidget { snapshot: self }
+    }
 
-                let x = area.x.saturating_add(column as u16);
-                let style = ratatui_style(cell.pen());
-                if cell.width() > 1 {
-                    buffer.set_stringn(x, y, cell.char().to_string(), cell.width() as usize, style);
-                } else {
-                    buffer[(x, y)].set_char(cell.char()).set_style(style);
-                }
+    pub(crate) fn cursor(&self) -> Option<(usize, usize)> {
+        self.cursor
+    }
+}
+
+pub(crate) struct EmbeddedTerminalSnapshotWidget<'a> {
+    snapshot: &'a EmbeddedTerminalSnapshot,
+}
+
+impl Widget for EmbeddedTerminalSnapshotWidget<'_> {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        render_lines(self.snapshot.lines.iter(), area, buffer);
+    }
+}
+
+fn render_lines<'a>(lines: impl Iterator<Item = &'a avt::Line>, area: Rect, buffer: &mut Buffer) {
+    for (row, line) in lines.take(area.height as usize).enumerate() {
+        let y = area.y.saturating_add(row as u16);
+        for (column, cell) in line.cells().iter().take(area.width as usize).enumerate() {
+            if cell.width() == 0 {
+                continue;
+            }
+
+            let x = area.x.saturating_add(column as u16);
+            let style = ratatui_style(cell.pen());
+            if cell.width() > 1 {
+                buffer.set_stringn(x, y, cell.char().to_string(), cell.width() as usize, style);
+            } else {
+                buffer[(x, y)].set_char(cell.char()).set_style(style);
             }
         }
     }

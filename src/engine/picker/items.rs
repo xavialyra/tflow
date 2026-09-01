@@ -1,26 +1,164 @@
-use super::PendingAction;
+#[cfg(test)]
+use crate::config::Config;
 use crate::config::{
-    Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ResolvedScriptSource, SessionScope,
+    EvaluationData, EvaluationSnapshot, InvocationScope, OwnerViewScope, PickerItemsProjection,
+    ResolvedScriptSource, SessionScope, toml_to_json,
 };
 use crate::execution::{ensure_script_success, run_script};
+use crate::expression::EvaluationStage;
+use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
-use crate::state::StateInstance;
+use crate::parameter::{ParameterBinding, ParameterSnapshot};
 use crate::terminal::sanitize_text;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::path::Path;
+use std::sync::Arc;
 
 const MAX_ITEMS_PER_SESSION: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FeedId(pub(crate) String);
 
-#[derive(Debug, Clone)]
-pub(crate) struct FeedContext {
+/// Immutable compiled metadata for one Picker feed mount.
+#[derive(Clone)]
+pub(crate) struct FeedDefinition {
+    pub(crate) feed_id: FeedId,
     pub(crate) owner_view: String,
-    pub(crate) state: StateInstance,
+    pub(crate) alias: Option<String>,
+    pub(crate) binding: ParameterBinding,
+    items: Option<Value>,
+    source: Arc<PickerItemsProjection>,
+}
+
+impl fmt::Debug for FeedDefinition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FeedDefinition")
+            .field("feed_id", &self.feed_id)
+            .field("owner_view", &self.owner_view)
+            .field("alias", &self.alias)
+            .field("items", &self.items)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FeedDefinition {
+    pub(crate) fn collection(
+        projection: Arc<PickerItemsProjection>,
+        page_view: &str,
+    ) -> Result<Arc<Vec<Arc<Self>>>> {
+        let definitions = projection
+            .feed_views(page_view)?
+            .into_iter()
+            .map(|(owner_view, view)| {
+                let items = view.items.as_ref().map(toml_to_json).transpose()?;
+                Ok(Arc::new(Self {
+                    feed_id: FeedId(owner_view.clone()),
+                    owner_view,
+                    alias: view.alias.clone(),
+                    binding: view.binding.clone(),
+                    items,
+                    source: Arc::clone(&projection),
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Arc::new(definitions))
+    }
+
+    fn has_items(&self) -> bool {
+        self.items.is_some()
+    }
+
+    fn items_value(&self, snapshot: &EvaluationSnapshot<'_>) -> Result<Option<Value>> {
+        let Some(items) = self.items.as_ref() else {
+            return Ok(None);
+        };
+        snapshot
+            .resolve(self, EvaluationStage::Operation, items)
+            .map(Some)
+    }
+
+    fn input_value(&self) -> &Value {
+        self.source.input_value()
+    }
+
+    fn plugin_root(&self) -> Option<&Path> {
+        self.source.plugin_root(&self.owner_view)
+    }
+}
+
+impl EvaluationData for FeedDefinition {
+    fn template_registry(&self) -> &crate::expression::TemplateRegistry {
+        self.source.template_registry()
+    }
+
+    fn view_value(
+        &self,
+        view_ref: &str,
+        parameters: &ParameterSnapshot,
+        binding_raw: Option<&str>,
+    ) -> Result<Value> {
+        anyhow::ensure!(
+            view_ref == self.owner_view,
+            "feed definition {:?} cannot evaluate view {:?}",
+            self.owner_view,
+            view_ref
+        );
+        let state = self.binding.state_from_snapshot(parameters, false)?;
+        let input = match binding_raw {
+            Some(raw) => raw.to_string(),
+            None => self.binding.render_input(&state)?,
+        };
+        Ok(serde_json::json!({
+            "ref": self.owner_view,
+            "query": self.binding.parameter_values(&state)?,
+            "input": input,
+            "raw_input": input,
+            "state_revision": state.revision(),
+        }))
+    }
+}
+
+/// Parameters resolved for one request and one immutable feed definition.
+#[derive(Debug, Clone)]
+pub(crate) struct FeedInstance {
+    pub(crate) definition: Arc<FeedDefinition>,
+    pub(crate) parameters: ParameterSnapshot,
     pub(crate) binding_raw: String,
+}
+
+impl FeedInstance {
+    pub(crate) fn resolve(
+        definition: Arc<FeedDefinition>,
+        page_view: &str,
+        page_parameters: &ParameterSnapshot,
+        binding_raw: &str,
+    ) -> Result<Self> {
+        let parameters = if definition.owner_view == page_view {
+            page_parameters.clone()
+        } else {
+            let mut state = definition.binding.instantiate()?;
+            definition
+                .binding
+                .bind_feed_input(&mut state, binding_raw)?;
+            definition.binding.validate_instance(&state)?;
+            ParameterSnapshot::from_parts(
+                definition.binding.parameter_values(&state)?,
+                state.raw_input().to_string(),
+                InputSourceIdentity::default(),
+                state.revision(),
+            )
+        };
+        Ok(Self {
+            definition,
+            parameters,
+            binding_raw: binding_raw.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,53 +183,170 @@ pub(crate) struct Item {
     pub(crate) feed_id: FeedId,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ItemsResult {
     pub(crate) items: Vec<Item>,
-    pub(crate) contexts: BTreeMap<FeedId, FeedContext>,
+    pub(crate) contexts: BTreeMap<FeedId, FeedInstance>,
     pub(crate) errors: Vec<String>,
 }
 
-pub(crate) struct ItemsRequest {
-    pub(crate) view: String,
-    /// Complete request identity prevents accepting a result for an older state snapshot.
-    pub(crate) generation: u64,
-    /// Chrome raw buffer used for stale-result matching.
-    pub(crate) input: String,
-    /// Coordinating page committed input used as the feed binding raw.
-    pub(crate) binding_raw: String,
-    /// Coordinating page state for single-source pickers; ignored for feeds pages.
-    pub(crate) page_state: StateInstance,
+/// The complete identity of one Picker feed request.
+///
+/// All fields participate in stale-result validation. `source` carries the
+/// input generation; `generation` identifies the request itself.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct FeedRequestIdentity {
+    pub(super) mount_id: ViewMountId,
+    pub(super) source: InputSourceIdentity,
+    pub(super) generation: u64,
+    pub(super) input_generation: u64,
+    pub(super) input: String,
+    pub(super) parameter_revision: u64,
+    pub(super) binding_raw: String,
+    pub(super) page_parameters: ParameterSnapshot,
 }
 
-pub(crate) struct ItemsResponse {
-    pub(crate) view: String,
-    pub(crate) generation: u64,
-    pub(crate) input: String,
-    pub(crate) query: String,
-    pub(crate) result: std::result::Result<ItemsResult, String>,
+impl FeedRequestIdentity {
+    pub(super) fn new(
+        mount_id: ViewMountId,
+        source: InputSourceIdentity,
+        generation: u64,
+        input: String,
+        parameter_revision: u64,
+        binding_raw: String,
+        page_parameters: ParameterSnapshot,
+    ) -> Result<Self> {
+        let identity = Self {
+            mount_id,
+            source,
+            generation,
+            input_generation: source.generation,
+            input,
+            parameter_revision,
+            binding_raw,
+            page_parameters,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    pub(super) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.mount_id == self.source.frame,
+            "picker feed request source does not belong to mount {:?}",
+            self.mount_id
+        );
+        anyhow::ensure!(
+            self.input_generation == self.source.generation,
+            "picker feed request input generation does not match its source"
+        );
+        anyhow::ensure!(
+            self.generation > 0,
+            "picker feed request generation must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.page_parameters.source() == self.source,
+            "picker feed request source does not match page parameters"
+        );
+        anyhow::ensure!(
+            self.page_parameters.revision() == self.parameter_revision,
+            "picker feed request parameter revision does not match page parameters"
+        );
+        Ok(())
+    }
+
+    /// Compare the request fields bound to a ViewContext. Request generation
+    /// is intentionally excluded; it identifies a task, not the context.
+    pub(super) fn matches_context(
+        &self,
+        mount_id: ViewMountId,
+        input: &str,
+        binding_raw: &str,
+        page_parameters: &ParameterSnapshot,
+    ) -> bool {
+        self.mount_id == mount_id
+            && self.source.frame == mount_id
+            && self.source == page_parameters.source()
+            && self.input_generation == page_parameters.source().generation
+            && self.input == input
+            && self.parameter_revision == page_parameters.revision()
+            && self.binding_raw == binding_raw
+            && self.page_parameters == *page_parameters
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ItemsRequest {
+    pub(super) view: String,
+    pub(super) identity: FeedRequestIdentity,
+}
+
+impl ItemsRequest {
+    pub(super) fn new(view: String, identity: FeedRequestIdentity) -> Result<Self> {
+        anyhow::ensure!(!view.is_empty(), "picker feed request view is empty");
+        identity.validate()?;
+        Ok(Self { view, identity })
+    }
+
+    pub(super) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(!self.view.is_empty(), "picker feed request view is empty");
+        self.identity.validate()
+    }
+
+    pub(super) fn matches_context(
+        &self,
+        mount_id: ViewMountId,
+        view: &str,
+        input: &str,
+        binding_raw: &str,
+        page_parameters: &ParameterSnapshot,
+    ) -> bool {
+        self.view == view
+            && self
+                .identity
+                .matches_context(mount_id, input, binding_raw, page_parameters)
+    }
+
+    pub(super) fn matches_response(&self, view: &str, identity: &FeedRequestIdentity) -> bool {
+        self.view == view && self.identity == *identity
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ItemsResponse {
+    pub(super) view: String,
+    pub(super) identity: FeedRequestIdentity,
+    pub(super) result: std::result::Result<ItemsResult, String>,
 }
 
 pub(crate) struct ItemsEvent {
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
     pub(crate) failure: Option<String>,
-    pub(super) pending_action: Option<PendingAction>,
 }
 
 pub(crate) type ItemsTaskHandle = crate::task::TaskHandle<ItemsResponse>;
 
-pub(crate) fn load_items_for_page(
-    config: &Config,
-    view_ref: &str,
-    page_state: &StateInstance,
+pub(crate) trait PickerItemsLoader: Send + Sync {
+    fn load(
+        &self,
+        request: &ItemsRequest,
+        runtime: &Value,
+        cancellation: &CancellationToken,
+    ) -> Result<ItemsResult>;
+}
+
+pub(crate) fn load_items_for_definitions(
+    definitions: &[Arc<FeedDefinition>],
+    page_view: &str,
+    page_parameters: &ParameterSnapshot,
     binding_raw: &str,
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let mut result = ItemsResult::default();
 
-    for (owner_ref, view) in config.feed_views(view_ref)? {
+    for definition in definitions {
         if cancellation.is_cancelled() {
             return Ok(result);
         }
@@ -102,47 +357,49 @@ pub(crate) fn load_items_for_page(
             ));
             break;
         }
-        let prefix = view.alias.clone().unwrap_or_else(|| owner_ref.clone());
-        if view.selected_items().is_none() {
+        if !definition.has_items() {
             continue;
         }
-
-        // Each provider gets exactly one typed state and one raw binding snapshot.
-        let (state, this_binding_raw) = if owner_ref == page_state.view_ref() {
-            (page_state.clone(), Some(binding_raw))
-        } else {
-            match config.ephemeral_feed_state(&owner_ref, binding_raw) {
-                Ok(state) => (state, Some(binding_raw)),
-                Err(error) => {
-                    result.errors.push(format!("{}: {}", owner_ref, error));
-                    continue;
-                }
+        let prefix = definition
+            .alias
+            .clone()
+            .unwrap_or_else(|| definition.owner_view.clone());
+        let instance = match FeedInstance::resolve(
+            Arc::clone(definition),
+            page_view,
+            page_parameters,
+            binding_raw,
+        ) {
+            Ok(instance) => instance,
+            Err(error) => {
+                result
+                    .errors
+                    .push(format!("{}: {}", definition.owner_view, error));
+                continue;
             }
         };
-        if let Err(error) = config.validate_query_state(&state) {
-            result.errors.push(format!("{}: {}", owner_ref, error));
-            continue;
-        }
-        let feed_id = FeedId(owner_ref.clone());
-        result.contexts.insert(
-            feed_id.clone(),
-            FeedContext {
-                owner_view: owner_ref.clone(),
-                state: state.clone(),
-                binding_raw: binding_raw.to_string(),
-            },
-        );
-        let owner_scope = OwnerViewScope::new(&state).with_binding_raw(this_binding_raw);
+        let feed_id = definition.feed_id.clone();
+        result.contexts.insert(feed_id.clone(), instance.clone());
+        let owner_scope =
+            OwnerViewScope::new(&instance.definition.owner_view, &instance.parameters)
+                .with_binding_raw(Some(&instance.binding_raw));
         let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&config.input_value),
+            InvocationScope::new(instance.definition.input_value()),
             SessionScope::new(runtime),
             Some(owner_scope),
             Some(cancellation),
         );
-        let value = match config.items_value(&owner_ref, &snapshot) {
+        let value = match instance.definition.items_value(&snapshot) {
             Ok(Some(value)) if ResolvedScriptSource::is_candidate(&value) => {
                 ResolvedScriptSource::parse(&value)
-                    .and_then(|source| run_items_source(config, &owner_ref, &source, cancellation))
+                    .and_then(|source| {
+                        run_items_source(
+                            &instance.definition,
+                            &instance.definition.owner_view,
+                            &source,
+                            cancellation,
+                        )
+                    })
                     .map(Some)
             }
             value => value,
@@ -151,13 +408,15 @@ pub(crate) fn load_items_for_page(
             Ok(Some(value)) => value,
             Ok(None) => continue,
             Err(error) => {
-                result.errors.push(format!("{}: {}", owner_ref, error));
+                result
+                    .errors
+                    .push(format!("{}: {}", definition.owner_view, error));
                 continue;
             }
         };
         append_items_value(
             &mut result,
-            &owner_ref,
+            &definition.owner_view,
             &feed_id,
             &prefix,
             value,
@@ -172,6 +431,26 @@ pub(crate) fn load_items_for_page(
 }
 
 #[cfg(test)]
+pub(crate) fn load_items_for_page(
+    projection: &PickerItemsProjection,
+    page_view: &str,
+    page_parameters: &ParameterSnapshot,
+    binding_raw: &str,
+    runtime: &Value,
+    cancellation: &CancellationToken,
+) -> Result<ItemsResult> {
+    let definitions = FeedDefinition::collection(Arc::new(projection.clone()), page_view)?;
+    load_items_for_definitions(
+        &definitions,
+        page_view,
+        page_parameters,
+        binding_raw,
+        runtime,
+        cancellation,
+    )
+}
+
+#[cfg(test)]
 fn load_items(
     config: &Config,
     view_ref: &str,
@@ -180,8 +459,17 @@ fn load_items(
 ) -> Result<ItemsResult> {
     let mut config = config.clone();
     config.test_rebuild_compiled()?;
-    let page_state = config.instantiate_state(view_ref)?;
-    load_items_for_page(&config, view_ref, &page_state, "", runtime, cancellation)
+    let page_state = config.instantiate_parameters(view_ref)?;
+    let page_parameters = config.parameter_snapshot(&page_state, InputSourceIdentity::default())?;
+    let projection = PickerItemsProjection::from_config(&config, view_ref)?;
+    load_items_for_page(
+        &projection,
+        view_ref,
+        &page_parameters,
+        "",
+        runtime,
+        cancellation,
+    )
 }
 
 fn append_items_value(
@@ -274,13 +562,13 @@ fn append_items(
 }
 
 fn run_items_source(
-    config: &Config,
+    definition: &FeedDefinition,
     source_ref: &str,
     source: &ResolvedScriptSource,
     cancellation: &CancellationToken,
 ) -> Result<Value> {
-    let root = config
-        .plugin_root(source_ref)
+    let root = definition
+        .plugin_root()
         .with_context(|| format!("items source {:?} has no plugin root", source_ref))?;
     let args = source.script_args("picker script args")?;
     let output = run_script(
@@ -319,6 +607,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::env;
     use std::fs;
+    use std::sync::Arc;
 
     fn script_source(file: &str, args: Option<toml::Value>) -> toml::Value {
         let mut source = toml::Table::new();
@@ -496,6 +785,144 @@ mod tests {
     }
 
     #[test]
+    fn feed_definitions_create_independent_instances_for_single_and_aggregate_mounts() {
+        let mut config = test_config();
+        config.test_views_mut().insert(
+            "sys:main".to_string(),
+            View {
+                engine: EngineSpec {
+                    engine_type: ENGINE_PICKER.to_string(),
+                    config: EngineOptions {
+                        items: Some(toml::Value::Array(vec![toml::Value::Table(
+                            [("label".to_string(), "SysItem".into())]
+                                .into_iter()
+                                .collect(),
+                        )])),
+                        ..Default::default()
+                    },
+                },
+                alias: Some("sys".to_string()),
+                run_shell: None,
+                cancel_exit_code: None,
+                query: None,
+                keymap: None,
+                commands: BTreeMap::new(),
+            },
+        );
+        config
+            .test_views_mut()
+            .get_mut("core:default")
+            .unwrap()
+            .engine
+            .config
+            .feeds = vec![
+            FeedSpec {
+                view: "apps:main".to_string(),
+            },
+            FeedSpec {
+                view: "sys:main".to_string(),
+            },
+        ];
+        let projection =
+            Arc::new(PickerItemsProjection::from_config(&config, "core:default").unwrap());
+        let ordinary_definitions =
+            FeedDefinition::collection(Arc::clone(&projection), "apps:main").unwrap();
+        let aggregate_definitions = FeedDefinition::collection(projection, "core:default").unwrap();
+        assert_eq!(ordinary_definitions.len(), 1);
+        assert_eq!(aggregate_definitions.len(), 2);
+        assert_eq!(
+            aggregate_definitions
+                .iter()
+                .map(|definition| definition.owner_view.as_str())
+                .collect::<Vec<_>>(),
+            ["apps:main", "sys:main"]
+        );
+
+        let ordinary_source = InputSourceIdentity {
+            frame: ViewMountId(201),
+            generation: 0,
+        };
+        let ordinary_parameters = ParameterSnapshot::from_parts(
+            serde_json::json!("ordinary"),
+            "ordinary".to_string(),
+            ordinary_source,
+            1,
+        );
+        let ordinary = load_items_for_definitions(
+            &ordinary_definitions,
+            "apps:main",
+            &ordinary_parameters,
+            "ordinary",
+            &serde_json::json!({}),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(ordinary.contexts.len(), 1);
+        assert!(Arc::ptr_eq(
+            &ordinary.contexts[&FeedId("apps:main".to_string())].definition,
+            &ordinary_definitions[0]
+        ));
+
+        let aggregate_parameters = ParameterSnapshot::from_parts(
+            serde_json::json!("page"),
+            "page".to_string(),
+            InputSourceIdentity {
+                frame: ViewMountId(202),
+                generation: 0,
+            },
+            1,
+        );
+        let runtime = serde_json::json!({
+            "view": {"current": {"items": [{"label": "AppItem"}]}}
+        });
+        let first_mount = load_items_for_definitions(
+            &aggregate_definitions,
+            "core:default",
+            &aggregate_parameters,
+            "first-mount",
+            &runtime,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let second_mount = load_items_for_definitions(
+            &aggregate_definitions,
+            "core:default",
+            &aggregate_parameters,
+            "second-mount",
+            &runtime,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(first_mount.contexts.len(), 2);
+        assert_eq!(second_mount.contexts.len(), 2);
+        let first_app = &first_mount.contexts[&FeedId("apps:main".to_string())];
+        let second_app = &second_mount.contexts[&FeedId("apps:main".to_string())];
+        assert!(Arc::ptr_eq(
+            &first_app.definition,
+            &aggregate_definitions[0]
+        ));
+        assert!(Arc::ptr_eq(
+            &second_app.definition,
+            &aggregate_definitions[0]
+        ));
+        assert!(!std::ptr::eq(first_app, second_app));
+        assert_eq!(first_app.binding_raw, "first-mount");
+        assert_eq!(second_app.binding_raw, "second-mount");
+        assert_ne!(
+            first_app.parameters.values(),
+            second_app.parameters.values()
+        );
+        assert_eq!(
+            first_app.parameters.values(),
+            &serde_json::json!("first-mount")
+        );
+        assert_eq!(
+            second_app.parameters.values(),
+            &serde_json::json!("second-mount")
+        );
+    }
+
+    #[test]
     fn feed_owner_and_active_page_are_distinct_dynamic_roots() {
         let mut config = test_config();
         config
@@ -536,9 +963,9 @@ mod tests {
     #[test]
     fn called_picker_items_read_declared_query_values() {
         let config = crate::config::load_test_fixture().unwrap();
-        let mut state = config.instantiate_state("selectors:commands").unwrap();
+        let mut state = config.instantiate_parameters("selectors:commands").unwrap();
         config
-            .update_query_value(
+            .update_parameter_values(
                 &mut state,
                 &serde_json::json!({
                     "commands": [{
@@ -550,10 +977,13 @@ mod tests {
                 }),
             )
             .unwrap();
+        let projection = PickerItemsProjection::from_config(&config, "selectors:commands").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "selectors:commands",
-            &state,
+            &config
+                .parameter_snapshot(&state, InputSourceIdentity::default())
+                .unwrap(),
             "open",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -585,6 +1015,34 @@ mod tests {
         .unwrap();
         assert!(result.items.is_empty());
         assert!(result.errors[0].contains("items must resolve to an array"));
+    }
+
+    #[test]
+    fn feed_sources_cannot_read_the_mounted_current_projection() {
+        let mut config = test_config();
+        config
+            .test_views_mut()
+            .get_mut("apps:main")
+            .unwrap()
+            .engine
+            .config
+            .items = Some("{{ current.value }}".into());
+        let result = load_items(
+            &config,
+            "core:default",
+            &serde_json::json!({
+                "view": {"current": {"value": "must-not-leak-into-feed"}}
+            }),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(result.items.is_empty());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| { error.contains("namespace \"current\" is unavailable") })
+        );
     }
 
     #[test]
@@ -647,7 +1105,7 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
             .test_plugin_roots_mut()
@@ -726,16 +1184,20 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
             .test_plugin_roots_mut()
             .insert("apps".to_string(), root.clone());
-        let page_state = config.instantiate_state("core:default").unwrap();
+        let page_state = config.instantiate_parameters("core:default").unwrap();
+        let page_parameters = config
+            .parameter_snapshot(&page_state, InputSourceIdentity::default())
+            .unwrap();
+        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "core:default",
-            &page_state,
+            &page_parameters,
             "fire",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -752,7 +1214,7 @@ mod tests {
         assert_eq!(result.contexts.len(), 1);
         let context = &result.contexts[&result.items[0].feed_id];
         assert_eq!(context.binding_raw, "fire");
-        assert_eq!(config.query_value(&context.state).unwrap(), "fire");
+        assert_eq!(context.parameters.values(), &serde_json::json!("fire"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -804,16 +1266,20 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
             .test_plugin_roots_mut()
             .insert("apps".to_string(), root.clone());
-        let page_state = config.instantiate_state("core:default").unwrap();
+        let page_state = config.instantiate_parameters("core:default").unwrap();
+        let page_parameters = config
+            .parameter_snapshot(&page_state, InputSourceIdentity::default())
+            .unwrap();
+        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "core:default",
-            &page_state,
+            &page_parameters,
             "",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -926,7 +1392,7 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
             .test_plugin_roots_mut()
@@ -934,11 +1400,15 @@ mod tests {
         config
             .test_plugin_roots_mut()
             .insert("sys".to_string(), root.clone());
-        let page_state = config.instantiate_state("core:default").unwrap();
+        let page_state = config.instantiate_parameters("core:default").unwrap();
+        let page_parameters = config
+            .parameter_snapshot(&page_state, InputSourceIdentity::default())
+            .unwrap();
+        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "core:default",
-            &page_state,
+            &page_parameters,
             "",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -991,14 +1461,18 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
-        let page_state = config.instantiate_state("core:default").unwrap();
+        let page_state = config.instantiate_parameters("core:default").unwrap();
+        let page_parameters = config
+            .parameter_snapshot(&page_state, InputSourceIdentity::default())
+            .unwrap();
 
+        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "core:default",
-            &page_state,
+            &page_parameters,
             "needle",
             &serde_json::json!({}),
             &CancellationToken::new(),
@@ -1115,16 +1589,20 @@ mod tests {
                 }
             }
         });
-        config.test_rebuild_state_registry().unwrap();
+        config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
             .test_plugin_roots_mut()
             .insert("apps".to_string(), root.clone());
-        let page_state = config.instantiate_state("core:default").unwrap();
+        let page_state = config.instantiate_parameters("core:default").unwrap();
+        let page_parameters = config
+            .parameter_snapshot(&page_state, InputSourceIdentity::default())
+            .unwrap();
+        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
         let result = load_items_for_page(
-            &config,
+            &projection,
             "core:default",
-            &page_state,
+            &page_parameters,
             "",
             &serde_json::json!({}),
             &CancellationToken::new(),

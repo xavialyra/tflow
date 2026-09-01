@@ -20,16 +20,18 @@ pub(crate) enum Namespace {
     View,
     Page,
     Selection,
+    Current,
     Input,
     Result,
     Session,
 }
 
 impl Namespace {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Input,
         Self::Page,
         Self::Selection,
+        Self::Current,
         Self::Session,
         Self::View,
         Self::Result,
@@ -40,6 +42,7 @@ impl Namespace {
             "view" => Some(Self::View),
             "page" => Some(Self::Page),
             "selection" => Some(Self::Selection),
+            "current" => Some(Self::Current),
             "input" => Some(Self::Input),
             "result" => Some(Self::Result),
             "session" => Some(Self::Session),
@@ -52,6 +55,7 @@ impl Namespace {
             Self::View => "view",
             Self::Page => "page",
             Self::Selection => "selection",
+            Self::Current => "current",
             Self::Input => "input",
             Self::Result => "result",
             Self::Session => "session",
@@ -96,6 +100,7 @@ impl EvaluationStage {
                         namespace,
                         Namespace::Page
                             | Namespace::Selection
+                            | Namespace::Current
                             | Namespace::Session
                             | Namespace::View
                     )
@@ -133,6 +138,18 @@ const PAGE_FIELDS: &[&str] = &[
     "commands",
 ];
 const SESSION_FIELDS: &[&str] = &["input", "views"];
+const CURRENT_FIELDS: &[&str] = &[
+    "item",
+    "source",
+    "text",
+    "value",
+    "metadata",
+    "selected_index",
+];
+
+pub(crate) const fn current_fields() -> &'static [&'static str] {
+    CURRENT_FIELDS
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PathSegment {
@@ -211,6 +228,43 @@ impl ContextRequirements {
             Some(RequiredFields::Fields(fields)) => fields.contains(field),
             None => false,
         }
+    }
+
+    pub(crate) fn validate_current_fields(&self, allowed: &[&str]) -> Result<()> {
+        let Some(required) = self.namespaces.get(&Namespace::Current) else {
+            return Ok(());
+        };
+        let missing = CURRENT_FIELDS
+            .iter()
+            .copied()
+            .filter(|field| {
+                let required = match required {
+                    RequiredFields::All => true,
+                    RequiredFields::Fields(fields) => fields.contains(*field),
+                };
+                required && !allowed.contains(field)
+            })
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let missing_count = missing.len();
+        let missing = missing
+            .iter()
+            .map(|field| format!("{field:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let allowed = if allowed.is_empty() {
+            "<none>".to_string()
+        } else {
+            allowed.join(", ")
+        };
+        bail!(
+            "current namespace field{} {} is not allowed by the active Engine schema; allowed fields: {}",
+            if missing_count == 1 { "" } else { "s" },
+            missing,
+            allowed,
+        );
     }
 
     /// Reject a template whose required scopes do not exist when `consumer`
@@ -700,6 +754,7 @@ fn validate_context_schema(path: &Path) -> Result<()> {
         Some(Namespace::View) => VIEW_FIELDS,
         Some(Namespace::Page) => PAGE_FIELDS,
         Some(Namespace::Session) => SESSION_FIELDS,
+        Some(Namespace::Current) => CURRENT_FIELDS,
         Some(Namespace::Selection | Namespace::Input | Namespace::Result) => return Ok(()),
         None => return Ok(()),
     };

@@ -1,3 +1,5 @@
+use crate::lifecycle::CancellationStatus;
+#[cfg(test)]
 use crate::lifecycle::CancellationToken;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -188,7 +190,7 @@ impl PreparedProcess {
 
     pub(crate) fn status(
         &self,
-        cancellation: &CancellationToken,
+        cancellation: &dyn CancellationStatus,
     ) -> io::Result<std::process::ExitStatus> {
         if cancellation.is_cancelled() {
             return Err(io::Error::new(

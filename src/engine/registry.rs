@@ -1,12 +1,19 @@
-use super::api::{Engine, EngineValidationContext, ViewContext, ViewFactory, ViewInstance};
+#[cfg(test)]
+use super::api::EngineRegistration;
+use super::api::{
+    EngineValidationContext, InputBindingFactoryContext, MountRuntimeData, RendererFactoryContext,
+    RuntimeFactoryContext, ViewFactory,
+};
 use crate::config::{Config, Defaults, EngineConfigValidator, View};
 use crate::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) struct EngineRegistry {
-    engines: BTreeMap<&'static str, Box<dyn Engine>>,
+    #[cfg(test)]
+    overrides: BTreeMap<&'static str, EngineRegistration>,
 }
 
 impl EngineConfigValidator for EngineRegistry {
@@ -25,30 +32,42 @@ impl EngineConfigValidator for EngineRegistry {
 
 impl EngineRegistry {
     pub(crate) fn new() -> Self {
-        let mut registry = Self {
-            engines: BTreeMap::new(),
-        };
-        registry.register(Box::new(super::picker::PickerEngine));
-        registry.register(Box::new(super::capture::CaptureEngine));
-        registry.register(Box::new(super::embedded::EmbeddedEngine));
-        registry
-    }
-
-    pub(crate) fn register(&mut self, engine: Box<dyn Engine>) {
-        self.engines.insert(engine.engine_type(), engine);
+        Self {
+            #[cfg(test)]
+            overrides: BTreeMap::new(),
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn contains(&self, engine_type: &str) -> bool {
-        self.engines.contains_key(engine_type)
+    pub(crate) fn register(&mut self, registration: EngineRegistration) {
+        self.overrides
+            .insert(registration.definition.kind, registration);
+    }
+
+    #[cfg(test)]
+    fn override_for(&self, engine_type: &str) -> Option<&EngineRegistration> {
+        self.overrides.get(engine_type)
+    }
+
+    pub(crate) fn definition_for_engine(
+        &self,
+        engine_type: &str,
+    ) -> Option<crate::engine::EngineDefinition> {
+        #[cfg(test)]
+        if let Some(registration) = self.override_for(engine_type) {
+            return Some(registration.definition.clone());
+        }
+        match engine_type {
+            crate::config::ENGINE_PICKER => Some(super::picker::definition()),
+            crate::config::ENGINE_CAPTURE => Some(super::capture::definition()),
+            crate::config::ENGINE_EMBEDDED => Some(super::embedded::definition()),
+            _ => None,
+        }
     }
 
     pub(crate) fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
-        for engine in self.engines.values() {
-            engine
-                .validate_defaults(defaults)
-                .with_context(|| format!("{} defaults", engine.engine_type()))?;
-        }
+        super::picker::validate_defaults(defaults).context("picker defaults")?;
+        super::capture::validate_defaults(defaults).context("capture defaults")?;
         Ok(())
     }
 
@@ -63,50 +82,125 @@ impl EngineRegistry {
         view: &View,
         script_root: Option<&Path>,
     ) -> Result<()> {
-        let engine = self
-            .engines
-            .get(view.selected_engine_type())
-            .with_context(|| {
-                format!(
-                    "view {:?} uses unsupported engine {:?}",
-                    name,
-                    view.selected_engine_type()
-                )
-            })?;
-        if !engine.supports_data_sources()
-            && (view.selected_items().is_some() || !view.selected_feeds().is_empty())
-        {
-            bail!(
-                "view {:?} using engine {:?} cannot provide picker items",
-                name,
-                view.selected_engine_type()
-            );
+        #[cfg(test)]
+        if self.override_for(view.selected_engine_type()).is_some() {
+            return Ok(());
         }
-        engine.validate_config(EngineValidationContext {
+        let context = EngineValidationContext {
             view_ref: name,
             view,
             script_root,
-        })?;
-        engine.validate_keymap(name, view)
+        };
+        match view.selected_engine_type() {
+            crate::config::ENGINE_PICKER => {
+                super::picker::validate_config(context)?;
+                super::picker::validate_keymap(name, view)
+            }
+            crate::config::ENGINE_CAPTURE => {
+                super::capture::validate_config(context)?;
+                super::capture::validate_keymap(name, view)
+            }
+            crate::config::ENGINE_EMBEDDED => {
+                super::embedded::validate_config(context)?;
+                default_validate_keymap(crate::config::ENGINE_EMBEDDED, name, view)
+            }
+            engine_type => bail!("view {:?} uses unsupported engine {:?}", name, engine_type),
+        }
     }
 
     pub(crate) fn validate_relations(&self, config: &Config) -> Result<()> {
-        for engine in self.engines.values() {
-            engine.validate_relations(config)?;
-        }
-        Ok(())
+        super::picker::validate_relations(config)
     }
 }
 
 impl ViewFactory for EngineRegistry {
-    fn create_view(&self, context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
-        let engine_type = context.config.engine(&context.request.view_ref)?;
-        let engine = self
-            .engines
-            .get(engine_type)
-            .with_context(|| format!("unsupported view engine {:?}", engine_type))?;
-        engine.create_view(context)
+    fn definition(
+        &self,
+        config: &Config,
+        view_ref: &str,
+    ) -> Result<crate::engine::EngineDefinition> {
+        let engine_type = config.engine(view_ref)?;
+        self.definition_for_engine(engine_type)
+            .with_context(|| format!("unsupported view engine {:?}", engine_type))
     }
+
+    fn create_mount_data(
+        &self,
+        config: &Config,
+        identity: &crate::engine::ViewIdentity,
+        task_lease: crate::task::MountTaskLease,
+    ) -> Result<Option<MountRuntimeData>> {
+        #[cfg(test)]
+        if self.override_for(&identity.engine_type).is_some() {
+            return Ok(None);
+        }
+        match identity.engine_type.as_str() {
+            crate::config::ENGINE_PICKER => {
+                super::picker::mount_data(config, &identity.view_ref, task_lease).map(Some)
+            }
+            crate::config::ENGINE_CAPTURE | crate::config::ENGINE_EMBEDDED => Ok(None),
+            engine_type => bail!("unsupported view engine {:?}", engine_type),
+        }
+    }
+
+    fn create_view(
+        &self,
+        context: RuntimeFactoryContext,
+    ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
+        #[cfg(test)]
+        if let Some(registration) = self.override_for(&context.identity.engine_type) {
+            return (registration.create_runtime)(context);
+        }
+        match context.identity.engine_type.as_str() {
+            crate::config::ENGINE_PICKER => super::picker::create_view(context),
+            crate::config::ENGINE_CAPTURE => super::capture::create_view(context),
+            crate::config::ENGINE_EMBEDDED => super::embedded::create_view(context),
+            engine_type => bail!("unsupported view engine {:?}", engine_type),
+        }
+    }
+
+    fn create_renderer(
+        &self,
+        context: RendererFactoryContext,
+    ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
+        #[cfg(test)]
+        if let Some(registration) = self.override_for(&context.identity.engine_type) {
+            return (registration.create_renderer)(context);
+        }
+        match context.identity.engine_type.as_str() {
+            crate::config::ENGINE_PICKER => super::picker::create_renderer(context),
+            crate::config::ENGINE_CAPTURE => super::capture::create_renderer(context),
+            crate::config::ENGINE_EMBEDDED => super::embedded::create_renderer(context),
+            engine_type => bail!("unsupported view engine {:?}", engine_type),
+        }
+    }
+
+    fn create_input_bindings(
+        &self,
+        context: InputBindingFactoryContext,
+    ) -> Result<Vec<crate::command::InputActionBinding>> {
+        #[cfg(test)]
+        if let Some(registration) = self.override_for(&context.identity.engine_type) {
+            return (registration.create_bindings)(context);
+        }
+        match context.identity.engine_type.as_str() {
+            crate::config::ENGINE_PICKER => super::picker::create_input_bindings(context),
+            crate::config::ENGINE_CAPTURE => super::capture::create_input_bindings(context),
+            crate::config::ENGINE_EMBEDDED => super::embedded::create_input_bindings(context),
+            engine_type => bail!("unsupported view engine {:?}", engine_type),
+        }
+    }
+}
+
+fn default_validate_keymap(engine_type: &str, name: &str, view: &View) -> Result<()> {
+    if view.keymap.is_some() {
+        bail!(
+            "view {:?} using engine {:?} cannot define a keymap",
+            name,
+            engine_type
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_fields(name: &str, view: &View, allowed: &[&str]) -> Result<()> {
@@ -141,54 +235,198 @@ pub(crate) fn require_field(name: &str, view: &View, field: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{EngineHost, EngineTerminal, ViewContext, ViewEffect, ViewInstance};
-    use anyhow::Result;
 
     #[test]
-    fn accepts_custom_engine_implementations() {
-        struct TestEngine;
-
+    fn accepts_custom_engine_registrations() {
         struct TestView;
 
-        impl ViewInstance for TestView {
-            fn step(
-                &mut self,
-                _host: &mut EngineHost<'_>,
-                _terminal: &mut dyn EngineTerminal,
-            ) -> Result<ViewEffect> {
-                Ok(ViewEffect::Continue)
+        impl crate::engine::EngineRuntime for TestView {
+            fn tick_mode(&self) -> crate::engine::EngineTickMode {
+                crate::engine::EngineTickMode::Prepared
             }
 
-            fn render(
-                &mut self,
-                _host: &EngineHost<'_>,
-                _frame: &mut ratatui::Frame,
-                _area: ratatui::layout::Rect,
-            ) {
+            fn render_model(&self) -> crate::engine::RenderModel {
+                crate::engine::RenderModel::new("test", ())
             }
         }
 
-        impl Engine for TestEngine {
-            fn engine_type(&self) -> &'static str {
-                "test"
-            }
-
-            fn validate_config(&self, _context: EngineValidationContext<'_>) -> Result<()> {
-                Ok(())
-            }
-
-            fn validate_relations(&self, _config: &Config) -> Result<()> {
-                Ok(())
-            }
-
-            fn create_view(&self, _context: ViewContext<'_>) -> Result<Box<dyn ViewInstance>> {
-                Ok(Box::new(TestView))
-            }
-        }
-
+        let registration = EngineRegistration::new(
+            crate::engine::EngineDefinition::new("test", "test"),
+            |_context| Ok(Box::new(TestView)),
+        );
         let mut registry = EngineRegistry::new();
-        registry.register(Box::new(TestEngine));
-        assert!(registry.contains("test"));
+        registry.register(registration);
+        assert!(registry.override_for("test").is_some());
+        assert_eq!(registry.definition_for_engine("test").unwrap().kind, "test");
+    }
+
+    #[test]
+    fn replacement_registration_delegates_input_binding_creation() {
+        struct TestView;
+
+        impl crate::engine::EngineRuntime for TestView {
+            fn tick_mode(&self) -> crate::engine::EngineTickMode {
+                crate::engine::EngineTickMode::Prepared
+            }
+
+            fn render_model(&self) -> crate::engine::RenderModel {
+                crate::engine::RenderModel::new("test", ())
+            }
+        }
+
+        let registration = EngineRegistration::new(
+            crate::engine::EngineDefinition::new(crate::config::ENGINE_PICKER, "custom-picker"),
+            |_context| Ok(Box::new(TestView)),
+        )
+        .with_input_binding_factory(|_context| {
+            Ok(vec![crate::command::InputActionBinding {
+                key: crate::input::Key::Escape,
+                action: crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
+                    "custom.cancel",
+                )),
+                label: Some("Cancel".to_string()),
+                enabled: true,
+            }])
+        });
+
+        let view_ref = "apps:main";
+        let mut registry = EngineRegistry::new();
+        registry.register(registration);
+
+        let bindings = registry
+            .create_input_bindings(InputBindingFactoryContext {
+                identity: crate::engine::ViewIdentity::new(view_ref, crate::config::ENGINE_PICKER),
+                bindings: crate::engine::EvaluatedBindingConfig::default(),
+            })
+            .unwrap();
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].key, crate::input::Key::Escape);
+        assert!(matches!(
+            &bindings[0].action,
+            crate::command::ResolvedInputAction::Engine(id) if id.as_str() == "custom.cancel"
+        ));
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_PICKER)
+                .unwrap()
+                .renderer,
+            "custom-picker"
+        );
+    }
+
+    #[test]
+    fn engine_definitions_are_the_action_schema_source() {
+        let registry = EngineRegistry::new();
+        let definition = registry.definition_for_engine("picker").unwrap();
+        assert!(
+            definition
+                .action(&crate::engine::ActionId::new("picker.select_next"))
+                .is_some()
+        );
+        assert!(
+            definition
+                .action(&crate::engine::ActionId::new("capture.copy"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn engine_definitions_declare_their_current_field_allowlists() {
+        let registry = EngineRegistry::new();
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_PICKER)
+                .unwrap()
+                .current_fields,
+            [
+                "item",
+                "source",
+                "text",
+                "value",
+                "metadata",
+                "selected_index"
+            ]
+        );
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_CAPTURE)
+                .unwrap()
+                .current_fields,
+            ["value"]
+        );
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_EMBEDDED)
+                .unwrap()
+                .current_fields,
+            [] as [&str; 0]
+        );
+        assert_eq!(
+            crate::engine::EngineDefinition::new("custom", "test").current_fields,
+            [] as [&str; 0]
+        );
+    }
+
+    #[test]
+    fn engine_definitions_own_input_focus_policy() {
+        let registry = EngineRegistry::new();
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_PICKER)
+                .unwrap()
+                .input
+                .focus,
+            crate::engine::InputFocus::Focused
+        );
+        for engine_type in [
+            crate::config::ENGINE_CAPTURE,
+            crate::config::ENGINE_EMBEDDED,
+        ] {
+            assert_eq!(
+                registry
+                    .definition_for_engine(engine_type)
+                    .unwrap()
+                    .input
+                    .focus,
+                crate::engine::InputFocus::Unfocused
+            );
+        }
+    }
+
+    #[test]
+    fn engine_definitions_declare_terminal_eof_policy() {
+        let registry = EngineRegistry::new();
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_PICKER)
+                .unwrap()
+                .mount_policy
+                .terminal_eof,
+            crate::engine::TerminalEofPolicy::Exit
+        );
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_CAPTURE)
+                .unwrap()
+                .mount_policy
+                .terminal_eof,
+            crate::engine::TerminalEofPolicy::Exit
+        );
+        assert_eq!(
+            registry
+                .definition_for_engine(crate::config::ENGINE_EMBEDDED)
+                .unwrap()
+                .mount_policy
+                .terminal_eof,
+            crate::engine::TerminalEofPolicy::Close
+        );
+        assert_eq!(
+            crate::engine::EngineDefinition::new("custom", "test")
+                .mount_policy
+                .terminal_eof,
+            crate::engine::TerminalEofPolicy::Exit
+        );
     }
 
     #[test]

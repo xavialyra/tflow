@@ -7,10 +7,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use support::{
-    fixture_config, run_tty_invocation_with_blocked_stdout_signal, spawn_launcher,
-    spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
-    wait_for_launcher_exit, wait_for_launcher_exit_without_reading, wait_for_nonempty_file,
-    wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
+    discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
+    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
+    wait_for_fresh_screen, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
+    wait_for_nonempty_file, wait_for_process_exit, wait_for_ready, wait_for_text,
+    write_test_config,
 };
 
 fn write_plugin_script(root: &Path, plugin: &str, file: &str, source: &str) {
@@ -1256,9 +1257,17 @@ fn btop_fixture_route_tab_and_escape_restore_the_empty_default() {
         "marker: {switched}"
     );
 
+    discard_pending_master_output(&process.master);
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "Enter Open");
+    let output = wait_for_fresh_screen(&process.master, |visible| {
+        visible.contains("Enter Open")
+            && visible
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.trim().is_empty())
+            && !visible.contains("btop /")
+    });
     let output = String::from_utf8_lossy(&output);
     let visible = output.rsplit("--- visible screen ---").next().unwrap();
     assert!(

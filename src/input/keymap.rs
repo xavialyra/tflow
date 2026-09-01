@@ -169,7 +169,7 @@ pub(crate) struct BindingRecord<T> {
     pub(crate) state: BindingState,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct BindingStore<T> {
     next_id: u64,
     records: HashMap<BindingId, BindingRecord<T>>,
@@ -204,7 +204,7 @@ impl<T> BindingStore<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayerEntry {
     Bind(BindingId),
-    #[allow(dead_code)]
+    #[cfg(test)]
     Unbind,
 }
 
@@ -234,14 +234,14 @@ impl<C: Copy> KeymapSnapshot<C> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ContextState {
     layers: BTreeMap<i16, HashMap<BindingKey, LayerEntry>>,
     effective: HashMap<BindingKey, BindingId>,
     revision: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DynamicKeymap<C> {
     contexts: HashMap<C, ContextState>,
     next_revision: u64,
@@ -334,6 +334,7 @@ where
                     LayerEntry::Bind(id) => {
                         effective.insert(*key, *id);
                     }
+                    #[cfg(test)]
                     LayerEntry::Unbind => {
                         effective.remove(key);
                     }
@@ -349,7 +350,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct InputContextId(u64);
+pub(crate) struct InputContextId(pub(crate) u64);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(crate) struct LayerId(u64);
@@ -357,13 +358,11 @@ pub(crate) struct LayerId(u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BindingEntry<T> {
     Bind(BindingRecord<T>),
-    #[allow(dead_code)]
-    Unbind,
 }
 
 type LayerReplacement<T> = (LayerId, Vec<(Key, BindingEntry<T>)>);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MountedLayer<T> {
     context: InputContextId,
     priority: i16,
@@ -371,8 +370,8 @@ struct MountedLayer<T> {
     binding_ids: Vec<BindingId>,
 }
 
-#[derive(Debug)]
-pub(crate) struct InputRouter<T> {
+#[derive(Debug, Clone)]
+pub(crate) struct InstructionTable<T> {
     next_context: u64,
     next_layer: u64,
     keymap: DynamicKeymap<InputContextId>,
@@ -380,7 +379,7 @@ pub(crate) struct InputRouter<T> {
     layers: HashMap<LayerId, MountedLayer<T>>,
 }
 
-impl<T> Default for InputRouter<T> {
+impl<T> Default for InstructionTable<T> {
     fn default() -> Self {
         Self {
             next_context: 1,
@@ -392,7 +391,7 @@ impl<T> Default for InputRouter<T> {
     }
 }
 
-impl<T> InputRouter<T>
+impl<T> InstructionTable<T>
 where
     T: Clone + Eq,
 {
@@ -473,9 +472,6 @@ where
                         let id = self.bindings.insert(record.clone());
                         binding_ids.push(id);
                         resolved.insert(*key, LayerEntry::Bind(id));
-                    }
-                    BindingEntry::Unbind => {
-                        resolved.insert(*key, LayerEntry::Unbind);
                     }
                 }
             }
@@ -770,7 +766,7 @@ mod tests {
 
     #[test]
     fn router_replaces_layers_incrementally_and_reclaims_contexts() {
-        let mut router = InputRouter::default();
+        let mut router = InstructionTable::default();
         let context = router.create_context();
         let action_layer = router.mount_layer(context, 100);
         let command_layer = router.mount_layer(context, 200);

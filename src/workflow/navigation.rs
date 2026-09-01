@@ -28,12 +28,6 @@ pub(crate) struct ViewCandidate {
     pub(crate) engine_type: String,
 }
 
-impl ViewCandidate {
-    pub(crate) fn primary_label(&self) -> &str {
-        self.alias.as_deref().unwrap_or(&self.view_ref)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct Router {
     views: BTreeSet<ViewRef>,

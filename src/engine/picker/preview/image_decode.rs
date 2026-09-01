@@ -5,7 +5,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 pub(crate) const MAX_IMAGE_WIDTH: u32 = 8192;
@@ -13,8 +13,6 @@ pub(crate) const MAX_IMAGE_HEIGHT: u32 = 8192;
 pub(crate) const MAX_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_IMAGE_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_CONCURRENT_IMAGE_DECODES: usize = 2;
-
-static IMAGE_DECODE_POOL: OnceLock<std::result::Result<ImageDecodePool, String>> = OnceLock::new();
 
 type DecodeResult = std::result::Result<DynamicImage, String>;
 type Decoder = dyn Fn(&Path) -> DecodeResult + Send + Sync + 'static;
@@ -65,7 +63,7 @@ struct SharedPool {
     decoder: Arc<Decoder>,
 }
 
-struct ImageDecodePool {
+pub(super) struct ImageDecodePool {
     shared: Arc<SharedPool>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -107,7 +105,7 @@ impl ImageDecodePool {
         Ok(Self { shared, workers })
     }
 
-    fn submit(&self, revision: u64, images: Vec<(usize, PathBuf)>) -> ImageDecodeHandle {
+    pub(super) fn submit(&self, revision: u64, images: Vec<(usize, PathBuf)>) -> ImageDecodeHandle {
         let cancellation = Arc::new(AtomicBool::new(false));
         let (completion, receiver) = sync_channel(1);
         let job = ImageDecodeJob {
@@ -198,17 +196,10 @@ fn image_worker(shared: Arc<SharedPool>) {
     }
 }
 
-pub(crate) fn submit(
-    revision: u64,
-    images: Vec<(usize, PathBuf)>,
-) -> std::result::Result<ImageDecodeHandle, String> {
-    match IMAGE_DECODE_POOL.get_or_init(|| {
-        ImageDecodePool::new(MAX_CONCURRENT_IMAGE_DECODES, Arc::new(decode_image))
-            .map_err(|error| format!("could not start bounded image decode workers: {error}"))
-    }) {
-        Ok(pool) => Ok(pool.submit(revision, images)),
-        Err(error) => Err(error.clone()),
-    }
+pub(super) fn new_default_pool() -> std::result::Result<Arc<ImageDecodePool>, String> {
+    ImageDecodePool::new(MAX_CONCURRENT_IMAGE_DECODES, Arc::new(decode_image))
+        .map(Arc::new)
+        .map_err(|error| format!("could not start bounded image decode workers: {error}"))
 }
 
 fn decode_image(path: &Path) -> DecodeResult {
@@ -368,6 +359,32 @@ mod tests {
             .expect("latest batch did not finish");
         assert_eq!(result.revision, 3);
         assert_eq!(*executed.lock().unwrap(), ["running", "latest"]);
+    }
+
+    #[test]
+    fn separate_pools_do_not_cancel_each_other() {
+        let decoder: Arc<Decoder> = Arc::new(|_path: &Path| Ok(DynamicImage::new_rgba8(1, 1)));
+        let first_pool = ImageDecodePool::new(1, Arc::clone(&decoder)).unwrap();
+        let second_pool = ImageDecodePool::new(1, Arc::clone(&decoder)).unwrap();
+        let first = first_pool.submit(1, vec![(0, PathBuf::from("first"))]);
+        let second = second_pool.submit(2, vec![(0, PathBuf::from("second"))]);
+
+        assert_eq!(
+            first
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            1
+        );
+        assert_eq!(
+            second
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            2
+        );
     }
 
     #[test]

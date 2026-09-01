@@ -1,1 +1,1 @@
-pub(crate) use crate::input::{InputBuffer, previous_char_boundary};
+pub(crate) use crate::input::{EditorBuffer, previous_char_boundary};

@@ -1,5 +1,11 @@
 [tools]
+"pipx:lizard" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
+"cargo:cargo-modules" = "latest"
+"cargo:rust-code-analysis-cli" = "latest"
+ripgrep = "latest"
 rust = { version = "1.97.1", profile = "default" }
+tokei = "latest"
 
 [env]
 TUI_LAUNCHER_CONFIG = "{{config_root}}/tests/fixtures/config/config.toml"
@@ -7,3 +13,107 @@ _.path = [
   "{{config_root}}/target/debug",
   "{{config_root}}/target/release",
 ]
+
+[tasks.metrics]
+description = "Run all architecture metrics"
+usage = '''
+arg "[paths]" var=#true help="Files or directories to analyze"
+'''
+run = """
+set -euo pipefail
+mkdir -p target/metrics
+summary="target/metrics/summary-$(date -u +%Y%m%d-%H%M%SZ).md"
+export METRICS_PATHS="${usage_paths:-}"
+export NO_COLOR=1
+{
+  printf '# Architecture Metrics Summary\\n\\n'
+  printf 'Generated: %s\\n\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'Paths: %s\\n\\n' "${METRICS_PATHS:-default paths}"
+  printf '## Protocol Scope\\n\\n'
+  mise run metrics-scope
+  printf '\\n## Source Size\\n\\n'
+  mise run metrics-size
+  printf '\\n## Complexity\\n\\n'
+  mise run metrics-complexity
+  printf '\\n## Module Structure\\n\\n'
+  mise run metrics-modules
+  printf '\\n## Test Coverage\\n\\n'
+  mise run metrics-coverage
+  printf '\\nSummary file: `%s`\\n' "$summary"
+} 2>&1 | tee "$summary"
+"""
+
+[tasks.metrics-scope]
+description = "Count Engine protocol surface"
+usage = '''
+arg "[paths]" var=#true help="Files or directories to analyze"
+'''
+run = """
+set -eu
+paths=(src/engine src/session src/workflow)
+path_args="${usage_paths:-${METRICS_PATHS:-}}"
+if [ -n "$path_args" ]; then
+  eval "paths=($path_args)"
+fi
+printf '%s\\n' '== Engine protocol scope =='
+printf 'paths: %s\\n' "${paths[*]}"
+printf 'traits: '
+rg -n '^pub\\((crate|super)\\) trait |^pub trait ' "${paths[@]}" | wc -l
+printf 'function definitions (rough): '
+rg -n '^    fn ' "${paths[@]}" | wc -l
+printf 'context structs: '
+rg -n '^pub\\([^)]*\\) struct .*Context|^struct .*Context' "${paths[@]}" | wc -l
+printf 'SelectionBinding references: '
+rg -n 'SelectionBinding|selection_commands' "${paths[@]}" | wc -l
+printf 'MountCapability references: '
+rg -n 'MountCapability|CapabilityRequest|CapabilityUpdate' "${paths[@]}" | wc -l
+printf 'files referencing Engine concepts: '
+rg -l 'crate::engine|EngineRuntime|EngineDecision|ViewRenderer|MountCapability' "${paths[@]}" | wc -l
+"""
+
+[tasks.metrics-size]
+description = "Report Rust source size"
+usage = '''
+arg "[paths]" var=#true help="Files or directories to measure"
+'''
+run = """
+set -eu
+paths=(src/engine src/session src/workflow/command src/workflow/config)
+path_args="${usage_paths:-${METRICS_PATHS:-}}"
+if [ -n "$path_args" ]; then
+  eval "paths=($path_args)"
+fi
+tokei "${paths[@]}"
+"""
+
+[tasks.metrics-complexity]
+description = "Report Rust function complexity"
+usage = '''
+arg "[paths]" var=#true help="Files or directories to analyze"
+'''
+run = """
+set -eu
+paths=(src)
+path_args="${usage_paths:-${METRICS_PATHS:-}}"
+if [ -n "$path_args" ]; then
+  eval "paths=($path_args)"
+fi
+rm -rf target/metrics/code-analysis
+mkdir -p target/metrics/code-analysis
+for path in "${paths[@]}"; do
+  rust-code-analysis-cli --metrics --output-format json --output target/metrics/code-analysis --language-type rust --paths "$path"
+done
+printf '%s\\n' '== Human-readable complexity =='
+lizard_status=0
+lizard -l rust "${paths[@]}" || lizard_status=$?
+if [ "$lizard_status" -gt 1 ]; then exit "$lizard_status"; fi
+printf '%s\\n' 'Machine-readable metrics: target/metrics/code-analysis'
+"""
+
+[tasks.metrics-modules]
+description = "Report Rust module structure"
+run = "cargo modules structure --lib --no-fns"
+
+[tasks.metrics-coverage]
+description = "Report test coverage"
+run = "cargo llvm-cov --all-features --all-targets --summary-only"

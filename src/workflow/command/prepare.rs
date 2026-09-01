@@ -1,16 +1,14 @@
 use crate::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     CommandOwnerContext, CommandRef, NavigationMode, NavigationRequest, ReturnAdapter, ViewOutput,
-    ViewReturn,
+    ViewOutputItem, ViewReturn,
 };
 use crate::config::{
-    Command, CommandAction, CommandScope, Config, EvaluationSnapshot, InvocationScope,
-    NavigatePayload, OwnerViewScope, ResolvedScriptSource, ReturnScope, RunPayload, SessionScope,
-    normalize_key,
+    Command, CommandAction, Config, EvaluationSnapshot, InvocationScope, NavigatePayload,
+    OwnerViewScope, ResolvedScriptSource, ReturnScope, RunPayload, SessionScope, normalize_key,
 };
 use crate::execution::PreparedProcess;
 use crate::expression::EvaluationStage;
-use crate::input::Key;
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -88,14 +86,17 @@ fn prepare_action(
     root_adapter: bool,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    let owner = command_owner(&context, invocation.source_view())?;
-    let owner_scope = OwnerViewScope::new(&owner.state).with_binding_raw(Some(&owner.binding_raw));
+    let owner = &context.owner;
+    let owner_scope = OwnerViewScope::new(&owner.view_ref, &owner.parameters)
+        .with_binding_raw(Some(&owner.binding_raw));
     let snapshot = EvaluationSnapshot::new(
         InvocationScope::new(&config.input_value),
         SessionScope::new(&context.runtime),
         Some(owner_scope),
         Some(cancellation),
     )
+    .with_current(&context.current)
+    .with_current_fields(context.current_fields)
     .with_return_scope(returned.map(ReturnScope::new));
     let stage = if returned.is_some() {
         EvaluationStage::Return
@@ -120,9 +121,9 @@ fn prepare_action(
             })
         }
         CommandAction::Navigate { payload } => {
-            let (target, query) = evaluate_target(config, payload, &snapshot, stage)?;
-            let request = match query {
-                Some(query) => NavigationRequest::new(target, "").with_query(query),
+            let (target, parameters) = evaluate_target(config, payload, &snapshot, stage)?;
+            let request = match parameters {
+                Some(parameters) => NavigationRequest::new(target, "").with_parameters(parameters),
                 None => NavigationRequest::with_defaults(target),
             };
             Ok(PreparedAction::Navigate {
@@ -140,13 +141,13 @@ fn prepare_action(
                 .context("call target must evaluate to a string")?
                 .to_string();
             let target = config.resolve_view(&target)?;
-            let query = payload
+            let parameters = payload
                 .query
                 .as_ref()
                 .map(|value| evaluate_value(config, &snapshot, stage, value))
                 .transpose()?;
-            let request = match query {
-                Some(query) => NavigationRequest::new(target, "").with_query(query),
+            let request = match parameters {
+                Some(parameters) => NavigationRequest::new(target, "").with_parameters(parameters),
                 None => NavigationRequest::with_defaults(target),
             };
             Ok(PreparedAction::Call(CallRequest {
@@ -161,8 +162,8 @@ fn prepare_action(
                 Some(value) => ViewOutput::Value {
                     value: evaluate_value(config, &snapshot, stage, value)?,
                 },
-                None => context.output.clone().context(
-                    "return command has no engine output; configure payload.value explicitly",
+                None => current_output(&context).context(
+                    "return command has no current ViewContext output; configure payload.value explicitly",
                 )?,
             };
             let adapter = if root_adapter {
@@ -213,24 +214,49 @@ fn prepare_action(
     }
 }
 
-fn command_owner<'a>(
-    context: &'a CommandContext,
-    source_view: &str,
-) -> Result<&'a CommandOwnerContext> {
-    if context.page.view_ref == source_view {
-        return Ok(&context.page);
+fn current_output(context: &CommandContext) -> Option<ViewOutput> {
+    let current = &context.current;
+    if let Some(values) = current.as_object()
+        && let Some(item_value) = values.get("item")
+    {
+        let item = (!item_value.is_null())
+            .then(|| {
+                let item = item_value.as_object()?;
+                Some(ViewOutputItem {
+                    text: item.get("text")?.as_str()?.to_string(),
+                    value: item
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    metadata: item.get("metadata").cloned().unwrap_or(Value::Null),
+                    source_view: values
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .or_else(|| item.get("owner_view").and_then(Value::as_str))?
+                        .to_string(),
+                })
+            })
+            .flatten();
+        if item.is_some() || !context.page.binding_raw.is_empty() {
+            return Some(ViewOutput::Selected {
+                item,
+                input: values
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&context.page.binding_raw)
+                    .to_string(),
+            });
+        }
+        return None;
     }
-    context
-        .selection
-        .as_ref()
-        .filter(|selection| selection.owner.view_ref == source_view)
-        .map(|selection| &selection.owner)
-        .with_context(|| {
-            format!(
-                "command owner {:?} is not the active page or selected item owner",
-                source_view
-            )
-        })
+    if let Some(value) = current.as_object().and_then(|values| values.get("value")) {
+        return Some(ViewOutput::Value {
+            value: value.clone(),
+        });
+    }
+    (!current.is_null()).then(|| ViewOutput::Value {
+        value: current.clone(),
+    })
 }
 
 fn evaluate_target(
@@ -244,12 +270,12 @@ fn evaluate_target(
         .context("navigation target must evaluate to a string")?
         .to_string();
     let target = config.resolve_view(&target)?;
-    let query = payload
+    let parameters = payload
         .query
         .as_ref()
         .map(|value| evaluate_value(config, snapshot, stage, value))
         .transpose()?;
-    Ok((target, query))
+    Ok((target, parameters))
 }
 
 fn evaluate_value(
@@ -314,19 +340,25 @@ fn prepare_run_command(
         bail!("command shell must not be empty");
     }
     let arguments = config.evaluate_argv(payload.args.as_ref(), snapshot, stage, "command args")?;
-    let item = context.selection.as_ref().map(|selection| &selection.item);
-    let value = item
-        .and_then(|item| item.value.as_deref())
-        .or_else(|| item.map(|item| item.text.as_str()))
-        .unwrap_or("");
-    let metadata = item
-        .map(|item| serde_json::to_string(&item.metadata))
+    let item_text = current_string_field(&context.current, "text")
+        .map(str::to_string)
+        .unwrap_or_default();
+    let value = current_string_field(&context.current, "value")
+        .map(str::to_string)
+        .unwrap_or_else(|| item_text.clone());
+    let metadata = current_field(&context.current, "metadata")
+        .map(serde_json::to_string)
         .transpose()
-        .context("could not serialize selected item metadata")?
+        .context("could not serialize current item metadata")?
         .unwrap_or_else(|| Value::Null.to_string());
-    let item_text = item.map(|item| item.text.clone()).unwrap_or_default();
-    let item_view = item.map(|item| item.source_view.as_str());
-    let item_plugin = item_view.map(package_id).unwrap_or("");
+    let item_view = current_string_field(&context.current, "source")
+        .or_else(|| current_string_field(&context.current, "owner_view"))
+        .map(str::to_string);
+    let item_plugin = item_view
+        .as_deref()
+        .map(package_id)
+        .unwrap_or("")
+        .to_string();
     let source_view = invocation.source_view();
     let plugin_root = config
         .plugin_root(source_view)
@@ -343,9 +375,9 @@ fn prepare_run_command(
         ("LAUNCHER_VIEW_REF".to_string(), source_view.to_string()),
         (
             "LAUNCHER_ITEM_VIEW_REF".to_string(),
-            item_view.unwrap_or("").to_string(),
+            item_view.unwrap_or_default(),
         ),
-        ("LAUNCHER_ITEM_PLUGIN".to_string(), item_plugin.to_string()),
+        ("LAUNCHER_ITEM_PLUGIN".to_string(), item_plugin),
         ("LAUNCHER_COMMAND".to_string(), invocation.id().to_string()),
         ("LAUNCHER_QUERY".to_string(), owner.binding_raw.clone()),
     ];
@@ -374,38 +406,28 @@ fn prepare_run_command(
     })
 }
 
+fn current_field<'a>(current: &'a Value, field: &str) -> Option<&'a Value> {
+    current
+        .get(field)
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            current
+                .get("item")
+                .and_then(Value::as_object)
+                .and_then(|item| item.get(field))
+                .filter(|value| !value.is_null())
+        })
+}
+
+fn current_string_field<'a>(current: &'a Value, field: &str) -> Option<&'a str> {
+    current_field(current, field).and_then(Value::as_str)
+}
+
 fn package_id(view_ref: &str) -> &str {
     view_ref
         .split_once(':')
         .map(|(package, _)| package)
         .unwrap_or(view_ref)
-}
-
-pub(crate) fn find_command(
-    config: &Config,
-    view_ref: &str,
-    key: &str,
-) -> Option<CommandInvocation> {
-    let view = config.view(view_ref)?;
-    view.commands.iter().find_map(|(id, command)| {
-        (normalize_key(&command.key).ok().as_deref() == Some(key)).then(|| {
-            CommandInvocation::view(
-                CommandRef {
-                    view: view_ref.to_string(),
-                    id: id.clone(),
-                },
-                command.clone(),
-            )
-        })
-    })
-}
-
-pub(crate) fn find_command_for_key(
-    config: &Config,
-    view_ref: &str,
-    key: Key,
-) -> Option<CommandInvocation> {
-    find_command(config, view_ref, &key.binding_name()?)
 }
 
 pub(crate) fn collect_page_owner_commands(
@@ -426,9 +448,6 @@ pub(crate) fn collect_page_owner_commands(
             return Ok(commands);
         };
         for (id, command) in &owner.commands {
-            if command.scope != CommandScope::Selection {
-                continue;
-            }
             let key = normalize_key(&command.key)
                 .with_context(|| format!("invalid command key for {owner_view}/{id}"))?;
             commands.insert(key, runtime_command_value(owner_view, id, command)?);
@@ -442,10 +461,8 @@ pub(crate) fn resolve_visible_command(
     context: &CommandContext,
     reference: &CommandRef,
 ) -> Result<CommandInvocation> {
-    let owner = context
-        .selection
-        .as_ref()
-        .map(|selection| selection.owner.view_ref.as_str());
+    let owner = (context.owner.view_ref != context.page.view_ref)
+        .then_some(context.owner.view_ref.as_str());
     let visible = collect_page_owner_commands(config, &context.page.view_ref, owner)?;
     let is_visible = visible.values().any(|value| {
         value.get("ref").is_some_and(|value| {
@@ -502,6 +519,60 @@ pub(crate) fn return_value(returned: &ViewReturn) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CommandScope;
+
+    fn test_parameters(config: &Config) -> crate::parameter::ParameterSnapshot {
+        let state = config.instantiate_parameters("core:default").unwrap();
+        config
+            .parameter_snapshot(&state, Default::default())
+            .unwrap()
+    }
+
+    #[test]
+    fn default_output_reads_picker_and_capture_current_shapes() {
+        let config = crate::config::load_test_fixture().unwrap();
+        let parameters = test_parameters(&config);
+        let mut context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: parameters.clone(),
+                binding_raw: String::new(),
+            },
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters,
+                binding_raw: String::new(),
+            },
+            current: serde_json::json!({"value": "captured"}),
+            current_fields: &["value"],
+            runtime: serde_json::json!({}),
+        };
+        assert!(matches!(
+            current_output(&context),
+            Some(ViewOutput::Value { value }) if value == serde_json::json!("captured")
+        ));
+
+        context.current = serde_json::json!({
+            "item": {
+                "text": "Editor",
+                "value": "vim",
+                "metadata": {},
+                "owner_view": "apps:main"
+            },
+            "source": "apps:main",
+            "input": ""
+        });
+        assert!(matches!(
+            current_output(&context),
+            Some(ViewOutput::Selected { item: Some(item), input })
+                if item.text == "Editor"
+                    && item.value.as_deref() == Some("vim")
+                    && input.is_empty()
+        ));
+
+        context.current = Value::Null;
+        assert!(current_output(&context).is_none());
+    }
 
     #[test]
     fn run_command_does_not_export_runtime_log_environment() {
@@ -512,12 +583,17 @@ mod tests {
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
-                state: config.instantiate_state("core:default").unwrap(),
+                parameters: test_parameters(&config),
                 binding_raw: String::new(),
             },
-            selection: None,
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
             runtime: serde_json::json!({}),
-            output: None,
         };
         let invocation = CommandInvocation::view(
             CommandRef {
@@ -575,12 +651,17 @@ mod tests {
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
-                state: config.instantiate_state("core:default").unwrap(),
+                parameters: test_parameters(&config),
                 binding_raw: String::new(),
             },
-            selection: None,
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
             runtime: serde_json::json!({}),
-            output: None,
         };
         let action = CommandAction::EditInput {
             payload: crate::config::EditInputPayload {
@@ -628,12 +709,17 @@ mod tests {
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
-                state: config.instantiate_state("core:default").unwrap(),
+                parameters: test_parameters(&config),
                 binding_raw: String::new(),
             },
-            selection: None,
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
             runtime: serde_json::json!({}),
-            output: None,
         };
         let action = CommandAction::EditInput {
             payload: crate::config::EditInputPayload {
@@ -667,12 +753,17 @@ mod tests {
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
-                state: config.instantiate_state("core:default").unwrap(),
+                parameters: test_parameters(&config),
                 binding_raw: String::new(),
             },
-            selection: None,
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
             runtime: serde_json::json!({}),
-            output: None,
         };
         let forged = CommandRef {
             view: "sys:main".to_string(),

@@ -125,6 +125,14 @@ pub(crate) struct ImagePicker {
     is_tmux: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ImagePickerFingerprint {
+    font_width: u16,
+    font_height: u16,
+    protocol: u8,
+    is_tmux: bool,
+}
+
 impl ImagePicker {
     pub(crate) fn new_resize_protocol(self, image: DynamicImage) -> StatefulProtocol {
         let protocol = match self.protocol {
@@ -142,6 +150,29 @@ impl ImagePicker {
             }),
         };
         StatefulProtocol::new(image, self.font_size, None, protocol)
+    }
+
+    pub(crate) fn fingerprint(self) -> ImagePickerFingerprint {
+        ImagePickerFingerprint {
+            font_width: self.font_size.width,
+            font_height: self.font_size.height,
+            protocol: match self.protocol {
+                ProtocolType::Halfblocks => 0,
+                ProtocolType::Kitty => 1,
+                ProtocolType::Sixel => 2,
+                ProtocolType::Iterm2 => 3,
+            },
+            is_tmux: self.is_tmux,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_halfblocks() -> Self {
+        Self {
+            font_size: FontSize::new(10, 20),
+            protocol: ProtocolType::Halfblocks,
+            is_tmux: false,
+        }
     }
 }
 
@@ -290,7 +321,11 @@ impl Terminal {
     }
 
     pub(crate) fn image_picker(&self) -> Option<ImagePicker> {
-        Some(self.image_picker)
+        let mut picker = self.image_picker;
+        if let Some(font_size) = font_size_from_fd(self.output_fd) {
+            picker.font_size = font_size;
+        }
+        Some(picker)
     }
 
     pub(crate) fn copy_to_clipboard(&self, value: &str) -> Result<()> {

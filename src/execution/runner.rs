@@ -1,4 +1,6 @@
 use crate::execution::{ProcessGroupGuard, clear_managed_environment};
+use crate::lifecycle::CancellationStatus;
+#[cfg(test)]
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, anyhow};
 use std::io::{self, Read, Write};
@@ -17,7 +19,7 @@ pub(crate) fn run_bounded_command_with_stdin(
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
-    cancellation: &CancellationToken,
+    cancellation: &dyn CancellationStatus,
 ) -> Result<std::process::Output> {
     clear_managed_environment(&mut process);
     process

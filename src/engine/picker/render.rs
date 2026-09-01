@@ -1,17 +1,21 @@
+use super::preview::{ImageProtocolCache, PickerPreviewRenderState};
 use super::{Item, PickerView};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
+use std::sync::{Arc, Mutex};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
 pub(crate) struct PickerRenderState {
-    pub(crate) items: Vec<Item>,
+    pub(crate) items: Arc<Vec<Item>>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
     pub(crate) show_prefix: bool,
+    pub(crate) preview_visible: bool,
+    pub(crate) preview: Option<PickerPreviewRenderState>,
     pub(crate) empty_message: String,
 }
 
@@ -39,7 +43,7 @@ pub(crate) fn render_picker(
     let right_padding = SIDE_PADDING + usize::from(reserves_scrollbar) * SCROLLBAR_WIDTH;
     let item_width = width.saturating_sub(MARKER_WIDTH + SIDE_PADDING + right_padding);
     let prefix_width = if state.show_prefix {
-        prefix_column_width(&state.items, item_width)
+        prefix_column_width(state.items.as_slice(), item_width)
     } else {
         0
     };
@@ -64,6 +68,7 @@ pub(crate) fn render_picker(
         let thumb_top = scrollbar_thumb_top(start, state.items.len(), height);
         for (visible_row, (index, item)) in state
             .items
+            .as_slice()
             .iter()
             .enumerate()
             .skip(start)
@@ -210,11 +215,96 @@ impl PickerView {
         let frame = self.current();
         let (show_prefix, empty_message) = self.list_presentation();
         PickerRenderState {
-            items: frame.items.clone(),
-            selected: frame.selected,
-            searching: frame.input_pending || frame.retry_requested || frame.items_pending,
+            items: Arc::clone(&frame.selection.items),
+            selected: frame.selection.selected,
+            searching: self.is_loading(),
             show_prefix,
+            preview_visible: self.preview_visible(),
+            preview: self.preview_render_state(),
             empty_message,
+        }
+    }
+}
+
+pub(crate) struct PickerRenderer {
+    image_protocols: Mutex<ImageProtocolCache>,
+}
+
+impl PickerRenderer {
+    pub(super) fn new() -> Self {
+        Self {
+            image_protocols: Mutex::new(ImageProtocolCache::new()),
+        }
+    }
+
+    fn clear_image_protocols(&self) {
+        self.image_protocols
+            .lock()
+            .expect("picker image protocol cache was poisoned")
+            .clear();
+    }
+}
+
+impl crate::engine::ViewRenderer for PickerRenderer {
+    fn validate_model(&self, model: &crate::engine::RenderModel) -> anyhow::Result<()> {
+        if model.kind() != "picker" || model.downcast_ref::<PickerRenderState>().is_none() {
+            anyhow::bail!(
+                "picker renderer/model pairing mismatch: renderer=picker model={:?}",
+                model
+            );
+        }
+        Ok(())
+    }
+
+    fn chrome(&self, model: &crate::engine::RenderModel) -> crate::chrome::EngineChrome {
+        let Some(state) = model.downcast_ref::<PickerRenderState>() else {
+            return crate::chrome::EngineChrome::default();
+        };
+        let current = if state.items.is_empty() {
+            0
+        } else {
+            state.selected.saturating_add(1)
+        };
+        crate::chrome::EngineChrome {
+            status: Some(format!("{current} of {}", state.items.len())),
+            ..crate::chrome::EngineChrome::default()
+        }
+    }
+
+    fn render(
+        &self,
+        model: &crate::engine::RenderModel,
+        context: &crate::engine::RenderContext,
+        frame: &mut Frame,
+        area: Rect,
+    ) {
+        let Some(state) = model.downcast_ref::<PickerRenderState>() else {
+            return;
+        };
+        if state.preview_visible
+            && let Some(preview) = &state.preview
+        {
+            let (items_area, preview_area) = preview.areas(area);
+            render_picker(frame, items_area, state, &context.theme);
+            if let Some(preview_area) = preview_area {
+                let mut image_protocols = self
+                    .image_protocols
+                    .lock()
+                    .expect("picker image protocol cache was poisoned");
+                preview.render(
+                    frame,
+                    preview_area,
+                    &context.theme,
+                    context.image_picker,
+                    &mut image_protocols,
+                );
+                preview.render_separator(frame, items_area, preview_area, &context.theme);
+            } else {
+                self.clear_image_protocols();
+            }
+        } else {
+            self.clear_image_protocols();
+            render_picker(frame, area, state, &context.theme);
         }
     }
 }
@@ -244,7 +334,19 @@ fn clip(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::ViewRenderer;
     use ratatui::style::{Color, Modifier, Style};
+
+    #[test]
+    fn picker_renderer_rejects_an_incompatible_render_model() {
+        let renderer = PickerRenderer::new();
+        let model = crate::engine::RenderModel::new("capture", ());
+
+        let error = renderer
+            .validate_model(&model)
+            .expect_err("picker renderer must reject a capture model");
+        assert!(error.to_string().contains("pairing mismatch"));
+    }
 
     #[test]
     fn scrollbar_is_hidden_at_the_top_and_shown_after_scrolling() {

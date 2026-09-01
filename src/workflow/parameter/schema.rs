@@ -3,16 +3,16 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum QueryType {
+pub(crate) enum ParameterType {
     String,
     Integer,
     Number,
     Boolean,
-    Array(Box<QueryType>),
+    Array(Box<ParameterType>),
     Object,
 }
 
-impl QueryType {
+impl ParameterType {
     fn parse(source: &str) -> Result<Self> {
         match source {
             "string" => Ok(Self::String),
@@ -64,15 +64,15 @@ impl QueryType {
             Self::Integer => source
                 .parse::<i64>()
                 .map(Value::from)
-                .with_context(|| format!("{:?} is not an integer", source)),
+                .with_context(|| format!("{source:?} is not an integer")),
             Self::Number => source
                 .parse::<serde_json::Number>()
                 .map(Value::Number)
-                .with_context(|| format!("{:?} is not a number", source)),
+                .with_context(|| format!("{source:?} is not a number")),
             Self::Boolean => source
                 .parse::<bool>()
                 .map(Value::Bool)
-                .with_context(|| format!("{:?} is not a boolean", source)),
+                .with_context(|| format!("{source:?} is not a boolean")),
             Self::Array(_) | Self::Object => {
                 bail!("{} input requires JSON", self.description())
             }
@@ -104,14 +104,14 @@ impl QueryType {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct QueryField {
-    pub(super) value_type: QueryType,
-    pub(super) default: Value,
-    pub(super) required: bool,
-    nullable: bool,
+pub(crate) struct ParameterField {
+    pub(crate) value_type: ParameterType,
+    pub(crate) default: Value,
+    pub(crate) required: bool,
+    pub(crate) nullable: bool,
 }
 
-impl QueryField {
+impl ParameterField {
     pub(super) fn validate(&self, value: &Value) -> Result<()> {
         if self.value_type.accepts(value, self.nullable) {
             return Ok(());
@@ -121,20 +121,20 @@ impl QueryField {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct QuerySchema {
-    pub(super) plain: bool,
-    pub(super) fields: BTreeMap<String, QueryField>,
-    pub(super) input_order: Vec<String>,
+pub(crate) struct ParameterSchema {
+    pub(crate) plain: bool,
+    pub(crate) fields: BTreeMap<String, ParameterField>,
+    pub(crate) input_order: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ViewQuerySchema {
-    pub(super) query: QuerySchema,
+pub(crate) struct ViewParameterSchema {
+    pub(super) schema: ParameterSchema,
 }
 
-pub(super) fn compile_query(view: &Value) -> Result<QuerySchema> {
+pub(super) fn compile_parameter_schema(view: &Value) -> Result<ParameterSchema> {
     let Some(query) = view.get("query") else {
-        return Ok(QuerySchema {
+        return Ok(ParameterSchema {
             plain: true,
             fields: BTreeMap::new(),
             input_order: Vec::new(),
@@ -149,7 +149,7 @@ pub(super) fn compile_query(view: &Value) -> Result<QuerySchema> {
         if query.keys().any(|key| key != "type") {
             bail!("string query may only declare type");
         }
-        return Ok(QuerySchema {
+        return Ok(ParameterSchema {
             plain: true,
             fields: BTreeMap::new(),
             input_order: Vec::new(),
@@ -175,14 +175,14 @@ pub(super) fn compile_query(view: &Value) -> Result<QuerySchema> {
             bail!("query input_order references unknown field {:?}", name);
         }
     }
-    Ok(QuerySchema {
+    Ok(ParameterSchema {
         plain: false,
         fields,
         input_order,
     })
 }
 
-fn compile_field(name: &str, value: &Value) -> Result<QueryField> {
+fn compile_field(name: &str, value: &Value) -> Result<ParameterField> {
     let field = value
         .as_object()
         .with_context(|| format!("query field {:?} must be an object", name))?;
@@ -195,8 +195,8 @@ fn compile_field(name: &str, value: &Value) -> Result<QueryField> {
         .get("type")
         .and_then(Value::as_str)
         .with_context(|| format!("query field {:?} requires a type", name))?;
-    let value_type =
-        QueryType::parse(value_type).with_context(|| format!("invalid query field {:?}", name))?;
+    let value_type = ParameterType::parse(value_type)
+        .with_context(|| format!("invalid query field {:?}", name))?;
     let nullable = field
         .get("nullable")
         .map(|value| value.as_bool().context("query nullable must be boolean"))
@@ -205,7 +205,7 @@ fn compile_field(name: &str, value: &Value) -> Result<QueryField> {
     let default = field.get("default").cloned().unwrap_or(Value::Null);
     let nullable = nullable || default.is_null() && field.contains_key("default");
     let required = !field.contains_key("default") && !nullable;
-    let definition = QueryField {
+    let definition = ParameterField {
         value_type,
         default,
         required,
@@ -220,7 +220,7 @@ fn compile_field(name: &str, value: &Value) -> Result<QueryField> {
 }
 
 pub(super) fn validate_required(
-    schema: &QuerySchema,
+    schema: &ParameterSchema,
     values: &BTreeMap<String, Value>,
 ) -> Result<()> {
     for (name, field) in &schema.fields {

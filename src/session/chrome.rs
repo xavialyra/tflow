@@ -1,7 +1,8 @@
 use super::AppSession;
-use super::state::{ChromeHint, RouteCompletion};
+use super::completion::{SelectionRenderModel, render_completion};
+use super::state::ChromeHint;
 use crate::config::CommandBindingVisibility;
-use crate::engine::{EngineHost, InputFocus};
+use crate::engine::{InputFocus, RenderContext};
 use crate::input::Key;
 use crate::input::keymap::BindingState;
 use crate::terminal::Terminal;
@@ -9,8 +10,6 @@ use crate::theme::Theme;
 use anyhow::{Context, Result};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 impl AppSession<'_> {
     fn current_binding_hints(&self) -> (Vec<ChromeHint>, Option<ChromeHint>) {
@@ -45,43 +44,46 @@ impl AppSession<'_> {
         (commands, overflow)
     }
 
+    #[cfg(test)]
     pub(super) fn current_chrome(&mut self, width: usize) -> Result<crate::chrome::ChromeFrame> {
         self.refresh_active_bindings()?;
+        let model = {
+            let entry = self.views.last().context("session has no active view")?;
+            let model = entry.runtime.render_model();
+            entry.renderer.validate_model(&model)?;
+            model
+        };
+        self.current_chrome_for_model(width, &model)
+    }
+
+    fn current_chrome_for_model(
+        &self,
+        width: usize,
+        model: &crate::engine::RenderModel,
+    ) -> Result<crate::chrome::ChromeFrame> {
         let (binding_commands, binding_overflow) = self.current_binding_hints();
         let route_completion_available = self.route_input_available();
         let route_completion_active = self.route_completion.is_some();
         let route_completion_opens_on_tab =
             route_completion_available && self.resolve_key_binding(Key::Tab).is_none();
-        let entry = self
-            .views
-            .last_mut()
-            .context("session has no active view")?;
+        let entry = self.views.last().context("session has no active view")?;
+        entry.renderer.validate_model(model)?;
         let route = (self.config.default_view.as_deref() != Some(entry.view_ref.as_str()))
             .then(|| self.router.display(&entry.view_ref));
         let error = self
             .active_error
             .as_ref()
             .map(|record| record.label.clone());
-        let input_focus = entry.instance.input_focus();
+        let input_focus = entry.input_focus();
         let input_text = match input_focus {
             InputFocus::Focused => entry.input.raw.clone(),
-            InputFocus::Unfocused => entry.input.params.clone(),
+            InputFocus::Unfocused => entry.committed_input().to_string(),
         };
         let input_cursor = match input_focus {
             InputFocus::Focused => entry.input.cursor,
             InputFocus::Unfocused => input_text.len(),
         };
-        let host = EngineHost {
-            config: self.config,
-            theme: self.theme,
-            input: &mut entry.input,
-            state: &mut entry.state,
-            runtime: &mut self.runtime,
-            runtime_log: &mut self.runtime_log,
-            active_error: &mut self.active_error,
-            active_error_deadline: &mut self.active_error_deadline,
-        };
-        let mut engine_chrome = entry.instance.chrome(&host);
+        let mut engine_chrome = entry.renderer.chrome(model);
         engine_chrome.commands = binding_commands;
         engine_chrome.overflow_command = binding_overflow;
         if route_completion_available
@@ -93,10 +95,11 @@ impl AppSession<'_> {
                 engine_chrome.presentation.with_recognized_input_prefix(end);
         }
         if let Some(completion) = &self.route_completion {
+            let model = completion.render_model();
             engine_chrome.status = Some(format!(
                 "{} / {} views",
-                usize::from(!completion.candidates.is_empty()).saturating_add(completion.selected),
-                completion.candidates.len()
+                usize::from(!model.candidates.is_empty()).saturating_add(model.selected),
+                model.candidates.len()
             ));
         }
         if route_completion_active {
@@ -117,31 +120,65 @@ impl AppSession<'_> {
         ))
     }
 
+    pub(super) fn active_content_size(&self, terminal_size: (u16, u16)) -> Result<(u16, u16)> {
+        let entry = self.views.last().context("session has no active view")?;
+        let route = (self.config.default_view.as_deref() != Some(entry.view_ref.as_str()))
+            .then(|| self.router.display(&entry.view_ref));
+        let model = entry.runtime.render_model();
+        entry.renderer.validate_model(&model)?;
+        let chrome = entry.renderer.chrome(&model);
+        let input = match entry.input_focus() {
+            InputFocus::Focused => entry.input.raw.as_str(),
+            InputFocus::Unfocused => entry.committed_input(),
+        };
+        let frame = crate::chrome::ChromeFrame::compose_with_cursor(
+            terminal_size.0 as usize,
+            route.as_ref(),
+            input,
+            input.len(),
+            chrome,
+            None,
+        );
+        let area = frame.content_area(Rect::new(0, 0, terminal_size.0, terminal_size.1));
+        Ok((area.width, area.height))
+    }
+
     pub(super) fn render(&mut self, terminal: &mut Terminal) -> Result<()> {
-        let chrome = self.current_chrome(terminal.size().0 as usize)?;
+        self.refresh_active_bindings()?;
+        let model = {
+            let entry = self.views.last().context("session has no active view")?;
+            let model = entry.runtime.render_model();
+            entry.renderer.validate_model(&model)?;
+            model
+        };
+        let chrome = self.current_chrome_for_model(terminal.size().0 as usize, &model)?;
+        let input_focus = self
+            .views
+            .last()
+            .context("session has no active view")?
+            .input_focus();
+        let route_completion = self
+            .route_completion
+            .as_ref()
+            .map(|completion| completion.render_model());
+        let render_context = RenderContext {
+            theme: self.theme,
+            image_picker: terminal.image_picker(),
+        };
         let entry = self
             .views
             .last_mut()
             .context("session has no active view")?;
-        let host = EngineHost {
-            config: self.config,
-            theme: self.theme,
-            input: &mut entry.input,
-            state: &mut entry.state,
-            runtime: &mut self.runtime,
-            runtime_log: &mut self.runtime_log,
-            active_error: &mut self.active_error,
-            active_error_deadline: &mut self.active_error_deadline,
-        };
-        let route_completion = self.route_completion.clone();
         terminal.draw(|frame| {
-            let content_area = chrome.render_chrome(frame, &host.theme);
-            if let Some(completion) = &route_completion {
-                render_route_completion(frame, content_area, completion, &host.theme);
+            let content_area = chrome.render_chrome(frame, &self.theme);
+            if let Some(completion) = route_completion.as_ref() {
+                render_route_completion(frame, content_area, completion, &self.theme);
             } else {
-                entry.instance.render(&host, frame, content_area);
+                entry
+                    .renderer
+                    .render(&model, &render_context, frame, content_area);
             }
-            if entry.instance.input_focus() == InputFocus::Focused {
+            if input_focus == InputFocus::Focused {
                 chrome.set_input_cursor(frame);
             }
         })
@@ -151,58 +188,8 @@ impl AppSession<'_> {
 pub(super) fn render_route_completion(
     frame: &mut Frame,
     area: Rect,
-    completion: &RouteCompletion,
+    completion: &SelectionRenderModel,
     theme: &Theme,
 ) {
-    let height = area.height as usize;
-    let width = area.width as usize;
-    if height == 0 || width == 0 {
-        return;
-    }
-    if completion.candidates.is_empty() {
-        frame.render_widget(
-            Paragraph::new("(no matching views)").style(theme.picker.muted),
-            area,
-        );
-        return;
-    }
-
-    let start = if completion.selected >= height {
-        completion.selected + 1 - height
-    } else {
-        0
-    };
-    let lines = completion
-        .candidates
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(height)
-        .map(|(index, candidate)| {
-            let reference = candidate
-                .alias
-                .as_ref()
-                .map(|_| format!("  {}", candidate.view_ref))
-                .unwrap_or_default();
-            let metadata = format!("  [{} / {}]", candidate.plugin_name, candidate.engine_type);
-            let label = format!("  {}", candidate.primary_label());
-            let text = crate::chrome::clip(&format!("{label}{reference}{metadata}"), width);
-            if index == completion.selected {
-                Line::from(vec![
-                    Span::styled("▌", theme.picker.marker),
-                    Span::styled(
-                        text.strip_prefix(' ').unwrap_or(&text).to_string(),
-                        theme.picker.selected,
-                    ),
-                ])
-            } else {
-                let label_end = label.len().min(text.len());
-                Line::from(vec![
-                    Span::styled(text[..label_end].to_string(), theme.picker.text),
-                    Span::styled(text[label_end..].to_string(), theme.picker.muted),
-                ])
-            }
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines).style(theme.picker.text), area);
+    render_completion(frame, area, completion, theme);
 }

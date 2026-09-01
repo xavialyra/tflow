@@ -1,15 +1,21 @@
+#[cfg(test)]
+use crate::expression::EvaluationStage;
 use crate::expression::TemplateRegistry;
 #[cfg(test)]
-use crate::expression::{Budget, EvalContext, EvaluationStage, Namespace, evaluate_json_value};
+use crate::expression::{Budget, EvalContext, Namespace, evaluate_json_value};
+use crate::input::InputSourceIdentity;
 use crate::input::Key;
-use crate::state::{StateInstance, StateRegistry};
+use crate::parameter::{
+    ParameterBinding, ParameterPatchRequest, ParameterRegistry, ParameterSnapshot, ParameterState,
+};
 #[cfg(test)]
 use crate::theme::ThemeLoadOptions;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 mod compile;
@@ -22,7 +28,8 @@ mod validation;
 #[cfg(test)]
 use evaluation::public_page_context;
 pub(crate) use evaluation::{
-    ConfigSource, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
+    ConfigSource, EvaluationData, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope,
+    SessionScope,
 };
 
 #[cfg(test)]
@@ -46,7 +53,7 @@ pub(crate) struct Config {
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) commands: CommandConfig,
     pub(crate) input_value: Value,
-    pub(crate) invocation_state: StateInstance,
+    pub(crate) invocation_parameters: ParameterState,
     compiled: CompiledConfig,
 }
 
@@ -58,53 +65,230 @@ struct CompiledConfig {
     plugin_roots: BTreeMap<String, PathBuf>,
     config_value: Value,
     template_registry: TemplateRegistry,
-    state_registry: StateRegistry,
+    parameter_registry: Arc<ParameterRegistry>,
+}
+
+/// The compiled, Picker-only configuration used to build feed definitions.
+/// It contains no command, theme, or complete Config owner and is safe to keep
+/// in a mount-owned loader after preparation.
+#[derive(Clone)]
+pub(crate) struct PickerItemsView {
+    pub(crate) alias: Option<String>,
+    pub(crate) feeds: Vec<ViewRef>,
+    pub(crate) items: Option<toml::Value>,
+    pub(crate) binding: ParameterBinding,
+}
+
+#[derive(Clone)]
+pub(crate) struct PickerItemsProjection {
+    input: Value,
+    views: BTreeMap<ViewRef, PickerItemsView>,
+    plugin_roots: BTreeMap<String, PathBuf>,
+    templates: TemplateRegistry,
+}
+
+impl PickerItemsProjection {
+    pub(crate) fn from_config(config: &Config, root_view_ref: &str) -> Result<Self> {
+        let mut selected = BTreeSet::from([root_view_ref.to_string()]);
+        let mut pending = vec![root_view_ref.to_string()];
+        while let Some(view_ref) = pending.pop() {
+            let view = config
+                .compiled
+                .views
+                .get(&view_ref)
+                .with_context(|| format!("view {:?} is not configured", view_ref))?;
+            for feed in view.selected_feeds() {
+                if selected.insert(feed.view.clone()) {
+                    pending.push(feed.view.clone());
+                }
+            }
+        }
+
+        let mut views = BTreeMap::new();
+        let mut template_values = Vec::new();
+        let mut plugin_roots = BTreeMap::new();
+        for view_ref in selected {
+            let view = config
+                .compiled
+                .views
+                .get(&view_ref)
+                .with_context(|| format!("view {:?} is not configured", view_ref))?;
+            if let Some(items) = view.selected_items() {
+                template_values.push(toml_to_json(items)?);
+            }
+            if let Some(root) = config.plugin_root(&view_ref) {
+                plugin_roots.insert(package_id(&view_ref).to_string(), root.to_path_buf());
+            }
+            views.insert(
+                view_ref.clone(),
+                PickerItemsView {
+                    alias: view.alias.clone(),
+                    feeds: view
+                        .selected_feeds()
+                        .iter()
+                        .map(|feed| feed.view.clone())
+                        .collect(),
+                    items: view.selected_items().cloned(),
+                    binding: config
+                        .compiled
+                        .parameter_registry
+                        .parameter_binding(&view_ref)?,
+                },
+            );
+        }
+        Ok(Self {
+            input: config.input_value.clone(),
+            views,
+            plugin_roots,
+            templates: TemplateRegistry::compile_json_tree(&Value::Array(template_values))?,
+        })
+    }
+
+    pub(crate) fn feed_views(&self, view_ref: &str) -> Result<Vec<(String, &PickerItemsView)>> {
+        let view = self
+            .views
+            .get(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?;
+        if view.feeds.is_empty() {
+            return Ok(vec![(view_ref.to_string(), view)]);
+        }
+        view.feeds
+            .iter()
+            .map(|feed| {
+                self.views
+                    .get(feed)
+                    .map(|source| (feed.clone(), source))
+                    .with_context(|| {
+                        format!("view {:?} references missing feed {:?}", view_ref, feed)
+                    })
+            })
+            .collect()
+    }
+
+    pub(crate) fn template_registry(&self) -> &TemplateRegistry {
+        &self.templates
+    }
+
+    pub(crate) fn input_value(&self) -> &Value {
+        &self.input
+    }
+
+    pub(crate) fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
+        let package = package_id(view_ref);
+        self.plugin_roots.get(package).map(PathBuf::as_path)
+    }
 }
 
 impl Config {
-    pub(crate) fn bind_invocation_state(
+    pub(crate) fn bind_invocation_parameters(
         &self,
         view_ref: &str,
         arguments: &[String],
-    ) -> Result<StateInstance> {
-        self.compiled.state_registry.bind_cli(view_ref, arguments)
+    ) -> Result<ParameterState> {
+        self.parameter_binding(view_ref)?.bind_cli(arguments)
     }
 
-    pub(crate) fn set_invocation(&mut self, input: Value, state: StateInstance) {
+    pub(crate) fn set_invocation(&mut self, input: Value, parameters: ParameterState) {
         self.input_value = input;
-        self.invocation_state = state;
+        self.invocation_parameters = parameters;
     }
 
-    pub(crate) fn instantiate_state(&self, view_ref: &str) -> Result<StateInstance> {
-        self.compiled.state_registry.instantiate(view_ref)
+    pub(crate) fn instantiate_parameters(&self, view_ref: &str) -> Result<ParameterState> {
+        self.parameter_binding(view_ref)?.instantiate()
     }
 
-    pub(crate) fn query_value(&self, state: &StateInstance) -> Result<Value> {
-        self.compiled.state_registry.query_value(state)
+    pub(crate) fn parameter_values(&self, state: &ParameterState) -> Result<Value> {
+        self.parameter_binding(state.view_ref())?
+            .parameter_values(state)
     }
 
-    pub(crate) fn update_query_value(
+    pub(crate) fn parameter_binding(&self, view_ref: &str) -> Result<ParameterBinding> {
+        self.compiled.parameter_registry.parameter_binding(view_ref)
+    }
+
+    pub(crate) fn parameter_snapshot(
         &self,
-        state: &mut StateInstance,
+        state: &ParameterState,
+        source: InputSourceIdentity,
+    ) -> Result<ParameterSnapshot> {
+        Ok(ParameterSnapshot::from_parts(
+            self.parameter_binding(state.view_ref())?
+                .parameter_values(state)?,
+            state.raw_input().to_string(),
+            source,
+            state.revision(),
+        ))
+    }
+
+    /// Rehydrates mutable state only inside configuration-owned evaluation
+    /// adapters. Runtime-facing contexts continue to carry snapshots.
+    fn parameter_state_from_snapshot(
+        &self,
+        view_ref: &str,
+        snapshot: &ParameterSnapshot,
+    ) -> Result<ParameterState> {
+        self.parameter_binding(view_ref)?
+            .state_from_snapshot(snapshot, false)
+    }
+
+    pub(crate) fn with_parameter_state_from_snapshot<T>(
+        &self,
+        view_ref: &str,
+        snapshot: &ParameterSnapshot,
+        evaluate: impl FnOnce(&ParameterState) -> Result<T>,
+    ) -> Result<T> {
+        let state = self.parameter_state_from_snapshot(view_ref, snapshot)?;
+        evaluate(&state)
+    }
+
+    pub(crate) fn apply_parameter_patch(
+        &self,
+        state: &mut ParameterState,
+        request: &ParameterPatchRequest,
+    ) -> Result<bool> {
+        self.parameter_binding(state.view_ref())?
+            .apply_patch(state, request)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn update_parameter_values(
+        &self,
+        state: &mut ParameterState,
         value: &Value,
     ) -> Result<bool> {
-        self.compiled.state_registry.update_value(state, value)
+        self.parameter_binding(state.view_ref())?
+            .update_value(state, value)
     }
 
-    pub(crate) fn render_query_input(&self, state: &StateInstance) -> Result<String> {
-        self.compiled.state_registry.render_input(state)
-    }
-
-    pub(crate) fn validate_query_state(&self, state: &StateInstance) -> Result<()> {
-        self.compiled.state_registry.validate_instance(state)
-    }
-
-    pub(crate) fn update_query_input(
+    pub(crate) fn update_sanitized_initial_parameter_values(
         &self,
-        state: &mut StateInstance,
+        state: &mut ParameterState,
+        value: &Value,
+    ) -> Result<bool> {
+        self.parameter_binding(state.view_ref())?
+            .update_sanitized_initial_value(state, value)
+    }
+
+    pub(crate) fn sanitize_initial_parameter_values(
+        &self,
+        state: &mut ParameterState,
+    ) -> Result<bool> {
+        self.parameter_binding(state.view_ref())?
+            .sanitize_typed_values(state)
+    }
+
+    pub(crate) fn render_parameter_input(&self, state: &ParameterState) -> Result<String> {
+        self.parameter_binding(state.view_ref())?
+            .render_input(state)
+    }
+
+    pub(crate) fn update_initial_parameter_input(
+        &self,
+        state: &mut ParameterState,
         source: &str,
     ) -> Result<bool> {
-        self.compiled.state_registry.update_input(state, source)
+        self.parameter_binding(state.view_ref())?
+            .update_initial_input(state, source)
     }
 
     #[cfg(test)]
@@ -118,8 +302,9 @@ impl Config {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_rebuild_state_registry(&mut self) -> Result<()> {
-        self.compiled.state_registry = StateRegistry::compile(&self.compiled.config_value)?;
+    pub(crate) fn test_rebuild_parameter_registry(&mut self) -> Result<()> {
+        self.compiled.parameter_registry =
+            Arc::new(ParameterRegistry::compile(&self.compiled.config_value)?);
         Ok(())
     }
 
@@ -213,36 +398,26 @@ impl Config {
 
     pub(crate) fn view_value(
         &self,
-        state: &StateInstance,
+        view_ref: &str,
+        parameters: &ParameterSnapshot,
         binding_raw: Option<&str>,
     ) -> Result<Value> {
-        // Feed default binding must expose the coordinating page's committed
-        // raw string (including ""). Rendering the owner state would replace
-        // empty input with schema defaults and break view.raw_input == R.
-        let input = match binding_raw {
-            Some(raw) => raw.to_string(),
-            None => self.render_query_input(state)?,
-        };
-        Ok(serde_json::json!({
-            "ref": state.view_ref(),
-            "query": self.query_value(state)?,
-            "input": input,
-            "raw_input": input,
-            "state_revision": state.revision(),
-        }))
-    }
-
-    pub(crate) fn ephemeral_feed_state(
-        &self,
-        feed_ref: &str,
-        query_input: &str,
-    ) -> Result<StateInstance> {
-        let mut state = self.instantiate_state(feed_ref)?;
-        self.compiled
-            .state_registry
-            .bind_feed_input(&mut state, query_input)?;
-        self.validate_query_state(&state)?;
-        Ok(state)
+        self.with_parameter_state_from_snapshot(view_ref, parameters, |state| {
+            // Feed default binding must expose the coordinating page's committed
+            // raw string (including ""). Rendering the owner state would replace
+            // empty input with schema defaults and break view.raw_input == R.
+            let input = match binding_raw {
+                Some(raw) => raw.to_string(),
+                None => self.render_parameter_input(state)?,
+            };
+            Ok(serde_json::json!({
+                "ref": view_ref,
+                "query": self.parameter_values(state)?,
+                "input": input,
+                "raw_input": input,
+                "state_revision": state.revision(),
+            }))
+        })
     }
 }
 
@@ -279,6 +454,11 @@ mod tests {
         let value: toml::Value = toml::from_str(source).unwrap();
         let raw: RawConfig = value.try_into().unwrap();
         Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new())).unwrap()
+    }
+
+    fn validate_config(config: &Config) -> Result<()> {
+        let engines = crate::engine::EngineRegistry::new();
+        config.validate_with_engines(&engines)
     }
 
     #[test]
@@ -453,7 +633,7 @@ mod tests {
             [plugins.core.views.default.engine.config]
 "#,
         );
-        config.validate().unwrap();
+        validate_config(&config).unwrap();
         assert_eq!(config.engine("core:default").unwrap(), ENGINE_PICKER);
         assert_eq!(
             config.view("core:default").unwrap().engine.engine_type,
@@ -473,9 +653,7 @@ mod tests {
             titel = "typo"
 "#,
         );
-        let error = config
-            .validate()
-            .expect_err("unknown engine fields should be rejected");
+        let error = validate_config(&config).expect_err("unknown engine fields should be rejected");
         assert!(error.to_string().contains("unsupported field \"titel\""));
     }
 
@@ -495,7 +673,7 @@ mod tests {
             "alt+c" = "copy"
 "#,
         );
-        valid.validate().unwrap();
+        validate_config(&valid).unwrap();
 
         let invalid = config(
             r#"
@@ -509,9 +687,8 @@ mod tests {
             "ctrl+j" = "copy"
 "#,
         );
-        let error = invalid
-            .validate()
-            .expect_err("one key cannot be both disabled and rebound");
+        let error =
+            validate_config(&invalid).expect_err("one key cannot be both disabled and rebound");
         assert!(format!("{error:#}").contains("both disabled and rebound"));
     }
 
@@ -527,8 +704,7 @@ mod tests {
             copy = ["ctrl+y"]
 "#,
         );
-        let error = config
-            .validate()
+        let error = validate_config(&config)
             .expect_err("engine config bindings are not View keymap patches");
         assert!(error.to_string().contains("unsupported field \"bindings\""));
     }
@@ -558,9 +734,7 @@ mod tests {
             items = []
 "#,
         );
-        config
-            .validate()
-            .expect("feeds pages may define page-level commands");
+        validate_config(&config).expect("feeds pages may define page-level commands");
     }
 
     #[test]
@@ -587,9 +761,7 @@ mod tests {
             items = []
 "#,
         );
-        let error = config
-            .validate()
-            .expect_err("nested feeds should be rejected");
+        let error = validate_config(&config).expect_err("nested feeds should be rejected");
         assert!(error.to_string().contains("cannot use feeds view"));
     }
 
@@ -641,9 +813,7 @@ mod tests {
             items = []
 "#,
         );
-        let error = config
-            .validate()
-            .expect_err("feeds+items should be rejected");
+        let error = validate_config(&config).expect_err("feeds+items should be rejected");
         assert!(error.to_string().contains("cannot define items"));
     }
 
@@ -665,8 +835,7 @@ mod tests {
             query = "item"
             "#,
         );
-        let error = config
-            .validate()
+        let error = validate_config(&config)
             .expect_err("navigation target must reference a configured view");
         assert!(error.to_string().contains("references missing view"));
     }
@@ -700,7 +869,7 @@ mod tests {
             "#,
         );
 
-        config.validate().unwrap();
+        validate_config(&config).unwrap();
     }
 
     #[test]
@@ -731,9 +900,8 @@ mod tests {
             "#,
         );
 
-        let error = config
-            .validate()
-            .expect_err("continuation return adapters should be rejected");
+        let error =
+            validate_config(&config).expect_err("continuation return adapters should be rejected");
         assert!(
             error
                 .to_string()
@@ -760,9 +928,8 @@ mod tests {
             "#,
         );
 
-        let error = config
-            .validate()
-            .expect_err("return args without a handler should be rejected");
+        let error =
+            validate_config(&config).expect_err("return args without a handler should be rejected");
         assert!(error.to_string().contains("return args require a handler"));
     }
 
@@ -791,7 +958,7 @@ mod tests {
 "#,
         );
 
-        config.validate().unwrap();
+        validate_config(&config).unwrap();
         assert_eq!(config.compiled.plugins["package-a"].name, "template");
         assert_eq!(config.compiled.plugins["package-b"].name, "template");
     }
@@ -834,7 +1001,7 @@ mod tests {
             .map(|(view_ref, _)| view_ref)
             .collect::<Vec<_>>();
         assert_eq!(feeds, ["apps:main", "sys:main", "apps:default"]);
-        config.validate().unwrap();
+        validate_config(&config).unwrap();
     }
 
     #[test]
@@ -858,9 +1025,7 @@ mod tests {
 "#,
         );
 
-        let error = config
-            .validate()
-            .expect_err("duplicate aliases should be rejected");
+        let error = validate_config(&config).expect_err("duplicate aliases should be rejected");
         assert!(
             error
                 .to_string()
@@ -881,7 +1046,7 @@ mod tests {
 "#
             ));
             assert!(
-                config.validate().is_err(),
+                validate_config(&config).is_err(),
                 "alias {alias:?} should be invalid"
             );
         }
@@ -1112,14 +1277,17 @@ mod tests {
             "exit": ["{{ view.ref }}"]
         });
         config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_state("apps:main").unwrap();
+        let owner = config.instantiate_parameters("apps:main").unwrap();
+        let owner_parameters = config
+            .parameter_snapshot(&owner, Default::default())
+            .unwrap();
         let runtime = serde_json::json!({
             "view": {"current": {"ref": "core:default"}}
         });
         let snapshot = EvaluationSnapshot::new(
             InvocationScope::new(&config.input_value),
             SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(&owner)),
+            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
             None,
         );
         let value = config
@@ -1162,14 +1330,17 @@ mod tests {
             "back": ["{{ selection }}"],
         });
         config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_state("apps:main").unwrap();
+        let owner = config.instantiate_parameters("apps:main").unwrap();
+        let owner_parameters = config
+            .parameter_snapshot(&owner, Default::default())
+            .unwrap();
         let runtime = serde_json::json!({
             "view": {"current": {"ref": "core:default"}}
         });
         let missing_return_scope = EvaluationSnapshot::new(
             InvocationScope::new(&config.input_value),
             SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(&owner)),
+            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
             None,
         );
         let error = config
@@ -1190,7 +1361,7 @@ mod tests {
         let snapshot = EvaluationSnapshot::new(
             InvocationScope::new(&config.input_value),
             SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(&owner)),
+            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
             None,
         )
         .with_return_scope(Some(ReturnScope::new(&returned)));
@@ -1205,6 +1376,198 @@ mod tests {
             .unwrap();
         assert!(value["exit"][0].is_null());
         assert!(value["back"][0].is_null());
+    }
+
+    #[test]
+    fn current_context_is_runtime_only_and_uses_the_view_snapshot() {
+        let mut config = load_test_fixture().unwrap();
+        config.compiled.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
+            "exit": ["{{ current.item.value }}"]
+        });
+        config.rebuild_template_registry().unwrap();
+        let owner = config.instantiate_parameters("core:default").unwrap();
+        let parameters = config
+            .parameter_snapshot(&owner, Default::default())
+            .unwrap();
+        let runtime = serde_json::json!({
+            "view": {"current": {"item": {"value": "global"}}}
+        });
+        let current = serde_json::json!({
+            "item": {"value": "mounted"},
+            "source": "apps:main"
+        });
+        let snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        )
+        .with_current(&current);
+        let value = config
+            .get(
+                ConfigSource::Root,
+                &snapshot,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["exit"][0], "mounted");
+
+        let without_current = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        );
+        let error = config
+            .get(
+                ConfigSource::Root,
+                &without_current,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("namespace \"current\" is unavailable")
+        );
+
+        let bootstrap = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        )
+        .with_current(&current);
+        let error = config
+            .get(
+                ConfigSource::Root,
+                &bootstrap,
+                EvaluationStage::Bootstrap,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot reference dynamic namespace")
+        );
+    }
+
+    #[test]
+    fn current_field_allowlists_allow_picker_and_capture_value() {
+        let mut config = load_test_fixture().unwrap();
+        config.compiled.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
+            "value": ["{{ current.value }}"]
+        });
+        config.rebuild_template_registry().unwrap();
+        let owner = config.instantiate_parameters("core:default").unwrap();
+        let parameters = config
+            .parameter_snapshot(&owner, Default::default())
+            .unwrap();
+        let runtime = serde_json::json!({});
+        let current = serde_json::json!({
+            "item": {
+                "text": "Editor",
+                "value": "vim",
+                "metadata": {},
+                "owner_view": "apps:main"
+            },
+            "source": "apps:main",
+            "text": "Editor",
+            "value": "vim",
+            "metadata": {},
+            "selected_index": 0
+        });
+        let picker_snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        )
+        .with_current(&current)
+        .with_current_fields(&[
+            "item",
+            "source",
+            "text",
+            "value",
+            "metadata",
+            "selected_index",
+        ]);
+        let picker_value = config
+            .get(
+                ConfigSource::Root,
+                &picker_snapshot,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(picker_value["value"][0], "vim");
+
+        let capture_current = serde_json::json!({"value": "captured"});
+        let capture_snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        )
+        .with_current(&capture_current)
+        .with_current_fields(&["value"]);
+        let capture_value = config
+            .get(
+                ConfigSource::Root,
+                &capture_snapshot,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture_value["value"][0], "captured");
+    }
+
+    #[test]
+    fn current_field_allowlists_reject_undeclared_and_unknown_fields() {
+        let mut config = load_test_fixture().unwrap();
+        config.compiled.config_value["defaults"]["picker"]["bindings"] =
+            serde_json::json!({"value": ["{{ current.item.value }}"]});
+        config.rebuild_template_registry().unwrap();
+        let owner = config.instantiate_parameters("core:default").unwrap();
+        let parameters = config
+            .parameter_snapshot(&owner, Default::default())
+            .unwrap();
+        let current = serde_json::json!({
+            "item": {"value": "vim"},
+            "value": "vim"
+        });
+        let session_runtime = serde_json::json!({});
+        let snapshot = EvaluationSnapshot::new(
+            InvocationScope::new(&config.input_value),
+            SessionScope::new(&session_runtime),
+            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
+            None,
+        )
+        .with_current(&current)
+        .with_current_fields(&["value"]);
+        let error = config
+            .get(
+                ConfigSource::Root,
+                &snapshot,
+                EvaluationStage::Operation,
+                &["defaults", "picker", "bindings"],
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("current namespace field \"item\"")
+        );
+        assert!(error.to_string().contains("active Engine schema"));
+
+        let error = crate::expression::Template::parse("{{ current.unknown }}").unwrap_err();
+        assert!(error.to_string().contains("unknown current field"));
     }
 
     #[test]
@@ -1306,7 +1669,7 @@ mod tests {
         let raw: RawConfig = base.try_into().unwrap();
         let config =
             Config::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new())).unwrap();
-        config.validate().unwrap();
+        validate_config(&config).unwrap();
         assert_eq!(
             config.compiled.views["base:main"]
                 .keymap

@@ -16,6 +16,27 @@ pub(crate) struct CancellationToken {
     signal: Option<Arc<AtomicI32>>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CancellationObserver {
+    token: CancellationToken,
+}
+
+pub(crate) trait CancellationStatus {
+    fn is_cancelled(&self) -> bool;
+}
+
+impl CancellationStatus for CancellationObserver {
+    fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+}
+
+impl CancellationStatus for CancellationToken {
+    fn is_cancelled(&self) -> bool {
+        CancellationToken::is_cancelled(self)
+    }
+}
+
 impl CancellationToken {
     pub(crate) fn new() -> Self {
         Self {
@@ -41,5 +62,26 @@ impl CancellationToken {
                 .signal
                 .as_ref()
                 .is_some_and(|signal| signal.load(Ordering::Acquire) & SIGNAL_MASK != 0)
+    }
+
+    pub(crate) fn observer(&self) -> CancellationObserver {
+        CancellationObserver {
+            token: self.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CancellationStatus, CancellationToken};
+
+    #[test]
+    fn observer_sees_explicit_token_cancellation() {
+        let token = CancellationToken::new();
+        let observer = token.observer();
+
+        assert!(!observer.is_cancelled());
+        token.cancel();
+        assert!(observer.is_cancelled());
     }
 }

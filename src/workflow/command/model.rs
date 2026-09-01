@@ -1,7 +1,8 @@
 use crate::config::{Command, CommandAction};
+use crate::engine::ActionId;
 use crate::execution::PreparedProcess;
 use crate::input::Key;
-use crate::state::StateInstance;
+use crate::parameter::ParameterSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -24,11 +25,11 @@ impl InputSeed {
         }
     }
 
-    pub(crate) fn routed(query: impl Into<String>, cursor: usize) -> Self {
-        let query = query.into();
+    pub(crate) fn routed(parameter_input: impl Into<String>, cursor: usize) -> Self {
+        let parameter_input = parameter_input.into();
         Self {
-            raw: query.clone(),
-            params: query,
+            raw: parameter_input.clone(),
+            params: parameter_input,
             cursor,
         }
     }
@@ -38,7 +39,7 @@ impl InputSeed {
 pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
-    pub(crate) query: Option<Value>,
+    pub(crate) parameters: Option<Value>,
 }
 
 impl NavigationRequest {
@@ -46,7 +47,7 @@ impl NavigationRequest {
         Self {
             view_ref: view_ref.into(),
             input: Some(InputSeed::new(input)),
-            query: None,
+            parameters: None,
         }
     }
 
@@ -54,25 +55,25 @@ impl NavigationRequest {
         Self {
             view_ref: view_ref.into(),
             input: None,
-            query: None,
+            parameters: None,
         }
     }
 
     pub(crate) fn routed(
         view_ref: impl Into<String>,
-        query: impl Into<String>,
+        parameter_input: impl Into<String>,
         cursor: usize,
     ) -> Self {
         Self {
             view_ref: view_ref.into(),
-            input: Some(InputSeed::routed(query, cursor)),
-            query: None,
+            input: Some(InputSeed::routed(parameter_input, cursor)),
+            parameters: None,
         }
     }
 
-    pub(crate) fn with_query(mut self, query: Value) -> Self {
+    pub(crate) fn with_parameters(mut self, parameters: Value) -> Self {
         self.input = None;
-        self.query = Some(query);
+        self.parameters = Some(parameters);
         self
     }
 }
@@ -95,23 +96,10 @@ pub(crate) enum EditorAction {
     DeleteWord,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ViewAction(&'static str);
-
-impl ViewAction {
-    pub(crate) const fn new(name: &'static str) -> Self {
-        Self(name)
-    }
-
-    pub(crate) const fn name(self) -> &'static str {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedInputAction {
     Edit(EditorAction),
-    View(ViewAction),
+    Engine(ActionId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,15 +107,7 @@ pub(crate) struct InputActionBinding {
     pub(crate) key: Key,
     pub(crate) action: ResolvedInputAction,
     pub(crate) label: Option<String>,
-    pub(crate) mode: ViewInputMode,
     pub(crate) enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SelectionBindingState {
-    None,
-    Ready(Option<String>),
-    Pending(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,13 +120,6 @@ pub(crate) enum InputRefreshPolicy {
 pub(crate) enum InputFocus {
     Focused,
     Unfocused,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum ViewInputMode {
-    #[default]
-    Keymap,
-    Passthrough,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,7 +162,7 @@ impl CommandOrigin {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct CommandInvocation {
     origin: CommandOrigin,
     pub(crate) command: Command,
@@ -239,22 +212,17 @@ impl CommandInvocation {
 #[derive(Debug, Clone)]
 pub(crate) struct CommandOwnerContext {
     pub(crate) view_ref: String,
-    pub(crate) state: StateInstance,
+    pub(crate) parameters: ParameterSnapshot,
     pub(crate) binding_raw: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CommandSelectionContext {
-    pub(crate) owner: CommandOwnerContext,
-    pub(crate) item: ViewOutputItem,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommandContext {
     pub(crate) page: CommandOwnerContext,
-    pub(crate) selection: Option<CommandSelectionContext>,
+    pub(crate) owner: CommandOwnerContext,
+    pub(crate) current: Value,
+    pub(crate) current_fields: &'static [&'static str],
     pub(crate) runtime: Value,
-    pub(crate) output: Option<ViewOutput>,
 }
 
 #[derive(Clone)]

@@ -1,23 +1,26 @@
 use crate::config::Config;
-use crate::input::InputBuffer;
+use crate::input::EditorBuffer;
+use crate::parameter::ParameterState;
 use crate::runtime::RuntimeStore;
-use crate::state::StateInstance;
 use anyhow::Result;
 use serde_json::{Value, json};
 
 pub(super) fn publish_active_input(
     runtime: &mut RuntimeStore,
-    input: &InputBuffer,
-    state: &StateInstance,
+    input: &EditorBuffer,
+    parameter_input: &str,
+    state: &ParameterState,
 ) -> Result<()> {
     runtime.set_many([
         ("/view/current/state_revision", json!(state.revision())),
-        ("/view/current/input", json!(input.params)),
+        ("/view/current/input", json!(parameter_input)),
         ("/view/current/raw_input", json!(input.raw)),
-        ("/view/current/query", json!(input.params)),
+        ("/view/current/query", json!(parameter_input)),
+        ("/view/current/cursor", json!(input.cursor)),
+        ("/view/current/buffer_revision", json!(input.revision)),
         (
             "/session/input",
-            json!({"raw": input.raw, "params": input.params, "cursor": input.cursor}),
+            json!({"raw": input.raw, "params": parameter_input, "cursor": input.cursor, "revision": input.revision}),
         ),
     ])?;
     Ok(())
@@ -27,8 +30,9 @@ pub(super) fn publish_location(
     runtime: &mut RuntimeStore,
     config: &Config,
     view_ref: &str,
-    input: &InputBuffer,
-    state: &StateInstance,
+    input: &EditorBuffer,
+    parameter_input: &str,
+    state: &ParameterState,
 ) -> Result<()> {
     let commands = crate::command::collect_page_owner_commands(config, view_ref, None)?
         .into_values()
@@ -37,10 +41,11 @@ pub(super) fn publish_location(
         "current": {
             "ref": view_ref,
             "state_revision": state.revision(),
-            "input": input.params,
+            "input": parameter_input,
             "raw_input": input.raw,
-            "query": input.params,
+            "query": parameter_input,
             "cursor": input.cursor,
+            "buffer_revision": input.revision,
             "selected_item": Value::Null,
             "items": [],
             "command": commands,
@@ -49,8 +54,9 @@ pub(super) fn publish_location(
     });
     let input = json!({
         "raw": input.raw,
-        "params": input.params,
+        "params": parameter_input,
         "cursor": input.cursor,
+        "revision": input.revision,
     });
     if runtime.snapshot().get("session").is_some() {
         runtime.set_many([("/view", view), ("/session/input", input)])?;

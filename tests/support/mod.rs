@@ -269,6 +269,54 @@ pub fn run_dmenu_steps(extra_args: &[&str], input: &[u8], key_steps: &[&[u8]]) -
     run_invocation_steps(&args, input, key_steps)
 }
 
+pub fn run_dmenu_steps_waiting_for_text(
+    extra_args: &[&str],
+    input: &[u8],
+    key_steps: &[&[u8]],
+    screen_texts: &[&str],
+) -> RunResult {
+    assert_eq!(
+        screen_texts.len(),
+        key_steps.len(),
+        "expected one screen marker before each dmenu key step"
+    );
+    let _guard = lock_dmenu_tests();
+    let config = fixture_config();
+    let config = config.to_str().expect("fixture config path is not UTF-8");
+    let mut args = vec!["--config", config, "dmenu:main"];
+    args.extend_from_slice(extra_args);
+
+    let mut process = spawn(&args);
+    process
+        .input
+        .take()
+        .expect("invocation input pipe is missing")
+        .write_all(input)
+        .expect("could not write invocation input");
+    wait_for_text(&process.master, screen_texts[0]);
+    for (index, keys) in key_steps.iter().enumerate() {
+        process
+            .master
+            .write_all(keys)
+            .expect("could not write invocation key input");
+        process
+            .master
+            .flush()
+            .expect("could not flush invocation key input");
+        if let Some(screen_text) = screen_texts.get(index + 1) {
+            wait_for_text(&process.master, screen_text);
+        }
+    }
+
+    let status = wait_for_exit(&mut process);
+    let mut stdout = Vec::new();
+    process
+        .output
+        .read_to_end(&mut stdout)
+        .expect("could not read invocation stdout");
+    RunResult { status, stdout }
+}
+
 pub fn run_tty_dmenu(keys: &[u8]) -> RunResult {
     let _guard = lock_dmenu_tests();
     let config = fixture_config();
@@ -626,6 +674,71 @@ pub fn wait_for_process_exit(pid: libc::pid_t) {
             return;
         }
         assert!(Instant::now() < deadline, "process {pid} did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+pub fn discard_pending_master_output(master: &File) {
+    let quiet_period = Duration::from_millis(50);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut output = Vec::new();
+    let mut screen = avt::Vt::new(80, 24);
+    let mut pending_utf8 = Vec::new();
+    let mut parsed = 0;
+    let mut last_visible = visible_screen(&screen);
+    let mut stable_since = Instant::now();
+    loop {
+        let before = output.len();
+        drain_master_into(master, &mut output);
+        if output.len() != before {
+            feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
+            parsed = output.len();
+            let visible = visible_screen(&screen);
+            if visible != last_visible {
+                last_visible = visible;
+                stable_since = Instant::now();
+            }
+        }
+        if Instant::now().duration_since(stable_since) >= quiet_period {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "PTY visible screen did not reach a stable frame before the fresh-screen action"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+pub fn wait_for_fresh_text(master: &File, needle: &str) -> Vec<u8> {
+    wait_for_fresh_screen(master, |visible| visible.contains(needle))
+}
+
+pub fn wait_for_fresh_screen<F>(master: &File, ready: F) -> Vec<u8>
+where
+    F: Fn(&str) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    let mut screen = avt::Vt::new(80, 24);
+    let mut pending_utf8 = Vec::new();
+    let mut parsed = 0;
+    loop {
+        drain_master_into(master, &mut output);
+        feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
+        parsed = output.len();
+        let visible = visible_screen(&screen);
+        if ready(&visible) {
+            let mut observed = output;
+            observed.extend_from_slice(b"\n--- visible screen ---\n");
+            observed.extend_from_slice(visible.as_bytes());
+            return observed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process did not render the expected fresh screen; visible screen: {visible:?}; output: {:?}",
+            output
+        );
         thread::sleep(Duration::from_millis(10));
     }
 }

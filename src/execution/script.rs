@@ -1,4 +1,6 @@
 use crate::execution::run_bounded_command_with_stdin;
+use crate::lifecycle::CancellationStatus;
+#[cfg(test)]
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -29,7 +31,7 @@ pub(crate) fn run_script(
     target: &str,
     args: &[String],
     max_output_bytes: Option<usize>,
-    cancellation: &CancellationToken,
+    cancellation: &dyn CancellationStatus,
 ) -> Result<Output> {
     if target.is_empty() {
         bail!("script source requires a non-empty file")
