@@ -27,15 +27,15 @@ src/
       model.rs              typed configuration model
       loader.rs             filesystem and plugin package loading
       normalize.rs          TOML/runtime normalization
-      compile.rs            template/state registry compilation
+      compile.rs            template/parameter registry compilation
       validation.rs         schema and command validation
       evaluation.rs         evaluation scopes and runtime projection
     expression/
       mod.rs                bounded dynamic expression language
-    query/
-      mod.rs                StateRegistry and StateInstance facade
-      schema.rs              query field types and schema compilation
-      instance.rs            query state lifecycle and updates
+    parameter/
+      mod.rs                ParameterRegistry, ParameterBinding, and ParameterState facade
+      schema.rs              parameter field types and schema compilation
+      state.rs               parameter state lifecycle, binding, and updates
     command/
       mod.rs
       model.rs              command context, effects, and output contracts
@@ -47,7 +47,7 @@ src/
     mod.rs                  AppSession and main loop coordination
     input.rs                input transport and passthrough parser
     input_dispatch.rs       binding refresh, route completion, and dispatch
-    navigation.rs           push/replace/call/return and rollback
+    navigation.rs           push/replace/call/return and prepared Host transition/commit
     effects.rs              ViewEffect processing and input mutation
     chrome.rs               Chrome assembly and route completion rendering
     state.rs                session stack and binding state types
@@ -56,7 +56,6 @@ src/
   engine/
     mod.rs
     api.rs
-    host.rs
     registry.rs
     evaluate.rs
     picker/
@@ -113,10 +112,20 @@ src/
 ```
 
 Generic task lifecycle and scheduling is owned by `task/`; it does not know
-about engines or picker items. Task closures have a cooperative cancellation
-contract: shutdown cancels queued and active work, then waits for the worker to
-exit. Latest-wins replacement is lane-scoped; picker-specific item request
-adaptation owns its `picker-items:<view_ref>` lane in `engine/picker/tasks.rs`.
+about engines or picker items. One `AppSession` owns one serialized FIFO worker
+shared by every mount and lane. Lanes scope latest-wins replacement and
+cancellation; they do not provide parallel execution. A task that does not
+observe cooperative cancellation promptly blocks later work across mounts.
+Task closures have a cooperative cancellation contract: the Session-owned
+shutdown path cancels queued and active work and joins the worker. Concurrent
+shutdown callers and worker-initiated shutdown are outside the runtime contract.
+Latest-wins replacement is lane-scoped; picker-specific item request adaptation owns its
+`picker-items:<view_ref>` lane in `engine/picker/tasks.rs`. Mount setup receives
+only an inert `MountTaskLease`; Session creates the post-commit
+`MountTaskStarter` from the matching mount identity, and prepared jobs reject a
+starter from another mount before scheduler submission. Picker preview decode
+uses a separate bounded pool per mount. Task closures must not capture the
+owning Engine/Session and rely on owner-drop cancellation.
 The other formerly mixed Engine modules have been moved to their owning
 top-level or feature-specific modules.
 
@@ -138,7 +147,7 @@ src/
   workflow/
     config/                   loading, normalization, compilation, evaluation
     expression/               bounded dynamic expression language
-    query/                    query schemas and state instances
+    parameter/                parameter schemas and state instances
     command/                  command contracts and preparation
     navigation.rs             Router and route resolution
     runtime.rs                shared workflow runtime store
@@ -186,19 +195,30 @@ test domain.
     for the worker to exit; latest-wins replacement must use an explicit lane.
 11. `session` may depend on the `ViewFactory` and generic `TaskRuntime`
     contracts, but it must not depend on `EngineRegistry` or
-    `engine::picker` implementation types.
+    `engine::picker` implementation types. Root mounts use one private
+    construction path; only the default-view invocation state and input
+    routing policy differ between session entry points.
 12. `execution` owns process and script mechanics. It may be used by command
     preparation and engine-specific task bodies, but it must not own task
     scheduling or engine semantics.
-13. `workflow/config/validation` orchestrates engine validation through hooks;
-    it must not branch on concrete engine identifiers for engine-specific
-    field or cross-view semantics. Engine relation hooks are required rather
-    than optional no-ops.
+13. `EngineRegistry` is a closed dispatcher for the three built-in Engines.
+    Engine-specific validation remains in each Engine module; adding a built-in
+    Engine requires one explicit dispatch branch. Test-only registrations may
+    replace a branch for failure injection but are not a production plugin API.
 
 ## Migration Order
 
 ### Completed in these migrations
 
+- Replaced the production Engine registration map with closed dispatch for
+  Picker, Capture, and Embedded; dynamic registrations remain test-only.
+- Collapsed Picker mount preparation from two `Any` boundaries and an opaque
+  setup closure to one Engine-owned runtime-data bundle built with an inert
+  task lease.
+- Reduced `ViewContextIdentity` to mount identity plus one context revision;
+  Picker retains its private request/input/parameter generations.
+- Removed the unused shared runtime `RwLock` mirror and source-text architecture
+  tests. Runtime snapshots are passed explicitly to task submissions.
 - Extracted Chrome input editing, layout, and frame rendering.
 - Extracted configuration model types, plugin loading, normalization, and
   validation while keeping `Config::load_app` and existing crate paths.
@@ -213,26 +233,46 @@ test domain.
   validation orchestration.
 - Added owner-based TaskRuntime cleanup and lane-scoped latest-wins scheduling;
   picker item work is isolated per View ref and shutdown remains cooperative.
-- Added the narrow `EngineTerminal` capability contract for View stepping;
-  Embedded uses terminal size and Picker Preview uses image output.
-- Restricted EngineHost input reads to named read-only queries.
+- Kept Embedded terminal polling and Picker preview decode in their
+  mount-owned runtime state; renderers consume immutable render snapshots and
+  create only frame-local drawing details.
+- Replaced the broad Engine boundary with explicit EngineRuntime inputs,
+  mount-owned raw receivers, and structured EngineDecision output.
 - Moved the input editor model to `input/editor.rs`; `ui/chrome/input.rs` keeps
   the stable Chrome re-export while Engine and Session use the input domain.
 - Added a terminal-owned Image Protocol type and perform the config-to-terminal
   mapping at the application composition boundary.
 - Added `lib.rs` as the module composition root and reduced `main.rs` to the
   binary error/exit adapter.
-- Grouped configuration, expression, query, command, navigation, and runtime
+- Grouped configuration, expression, parameter, command, navigation, and runtime
   modules under `workflow/`.
 - Grouped Chrome and Theme under `ui/` while preserving the
   `crate::chrome::*` and `crate::theme::*` paths through narrow root exports.
-- Split query schema compilation from query instance/state lifecycle in
-  `workflow/query/schema.rs` and `workflow/query/instance.rs`.
+- Completed the internal Query-to-Parameter migration under
+  `workflow/parameter/`, with `schema.rs` and `state.rs`; the external
+  configuration key remains `query` for compatibility.
 - Split TOML/runtime normalization from filesystem loading into
   `workflow/config/normalize.rs`.
 - Moved `ConfigSource` next to evaluation snapshots while re-exporting the
   existing `crate::config::ConfigSource` path.
 - Moved serde model default helpers into `workflow/config/model.rs`.
+- Added behavior checks for factory context ownership, renderer immutability,
+  generic session boundaries, live Engine event handling,
+  root assembly, and picker renderer ownership. A registration-owned
+  `MountPlanDataFactory` may inspect complete `Config` to compile opaque
+  target-specific data; generic `MountPlanFactory`, runtime, renderer, binding,
+  and mount-service contexts cannot inspect complete `Config`. Ordinary Engine
+  events mutate the mounted Engine's private state directly and return an
+  `EngineEmission` containing only a decision and optional publication. Host
+  preflight and Host-owned state/effect commits happen afterward and do not
+  roll back the Engine mutation.
+  Normal Engine decisions commit reports and an atomic runtime batch before
+  processing structural Host effects. Pop and Return
+  consume the child stack before sequential parent lifecycle/continuation
+  phases, and only a mount that remains active starts prepared work. Capability
+  start is infallible after committed mount validation. Embedded's PTY drive remains explicitly
+  external and irreversible. Root and navigation mount construction use the
+  shared private preparation path, and root Session assembly is also shared.
 - Extracted session stack/binding state and runtime publication helpers.
 - Directoryized the shared runtime store under `workflow/runtime.rs`.
 - Grouped process groups, bounded runners, and script execution under
@@ -255,8 +295,10 @@ test domain.
   refresh to `session/input_dispatch.rs` while retaining transport in
   `session/input.rs`.
 - Moved `ViewEffect` processing and input mutation to `session/effects.rs`.
-- Moved navigation, call/return, rollback, and lifecycle transitions to
-  `session/navigation.rs`.
+- Moved navigation, call/return, Host transition preparation, and lifecycle
+  transitions to `session/navigation.rs`; ordinary lifecycle events update live
+  Engine-private state directly, while Host-owned transition state retains its
+  local preparation and ordered commit rules.
 - Moved Chrome assembly and route completion rendering to `session/chrome.rs`.
 - Removed `Config`'s `Deref<Target = CompiledConfig>` façade. `CompiledConfig`
   is now private, Router uses named read-only queries, and test mutations use
@@ -264,8 +306,8 @@ test domain.
 - Moved evaluation scopes, public runtime projections, and dynamic value
   resolution to `workflow/config/evaluation.rs` while retaining the `crate::config`
   façade.
-- Moved compiled configuration construction, view/feed expansion, and state
-  registry setup to `workflow/config/compile.rs`.
+- Moved compiled configuration construction, view/feed expansion, and
+  parameter registry setup to `workflow/config/compile.rs`.
 - Moved generic configuration validation and dynamic requirement checks to
   `workflow/config/validation.rs`; engine-specific view and relation checks are
   dispatched through `EngineConfigValidator` hooks to the owning engines.
@@ -274,8 +316,20 @@ test domain.
 
 The remaining `AppSession` implementation in `session/mod.rs` owns
 construction, the main loop, runtime-log presentation, and stable façade
-methods. Engine steps now consume the narrow `EngineTerminal` capability
-contract; the concrete TTY adapter remains outside the Engine protocol.
+methods. Engine runtimes receive mount snapshots and explicit event/tick inputs,
+mutate only their own private state, and never receive `Session` or Host-owned
+state. Renderers consume immutable models while the concrete TTY adapter,
+navigation, runtime publication, and effects remain outside the Engine protocol.
+
+Overall migration status is **Incomplete** for one concrete reason: Rust
+package boundaries cannot statically enforce every architecture policy in this
+single crate. Embedded now has an inert prepared start plan followed by an
+explicit post-Host-commit external PTY boundary; the child, descriptors, resize,
+and input I/O remain intentionally irreversible and are not presented as
+rollback-capable. Host transitions use local atomic validation with ordered
+commits rather than cross-Engine/stack rollback; internal parameter terminology
+is now consolidated while the compatible `view.query` configuration key
+remains unchanged.
 
 Each step should keep the same `AppSession` constructors and run the focused
 session tests plus the complete launcher suite.
@@ -283,12 +337,13 @@ session tests plus the complete launcher suite.
 ### Next: boundary types and application composition
 
 - Keep `workflow/` as an explicit application domain, with Config, Expression,
-  Query, Command, Navigation, and Runtime as separate child boundaries.
+  Parameter, Command, Navigation, and Runtime as separate child boundaries.
 - Do not introduce a generic `common/` catch-all alongside the domain tree.
 - Keep CLI argument parsing and process bootstrap behind `app/`; `main.rs` is
   now a thin binary entry point.
-- Extend `EngineTerminal` only when a new View requires a distinct terminal
-  capability; do not expose the complete TTY adapter through the Engine API.
+- Extend mount-owned capabilities only when a new View requires a distinct
+  terminal or external resource; do not expose the complete TTY adapter through
+  the Engine API.
 - Keep Router separate from both Session and Chrome because both consume its
   route models.
 
@@ -301,9 +356,10 @@ Tests should follow the invariant they protect:
   plugins, and path resolution.
 - `workflow/config/normalize.rs`: keymap, engine-shape, disabled-plugin, and
   built-in command normalization.
-- `workflow/query/schema.rs`: query types, field defaults, and input ordering.
-- `workflow/query/instance.rs`: query state binding, updates, rendering, and
-  validation.
+- `workflow/parameter/schema.rs`: parameter types, field defaults, and input
+  ordering.
+- `workflow/parameter/state.rs`: parameter state binding, updates, rendering,
+  and validation.
 - `workflow/config/validation.rs`: generic schema orchestration, command nesting,
   target safety, and template requirements.
 - `engine/picker/mod.rs` and `engine/capture/mod.rs`: picker data-source/feed
@@ -311,7 +367,7 @@ Tests should follow the invariant they protect:
 - `workflow/config/evaluation.rs`: scope composition, allowlisted runtime projections,
   dynamic value resolution, and evaluation budgets.
 - `workflow/config/compile.rs`: compiled configuration construction, feed expansion,
-  template bootstrap validation, and state registry setup.
+  template bootstrap validation, and parameter registry setup.
 - `input/editor.rs`: Unicode cursor and edit invariants.
 - `ui/chrome/frame.rs`: clipping, footer overflow, layout geometry, and rendering
   styles.
@@ -323,8 +379,8 @@ Tests should follow the invariant they protect:
 - `session/input.rs`: input transport and passthrough parsing.
 - `session/input_dispatch.rs`: input grammar, binding refresh, reconciliation,
   route completion, and editor dispatch.
-- `session/effects.rs`: effect processing and input mutation.
-- `session/navigation.rs`: push/replace/call/return and rollback.
+- `session/effects.rs`: effect processing, preflight, and input mutation.
+- `session/navigation.rs`: push/replace/call/return and prepared Host commits.
 - `session/chrome.rs`: Chrome assembly and route completion rendering.
 - `workflow/runtime.rs`: shared runtime revisions and atomic publication.
 - `execution/`: process cleanup, bounded commands, and script safety.
