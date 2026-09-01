@@ -291,6 +291,25 @@ pub struct EngineOptions {
     pub fields: toml::Table,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewPresentationMode {
+    #[default]
+    Inline,
+    Popup,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewPresentation {
+    #[serde(default)]
+    pub mode: ViewPresentationMode,
+    #[serde(default)]
+    pub width: Option<u16>,
+    #[serde(default)]
+    pub height: Option<u16>,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
@@ -399,6 +418,8 @@ pub struct NavigatePayload {
     pub target: toml::Value,
     #[serde(default)]
     pub query: Option<toml::Value>,
+    #[serde(default)]
+    pub presentation: ViewPresentation,
     /// Replace the current View instead of pushing a new stack entry.
     #[serde(default)]
     pub replace: bool,
@@ -410,6 +431,8 @@ pub struct CallPayload {
     pub target: toml::Value,
     #[serde(default)]
     pub query: Option<toml::Value>,
+    #[serde(default)]
+    pub presentation: ViewPresentation,
     #[serde(default)]
     pub then: Option<Box<CommandAction>>,
 }
@@ -516,6 +539,11 @@ impl CommandBinding {
             payload: CallPayload {
                 target: toml::Value::String("selectors:commands".to_string()),
                 query: Some(toml::Value::Table(query)),
+                presentation: ViewPresentation {
+                    mode: ViewPresentationMode::Popup,
+                    width: Some(72),
+                    height: Some(16),
+                },
                 then: Some(Box::new(CommandAction::Invoke {
                     payload: InvokePayload {
                         command: toml::Value::String("{{ result.output.value }}".to_string()),
@@ -586,7 +614,7 @@ pub(super) struct PluginHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::View;
+    use super::{CommandAction, CommandBinding, View, ViewPresentationMode};
 
     #[test]
     fn view_query_deserializes_and_serializes_with_the_compatibility_key() {
@@ -617,5 +645,70 @@ mod tests {
         )
         .expect_err("parameters is an internal name, not a configuration key");
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn call_presentation_defaults_to_inline() {
+        let view: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [commands.open]
+            key = "enter"
+            label = "Open"
+            type = "call"
+            [commands.open.payload]
+            target = "other:view"
+            "#,
+        )
+        .expect("view must deserialize");
+
+        let CommandAction::Call { payload } = &view.commands["open"].action else {
+            panic!("expected call action");
+        };
+        assert_eq!(payload.presentation.mode, ViewPresentationMode::Inline);
+    }
+
+    #[test]
+    fn built_in_commands_use_popup_presentation() {
+        let binding = CommandBinding::builtin_commands();
+        let action = binding
+            .command_action("commands")
+            .expect("built-in commands must have an action");
+        let CommandAction::Call { payload } = action else {
+            panic!("built-in commands must call the selector View");
+        };
+
+        assert_eq!(payload.presentation.mode, ViewPresentationMode::Popup);
+        assert_eq!(payload.presentation.width, Some(72));
+        assert_eq!(payload.presentation.height, Some(16));
+    }
+
+    #[test]
+    fn call_presentation_deserializes_dimensions() {
+        let view: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [commands.open]
+            key = "enter"
+            label = "Open"
+            type = "call"
+            [commands.open.payload]
+            target = "other:view"
+            [commands.open.payload.presentation]
+            mode = "popup"
+            width = 72
+            height = 16
+            "#,
+        )
+        .expect("popup presentation must deserialize");
+
+        let CommandAction::Call { payload } = &view.commands["open"].action else {
+            panic!("expected call action");
+        };
+        assert_eq!(payload.presentation.mode, ViewPresentationMode::Popup);
+        assert_eq!(payload.presentation.width, Some(72));
+        assert_eq!(payload.presentation.height, Some(16));
     }
 }

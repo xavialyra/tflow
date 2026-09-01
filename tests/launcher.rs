@@ -1948,7 +1948,7 @@ fn command_selector_does_not_expose_an_owner_from_stale_items() {
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "no-match");
+    discard_pending_master_output(&process.master);
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);

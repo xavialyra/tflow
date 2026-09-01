@@ -65,6 +65,7 @@ pub(super) struct ViewMount {
 
 pub(super) struct ViewFrame {
     pub(super) mount: ViewMount,
+    pub(super) presentation: crate::config::ViewPresentation,
     pub(super) call_boundary: Option<CallBoundary>,
 }
 

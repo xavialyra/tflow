@@ -145,12 +145,14 @@ pub(super) fn validate_command_action_requirements(
             }
         }
         CommandAction::Navigate { payload } => {
+            validate_presentation(&format!("{consumer} presentation"), &payload.presentation)?;
             validate(&payload.target, &format!("{consumer} target"), stage)?;
             if let Some(query) = &payload.query {
                 validate(query, &format!("{consumer} query"), stage)?;
             }
         }
         CommandAction::Call { payload } => {
+            validate_presentation(&format!("{consumer} presentation"), &payload.presentation)?;
             validate(&payload.target, &format!("{consumer} target"), stage)?;
             if let Some(query) = &payload.query {
                 validate(query, &format!("{consumer} query"), stage)?;
@@ -266,6 +268,18 @@ pub(super) fn validate_command_action(
             }
         }
         CommandAction::Invoke { payload } => validate_templates(&payload.command)?,
+    }
+    Ok(())
+}
+
+fn validate_presentation(consumer: &str, presentation: &super::ViewPresentation) -> Result<()> {
+    if presentation.mode != super::ViewPresentationMode::Popup
+        && (presentation.width.is_some() || presentation.height.is_some())
+    {
+        bail!("{consumer} width and height require popup mode");
+    }
+    if presentation.width == Some(0) || presentation.height == Some(0) {
+        bail!("{consumer} width and height must be positive");
     }
     Ok(())
 }

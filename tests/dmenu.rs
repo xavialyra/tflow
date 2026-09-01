@@ -128,8 +128,8 @@ fn dmenu_can_cancel_the_global_command_selector_and_continue() {
     let result = run_dmenu_steps_waiting_for_text(
         &[],
         b"first\nsecond\n",
-        &[&b"\x0b"[..], &b"\x1b"[..], &b"\r"[..]],
-        &["dmenu", "commands", "dmenu"],
+        &[&b"\x0b"[..], &b"\x1b\r"[..]],
+        &["dmenu", "commands"],
     );
 
     assert_eq!(result.status, 0);

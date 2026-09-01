@@ -458,6 +458,7 @@ impl<'a> AppSession<'a> {
                     runtime: prepared.runtime,
                     renderer: prepared.renderer,
                 },
+                presentation: crate::config::ViewPresentation::default(),
                 call_boundary: None,
             }],
             tasks,
@@ -1039,6 +1040,7 @@ mod tests {
                         payload: crate::config::NavigatePayload {
                             target: toml::Value::String("missing:view".to_string()),
                             query: None,
+                            presentation: crate::config::ViewPresentation::default(),
                             replace: false,
                         },
                     },
@@ -5055,6 +5057,7 @@ mod tests {
                     payload: crate::config::CallPayload {
                         target: toml::Value::String("apps:main".to_string()),
                         query: None,
+                        presentation: crate::config::ViewPresentation::default(),
                         then: None,
                     },
                 })),

@@ -112,7 +112,26 @@ Theme bindings style concrete launcher elements. Missing fields use their bindin
 
 ## Commands And Navigation
 
-Commands belong to a View and use a tagged action:
+Commands belong to a View and use a tagged action. A call or navigation decides how its target is presented; Views are inline by default. A popup target retains the normal call/return lifecycle while rendering above its parent:
+
+```toml
+[views.main.commands.open]
+key = "ctrl+o"
+label = "Open"
+type = "call"
+
+[views.main.commands.open.payload]
+target = "selectors:commands"
+
+[views.main.commands.open.payload.presentation]
+mode = "popup"
+width = 72
+height = 16
+```
+
+Popup dimensions are measured in terminal cells and are clamped to the available content area. Only the top View receives input while a popup is open; the parent remains mounted underneath it. The built-in `commands` session command uses this popup presentation automatically when `selectors:commands` is configured.
+
+Commands use a tagged action:
 
 ```toml
 [views.main.commands.open]

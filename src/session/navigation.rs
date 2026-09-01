@@ -94,6 +94,7 @@ pub(super) struct PreparedActiveCommit {
 pub(super) struct PreparedNavigation {
     source_index: usize,
     mount_id: crate::input::ViewMountId,
+    presentation: crate::config::ViewPresentation,
     view_ref: String,
     input: crate::input::EditorBuffer,
     state: crate::parameter::ParameterState,
@@ -237,6 +238,7 @@ impl AppSession<'_> {
         Ok(PreparedNavigation {
             source_index,
             mount_id,
+            presentation: request.presentation,
             view_ref: prepared.view_ref,
             input: prepared.input,
             state: prepared.state,
@@ -383,6 +385,7 @@ impl AppSession<'_> {
                 runtime: prepared.runtime,
                 renderer: prepared.renderer,
             },
+            presentation: prepared.presentation,
             call_boundary,
         });
         let target_index = self.views.len() - 1;

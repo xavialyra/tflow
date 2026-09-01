@@ -1,4 +1,4 @@
-use crate::config::{Command, CommandAction};
+use crate::config::{Command, CommandAction, ViewPresentation};
 use crate::engine::ActionId;
 use crate::execution::PreparedProcess;
 use crate::input::Key;
@@ -40,6 +40,7 @@ pub(crate) struct NavigationRequest {
     pub(crate) view_ref: String,
     pub(crate) input: Option<InputSeed>,
     pub(crate) parameters: Option<Value>,
+    pub(crate) presentation: ViewPresentation,
 }
 
 impl NavigationRequest {
@@ -48,6 +49,7 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::new(input)),
             parameters: None,
+            presentation: ViewPresentation::default(),
         }
     }
 
@@ -56,6 +58,7 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: None,
             parameters: None,
+            presentation: ViewPresentation::default(),
         }
     }
 
@@ -68,12 +71,18 @@ impl NavigationRequest {
             view_ref: view_ref.into(),
             input: Some(InputSeed::routed(parameter_input, cursor)),
             parameters: None,
+            presentation: ViewPresentation::default(),
         }
     }
 
     pub(crate) fn with_parameters(mut self, parameters: Value) -> Self {
         self.input = None;
         self.parameters = Some(parameters);
+        self
+    }
+
+    pub(crate) fn with_presentation(mut self, presentation: ViewPresentation) -> Self {
+        self.presentation = presentation;
         self
     }
 }

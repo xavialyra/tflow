@@ -125,7 +125,8 @@ fn prepare_action(
             let request = match parameters {
                 Some(parameters) => NavigationRequest::new(target, "").with_parameters(parameters),
                 None => NavigationRequest::with_defaults(target),
-            };
+            }
+            .with_presentation(payload.presentation.clone());
             Ok(PreparedAction::Navigate {
                 request,
                 mode: if payload.replace {
@@ -149,7 +150,8 @@ fn prepare_action(
             let request = match parameters {
                 Some(parameters) => NavigationRequest::new(target, "").with_parameters(parameters),
                 None => NavigationRequest::with_defaults(target),
-            };
+            }
+            .with_presentation(payload.presentation.clone());
             Ok(PreparedAction::Call(CallRequest {
                 request,
                 origin: invocation.origin(),
