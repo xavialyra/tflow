@@ -4,8 +4,13 @@ This project is a terminal workflow host. The long-term structure should keep
 configuration, session state, engine behavior, and terminal rendering as
 separate domains. A module may expose a small crate-level facade, but new
 feature code should live in the narrowest domain that owns its behavior.
+The input and navigation model establishes that each View implementation (Picker,
+Embedded, Capture) owns its own interaction model, while the Router and ProtocolSession
+host generic navigation, lifecycle, and lossless input events.
 
 ## Current Boundaries
+
+The tree below is an overview of the current source structure:
 
 The structural migrations keep existing crate paths and runtime behavior stable
 while separating the largest mixed modules:
@@ -19,6 +24,9 @@ src/
     mod.rs                  top-level startup and App facade
     cli.rs                  CLI arguments and process bootstrap
     invocation.rs           stdin capture and final result adaptation
+
+  protocol.rs               ProtocolSession host and shared FooterModel
+  view.rs                   engine-neutral View and Router contracts
 
   workflow/
     mod.rs
@@ -43,45 +51,42 @@ src/
     navigation.rs           Router and route resolution
     runtime.rs              shared JSON runtime store
 
-  session/
-    mod.rs                  AppSession and main loop coordination
-    input.rs                input transport and passthrough parser
-    input_dispatch.rs       binding refresh, route completion, and dispatch
-    navigation.rs           push/replace/call/return and prepared Host transition/commit
-    effects.rs              ViewEffect processing and input mutation
-    chrome.rs               Chrome assembly and route completion rendering
-    state.rs                session stack and binding state types
-    publication.rs          runtime publication
-
   engine/
     mod.rs
     api.rs
     registry.rs
     evaluate.rs
+    protocol_factory.rs     engine-neutral protocol view factory
     picker/
+      mod.rs
+      protocol.rs           PickerProtocolView with interactive query editor
       preview/
         mod.rs
         image_decode.rs
         image_path.rs
     capture/
+      mod.rs
+      protocol.rs           CaptureProtocolView
     embedded/
       mod.rs
+      protocol.rs           EmbeddedProtocolView
       pty.rs
       terminal.rs
       session.rs
 
   input/
-    mod.rs                  Key and InputDecoder
+    mod.rs                  Key, pipeline, and editor exports
+    pipeline.rs             lossless input pipeline and terminal decoder
     editor.rs               neutral input buffer and Unicode editing
     keymap.rs               generic layered keymap and input router
+    runtime.rs              input events and mount IDs
 
   ui/
     mod.rs
     chrome/
-      mod.rs
-      input.rs                stable re-export of the input model
-      layout.rs
-      frame.rs
+      mod.rs                Chrome layout and footer formatting
+      footer.rs             FooterModel and FooterRenderer
+      host.rs               ContentHost and popup stack rendering
     theme/
       mod.rs
       model.rs
@@ -156,6 +161,7 @@ src/
   engine/                     View Engine protocol and concrete implementations
   input/                      terminal input model and layered keymaps
   ui/                         Chrome and Theme presentation modules
+    chrome/                   target ContentHost and shared Footer presentation
   terminal/                   TTY and terminal-control adapter
   execution/                  external process and script execution
   task/                       generic background task lifecycle and scheduling
@@ -180,28 +186,36 @@ test domain.
    runtime state. Expressions must never receive the complete runtime JSON tree
    by accident.
 5. `engine` owns the View Engine protocol and concrete View implementations.
-   `session` owns transitions and orchestration around those engines.
-6. `input/editor` owns input editing semantics independently of ratatui.
-   `ui/chrome` consumes the input model for rendering, never the reverse.
-7. `ui/theme/model` and `ui/theme/color` must not read files. Only `ui/theme/load` may
+   The runtime Router owns View navigation and transitions; `session` owns the
+   terminal host and orchestration around the Router.
+6. `ui/chrome` is split conceptually into `ContentHost` and `Footer`.
+   `ContentHost` owns framing, inline/popup placement, and the View content
+   area. The shared `Footer` consumes committed Router location and generic
+   View metadata for status, errors, and command hints. Neither component
+   owns or renders View-private input, query text, completion rows, or cursor
+   state.
+7. Interactive query editing is Picker-owned. Terminal byte decoding and event
+   transport remain independent infrastructure; shared UI must not own or
+   duplicate Picker input state.
+8. `ui/theme/model` and `ui/theme/color` must not read files. Only `ui/theme/load` may
    depend on the filesystem.
-8. Engines may consume stable configuration queries. New code should not reach
+9. Engines may consume stable configuration queries. New code should not reach
    into `Config::compiled` or `config_value` directly.
-9. New crate-visible fields are not a substitute for an API. Prefer private
-   fields with constructors or focused accessors.
-10. `task` owns generic background scheduling, cancellation, and task handles.
+10. New crate-visible fields are not a substitute for an API. Prefer private
+    fields with constructors or focused accessors.
+11. `task` owns generic background scheduling, cancellation, and task handles.
     It must not depend on a concrete engine or on picker item types. Task
     closures must cooperate with cancellation because runtime shutdown waits
     for the worker to exit; latest-wins replacement must use an explicit lane.
-11. `session` may depend on the `ViewFactory` and generic `TaskRuntime`
+12. `session` may depend on the `ViewFactory` and generic `TaskRuntime`
     contracts, but it must not depend on `EngineRegistry` or
     `engine::picker` implementation types. Root mounts use one private
     construction path; only the default-view invocation state and input
     routing policy differ between session entry points.
-12. `execution` owns process and script mechanics. It may be used by command
+13. `execution` owns process and script mechanics. It may be used by command
     preparation and engine-specific task bodies, but it must not own task
     scheduling or engine semantics.
-13. `EngineRegistry` is a closed dispatcher for the three built-in Engines.
+14. `EngineRegistry` is a closed dispatcher for the three built-in Engines.
     Engine-specific validation remains in each Engine module; adding a built-in
     Engine requires one explicit dispatch branch. Test-only registrations may
     replace a branch for failure injection but are not a production plugin API.
@@ -291,15 +305,13 @@ test domain.
 - Split theme models, color and scheme resolution, semantic bindings, and file
   loading into `ui/theme/model.rs`, `ui/theme/color.rs`, `ui/theme/binding.rs`, and
   `ui/theme/load.rs`.
-- Moved Session input dispatch, route completion, reconciliation, and binding
-  refresh to `session/input_dispatch.rs` while retaining transport in
-  `session/input.rs`.
-- Moved `ViewEffect` processing and input mutation to `session/effects.rs`.
-- Moved navigation, call/return, Host transition preparation, and lifecycle
-  transitions to `session/navigation.rs`; ordinary lifecycle events update live
-  Engine-private state directly, while Host-owned transition state retains its
-  local preparation and ordered commit rules.
-- Moved Chrome assembly and route completion rendering to `session/chrome.rs`.
+- Completely eliminated `session/` and transitioned to the `ProtocolSession` and
+  `Router` architecture in `protocol.rs` and `view.rs`.
+- Separated Chrome presentation into `ContentHost` and `FooterRenderer` in
+  `ui/chrome/`. The protocol draw path completely routes through
+  `ContentHost` (framing, popup placement/clearing/borders, and view rendering)
+  and `FooterRenderer` (committed location, status, error, and command hints),
+  while input editors are owned directly by interactive protocol views.
 - Removed `Config`'s `Deref<Target = CompiledConfig>` façade. `CompiledConfig`
   is now private, Router uses named read-only queries, and test mutations use
   explicit `#[cfg(test)]` helpers.
@@ -314,25 +326,29 @@ test domain.
 - Preserved the existing behavior contract with the current unit and
   integration tests.
 
-The remaining `AppSession` implementation in `session/mod.rs` owns
-construction, the main loop, runtime-log presentation, and stable façade
-methods. Engine runtimes receive mount snapshots and explicit event/tick inputs,
-mutate only their own private state, and never receive `Session` or Host-owned
-state. Renderers consume immutable models while the concrete TTY adapter,
-navigation, runtime publication, and effects remain outside the Engine protocol.
+The legacy `AppSession` implementation in `session/` has been completely
+decommissioned and removed. The default application constructs `ProtocolSession`,
+a protocol `Router`, and concrete protocol-native Picker, Capture, and Embedded
+Views. Engine runtimes receive View-owned snapshots and explicit event/tick inputs,
+mutate only their own private state, and never receive `Session` or Host-owned state.
+Renderers consume immutable models while the concrete TTY adapter, navigation,
+runtime publication, and effects remain outside the Engine protocol.
 
-Overall migration status is **Incomplete** for one concrete reason: Rust
-package boundaries cannot statically enforce every architecture policy in this
-single crate. Embedded now has an inert prepared start plan followed by an
-explicit post-Host-commit external PTY boundary; the child, descriptors, resize,
-and input I/O remain intentionally irreversible and are not presented as
+The runtime architecture is now fully single-track on the protocol architecture.
+Command preparation and continuation semantics operate through `ProtocolCommandService`
+and `Router`.
+
+Embedded has an inert prepared start plan followed by an explicit
+post-Host-commit external PTY boundary; the child, descriptors, resize, and
+input I/O remain intentionally irreversible and are not presented as
 rollback-capable. Host transitions use local atomic validation with ordered
 commits rather than cross-Engine/stack rollback; internal parameter terminology
-is now consolidated while the compatible `view.query` configuration key
-remains unchanged.
+is consolidated while the compatible `view.query` configuration key remains
+unchanged.
 
-Each step should keep the same `AppSession` constructors and run the focused
-session tests plus the complete launcher suite.
+Every architecture change should run the focused tests, the complete launcher
+suite, and `mise run metrics`; retain the generated metrics summary when
+comparing complexity or coverage.
 
 ### Next: boundary types and application composition
 
@@ -344,8 +360,9 @@ session tests plus the complete launcher suite.
 - Extend mount-owned capabilities only when a new View requires a distinct
   terminal or external resource; do not expose the complete TTY adapter through
   the Engine API.
-- Keep Router separate from both Session and Chrome because both consume its
-  route models.
+- Keep static Route definitions and the runtime Router separate from Picker
+  rendering and terminal Session. Session may host the Router, but Router owns
+  View locations, instances, and stack transitions.
 
 ## Test Ownership
 
@@ -368,20 +385,29 @@ Tests should follow the invariant they protect:
   dynamic value resolution, and evaluation budgets.
 - `workflow/config/compile.rs`: compiled configuration construction, feed expansion,
   template bootstrap validation, and parameter registry setup.
-- `input/editor.rs`: Unicode cursor and edit invariants.
-- `ui/chrome/frame.rs`: clipping, footer overflow, layout geometry, and rendering
-  styles.
+- `engine/picker/`: Picker editor, query diagnostics, route completion,
+  input revisions, and complete Picker surface rendering. Low-level Unicode
+  editing helpers may be private implementation details there.
+- `ui/chrome/` target `ContentHost` and `Footer`: application frame geometry,
+  inline/popup content placement, committed View location, generic
+  status/error metadata, command hints, clipping, overflow, and rendering
+  styles. Tests must not make either component responsible for editor or
+  cursor state.
 - `ui/theme/model.rs`: serde shape and resolved theme composition.
 - `ui/theme/color.rs`: palette, ANSI, scheme roles, and color reference errors.
 - `ui/theme/binding.rs`: semantic binding names, defaults, and style patches.
 - `ui/theme/load.rs`: named theme selectors and config-directory resolution.
 - `input/keymap.rs`: binding priority, layer replacement, and tombstones.
 - `session/input.rs`: input transport and passthrough parsing.
-- `session/input_dispatch.rs`: input grammar, binding refresh, reconciliation,
-  route completion, and editor dispatch.
-- `session/effects.rs`: effect processing, preflight, and input mutation.
-- `session/navigation.rs`: push/replace/call/return and prepared Host commits.
-- `session/chrome.rs`: Chrome assembly and route completion rendering.
+- `input/`: lossless terminal decoding and generic InputEvent invariants.
+- `workflow/navigation.rs` or the eventual Router owner module: View instance
+  creation, stack transitions, call/return boundaries, popup placement,
+  lifecycle ordering, and transition rejection.
+- `engine/picker/`: Picker query parsing orchestration, route completion,
+  editor state, and complete Picker rendering.
+- `ui/chrome/`: application frame geometry, committed View location, generic
+  status/error metadata, command hints, clipping, and overflow. It must not
+  render or own View input.
 - `workflow/runtime.rs`: shared runtime revisions and atomic publication.
 - `execution/`: process cleanup, bounded commands, and script safety.
 - `task/mod.rs`: generic task submission, completion, cancellation, and
