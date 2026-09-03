@@ -1,6 +1,9 @@
 mod keymap;
+mod protocol;
 mod render;
 mod session;
+
+pub(crate) use protocol::{CaptureProtocolConfig, create_protocol_view};
 
 use self::keymap::{CaptureAction, CaptureKeymap};
 pub(crate) use self::render::CaptureRenderer;
@@ -13,30 +16,20 @@ use super::{
 };
 use crate::command::ResolvedInputAction;
 use crate::config::{
-    Defaults, ENGINE_CAPTURE, ResolvedScriptSource, ScriptSourceSpec, View, toml_to_json,
+    Defaults, ResolvedScriptSource, ScriptSourceSpec, View, toml_to_json,
 };
 use crate::execution::{ensure_script_success, run_script};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
-    crate::engine::EngineDefinition::new(ENGINE_CAPTURE, "capture")
+    crate::engine::EngineDefinition::new()
         .with_current_fields(&["value"])
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: &["title", "output"],
             binding: &[],
             deferred_runtime_errors: &["title", "output"],
             binding_defaults: Some(&["defaults", "capture", "bindings"]),
-        })
-        .with_input_policy(crate::engine::InputPolicy {
-            strategy: crate::input::InputStrategy::Decoded,
-            buffer_target: None,
-            focus: crate::engine::InputFocus::Unfocused,
-        })
-        .with_mount_policy(crate::engine::MountPolicy {
-            launcher_input_timeout: Some(80),
-            terminal_eof: crate::engine::TerminalEofPolicy::Exit,
-            ..crate::engine::MountPolicy::default()
         })
         .with_actions([
             crate::engine::ActionSpec::unit("capture.copy"),
@@ -321,7 +314,10 @@ impl CaptureView {
         } else {
             serde_json::Value::Null
         };
-        (notice, ViewContextPublication::new(current))
+        (
+            notice,
+            ViewContextPublication::new(current).with_ready(true),
+        )
     }
 }
 
@@ -338,13 +334,6 @@ impl EngineRuntime for CaptureView {
         Ok(EngineEmission::decision(decision))
     }
 
-    fn parameters(
-        &mut self,
-        _parameters: crate::parameter::ParameterSnapshot,
-        _expected: crate::engine::ViewContextIdentity,
-    ) -> Result<EngineEmission> {
-        Ok(EngineEmission::decision(EngineDecision::Invalidate))
-    }
 
     fn tick(&mut self, _tick: crate::engine::EngineTick) -> Result<EngineEmission> {
         if self.pending_script.is_some()
@@ -372,11 +361,7 @@ impl EngineRuntime for CaptureView {
             })
         };
         Ok(EngineEmission::decision(decision)
-            .with_publication(ViewContextPublication::new(current)))
-    }
-
-    fn tick_mode(&self) -> crate::engine::EngineTickMode {
-        crate::engine::EngineTickMode::Prepared
+            .with_publication(ViewContextPublication::new(current).with_ready(true)))
     }
 
     fn start_prepared_work(
@@ -466,7 +451,7 @@ mod tests {
 
         let cancellation = crate::lifecycle::CancellationToken::new();
         let context = RuntimeFactoryContext {
-            identity: crate::engine::ViewIdentity::new("core:capture", ENGINE_CAPTURE),
+            identity: crate::engine::ViewIdentity::new("core:capture", crate::config::ENGINE_CAPTURE),
             config: EvaluatedEngineConfig {
                 fields: [(
                     "output".to_string(),
@@ -490,7 +475,6 @@ mod tests {
                 0,
             ),
             cancellation: cancellation.observer(),
-            data: None,
         };
 
         let mut runtime = create_view(context).unwrap();

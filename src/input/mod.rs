@@ -1,13 +1,11 @@
 mod editor;
 pub(crate) mod keymap;
+mod pipeline;
 mod runtime;
 
-pub(crate) use editor::{BufferEditError, EditorBuffer, EditorSnapshot, previous_char_boundary};
-pub(crate) use runtime::{
-    CompletionEdit, CompletionHost, CompletionId, CompletionSnapshot, EventDisposition,
-    InputConsumer, InputContext, InputEvent, InputSourceIdentity, InputStrategy, InputTarget,
-    ReceiverId, ViewMountId,
-};
+pub(crate) use editor::{EditorBuffer, EditorSnapshot, previous_char_boundary};
+pub(crate) use pipeline::InputPipeline;
+pub(crate) use runtime::{InputEvent, InputSourceIdentity, ViewMountId};
 
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
@@ -145,8 +143,19 @@ pub(crate) struct InputDecoder {
 
 impl InputDecoder {
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<DecodedInput> {
+        let mut expired_escape = Vec::new();
+        if self.pending.as_slice() == b"\x1b"
+            && (bytes.len() > 1
+                || self
+                    .escape_since
+                    .is_some_and(|started| started.elapsed() >= Duration::from_millis(35)))
+        {
+            self.escape_since = None;
+            expired_escape.push(self.take(1, Some(Key::Escape)));
+        }
         self.pending.extend_from_slice(bytes);
-        self.parse()
+        expired_escape.extend(self.parse());
+        expired_escape
     }
 
     pub(crate) fn take_pending_raw(&mut self) -> Vec<u8> {
@@ -437,54 +446,21 @@ mod tests {
     #[test]
     fn input_events_keep_paste_and_raw_representations_distinct() {
         let paste = InputEvent::decoded(decoded(None, b"\x1b[200~text\x1b[201~"));
-        assert!(matches!(paste, InputEvent::Paste(_)));
-        let raw = InputEvent::Raw(vec![0xff]);
-        assert!(matches!(raw, InputEvent::Raw(bytes) if bytes == vec![0xff]));
+        assert!(
+            matches!(paste, InputEvent::Paste { text: Some(text), raw } if text == "text" && raw.starts_with(b"\x1b[200~"))
+        );
+        let raw = InputEvent::Bytes(vec![0xff]);
+        assert!(matches!(raw, InputEvent::Bytes(bytes) if bytes == vec![0xff]));
+        let key = InputEvent::decoded(decoded(Some(Key::Char('x')), b"x"));
+        assert!(matches!(key, InputEvent::Key { key: Key::Char('x'), raw } if raw == b"x"));
     }
 
     #[test]
-    fn completion_context_replays_an_opaque_event_without_decoding_it() {
-        let mut context = InputContext::decoded(
-            keymap::InputContextId::default(),
-            InputConsumer::Completion(CompletionId(1)),
-            None,
-            InputTarget::Ignore,
+    fn invalid_paste_text_remains_lossless() {
+        let event = InputEvent::decoded(decoded(None, b"\x1b[200~\xff\x1b[201~"));
+        assert!(
+            matches!(event, InputEvent::Paste { text: None, raw } if raw.ends_with(b"\x1b[201~"))
         );
-        context.replay_context = Some(keymap::InputContextId(9));
-        let event = InputEvent::Key(decoded(None, b"\x1b[999~"));
-        assert_eq!(
-            context.disposition_for_unmatched(event.clone()),
-            EventDisposition::CloseAndReplay(keymap::InputContextId(9), event)
-        );
-    }
-
-    #[test]
-    fn raw_receiver_is_independent_from_input_context_id() {
-        let context = InputContext::raw(
-            keymap::InputContextId(41),
-            InputConsumer::Mount(ViewMountId(7)),
-            InputTarget::Pty(ReceiverId(99)),
-        );
-        assert_eq!(context.unmatched_receiver(), Some(ReceiverId(99)));
-    }
-
-    #[test]
-    fn completion_edits_reject_stale_source_revisions() {
-        let identity = InputSourceIdentity {
-            frame: ViewMountId(1),
-            generation: 0,
-        };
-        let mut buffer = EditorBuffer::new("app");
-        let edit = CompletionEdit {
-            source_identity: identity,
-            source_revision: buffer.revision,
-            range: 0..3,
-            replacement: "apps:main".to_string(),
-            cursor: 9,
-        };
-        buffer.insert(' ');
-        assert!(edit.apply(identity, &mut buffer).is_err());
-        assert_eq!(buffer.raw, "app ");
     }
 
     #[test]

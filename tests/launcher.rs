@@ -10,7 +10,7 @@ use support::{
     discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
     spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
     wait_for_fresh_screen, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
-    wait_for_nonempty_file, wait_for_process_exit, wait_for_ready, wait_for_text,
+    wait_for_nonempty_file, wait_for_output, wait_for_process_exit, wait_for_ready, wait_for_text,
     write_test_config,
 };
 
@@ -1069,8 +1069,51 @@ fn explicit_capture_view_receives_typed_query_state() {
     assert!(output.contains("from-option"));
     let visible = output.rsplit("--- visible screen ---").next().unwrap();
     assert!(
-        visible.lines().any(|line| line.trim() == "core:direct"),
-        "screen: {visible}"
+        visible
+            .lines()
+            .last()
+            .is_some_and(|footer| footer.contains("core:direct")),
+        "route location is not in the footer: {visible}"
+    );
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn capture_does_not_render_its_private_query_as_a_host_input_row() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:capture"
+
+        [plugins.core.views.capture.engine]
+        type = "capture"
+        [plugins.core.views.capture.engine.config]
+        output = "fixed-capture"
+        [plugins.core.views.capture.query]
+        type = "object"
+        secret = { type = "string" }
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &["core:capture", "--secret=hidden-query"]);
+    let output = wait_for_text(&process.master, "fixed-capture");
+    let output = String::from_utf8_lossy(&output);
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(!visible.contains("hidden-query"), "screen: {visible}");
+    assert_eq!(
+        visible
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim),
+        Some("fixed-capture")
     );
 
     process.master.write_all(b"\x1b").unwrap();
@@ -1153,6 +1196,47 @@ fn explicit_embedded_view_receives_typed_query_input() {
     assert_eq!(status, 0);
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("input=from-option"), "output: {output}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn embedded_does_not_render_its_private_query_as_a_host_input_row() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:embedded"
+
+        [plugins.core.views.embedded.engine]
+        type = "embedded"
+        [plugins.core.views.embedded.engine.config]
+        command = ["sh", "-c", "printf 'fixed-embedded'; trap 'exit 0' INT TERM; while :; do sleep 1; done"]
+        [plugins.core.views.embedded.query]
+        type = "object"
+        secret = { type = "string" }
+        "#,
+    )
+    .unwrap();
+
+    let mut process =
+        spawn_launcher_with_args(&config, &["core:embedded", "--secret=hidden-query"]);
+    let output = wait_for_text(&process.master, "fixed-embedded");
+    let output = String::from_utf8_lossy(&output);
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    assert!(!visible.contains("hidden-query"), "screen: {visible}");
+    assert_eq!(
+        visible
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim),
+        Some("fixed-embedded")
+    );
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1498,6 +1582,58 @@ fn view_commands_accept_unreserved_control_bindings() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove control command config");
+}
+
+#[test]
+fn edit_input_command_updates_the_picker_owned_editor() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [{label = "Item", value = "value"}]
+
+        [plugins.core.views.default.commands.rewrite]
+        key = "ctrl+r"
+        label = "Rewrite"
+        requires = "input"
+        type = "edit-input"
+
+        [plugins.core.views.default.commands.rewrite.payload]
+        value = "rewritten"
+        cursor = 3
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args(&config, &[]);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"draft").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "draft")
+    });
+    process.master.write_all(b"\x12").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "rewritten") && visible.contains("Rewrite")
+    });
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        output.lines().any(|line| line.trim() == "rewritten"),
+        "edit-input did not update the Picker surface"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -2207,6 +2343,55 @@ fn feed_owners_apply_independent_query_defaults() {
 }
 
 #[test]
+fn routed_picker_restores_alias_prefix_and_top_spacing() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        [[plugins.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+
+        [plugins.apps.views.default]
+        alias = "app"
+        [plugins.apps.views.default.engine]
+        type = "picker"
+        [plugins.apps.views.default.engine.config]
+        items = [{label = "Needle", value = "needle"}]
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"app needle\r").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "app needle")
+            && visible
+                .lines()
+                .last()
+                .is_some_and(|footer| footer.trim_start().starts_with("app "))
+    });
+    let output = String::from_utf8_lossy(&output);
+    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    let mut lines = visible.lines().filter(|line| !line.is_empty());
+    assert!(lines.next().is_some_and(|line| line.trim().is_empty()));
+    assert!(visible.lines().any(|line| line.trim() == "app needle"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn picker_back_clears_routed_query_before_returning_to_default() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2510,9 +2695,9 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         .master
         .flush()
         .expect("could not flush capture copy key");
-    let copied = wait_for_text(
+    let copied = wait_for_output(
         &process.master,
-        "\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07",
+        b"\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07",
     );
     process
         .master
@@ -2729,7 +2914,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         .flush()
         .expect("could not flush embedded Enter key");
 
-    let mut output = wait_for_text(&process.master, "embedded-marker:value");
+    let mut output = wait_for_output(&process.master, b"embedded-marker:value");
     process
         .master
         .write_all(b"\x03")
@@ -2840,7 +3025,7 @@ fn qualified_view_path_navigates_to_any_engine() {
         .flush()
         .expect("could not flush qualified embedded route");
 
-    let mut output = wait_for_text(&process.master, "route-marker");
+    let mut output = wait_for_output(&process.master, b"route-marker");
     let launcher = wait_for_text(&process.master, "0 of 0");
     output.extend(launcher);
     process

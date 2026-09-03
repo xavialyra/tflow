@@ -1,10 +1,10 @@
+use super::SessionOutcome;
 use crate::command::ViewOutput;
 use crate::config::{
     Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
 };
 use crate::expression::EvaluationStage;
 use crate::lifecycle::CancellationToken;
-use crate::session::SessionOutcome;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};

@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::clip;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,10 +26,12 @@ impl Insets {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn horizontal(self) -> usize {
         self.left.saturating_add(self.right)
     }
 
+    #[cfg(test)]
     pub(crate) fn vertical(self) -> usize {
         self.top.saturating_add(self.bottom)
     }
@@ -53,6 +56,7 @@ impl Default for InputLayout {
     }
 }
 
+#[cfg(test)]
 impl InputLayout {
     fn input_region_rows(self) -> usize {
         self.rows.saturating_add(self.padding.vertical())
@@ -98,7 +102,9 @@ impl Default for ChromeLayout {
     }
 }
 
+#[cfg(test)]
 impl ChromeLayout {
+
     fn region_rows(rows: usize, padding: Insets) -> usize {
         rows.saturating_add(padding.vertical())
     }

@@ -25,6 +25,7 @@ pub(crate) struct TaskRuntime {
 
 struct TaskRuntimeOwner {
     registry: Arc<TaskRegistry>,
+    events: Arc<Mutex<VecDeque<crate::view::TaskEvent>>>,
 }
 
 /// An inert mount identity handed to registration-owned setup code. It has no
@@ -52,6 +53,7 @@ pub(crate) struct MountTaskStarter {
     runtime: TaskRuntime,
     mount_id: crate::input::ViewMountId,
     lane_prefix: String,
+    correlation: Option<(crate::view::TaskId, u64)>,
 }
 
 impl MountTaskStarter {
@@ -61,11 +63,23 @@ impl MountTaskStarter {
             runtime: runtime.clone(),
             mount_id,
             lane_prefix: format!("mount-{}", mount_id.0),
+            correlation: None,
         }
     }
 
     pub(crate) fn mount_id(&self) -> crate::input::ViewMountId {
         self.mount_id
+    }
+
+    pub(crate) fn for_task(&self, task: crate::view::TaskId, generation: u64) -> Self {
+        let mut starter = self.clone();
+        starter.correlation = Some((task, generation));
+        starter
+    }
+
+    pub(crate) fn cancel_all(&self) {
+        self.runtime
+            .cancel_lane_prefix(&format!("{}:", self.lane_prefix));
     }
 
     #[cfg(test)]
@@ -89,9 +103,16 @@ impl MountTaskStarter {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.runtime.spawn_latest_with_snapshot(
+        self.runtime.spawn_latest_with_snapshot_and_correlation(
             format!("{}:{}", self.lane_prefix, lane.as_ref()),
             runtime_snapshot,
+            self.correlation.map(|(task, generation)| {
+                (
+                    crate::view::ViewInstanceId(self.mount_id.0),
+                    task,
+                    generation,
+                )
+            }),
             task,
         )
     }
@@ -155,6 +176,7 @@ impl TaskRuntime {
                         thread_id: None,
                     }),
                 }),
+                events: Arc::new(Mutex::new(VecDeque::new())),
             }),
         }
     }
@@ -180,6 +202,7 @@ impl TaskRuntime {
     }
 
     /// Submit replacing work with an already committed runtime snapshot.
+    #[cfg(test)]
     pub(crate) fn spawn_latest_with_snapshot<T, F>(
         &self,
         lane: impl Into<String>,
@@ -190,7 +213,21 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_with_snapshot(task, Some(lane.into()), runtime_snapshot)
+        self.spawn_latest_with_snapshot_and_correlation(lane, runtime_snapshot, None, task)
+    }
+
+    fn spawn_latest_with_snapshot_and_correlation<T, F>(
+        &self,
+        lane: impl Into<String>,
+        runtime_snapshot: Value,
+        correlation: Option<(crate::view::ViewInstanceId, crate::view::TaskId, u64)>,
+        task: F,
+    ) -> TaskHandle<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
+    {
+        self.spawn_with_snapshot(task, Some(lane.into()), runtime_snapshot, correlation)
     }
 
     #[cfg(test)]
@@ -199,7 +236,7 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_with_snapshot(task, replace_lane, Value::Null)
+        self.spawn_with_snapshot(task, replace_lane, Value::Null, None)
     }
 
     fn spawn_with_snapshot<T, F>(
@@ -207,6 +244,7 @@ impl TaskRuntime {
         task: F,
         replace_lane: Option<String>,
         runtime_snapshot: Value,
+        correlation: Option<(crate::view::ViewInstanceId, crate::view::TaskId, u64)>,
     ) -> TaskHandle<T>
     where
         T: Send + 'static,
@@ -214,6 +252,7 @@ impl TaskRuntime {
     {
         let cancellation = CancellationToken::new();
         let (completion, receiver) = sync_channel(1);
+        let events = Arc::clone(&self.owner.events);
         let execute = Box::new(move |runtime, cancellation: CancellationToken| {
             let result = if cancellation.is_cancelled() {
                 TaskCompletion::Cancelled
@@ -232,7 +271,27 @@ impl TaskRuntime {
                     Err(_) => TaskCompletion::Failed("task panicked".to_string()),
                 }
             };
+            let outcome = match &result {
+                TaskCompletion::Completed(_) => {
+                    crate::view::TaskOutcome::Completed(serde_json::Value::Null)
+                }
+                TaskCompletion::Failed(message) => {
+                    crate::view::TaskOutcome::Failed(message.clone())
+                }
+                TaskCompletion::Cancelled => crate::view::TaskOutcome::Cancelled,
+            };
             let _ = completion.send(result);
+            if let Some((instance, task, generation)) = correlation {
+                events
+                    .lock()
+                    .expect("task event queue was poisoned")
+                    .push_back(crate::view::TaskEvent {
+                        instance,
+                        task,
+                        generation,
+                        outcome,
+                    });
+            }
         });
         self.owner.registry.submit(
             Job {
@@ -249,11 +308,26 @@ impl TaskRuntime {
         }
     }
 
+    pub(crate) fn drain_events(&self) -> Vec<crate::view::TaskEvent> {
+        self.owner
+            .events
+            .lock()
+            .expect("task event queue was poisoned")
+            .drain(..)
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn cancel_all(&self) {
         self.owner.registry.cancel_all();
     }
 
+    fn cancel_lane_prefix(&self, prefix: &str) {
+        self.owner.registry.cancel_lane_prefix(prefix);
+    }
+
     /// Cancel all work and wait for the worker to exit.
+    #[cfg(test)]
     pub(crate) fn shutdown_and_wait(&self) {
         self.owner.registry.shutdown_and_wait();
     }
@@ -316,6 +390,7 @@ impl TaskRegistry {
         self.ready.notify_one();
     }
 
+    #[cfg(test)]
     fn cancel_all(&self) {
         let state = self.state.lock().expect("task registry state was poisoned");
         if let Some(active) = &state.active {
@@ -323,6 +398,46 @@ impl TaskRegistry {
         }
         for pending in &state.pending {
             pending.cancellation.cancel();
+        }
+    }
+
+    fn cancel_lane_prefix(&self, prefix: &str) {
+        let cancelled = {
+            let mut state = self.state.lock().expect("task registry state was poisoned");
+            if state.active.as_ref().is_some_and(|active| {
+                active
+                    .lane
+                    .as_deref()
+                    .is_some_and(|lane| lane.starts_with(prefix))
+            }) && let Some(active) = &state.active
+            {
+                active.cancellation.cancel();
+            }
+            let mut retained = VecDeque::new();
+            let mut cancelled = Vec::new();
+            for pending in state.pending.drain(..) {
+                if pending
+                    .lane
+                    .as_deref()
+                    .is_some_and(|lane| lane.starts_with(prefix))
+                {
+                    pending.cancellation.cancel();
+                    cancelled.push(pending);
+                } else {
+                    retained.push_back(pending);
+                }
+            }
+            state.pending = retained;
+            cancelled
+        };
+        for Job {
+            runtime,
+            cancellation,
+            execute,
+            ..
+        } in cancelled
+        {
+            execute(runtime, cancellation);
         }
     }
 
@@ -456,7 +571,7 @@ impl<T> Drop for TaskHandle<T> {
 mod tests {
     use super::{MountTaskLease, MountTaskStarter, TaskCompletion, TaskRuntime};
     use crate::input::ViewMountId;
-    use crate::runtime::RuntimeStore;
+    use crate::view::{TaskId, TaskOutcome, ViewInstanceId};
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
@@ -479,12 +594,41 @@ mod tests {
     }
 
     #[test]
+    fn correlated_mount_tasks_emit_router_task_events() {
+        let tasks = TaskRuntime::new();
+        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(73)))
+            .for_task(TaskId(4), 9);
+        let mut handle =
+            starter.spawn_latest_with_snapshot("items", json!({}), |_context| Ok("done"));
+        assert!(matches!(
+            receive(&mut handle),
+            TaskCompletion::Completed("done")
+        ));
+
+        let mut event = None;
+        for _ in 0..200 {
+            event = tasks.drain_events().into_iter().next();
+            if event.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        let event = event.expect("correlated task did not emit its Router event");
+        assert_eq!(event.instance, ViewInstanceId(73));
+        assert_eq!(event.task, TaskId(4));
+        assert_eq!(event.generation, 9);
+        assert_eq!(
+            event.outcome,
+            TaskOutcome::Completed(serde_json::Value::Null)
+        );
+    }
+
+    #[test]
     fn uses_the_runtime_snapshot_supplied_at_submission() {
-        let mut runtime = RuntimeStore::new();
-        runtime.set("/marker", json!("before")).unwrap();
+        let snapshot = json!({"marker": "before"});
         let tasks = TaskRuntime::new();
         let mut handle =
-            tasks.spawn_latest_with_snapshot("snapshot", runtime.snapshot().clone(), |context| {
+            tasks.spawn_latest_with_snapshot("snapshot", snapshot, |context| {
                 Ok(context.runtime["marker"].clone())
             });
 
@@ -498,11 +642,8 @@ mod tests {
 
     #[test]
     fn latest_submission_can_use_an_explicit_runtime_snapshot() {
-        let mut runtime = RuntimeStore::new();
-        runtime.set("/marker", json!("live-before")).unwrap();
         let tasks = TaskRuntime::new();
         let explicit = json!({"marker": "prepared"});
-        runtime.set("/marker", json!("live-after")).unwrap();
 
         let mut handle = tasks.spawn_latest_with_snapshot("latest", explicit, |context| {
             Ok(context.runtime["marker"].clone())
@@ -850,6 +991,40 @@ mod tests {
         assert!(matches!(
             receive(&mut following),
             TaskCompletion::Completed(7)
+        ));
+        tasks.shutdown_and_wait();
+    }
+
+    #[test]
+    fn mount_cancellation_does_not_cancel_another_mount() {
+        let tasks = TaskRuntime::new();
+        let first = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
+        let second = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(2)));
+        let started = Arc::new(AtomicBool::new(false));
+        let started_task = Arc::clone(&started);
+        let mut first_handle =
+            first.spawn_latest_with_snapshot("work", serde_json::Value::Null, move |context| {
+                started_task.store(true, Ordering::Release);
+                while !context.cancellation.is_cancelled() {
+                    thread::yield_now();
+                }
+                Ok(1)
+            });
+        let mut second_handle =
+            second.spawn_latest_with_snapshot("work", serde_json::Value::Null, |_context| Ok(2));
+        while !started.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        first.cancel_all();
+
+        assert!(matches!(
+            receive(&mut first_handle),
+            TaskCompletion::Cancelled
+        ));
+        assert!(matches!(
+            receive(&mut second_handle),
+            TaskCompletion::Completed(2)
         ));
         tasks.shutdown_and_wait();
     }

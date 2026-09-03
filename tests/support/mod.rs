@@ -8,13 +8,14 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct DmenuProcess {
     pid: libc::pid_t,
     master: File,
+    observer: PtyObserverKey,
     input: Option<File>,
     output: File,
     state_home: PathBuf,
@@ -29,6 +30,7 @@ impl Drop for DmenuProcess {
                 libc::waitpid(self.pid, std::ptr::null_mut(), 0);
             }
         }
+        remove_pty_observer(self.observer);
         fs::remove_dir_all(&self.state_home).ok();
     }
 }
@@ -36,6 +38,7 @@ impl Drop for DmenuProcess {
 pub struct LauncherProcess {
     pid: libc::pid_t,
     pub master: File,
+    observer: PtyObserverKey,
     original_termios: libc::termios,
     state_home: PathBuf,
     finished: bool,
@@ -68,6 +71,7 @@ impl Drop for LauncherProcess {
                 libc::waitpid(self.pid, std::ptr::null_mut(), 0);
             }
         }
+        remove_pty_observer(self.observer);
         fs::remove_dir_all(&self.state_home).ok();
     }
 }
@@ -78,6 +82,124 @@ pub struct RunResult {
 }
 
 static DMENU_TEST_LOCK: Mutex<()> = Mutex::new(());
+const PTY_SCREEN_QUIET_PERIOD: Duration = Duration::from_millis(100);
+static PTY_OBSERVER_TOKEN: AtomicU64 = AtomicU64::new(1);
+static PTY_OBSERVERS: LazyLock<Mutex<BTreeMap<RawFd, RegisteredPtyObserver>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+#[derive(Clone, Copy)]
+struct PtyObserverKey {
+    fd: RawFd,
+    token: u64,
+}
+
+struct RegisteredPtyObserver {
+    token: u64,
+    state: PtyObserverState,
+}
+
+struct PtyObserverState {
+    screen: avt::Vt,
+    pending_utf8: Vec<u8>,
+    visible: String,
+    revision: u64,
+    completed_waits: u64,
+    allow_cached_wait: bool,
+}
+
+#[derive(Clone)]
+struct PtyObservation {
+    visible: String,
+    revision: u64,
+    allow_cached_wait: bool,
+}
+
+fn register_pty_observer(master: &File) -> PtyObserverKey {
+    let fd = master.as_raw_fd();
+    let token = PTY_OBSERVER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let screen = avt::Vt::new(80, 24);
+    let visible = visible_screen(&screen);
+    let observer = RegisteredPtyObserver {
+        token,
+        state: PtyObserverState {
+            screen,
+            pending_utf8: Vec::new(),
+            visible,
+            revision: 0,
+            completed_waits: 0,
+            allow_cached_wait: false,
+        },
+    };
+    PTY_OBSERVERS
+        .lock()
+        .expect("PTY observer registry lock poisoned")
+        .insert(fd, observer);
+    PtyObserverKey { fd, token }
+}
+
+fn remove_pty_observer(key: PtyObserverKey) {
+    let mut observers = PTY_OBSERVERS
+        .lock()
+        .expect("PTY observer registry lock poisoned");
+    if observers
+        .get(&key.fd)
+        .is_some_and(|observer| observer.token == key.token)
+    {
+        observers.remove(&key.fd);
+    }
+}
+
+fn observe_pty_output(master: &File, bytes: &[u8]) -> Option<PtyObservation> {
+    let mut observers = PTY_OBSERVERS
+        .lock()
+        .expect("PTY observer registry lock poisoned");
+    let observer = observers.get_mut(&master.as_raw_fd())?;
+    let state = &mut observer.state;
+    if !bytes.is_empty() {
+        let PtyObserverState {
+            screen,
+            pending_utf8,
+            ..
+        } = state;
+        feed_terminal_output(screen, pending_utf8, bytes);
+        let visible = visible_screen(screen);
+        if visible != state.visible {
+            state.visible = visible;
+            state.revision = state.revision.wrapping_add(1);
+        }
+    }
+    Some(PtyObservation {
+        visible: state.visible.clone(),
+        revision: state.revision,
+        allow_cached_wait: state.allow_cached_wait,
+    })
+}
+
+fn current_pty_observation(master: &File) -> Option<PtyObservation> {
+    observe_pty_output(master, &[])
+}
+
+fn allow_cached_pty_wait(master: &File) {
+    if let Some(observer) = PTY_OBSERVERS
+        .lock()
+        .expect("PTY observer registry lock poisoned")
+        .get_mut(&master.as_raw_fd())
+        && observer.state.completed_waits == 0
+    {
+        observer.state.allow_cached_wait = true;
+    }
+}
+
+fn complete_pty_wait(master: &File) {
+    if let Some(observer) = PTY_OBSERVERS
+        .lock()
+        .expect("PTY observer registry lock poisoned")
+        .get_mut(&master.as_raw_fd())
+    {
+        observer.state.allow_cached_wait = false;
+        observer.state.completed_waits = observer.state.completed_waits.wrapping_add(1);
+    }
+}
 
 struct PreparedExec {
     _command: Vec<CString>,
@@ -458,9 +580,12 @@ pub fn spawn_launcher_with_args_and_env(
     );
     close_fd(gate[1]);
     set_nonblocking(master);
+    let master = unsafe { File::from_raw_fd(master) };
+    let observer = register_pty_observer(&master);
     LauncherProcess {
         pid,
-        master: unsafe { File::from_raw_fd(master) },
+        master,
+        observer,
         original_termios,
         state_home,
         finished: false,
@@ -494,10 +619,13 @@ fn spawn(args: &[&str]) -> DmenuProcess {
     close_fd(output_pipe[1]);
     set_cloexec(master);
     set_nonblocking(master);
+    let master = unsafe { File::from_raw_fd(master) };
+    let observer = register_pty_observer(&master);
 
     DmenuProcess {
         pid,
-        master: unsafe { File::from_raw_fd(master) },
+        master,
+        observer,
         input: Some(unsafe { File::from_raw_fd(input_pipe[1]) }),
         output: unsafe { File::from_raw_fd(output_pipe[0]) },
         state_home,
@@ -561,9 +689,12 @@ fn spawn_tty_with_redirected_stdout(args: &[&str]) -> DmenuProcess {
     close_fd(output_pipe[1]);
     set_cloexec(master);
     set_nonblocking(master);
+    let master = unsafe { File::from_raw_fd(master) };
+    let observer = register_pty_observer(&master);
     DmenuProcess {
         pid,
-        master: unsafe { File::from_raw_fd(master) },
+        master,
+        observer,
         input: None,
         output: unsafe { File::from_raw_fd(output_pipe[0]) },
         state_home,
@@ -602,6 +733,8 @@ pub fn wait_for_ready(master: &File) {
         let count =
             unsafe { libc::read(master.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
         if count > 0 {
+            observe_pty_output(master, &buffer[..count as usize]);
+            allow_cached_pty_wait(master);
             return;
         }
         if count < 0 {
@@ -679,27 +812,22 @@ pub fn wait_for_process_exit(pid: libc::pid_t) {
 }
 
 pub fn discard_pending_master_output(master: &File) {
-    let quiet_period = Duration::from_millis(50);
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut output = Vec::new();
-    let mut screen = avt::Vt::new(80, 24);
-    let mut pending_utf8 = Vec::new();
-    let mut parsed = 0;
-    let mut last_visible = visible_screen(&screen);
+    let mut last_revision = current_pty_observation(master)
+        .expect("test PTY is not registered")
+        .revision;
     let mut stable_since = Instant::now();
     loop {
         let before = output.len();
         drain_master_into(master, &mut output);
-        if output.len() != before {
-            feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
-            parsed = output.len();
-            let visible = visible_screen(&screen);
-            if visible != last_visible {
-                last_visible = visible;
-                stable_since = Instant::now();
-            }
+        let observation =
+            observe_pty_output(master, &output[before..]).expect("test PTY is not registered");
+        if observation.revision != last_revision {
+            last_revision = observation.revision;
+            stable_since = Instant::now();
         }
-        if Instant::now().duration_since(stable_since) >= quiet_period {
+        if Instant::now().duration_since(stable_since) >= PTY_SCREEN_QUIET_PERIOD {
             return;
         }
         assert!(
@@ -720,23 +848,25 @@ where
 {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut output = Vec::new();
-    let mut screen = avt::Vt::new(80, 24);
-    let mut pending_utf8 = Vec::new();
-    let mut parsed = 0;
+    let start_revision = current_pty_observation(master)
+        .expect("test PTY is not registered")
+        .revision;
     loop {
+        let before = output.len();
         drain_master_into(master, &mut output);
-        feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
-        parsed = output.len();
-        let visible = visible_screen(&screen);
-        if ready(&visible) {
+        let observation =
+            observe_pty_output(master, &output[before..]).expect("test PTY is not registered");
+        if observation.revision > start_revision && ready(&observation.visible) {
+            complete_pty_wait(master);
             let mut observed = output;
             observed.extend_from_slice(b"\n--- visible screen ---\n");
-            observed.extend_from_slice(visible.as_bytes());
+            observed.extend_from_slice(observation.visible.as_bytes());
             return observed;
         }
         assert!(
             Instant::now() < deadline,
-            "process did not render the expected fresh screen; visible screen: {visible:?}; output: {:?}",
+            "process did not render the expected fresh screen; visible screen: {:?}; output: {:?}",
+            observation.visible,
             output
         );
         thread::sleep(Duration::from_millis(10));
@@ -746,23 +876,64 @@ where
 pub fn wait_for_text(master: &File, needle: &str) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut output = Vec::new();
-    let mut screen = avt::Vt::new(80, 24);
-    let mut pending_utf8 = Vec::new();
-    let mut parsed = 0;
+    let start = current_pty_observation(master).expect("test PTY is not registered");
+    let mut matched_frame = None;
     loop {
+        let before = output.len();
         drain_master_into(master, &mut output);
-        feed_terminal_output(&mut screen, &mut pending_utf8, &output[parsed..]);
-        parsed = output.len();
-        let visible = visible_screen(&screen);
-        if String::from_utf8_lossy(&output).contains(needle) || visible.contains(needle) {
+        let observation =
+            observe_pty_output(master, &output[before..]).expect("test PTY is not registered");
+        let fresh = observation.revision > start.revision;
+        let cached = start.allow_cached_wait && start.visible.contains(needle);
+        let ready = !observation.visible.contains("(searching...)");
+        let matched = ready && observation.visible.contains(needle) && (fresh || cached);
+        if matched {
+            let (revision, stable_since) =
+                matched_frame.get_or_insert_with(|| (observation.revision, Instant::now()));
+            if *revision != observation.revision {
+                *revision = observation.revision;
+                *stable_since = Instant::now();
+            }
+            if Instant::now().duration_since(*stable_since) >= PTY_SCREEN_QUIET_PERIOD {
+                complete_pty_wait(master);
+                let mut observed = output;
+                observed.extend_from_slice(b"\n--- visible screen ---\n");
+                observed.extend_from_slice(observation.visible.as_bytes());
+                return observed;
+            }
+        } else {
+            matched_frame = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process did not render {needle:?}; visible screen: {:?}; output: {:?}",
+            observation.visible,
+            output
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+pub fn wait_for_output(master: &File, needle: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    loop {
+        let before = output.len();
+        drain_master_into(master, &mut output);
+        let observation =
+            observe_pty_output(master, &output[before..]).expect("test PTY is not registered");
+        if output.windows(needle.len()).any(|window| window == needle) {
+            complete_pty_wait(master);
             let mut observed = output;
             observed.extend_from_slice(b"\n--- visible screen ---\n");
-            observed.extend_from_slice(visible.as_bytes());
+            observed.extend_from_slice(observation.visible.as_bytes());
             return observed;
         }
         assert!(
             Instant::now() < deadline,
-            "process did not render {needle:?}; visible screen: {visible:?}; output: {:?}",
+            "process did not emit raw output {:?}; visible screen: {:?}; output: {:?}",
+            needle,
+            observation.visible,
             output
         );
         thread::sleep(Duration::from_millis(10));

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedTheme {
     pub(crate) text: Style,
+    #[cfg(test)]
     pub(crate) muted_text: Style,
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
@@ -68,6 +69,7 @@ impl ResolvedTheme {
 
         Ok(Self {
             text: binding(ThemeBinding::Text)?,
+            #[cfg(test)]
             muted_text: binding(ThemeBinding::MutedText)?,
             chrome: ChromeTheme {
                 divider: binding(ThemeBinding::ChromeDivider)?,

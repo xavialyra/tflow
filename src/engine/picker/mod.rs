@@ -1,6 +1,7 @@
 mod items;
 mod keymap;
 mod preview;
+mod protocol;
 mod render;
 mod runtime;
 mod session;
@@ -8,13 +9,13 @@ mod tasks;
 
 use self::items::{FeedDefinition, ItemsRequest, ItemsResult, PickerItemsLoader};
 use self::keymap::PickerKeymap;
+pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
 use self::session::PickerOptions;
 pub(crate) use self::session::PickerView;
 use self::tasks::PickerItemsScheduler;
 use super::{
-    EngineValidationContext, InputBindingFactoryContext, MountRuntimeData, RendererFactoryContext,
-    RuntimeFactoryContext, validate_fields,
+    EngineValidationContext, InputBindingFactoryContext, RendererFactoryContext, validate_fields,
 };
 use crate::config::{
     CommandBindingVisibility, CommandScope, Config, Defaults, ENGINE_PICKER, ScriptSourceSpec,
@@ -200,6 +201,13 @@ impl PickerViewServices {
             .contains(&(view_ref.to_string(), command_id.to_string()))
     }
 
+    pub(crate) fn command_requires_items(&self, view_ref: &str, command_id: &str) -> bool {
+        self.page_item_commands(view_ref)
+            .iter()
+            .find(|command| command.id == command_id)
+            .is_some_and(|command| command.requires_items)
+    }
+
     pub(crate) fn selection_commands(&self, owner: &str) -> &[PickerSelectionCommand] {
         self.selection_commands
             .get(owner)
@@ -252,7 +260,7 @@ pub(super) fn mount_data(
     config: &Config,
     view_ref: &str,
     lease: MountTaskLease,
-) -> Result<MountRuntimeData> {
+) -> Result<PickerViewServices> {
     let projection = Arc::new(crate::config::PickerItemsProjection::from_config(
         config, view_ref,
     )?);
@@ -261,7 +269,7 @@ pub(super) fn mount_data(
         view_services: PickerViewServices::from_config(config, view_ref)?,
     };
     let picker = PickerRuntimeServices::from_plan(plan, lease, view_ref);
-    Ok(MountRuntimeData::new(picker.view_services()))
+    Ok(picker.view_services())
 }
 
 #[derive(Clone)]
@@ -317,7 +325,7 @@ impl From<PickerRuntimeServices> for PickerViewServices {
 pub(crate) use items::Item;
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
-    crate::engine::EngineDefinition::new(ENGINE_PICKER, "candidate_list")
+    crate::engine::EngineDefinition::new()
         .with_current_fields(&[
             "item",
             "source",
@@ -331,11 +339,6 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
             binding: &["layout", "preview"],
             deferred_runtime_errors: &[],
             binding_defaults: Some(&["defaults", "picker", "bindings"]),
-        })
-        .with_mount_policy(crate::engine::MountPolicy {
-            refresh: crate::engine::InputRefreshPolicy::Debounced(session::INPUT_DEBOUNCE),
-            launcher_input_timeout: Some(session::INPUT_POLL_MS),
-            terminal_eof: crate::engine::TerminalEofPolicy::Exit,
         })
         .with_actions([
             crate::engine::ActionSpec::unit("picker.select_next"),
@@ -424,32 +427,6 @@ pub(super) fn validate_keymap(name: &str, view: &View) -> Result<()> {
     let keymap = view.keymap.as_ref().map(toml_to_json).transpose()?;
     PickerKeymap::validate_values(None, keymap.as_ref())
         .with_context(|| format!("view {:?} picker keymap", name))
-}
-
-pub(super) fn create_view(
-    context: RuntimeFactoryContext,
-) -> Result<Box<dyn crate::engine::EngineRuntime>> {
-    let show_prefix = context.config.field("show_prefix").cloned();
-    let options = PickerOptions {
-        show_prefix: parse_bool(show_prefix, "show_prefix", false)?,
-        preview_enabled: context.config.field("preview").is_some(),
-    };
-    let services = context
-        .data
-        .as_ref()
-        .and_then(|data| data.downcast_ref::<PickerViewServices>())
-        .context("picker runtime data is not available")?;
-    let preview = self::preview::parse(
-        context.config.field("layout").cloned(),
-        context.config.field("preview").cloned(),
-    )?;
-    let picker = PickerView::new_with_preview(
-        &context.identity.view_ref,
-        services.clone(),
-        options,
-        preview,
-    );
-    Ok(Box::new(picker))
 }
 
 pub(super) fn create_renderer(
@@ -596,17 +573,6 @@ fn is_complete_dynamic_path(value: &toml::Value) -> Result<bool> {
         return Ok(false);
     };
     Ok(Template::parse(source)?.is_complete_path())
-}
-
-fn parse_bool(value: Option<Value>, name: &str, default: bool) -> Result<bool> {
-    value
-        .map(|value| {
-            value
-                .as_bool()
-                .with_context(|| format!("picker field {:?} must evaluate to a boolean", name))
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(default))
 }
 
 #[cfg(test)]

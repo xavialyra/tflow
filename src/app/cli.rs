@@ -1,3 +1,4 @@
+use super::SessionOutcome;
 use super::{App, InputArtifact, InvocationResult, LoadedApp, finish};
 #[cfg(test)]
 use crate::config::EngineConfigValidator;
@@ -5,7 +6,6 @@ use crate::config::{Config, ImageProtocol as ConfigImageProtocol};
 use crate::diagnostics::RuntimeLog;
 use crate::engine::EngineRegistry;
 use crate::lifecycle::SignalGuard;
-use crate::session::SessionOutcome;
 use crate::terminal::{ImageProtocol as TerminalImageProtocol, Terminal};
 use crate::theme::{self, ThemeLoadOptions};
 use anyhow::{Context, Result, bail};

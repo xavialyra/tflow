@@ -34,11 +34,10 @@ impl crate::engine::ViewRenderer for CaptureRenderer {
         let Some(model) = model.downcast_ref::<super::CaptureRenderModel>() else {
             return crate::chrome::EngineChrome::default();
         };
-        crate::chrome::EngineChrome {
-            title: Some(format!("capture: {}", model.title)),
-            status: Some(model.status.clone()),
-            ..crate::chrome::EngineChrome::default()
-        }
+        crate::chrome::EngineChrome::new(
+            Some(format!("capture: {}", model.title)),
+            Some(model.status.clone()),
+        )
     }
 
     fn render(

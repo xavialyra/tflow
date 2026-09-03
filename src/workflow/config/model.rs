@@ -328,9 +328,6 @@ pub struct View {
     pub commands: BTreeMap<String, Command>,
 }
 
-/// Static composition metadata for one configured View.
-pub(crate) type ViewDefinition = View;
-
 impl View {
     pub(crate) fn selected_engine_type(&self) -> &str {
         &self.engine.engine_type

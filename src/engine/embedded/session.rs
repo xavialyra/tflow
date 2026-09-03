@@ -83,6 +83,14 @@ impl EmbeddedSession {
         self.runtime.is_some()
     }
 
+    pub(crate) fn deactivate(&mut self) {
+        // Dropping EmbeddedRuntime closes the PTY and terminates the process
+        // group. Taking it here makes the lifecycle cleanup explicit and
+        // idempotent for both legacy Session and protocol Views.
+        self.runtime.take();
+        self.pending_input.clear();
+    }
+
     pub(crate) fn push_input(&mut self, bytes: &[u8]) -> Result<()> {
         if let Some(runtime) = &mut self.runtime {
             runtime.push_input(bytes)?;

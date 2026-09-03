@@ -17,8 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_QUERY_SEQUENCE_LEN: usize = 4096;
-const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const PTY_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
+const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PTY_READ_BYTES: usize = 64 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?6c";
 
@@ -126,6 +126,7 @@ pub(crate) struct EmbeddedRuntime {
     result_config: Option<EmbeddedResultConfig>,
     result_bytes: Vec<u8>,
     result_open: bool,
+    output_open: bool,
     responder: TerminalResponder,
     screen: EmbeddedTerminal,
     last_size: (u16, u16),
@@ -240,6 +241,7 @@ impl EmbeddedRuntime {
             result_config,
             result_bytes: Vec::new(),
             result_open: result_read.is_some(),
+            output_open: true,
             responder: TerminalResponder::default(),
             screen: EmbeddedTerminal::new(initial_size.0.max(1), initial_size.1.max(1)),
             last_size: (initial_size.0.max(1), initial_size.1.max(1)),
@@ -295,16 +297,21 @@ impl EmbeddedRuntime {
 
         if let Some(status) = self.process.try_wait_raw()? {
             self.process.cleanup_group();
-            if let Err(error) = self.drain_output() {
+            if self.output_open
+                && let Err(error) = self.drain_output()
+            {
                 return Err(self.finish_error(error));
             }
             return self.finish_status(status).map(EmbeddedPoll::Finished);
         }
 
-        let output_closed = match self.drain_output() {
-            Ok(output_closed) => output_closed,
-            Err(error) => return Err(self.finish_error(error)),
-        };
+        if self.output_open {
+            match self.drain_output() {
+                Ok(true) => self.output_open = false,
+                Ok(false) => {}
+                Err(error) => return Err(self.finish_error(error)),
+            }
+        }
         if self.result_open
             && let (Some(fd), Some(config)) = (self.result_fd, self.result_config)
         {
@@ -316,7 +323,7 @@ impl EmbeddedRuntime {
                 self.result_open = false;
             }
         }
-        if output_closed {
+        if !self.output_open && self.result_fd.is_none() {
             if let Some(status) = match wait_for_pty_exit(&mut self.process) {
                 Ok(status) => status,
                 Err(error) => return Err(self.finish_error(error)),
@@ -716,10 +723,68 @@ fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
 #[cfg(test)]
 mod tests {
     use super::{
-        EmbeddedResultConfig, EmbeddedResultFormat, EmbeddedRuntime, PreparedProcess,
-        TerminalResponder, parse_result,
+        EmbeddedOutcome, EmbeddedPoll, EmbeddedResultConfig, EmbeddedResultFormat, EmbeddedRuntime,
+        PreparedProcess, TerminalResponder, parse_result,
     };
     use crate::lifecycle::CancellationToken;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn pty_eof_does_not_cancel_a_process_waiting_to_write_its_result() {
+        let cancellation = CancellationToken::new();
+        let prepared = PreparedProcess {
+            argv: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "exec 0<&- 2>&-; sleep 0.3; printf result".to_string(),
+            ],
+            environment: Vec::new(),
+            current_dir: None,
+        };
+        let mut runtime = EmbeddedRuntime::start(
+            &prepared,
+            Some(EmbeddedResultConfig {
+                format: EmbeddedResultFormat::Text,
+                required: true,
+                max_bytes: 1024,
+            }),
+            (20, 10),
+            &[],
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while runtime.output_open {
+            assert!(matches!(
+                runtime.poll_background(&cancellation.observer()).unwrap(),
+                EmbeddedPoll::Running
+            ));
+            assert!(Instant::now() < deadline, "PTY output did not close");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        thread::sleep(Duration::from_millis(150));
+        assert!(matches!(
+            runtime.poll_background(&cancellation.observer()).unwrap(),
+            EmbeddedPoll::Running
+        ));
+
+        loop {
+            match runtime.poll_background(&cancellation.observer()).unwrap() {
+                EmbeddedPoll::Running => {
+                    assert!(Instant::now() < deadline, "embedded process did not finish");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                EmbeddedPoll::Finished(result) => {
+                    let EmbeddedOutcome::Returned(output) = result.outcome else {
+                        panic!("PTY EOF changed the embedded process outcome")
+                    };
+                    assert_eq!(serde_json::to_value(output).unwrap()["value"], "result");
+                    break;
+                }
+            }
+        }
+    }
 
     #[test]
     fn background_poll_does_not_resize_the_pty() {

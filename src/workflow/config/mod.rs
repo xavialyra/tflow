@@ -3,10 +3,9 @@ use crate::expression::EvaluationStage;
 use crate::expression::TemplateRegistry;
 #[cfg(test)]
 use crate::expression::{Budget, EvalContext, Namespace, evaluate_json_value};
-use crate::input::InputSourceIdentity;
 use crate::input::Key;
 use crate::parameter::{
-    ParameterBinding, ParameterPatchRequest, ParameterRegistry, ParameterSnapshot, ParameterState,
+    ParameterBinding, ParameterRegistry, ParameterSnapshot, ParameterState,
 };
 #[cfg(test)]
 use crate::theme::ThemeLoadOptions;
@@ -206,10 +205,11 @@ impl Config {
         self.compiled.parameter_registry.parameter_binding(view_ref)
     }
 
+    #[cfg(test)]
     pub(crate) fn parameter_snapshot(
         &self,
         state: &ParameterState,
-        source: InputSourceIdentity,
+        source: crate::input::InputSourceIdentity,
     ) -> Result<ParameterSnapshot> {
         Ok(ParameterSnapshot::from_parts(
             self.parameter_binding(state.view_ref())?
@@ -241,24 +241,6 @@ impl Config {
         evaluate(&state)
     }
 
-    pub(crate) fn apply_parameter_patch(
-        &self,
-        state: &mut ParameterState,
-        request: &ParameterPatchRequest,
-    ) -> Result<bool> {
-        self.parameter_binding(state.view_ref())?
-            .apply_patch(state, request)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn update_parameter_values(
-        &self,
-        state: &mut ParameterState,
-        value: &Value,
-    ) -> Result<bool> {
-        self.parameter_binding(state.view_ref())?
-            .update_value(state, value)
-    }
 
     pub(crate) fn update_sanitized_initial_parameter_values(
         &self,

@@ -4,11 +4,11 @@ mod engine;
 mod execution;
 mod input;
 mod lifecycle;
-mod selection;
-mod session;
+mod protocol;
 mod task;
 mod terminal;
 mod ui;
+mod view;
 mod workflow;
 
 // Keep the established crate paths while the implementation lives in the

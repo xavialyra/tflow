@@ -1,11 +1,12 @@
-use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
-use crate::lifecycle::CancellationToken;
+use crate::lifecycle::{CancellationStatus, CancellationToken};
 use std::io;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
+#[cfg(test)]
 use std::thread;
+#[cfg(test)]
 use std::time::Duration;
 
 pub(crate) const MANAGED_ENVIRONMENT: &[&str] = &[
@@ -174,6 +175,7 @@ pub(crate) fn clear_managed_environment(command: &mut Command) {
     }
 }
 
+#[cfg(test)]
 impl PreparedProcess {
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.argv[0]);

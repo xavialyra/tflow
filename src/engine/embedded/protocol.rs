@@ -1,0 +1,949 @@
+//! Protocol-native adapter for the Embedded engine.
+//!
+//! The PTY and terminal implementation remain owned by the existing
+//! Embedded Engine runtime. This adapter only translates the runtime's
+
+use super::{EmbeddedAction, create_input_bindings, create_renderer, create_view};
+use crate::engine::{
+    ActionId, EngineActionInput, EngineDecision, EngineEmission, EngineNavigationRequest,
+    EngineRuntime, EngineRuntimeSnapshot, EngineTick, EvaluatedBindingConfig,
+    EvaluatedEngineConfig, ExternalTickAction, ExternalTickResult, InputBindingFactoryContext,
+    RawInputReceiver, RendererFactoryContext, RuntimeFactoryContext, ViewContext as EngineContext,
+    ViewIdentity,
+};
+use crate::input::{EditorSnapshot, InputSourceIdentity, ViewMountId};
+use crate::lifecycle::CancellationObserver;
+use crate::parameter::ParameterSnapshot;
+use crate::theme::ResolvedTheme;
+use crate::view::{
+    Binding, BindingSet, EffectRequest, InputEvent, LifecycleEvent, RelativeCursor, RenderContext,
+    RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewInstanceId,
+    ViewPublication, ViewResult,
+};
+use anyhow::{Context, Result, bail};
+use ratatui::{Frame, layout::Rect};
+use serde_json::Value;
+
+pub(crate) struct EmbeddedProtocolConfig {
+    pub(crate) commands: crate::protocol::ViewCommandBindings,
+    pub(crate) identity: ViewIdentity,
+    pub(crate) engine: EvaluatedEngineConfig,
+    pub(crate) bindings: EvaluatedBindingConfig,
+    pub(crate) cancellation: CancellationObserver,
+    pub(crate) theme: ResolvedTheme,
+}
+
+impl EmbeddedProtocolConfig {
+    pub(crate) fn new(
+        view_ref: impl Into<String>,
+        engine: EvaluatedEngineConfig,
+        bindings: EvaluatedBindingConfig,
+        commands: crate::protocol::ViewCommandBindings,
+        cancellation: CancellationObserver,
+        theme: ResolvedTheme,
+    ) -> Self {
+        Self {
+            commands,
+            identity: ViewIdentity::new(view_ref, crate::config::ENGINE_EMBEDDED),
+            engine,
+            bindings,
+            cancellation,
+            theme,
+        }
+    }
+}
+
+pub(crate) fn create_protocol_view(
+    config: EmbeddedProtocolConfig,
+    request: &crate::view::NavigationRequest,
+    instance: ViewInstanceId,
+) -> Result<Box<dyn View>> {
+    Ok(Box::new(create_protocol_view_state(
+        config, request, instance,
+    )?))
+}
+
+fn create_protocol_view_state(
+    config: EmbeddedProtocolConfig,
+    request: &crate::view::NavigationRequest,
+    instance: ViewInstanceId,
+) -> Result<EmbeddedProtocolView> {
+    anyhow::ensure!(
+        request.query.target == config.identity.view_ref,
+        "embedded request target {:?} does not match configured View {:?}",
+        request.query.target,
+        config.identity.view_ref
+    );
+    let mount_id = ViewMountId(instance.0);
+    let parameters = ParameterSnapshot::from_parts(
+        request.query.values.clone(),
+        request
+            .input
+            .as_ref()
+            .map(|seed| seed.text.clone())
+            .unwrap_or_default(),
+        InputSourceIdentity {
+            frame: mount_id,
+            generation: 0,
+        },
+        0,
+    );
+    let identity = config.identity.clone();
+    let runtime = create_view(RuntimeFactoryContext {
+        identity: identity.clone(),
+        config: config.engine,
+        parameters: parameters.clone(),
+        cancellation: config.cancellation,
+    })?;
+    let bindings = create_input_bindings(InputBindingFactoryContext {
+        identity: identity.clone(),
+        bindings: config.bindings,
+    })?;
+    let renderer = create_renderer(RendererFactoryContext)?;
+    let engine_context = engine_context(instance, &identity, &parameters, &Value::Null, 0, None);
+    let input_raw = parameters.raw_input().to_string();
+    Ok(EmbeddedProtocolView {
+        runtime,
+        renderer,
+        bindings,
+        commands: config.commands,
+        theme: config.theme,
+        input_raw,
+        parameters,
+        runtime_snapshot: Value::Null,
+        publication: None,
+        state_revision: 0,
+        engine_context,
+        instance,
+        // A usable fallback also covers a first Tick before the host sends its
+        // initial Resize event. The host's actual size replaces this value.
+        content_size: (80, 24),
+        active: false,
+        closed: false,
+        terminal_finished: false,
+        external_ack_pending: false,
+        status: None,
+        error: None,
+    })
+}
+
+struct EmbeddedProtocolView {
+    runtime: Box<dyn EngineRuntime>,
+    renderer: Box<dyn crate::engine::ViewRenderer>,
+    bindings: Vec<crate::command::InputActionBinding>,
+    commands: crate::protocol::ViewCommandBindings,
+    theme: ResolvedTheme,
+    input_raw: String,
+    parameters: ParameterSnapshot,
+    runtime_snapshot: Value,
+    publication: Option<ViewPublication>,
+    state_revision: u64,
+    engine_context: EngineContext,
+    instance: ViewInstanceId,
+    content_size: (u16, u16),
+    active: bool,
+    closed: bool,
+    terminal_finished: bool,
+    external_ack_pending: bool,
+    status: Option<String>,
+    error: Option<String>,
+}
+
+fn engine_context(
+    instance: ViewInstanceId,
+    identity: &ViewIdentity,
+    parameters: &ParameterSnapshot,
+    runtime: &Value,
+    revision: u64,
+    current: Option<&Value>,
+) -> EngineContext {
+    let mount_id = ViewMountId(instance.0);
+    EngineContext::from_parts(crate::engine::ViewContextParts {
+        mount_id,
+        identity: identity.clone(),
+        input: EditorSnapshot {
+            raw: parameters.raw_input().to_string(),
+            cursor: parameters.raw_input().len(),
+            revision: 0,
+        },
+        input_generation: 0,
+        parameters: parameters.clone(),
+        input_rejected: false,
+        runtime: EngineRuntimeSnapshot::new(runtime.clone()),
+        current: current.cloned().unwrap_or(Value::Null),
+        revision,
+    })
+}
+
+impl EmbeddedProtocolView {
+    fn sync_context(&mut self, context: &ViewContext) -> Result<()> {
+        anyhow::ensure!(
+            context.instance == self.instance,
+            "embedded protocol context belongs to {:?}, expected {:?}",
+            context.instance,
+            self.instance
+        );
+        self.engine_context = engine_context(
+            self.instance,
+            self.engine_context.view_identity(),
+            &self.parameters,
+            &self.runtime_snapshot,
+            self.state_revision,
+            self.publication
+                .as_ref()
+                .map(|publication| &publication.current),
+        );
+        Ok(())
+    }
+
+    fn apply_notice(&mut self, notice: &crate::engine::EngineNotice) {
+        match notice {
+            crate::engine::EngineNotice::Info { message, .. } => {
+                self.status = Some(message.clone());
+                self.error = None;
+            }
+            crate::engine::EngineNotice::Error { message, .. } => {
+                self.status = None;
+                self.error = Some(message.clone());
+            }
+            crate::engine::EngineNotice::ClearError => self.error = None,
+        }
+    }
+
+    fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
+        if let Some(publication) = emission.publication() {
+            self.publication = Some(ViewPublication {
+                current: publication.current().clone(),
+                ready: publication.ready,
+            });
+            self.state_revision = self.state_revision.wrapping_add(1);
+        }
+    }
+
+    fn map_decision(
+        &mut self,
+        context: &ViewContext,
+        emission: EngineEmission,
+    ) -> Result<ViewDecision> {
+        self.apply_publication(context, &emission);
+        self.map_engine_decision(context, emission.decision_ref().clone())
+    }
+
+    fn map_engine_decision(
+        &mut self,
+        context: &ViewContext,
+        decision: EngineDecision,
+    ) -> Result<ViewDecision> {
+        match decision {
+            EngineDecision::Continue => Ok(ViewDecision::Stay),
+            EngineDecision::Invalidate => Ok(ViewDecision::Invalidate),
+            EngineDecision::Report(notice) => {
+                self.apply_notice(&notice);
+                Ok(ViewDecision::Invalidate)
+            }
+            EngineDecision::RuntimeUpdate(update) => {
+                self.runtime_snapshot = update.value;
+                self.state_revision = self.state_revision.wrapping_add(1);
+                self.sync_context(context)?;
+                Ok(ViewDecision::Invalidate)
+            }
+            EngineDecision::Execute(crate::engine::EffectRequest::CopyToClipboard(value)) => {
+                Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(value)))
+            }
+            EngineDecision::Close => Ok(ViewDecision::Close),
+            EngineDecision::Exit => Ok(ViewDecision::Exit),
+            EngineDecision::Return(output) => Ok(ViewDecision::Return(ViewResult {
+                value: serde_json::to_value(output)
+                    .context("could not serialize embedded result")?,
+                adapter: None,
+            })),
+            EngineDecision::Batch(decisions) => {
+                let mut mapped = Vec::with_capacity(decisions.len());
+                for decision in decisions {
+                    mapped.push(self.map_engine_decision(context, decision)?);
+                }
+                Ok(ViewDecision::Batch(mapped))
+            }
+            EngineDecision::Navigate(EngineNavigationRequest { .. }) => {
+                bail!("Embedded protocol View cannot handle this Engine decision")
+            }
+        }
+    }
+
+    fn action(&mut self, context: &ViewContext, action: ActionId) -> Result<ViewDecision> {
+        let emission = self.runtime.action(EngineActionInput {
+            invocation: crate::engine::ActionInvocation::new(action),
+            context: self.engine_context.clone(),
+        })?;
+        self.map_decision(context, emission)
+    }
+
+    fn external_tick(&mut self, context: &ViewContext) -> Result<ViewDecision> {
+        if self.terminal_finished {
+            return Ok(ViewDecision::Stay);
+        }
+        let result = self.runtime.drive_tick(EngineTick {
+            context: self.engine_context.clone(),
+            content_size: self.content_size,
+        })?;
+        self.map_external_result(context, result)
+    }
+
+    fn map_external_result(
+        &mut self,
+        _context: &ViewContext,
+        result: ExternalTickResult,
+    ) -> Result<ViewDecision> {
+        if matches!(result.action, ExternalTickAction::Continue) && result.notice.is_some() {
+            bail!("embedded external Continue result cannot carry a notice")
+        }
+        if let Some(notice) = &result.notice {
+            self.apply_notice(notice);
+        }
+        match result.action {
+            ExternalTickAction::Continue => Ok(ViewDecision::Invalidate),
+            ExternalTickAction::Return(output) => {
+                self.terminal_finished = true;
+                self.external_ack_pending = true;
+                Ok(ViewDecision::Return(ViewResult {
+                    value: serde_json::to_value(output)
+                        .context("could not serialize embedded result")?,
+                    adapter: None,
+                }))
+            }
+            ExternalTickAction::Close => {
+                self.terminal_finished = true;
+                self.external_ack_pending = true;
+                Ok(ViewDecision::Close)
+            }
+            ExternalTickAction::Fail(error) => {
+                self.terminal_finished = true;
+                self.error = Some(error.clone());
+                self.state_revision = self.state_revision.wrapping_add(1);
+                // Failure is already consumed by the host's error path. Ack it
+                // here so the adapter cannot remain frozen on a completion that
+                // will never produce a transition.
+                self.runtime.commit_external_tick();
+                self.external_ack_pending = false;
+                Err(crate::view::operation_failure(error))
+            }
+        }
+    }
+}
+
+impl RawInputReceiver for EmbeddedProtocolView {
+    fn push_input(&mut self, bytes: &[u8]) -> Result<()> {
+        self.runtime
+            .raw_receiver()
+            .context("embedded runtime does not provide a raw input receiver")?
+            .push_input(bytes)
+    }
+}
+
+impl View for EmbeddedProtocolView {
+    fn bindings(&self, _: &ViewContext) -> BindingSet {
+        let commands = self.commands.bindings.iter().filter(|binding| {
+            (binding.invocation.view_reference().is_some()
+                && binding.invocation.command.passthrough)
+                || (binding.invocation.view_reference().is_none()
+                    && binding.invocation.id() == "commands")
+        });
+        BindingSet::new(
+            commands
+                .map(|binding| Binding {
+                    key: binding.key,
+                    label: binding.label.clone(),
+                })
+                .chain(
+                    self.bindings
+                        .iter()
+                        .filter(|binding| binding.enabled)
+                        .map(|binding| Binding {
+                            key: binding.key,
+                            label: binding.label.clone(),
+                        }),
+                ),
+        )
+    }
+
+    fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+        let model = self.runtime.render_model();
+        self.renderer.validate_model(&model)?;
+        let chrome = self.renderer.chrome(&model);
+        Ok(crate::view::ViewChrome {
+            title: chrome.title,
+            status: self.status.clone().or(chrome.status),
+            error: self.error.clone(),
+            bindings: Some(self.bindings(context)),
+        })
+    }
+
+    fn command_snapshot(&self) -> ViewCommandSnapshot {
+        ViewCommandSnapshot {
+            parameters: self.parameters.values().clone(),
+            raw_input: self.input_raw.clone(),
+            runtime: self.runtime_snapshot.clone(),
+            publication: self.publication.clone(),
+            revision: self.state_revision,
+        }
+    }
+
+    fn event(&mut self, event: ViewEvent, context: &ViewContext) -> Result<ViewDecision> {
+        self.sync_context(context)?;
+        match event {
+            ViewEvent::Lifecycle(LifecycleEvent::Mounted) => Ok(ViewDecision::Stay),
+            ViewEvent::Lifecycle(LifecycleEvent::Activated) => {
+                self.active = true;
+                if self.external_ack_pending {
+                    self.terminal_finished = false;
+                }
+                let emission = self.runtime.activate(self.engine_context.clone())?;
+                self.map_decision(context, emission)
+            }
+            ViewEvent::Lifecycle(LifecycleEvent::Covered) => {
+                self.active = false;
+                Ok(ViewDecision::Stay)
+            }
+            ViewEvent::Lifecycle(LifecycleEvent::Closing) => {
+                self.active = false;
+                // Closing is reversible while Router stages parent activation.
+                // Resource release and external completion ack happen at Closed.
+                Ok(ViewDecision::Stay)
+            }
+            ViewEvent::Lifecycle(LifecycleEvent::Closed) => {
+                if self.external_ack_pending {
+                    self.runtime.commit_external_tick();
+                    self.external_ack_pending = false;
+                }
+                self.runtime.deactivate();
+                self.closed = true;
+                Ok(ViewDecision::Stay)
+            }
+            ViewEvent::Lifecycle(
+                LifecycleEvent::TransitionCommitted { .. }
+                | LifecycleEvent::TransitionRejected { .. },
+            ) => Ok(ViewDecision::Stay),
+            ViewEvent::Command(crate::view::CommandResult::EditInput { .. }) => Err(
+                crate::view::operation_failure("Embedded does not provide an editable input"),
+            ),
+            ViewEvent::Input(InputEvent::Key { key, raw }) => {
+                if let Some(binding) = self.commands.binding(key)
+                    && ((binding.invocation.view_reference().is_some()
+                        && binding.invocation.command.passthrough)
+                        || (binding.invocation.view_reference().is_none()
+                            && binding.invocation.id() == "commands"))
+                {
+                    return Ok(self.commands.request(binding, None));
+                }
+                if self.keymap_action(key).is_some() {
+                    return self.action(context, ActionId::new("embedded.cancel"));
+                }
+                self.push_raw(&raw)?;
+                Ok(ViewDecision::Invalidate)
+            }
+            ViewEvent::Input(InputEvent::Paste { raw, .. })
+            | ViewEvent::Input(InputEvent::Bytes(raw)) => {
+                self.push_raw(&raw)?;
+                Ok(ViewDecision::Invalidate)
+            }
+            ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Close),
+            ViewEvent::Task(task) => {
+                if task.instance != context.instance {
+                    return Ok(ViewDecision::Stay);
+                }
+                Ok(ViewDecision::Stay)
+            }
+            ViewEvent::Tick if self.active => self.external_tick(context),
+            ViewEvent::Tick => {
+                self.runtime.drive_background_tick()?;
+                Ok(ViewDecision::Stay)
+            }
+            ViewEvent::Resize(size) => {
+                self.content_size = (size.width.max(1), size.height.max(1));
+                Ok(ViewDecision::Invalidate)
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, _: &RenderContext) -> Result<RenderResult> {
+        let model = self.runtime.render_model();
+        self.renderer.validate_model(&model)?;
+        let engine_context = crate::engine::RenderContext {
+            theme: self.theme,
+            image_picker: None,
+        };
+        self.renderer.render(&model, &engine_context, frame, area);
+        let chrome = self.renderer.chrome(&model);
+        let cursor = match model.downcast_ref::<super::EmbeddedRenderModel>() {
+            Some(model) => model
+                .screen
+                .as_ref()
+                .and_then(|screen| screen.cursor())
+                .map(|(x, y)| RelativeCursor {
+                    x: x.min(u16::MAX as usize) as u16,
+                    y: y.min(u16::MAX as usize) as u16,
+                    visible: true,
+                }),
+            None => None,
+        };
+        Ok(RenderResult {
+            cursor,
+            metadata: crate::view::ViewMetadata {
+                title: chrome.title,
+                status: self.status.clone().or(chrome.status),
+                error: self.error.clone(),
+                bindings: Some(self.bindings(&ViewContext::new(self.instance, "embedded"))),
+            },
+        })
+    }
+}
+
+impl EmbeddedProtocolView {
+    fn keymap_action(&self, key: crate::view::Key) -> Option<EmbeddedAction> {
+        self.bindings
+            .iter()
+            .find(|binding| {
+                binding.enabled && binding.key.binding_identity() == key.binding_identity()
+            })
+            .and_then(|binding| match &binding.action {
+                crate::command::ResolvedInputAction::Engine(action)
+                    if action.as_str() == "embedded.cancel" =>
+                {
+                    Some(EmbeddedAction::Cancel)
+                }
+                _ => None,
+            })
+    }
+
+    fn push_raw(&mut self, raw: &[u8]) -> Result<()> {
+        self.runtime
+            .raw_receiver()
+            .context("embedded runtime does not provide a raw input receiver")?
+            .push_input(raw)
+    }
+}
+
+impl Drop for EmbeddedProtocolView {
+    fn drop(&mut self) {
+        if !self.closed {
+            self.runtime.deactivate();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::EvaluatedBindingConfig;
+    use crate::view::{NavigationRequest, ParsedQuery};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    fn request() -> NavigationRequest {
+        NavigationRequest::new(
+            "embedded",
+            ParsedQuery::new("embedded", "query", Value::Null),
+        )
+    }
+
+    fn config(command: &[&str]) -> EmbeddedProtocolConfig {
+        EmbeddedProtocolConfig::new(
+            "embedded",
+            EvaluatedEngineConfig {
+                fields: [(
+                    "command".to_string(),
+                    Value::Array(
+                        command
+                            .iter()
+                            .map(|value| Value::String((*value).into()))
+                            .collect(),
+                    ),
+                )]
+                .into_iter()
+                .collect(),
+                ..EvaluatedEngineConfig::default()
+            },
+            EvaluatedBindingConfig::default(),
+            crate::protocol::ViewCommandBindings::new(
+                &crate::config::load_test_fixture().unwrap(),
+                "embedded",
+                crate::lifecycle::CancellationToken::new().observer(),
+                &[],
+            )
+            .unwrap(),
+            crate::lifecycle::CancellationToken::new().observer(),
+            ResolvedTheme::terminal(),
+        )
+    }
+
+    fn context() -> ViewContext {
+        ViewContext::new(ViewInstanceId(1), "embedded")
+    }
+
+    fn mounted_view(config: EmbeddedProtocolConfig) -> (Box<dyn View>, ViewContext) {
+        let mut view = create_protocol_view(config, &request(), ViewInstanceId(1)).unwrap();
+        let mut context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+            .unwrap();
+        view.event(
+            ViewEvent::Lifecycle(LifecycleEvent::Activated),
+            &mut context,
+        )
+        .unwrap();
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 40,
+                height: 6,
+            }),
+            &mut context,
+        )
+        .unwrap();
+        (view, context)
+    }
+
+    #[test]
+    fn embedded_outputs_keep_the_command_output_envelope() {
+        let output = crate::engine::ViewOutput::Value {
+            value: serde_json::json!({"ok": true}),
+        };
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::engine::ViewOutput>(value).unwrap(),
+            output
+        );
+
+        let output = crate::engine::ViewOutput::Selected {
+            item: Some(crate::command::ViewOutputItem {
+                text: "display".to_string(),
+                value: Some("value".to_string()),
+                metadata: serde_json::json!({"kind": "test"}),
+                source_view: "source:view".to_string(),
+            }),
+            input: "draft".to_string(),
+        };
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::engine::ViewOutput>(value).unwrap(),
+            output
+        );
+    }
+
+    #[test]
+    fn covered_ticks_use_background_polling_without_forwarding_input() {
+        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "sleep 0.02"]));
+        view.event(ViewEvent::Tick, &mut context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &mut context)
+            .unwrap();
+        assert!(matches!(
+            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            ViewDecision::Stay
+        ));
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn covered_completion_is_retained_until_foreground_activation() {
+        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
+        view.event(ViewEvent::Tick, &mut context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &mut context)
+            .unwrap();
+        for _ in 0..50 {
+            view.event(ViewEvent::Tick, &mut context).unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        view.event(
+            ViewEvent::Lifecycle(LifecycleEvent::Activated),
+            &mut context,
+        )
+        .unwrap();
+        let mut closed = false;
+        for _ in 0..50 {
+            if matches!(
+                view.event(ViewEvent::Tick, &mut context).unwrap(),
+                ViewDecision::Close
+            ) {
+                closed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            closed,
+            "covered completion must remain available on activation"
+        );
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn external_completion_replays_after_closing_is_rolled_back() {
+        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
+        let mut completed = false;
+        for _ in 0..100 {
+            if matches!(
+                view.event(ViewEvent::Tick, &mut context).unwrap(),
+                ViewDecision::Close
+            ) {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed, "embedded completion did not become ready");
+
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(
+            ViewEvent::Lifecycle(LifecycleEvent::Activated),
+            &mut context,
+        )
+        .unwrap();
+        assert!(matches!(
+            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            ViewDecision::Close
+        ));
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn raw_key_paste_and_bytes_are_forwarded_losslessly() {
+        let script = "read -r line; printf '%s' \"$line\"";
+        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", script]));
+        view.event(
+            ViewEvent::Input(InputEvent::Key {
+                key: crate::view::Key::Char('x'),
+                raw: vec![0x1b, b'[', b'1', b'~'],
+            }),
+            &mut context,
+        )
+        .unwrap();
+        view.event(
+            ViewEvent::Input(InputEvent::Paste {
+                text: Some("ignored".into()),
+                raw: b"\x1b[200~payload\x1b[201~".to_vec(),
+            }),
+            &mut context,
+        )
+        .unwrap();
+        view.event(
+            ViewEvent::Input(InputEvent::Bytes(vec![0xff, 0x00])),
+            &mut context,
+        )
+        .unwrap();
+        for _ in 0..80 {
+            view.event(ViewEvent::Tick, &mut context).unwrap();
+            if view.command_snapshot().revision > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(
+                    frame,
+                    frame.area(),
+                    &RenderContext {
+                        terminal: crate::view::TerminalSize {
+                            width: 40,
+                            height: 6,
+                        },
+                    },
+                )
+                .unwrap();
+            })
+            .unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("payload"));
+    }
+
+    #[test]
+    fn cancel_binding_returns_without_forwarding_escape() {
+        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "sleep 2"]));
+        let decision = view
+            .event(
+                ViewEvent::Input(InputEvent::Key {
+                    key: crate::view::Key::Escape,
+                    raw: vec![0x1b],
+                }),
+                &mut context,
+            )
+            .unwrap();
+        assert!(matches!(decision, ViewDecision::Close));
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_external_completion_is_propagated_and_acknowledged() {
+        let mut cfg = config(&["/bin/sh", "-c", "exit 0"]);
+        cfg.engine.fields.insert(
+            "result".to_string(),
+            serde_json::json!({"format": "text", "required": true}),
+        );
+        let (mut view, mut context) = mounted_view(cfg);
+        let mut failed = false;
+        for _ in 0..100 {
+            match view.event(ViewEvent::Tick, &mut context) {
+                Ok(decision) => {
+                    assert!(matches!(
+                        decision,
+                        ViewDecision::Invalidate | ViewDecision::Stay
+                    ));
+                }
+                Err(error) => {
+                    assert!(error.to_string().contains("produced no result"));
+                    failed = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(failed, "embedded failure should reach the protocol host");
+        assert!(matches!(
+            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            ViewDecision::Stay
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
+        let mut rendered = None;
+        terminal
+            .draw(|frame| {
+                rendered = Some(
+                    view.render(
+                        frame,
+                        frame.area(),
+                        &RenderContext {
+                            terminal: crate::view::TerminalSize {
+                                width: 20,
+                                height: 2,
+                            },
+                        },
+                    )
+                    .unwrap(),
+                );
+            })
+            .unwrap();
+        assert!(rendered.unwrap().metadata.error.is_some());
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn first_start_and_resize_use_host_content_dimensions() {
+        let mut request = request();
+        request.presentation.mode = crate::config::ViewPresentationMode::Popup;
+        request.presentation.width = Some(12);
+        request.presentation.height = Some(6);
+        let mut view = create_protocol_view_state(
+            config(&["/bin/sh", "-c", "sleep 1"]),
+            &request,
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        let mut context = context();
+        context.presentation = request.presentation;
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+            .unwrap();
+        view.event(
+            ViewEvent::Lifecycle(LifecycleEvent::Activated),
+            &mut context,
+        )
+        .unwrap();
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 10,
+                height: 4,
+            }),
+            &mut context,
+        )
+        .unwrap();
+        view.event(ViewEvent::Tick, &mut context).unwrap();
+        let model = view.runtime.render_model();
+        let model = model
+            .downcast_ref::<super::super::EmbeddedRenderModel>()
+            .unwrap();
+        assert_eq!(
+            model.screen.as_ref().unwrap().dimensions(),
+            (10, 4),
+            "PTY starts at popup inner dimensions"
+        );
+
+        context.presentation.width = Some(20);
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 18,
+                height: 4,
+            }),
+            &mut context,
+        )
+        .unwrap();
+        view.event(ViewEvent::Tick, &mut context).unwrap();
+        let model = view.runtime.render_model();
+        let model = model
+            .downcast_ref::<super::super::EmbeddedRenderModel>()
+            .unwrap();
+        assert_eq!(model.screen.as_ref().unwrap().dimensions(), (18, 4));
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+    }
+
+    #[test]
+    fn external_completion_keeps_final_screen_then_returns_result() {
+        let root = std::env::temp_dir().join(format!(
+            "tui-launcher-protocol-embedded-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("embedded.sh");
+        fs::write(&script, "#!/bin/sh\nprintf 'done'; sleep 0.01\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = config(&[script.to_str().unwrap()]);
+        cfg.engine.fields.insert(
+            "result".to_string(),
+            serde_json::json!({"format":"text", "required":false}),
+        );
+        let (mut view, mut context) = mounted_view(cfg);
+        let mut saw_final_render = false;
+        let mut returned = false;
+        for _ in 0..200 {
+            let decision = view.event(ViewEvent::Tick, &mut context).unwrap();
+            if matches!(decision, ViewDecision::Invalidate) {
+                saw_final_render = true;
+            }
+            if matches!(decision, ViewDecision::Return(_)) {
+                returned = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(saw_final_render);
+        assert!(returned);
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+}

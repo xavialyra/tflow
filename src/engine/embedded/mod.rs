@@ -1,20 +1,21 @@
+mod protocol;
 mod pty;
 mod session;
 mod terminal;
 
+pub(crate) use self::protocol::{EmbeddedProtocolConfig, create_protocol_view};
 pub(crate) use self::pty::EmbeddedOutcome;
 use self::pty::EmbeddedPoll;
 use self::session::{EmbeddedSession, EmbeddedStartPlan};
 pub(crate) use self::terminal::{EmbeddedTerminal, EmbeddedTerminalSnapshot};
 
 use super::{
-    ActionId, BackgroundEngineTick, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput,
-    EngineDecision, EngineEmission, EngineNotice, EngineRuntime, EngineTickMode,
+    ActionId, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput,
+    EngineDecision, EngineEmission, EngineNotice, EngineRuntime,
     EngineValidationContext, ExternalTickResult, InputBindingFactoryContext, RawInputReceiver,
     RenderModel, RendererFactoryContext, RuntimeFactoryContext, evaluate_field,
     evaluate_optional_string, require_field, validate_fields,
 };
-use crate::config::ENGINE_EMBEDDED;
 use crate::execution::PreparedProcess;
 use crate::expression::{Template, is_dynamic_string};
 use crate::input::keymap::KeymapAction;
@@ -109,23 +110,13 @@ fn contains_dynamic(value: &toml::Value) -> bool {
 }
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
-    crate::engine::EngineDefinition::new(ENGINE_EMBEDDED, "terminal")
+    crate::engine::EngineDefinition::new()
         .with_current_fields(&[])
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: &["command", "title", "result"],
             binding: &["escape-cancels"],
             deferred_runtime_errors: &[],
             binding_defaults: None,
-        })
-        .with_input_policy(crate::engine::InputPolicy {
-            strategy: crate::input::InputStrategy::RawIntercepted,
-            buffer_target: None,
-            focus: crate::engine::InputFocus::Unfocused,
-        })
-        .with_mount_policy(crate::engine::MountPolicy {
-            launcher_input_timeout: Some(10),
-            terminal_eof: crate::engine::TerminalEofPolicy::Close,
-            ..crate::engine::MountPolicy::default()
         })
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
 }
@@ -352,17 +343,6 @@ impl EngineRuntime for EmbeddedView {
         Ok(EngineEmission::decision(decision))
     }
 
-    fn parameters(
-        &mut self,
-        _parameters: crate::parameter::ParameterSnapshot,
-        _expected: crate::engine::ViewContextIdentity,
-    ) -> Result<EngineEmission> {
-        Ok(EngineEmission::decision(EngineDecision::Invalidate))
-    }
-
-    fn tick_mode(&self) -> EngineTickMode {
-        EngineTickMode::External
-    }
 
     fn raw_receiver(&mut self) -> Option<&mut dyn RawInputReceiver> {
         Some(self)
@@ -391,7 +371,13 @@ impl EngineRuntime for EmbeddedView {
         self.pending_outcome = None;
     }
 
-    fn drive_background_tick(&mut self, _tick: BackgroundEngineTick) -> Result<()> {
+    fn deactivate(&mut self) {
+        self.pending_outcome = None;
+        self.start_plan = None;
+        self.session.deactivate();
+    }
+
+    fn drive_background_tick(&mut self) -> Result<()> {
         // Background polling never consumes the start plan: PTY creation is
         // reserved for the foreground external phase after Host commit.
         if !self.session.is_started() || self.pending_outcome.is_some() {
@@ -439,11 +425,10 @@ impl crate::engine::ViewRenderer for EmbeddedRenderer {
         let Some(model) = model.downcast_ref::<EmbeddedRenderModel>() else {
             return crate::chrome::EngineChrome::default();
         };
-        crate::chrome::EngineChrome {
-            title: Some(format!("embedded: {}", model.title)),
-            status: Some("keys pass through".to_string()),
-            ..crate::chrome::EngineChrome::default()
-        }
+        crate::chrome::EngineChrome::new(
+            Some(format!("embedded: {}", model.title)),
+            Some("keys pass through".to_string()),
+        )
     }
 
     fn render(
@@ -531,7 +516,6 @@ fn parse_result_config_value(
 #[cfg(test)]
 mod tests {
     use super::{EmbeddedSession, EngineRuntime, parse_escape_cancels_value};
-    use crate::engine::BackgroundEngineTick;
     use crate::execution::PreparedProcess;
     use crate::lifecycle::CancellationToken;
 
@@ -558,11 +542,7 @@ mod tests {
     #[test]
     fn background_tick_does_not_consume_unstarted_start_plan() {
         let mut view = unstarted_view();
-        view.drive_background_tick(BackgroundEngineTick {
-            mount_id: crate::input::ViewMountId(1),
-            expected: crate::engine::ViewContextIdentity::new(crate::input::ViewMountId(1), 0),
-        })
-        .unwrap();
+        view.drive_background_tick().unwrap();
 
         assert!(!view.session.is_started());
         assert!(view.start_plan.is_some());

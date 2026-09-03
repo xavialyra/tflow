@@ -4,10 +4,7 @@ mod load;
 mod model;
 
 pub(crate) use load::{ThemeLoadOptions, cli_named_theme, load};
-#[allow(unused_imports)]
-pub(crate) use model::{
-    CaptureTheme, ChromeTheme, PickerTheme, PreviewTheme, ResolvedTheme, Theme, ThemeRef,
-};
+pub(crate) use model::{ResolvedTheme, Theme};
 
 #[cfg(test)]
 use binding::ThemeBinding;
@@ -25,6 +22,7 @@ use std::fs;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use model::ThemeRef;
     use std::{
         env,
         path::PathBuf,

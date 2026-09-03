@@ -58,6 +58,18 @@ impl EmbeddedTerminalSnapshot {
     pub(crate) fn cursor(&self) -> Option<(usize, usize)> {
         self.cursor
     }
+
+    #[cfg(test)]
+    pub(crate) fn dimensions(&self) -> (u16, u16) {
+        (
+            self.lines
+                .first()
+                .map(|line| line.cells().len())
+                .unwrap_or_default()
+                .min(u16::MAX as usize) as u16,
+            self.lines.len().min(u16::MAX as usize) as u16,
+        )
+    }
 }
 
 pub(crate) struct EmbeddedTerminalSnapshotWidget<'a> {

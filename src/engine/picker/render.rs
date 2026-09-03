@@ -214,13 +214,22 @@ impl PickerView {
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
         let (show_prefix, empty_message) = self.list_presentation();
+        let results_ready = self.results_current(&frame.query);
         PickerRenderState {
-            items: Arc::clone(&frame.selection.items),
-            selected: frame.selection.selected,
+            items: if results_ready {
+                Arc::clone(&frame.selection.items)
+            } else {
+                Arc::new(Vec::new())
+            },
+            selected: if results_ready {
+                frame.selection.selected
+            } else {
+                0
+            },
             searching: self.is_loading(),
             show_prefix,
             preview_visible: self.preview_visible(),
-            preview: self.preview_render_state(),
+            preview: results_ready.then(|| self.preview_render_state()).flatten(),
             empty_message,
         }
     }
@@ -265,10 +274,10 @@ impl crate::engine::ViewRenderer for PickerRenderer {
         } else {
             state.selected.saturating_add(1)
         };
-        crate::chrome::EngineChrome {
-            status: Some(format!("{current} of {}", state.items.len())),
-            ..crate::chrome::EngineChrome::default()
-        }
+        crate::chrome::EngineChrome::new(
+            None,
+            (!state.searching).then(|| format!("{current} of {}", state.items.len())),
+        )
     }
 
     fn render(

@@ -1,8 +1,8 @@
 use super::api::ViewIdentity;
-use crate::command::{CommandExecution, InputEdit, InputFocus, InputRefreshPolicy, ViewOutput};
+use crate::command::ViewOutput;
 use crate::config::CommandBindingVisibility;
-use crate::input::{EditorSnapshot, InputStrategy, Key, ViewMountId};
-use crate::parameter::{ParameterPatchRequest, ParameterSnapshot};
+use crate::input::{EditorSnapshot, Key, ViewMountId};
+use crate::parameter::ParameterSnapshot;
 use crate::terminal::ImagePicker;
 use crate::theme::ResolvedTheme;
 use anyhow::Result;
@@ -113,11 +113,20 @@ impl ViewContextIdentity {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewContextPublication {
     pub(crate) current: Value,
+    pub(crate) ready: bool,
 }
 
 impl ViewContextPublication {
     pub(crate) fn new(current: Value) -> Self {
-        Self { current }
+        Self {
+            current,
+            ready: false,
+        }
+    }
+
+    pub(crate) fn with_ready(mut self, ready: bool) -> Self {
+        self.ready = ready;
+        self
     }
 
     pub(crate) fn current(&self) -> &Value {
@@ -232,96 +241,8 @@ impl ViewContext {
         &self.runtime
     }
 
-    pub(crate) fn current(&self) -> &Value {
-        &self.current
-    }
-
     pub(crate) fn revision(&self) -> u64 {
         self.revision
-    }
-
-    /// Create a context projection without changing the Session-owned value.
-    /// The revision advances when a runtime-visible Host field changes.
-    pub(crate) fn with_state(
-        &self,
-        input: EditorSnapshot,
-        input_generation: u64,
-        parameters: ParameterSnapshot,
-        input_rejected: bool,
-        runtime: EngineRuntimeSnapshot,
-    ) -> Self {
-        self.with_state_and_current(
-            input,
-            input_generation,
-            parameters,
-            input_rejected,
-            runtime,
-            self.current.clone(),
-        )
-    }
-
-    fn with_state_and_current(
-        &self,
-        input: EditorSnapshot,
-        input_generation: u64,
-        parameters: ParameterSnapshot,
-        input_rejected: bool,
-        runtime: EngineRuntimeSnapshot,
-        current: Value,
-    ) -> Self {
-        let changed = self.input != input
-            || self.input_generation != input_generation
-            || self.parameters != parameters
-            || self.input_rejected != input_rejected
-            || self.runtime != runtime
-            || self.current != current;
-        let mut next = self.clone();
-        next.input = input;
-        next.input_generation = input_generation;
-        next.parameters = parameters;
-        next.input_rejected = input_rejected;
-        next.runtime = runtime;
-        next.current = current;
-        if changed {
-            next.revision = next.revision.wrapping_add(1);
-        }
-        next
-    }
-
-    pub(crate) fn with_publication(&self, publication: Option<&ViewContextPublication>) -> Self {
-        let Some(publication) = publication else {
-            return self.clone();
-        };
-        let mut next = self.clone();
-        if next.current() != publication.current() {
-            next.current = publication.current().clone();
-            next.revision = next.revision.wrapping_add(1);
-        }
-        next
-    }
-
-    /// Apply a successful Host snapshot and optional Engine publication as one
-    /// context revision. This is intended for the Session commit boundary.
-    pub(crate) fn committed(
-        &self,
-        input: EditorSnapshot,
-        input_generation: u64,
-        parameters: ParameterSnapshot,
-        input_rejected: bool,
-        runtime: EngineRuntimeSnapshot,
-        publication: Option<&ViewContextPublication>,
-    ) -> Self {
-        let current = publication
-            .map(|publication| publication.current().clone())
-            .unwrap_or_else(|| self.current().clone());
-        self.with_state_and_current(
-            input,
-            input_generation,
-            parameters,
-            input_rejected,
-            runtime,
-            current,
-        )
     }
 }
 
@@ -331,15 +252,6 @@ pub(crate) struct EngineTick {
     pub(crate) content_size: (u16, u16),
 }
 
-/// Narrow input supplied while polling an inactive mounted Engine.
-///
-/// Background polling has no full mount-local runtime projection. Keep the
-/// mount identity and the exact context identity for Host-side correlation.
-#[derive(Clone, Copy)]
-pub(crate) struct BackgroundEngineTick {
-    pub(crate) mount_id: ViewMountId,
-    pub(crate) expected: ViewContextIdentity,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EngineNotice {
@@ -402,17 +314,6 @@ impl EngineCommandBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EngineCommandInvocation {
-    pub(crate) command: QualifiedCommandId,
-    pub(crate) expected: ViewContextIdentity,
-}
-
-impl EngineCommandInvocation {
-    pub(crate) fn new(command: QualifiedCommandId, expected: ViewContextIdentity) -> Self {
-        Self { command, expected }
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct EngineCommandProjection {
@@ -435,9 +336,6 @@ pub(crate) enum EngineDecision {
     Invalidate,
     Return(ViewOutput),
     Navigate(EngineNavigationRequest),
-    Edit(InputEdit),
-    ParameterPatch(ParameterPatchRequest),
-    DispatchCommand(Box<CommandExecution>),
     Execute(EffectRequest),
     Report(EngineNotice),
     RuntimeUpdate(RuntimeUpdate),
@@ -449,12 +347,6 @@ pub(crate) enum EngineDecision {
 impl From<EngineNavigationRequest> for EngineDecision {
     fn from(request: EngineNavigationRequest) -> Self {
         Self::Navigate(request)
-    }
-}
-
-impl From<ParameterPatchRequest> for EngineDecision {
-    fn from(request: ParameterPatchRequest) -> Self {
-        Self::ParameterPatch(request)
     }
 }
 
@@ -561,11 +453,6 @@ impl BackgroundOutcome {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EngineTickMode {
-    Prepared,
-    External,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ExternalTickAction {
@@ -618,14 +505,6 @@ pub(crate) trait EngineRuntime {
         anyhow::bail!("engine runtime does not support actions")
     }
 
-    fn parameters(
-        &mut self,
-        _parameters: ParameterSnapshot,
-        _expected: ViewContextIdentity,
-    ) -> Result<EngineEmission> {
-        anyhow::bail!("engine runtime does not support parameters")
-    }
-
     fn activate(&mut self, _context: ViewContext) -> Result<EngineEmission> {
         Ok(EngineEmission::decision(EngineDecision::Continue))
     }
@@ -648,16 +527,6 @@ pub(crate) trait EngineRuntime {
 
     fn tick(&mut self, _tick: EngineTick) -> Result<EngineEmission> {
         Ok(EngineEmission::decision(EngineDecision::Continue))
-    }
-
-    fn background_tick(&mut self, tick: BackgroundEngineTick) -> Result<BackgroundOutcome> {
-        anyhow::ensure!(
-            tick.mount_id == tick.expected.mount_id,
-            "background tick identity belongs to {:?}, expected {:?}",
-            tick.expected.mount_id,
-            tick.mount_id
-        );
-        Ok(BackgroundOutcome::default())
     }
 
     /// Start work that was made ready by the live Engine change. Session
@@ -684,12 +553,6 @@ pub(crate) trait EngineRuntime {
         Ok(None)
     }
 
-    /// Selects the active tick protocol. Every runtime must make this choice
-    /// explicitly. `Prepared` returns a normal Engine emission; `External` is
-    /// driven through its dedicated confirmation path because resource I/O is
-    /// irreversible.
-    fn tick_mode(&self) -> EngineTickMode;
-
     /// Drive an explicitly external tick. Session applies the restricted
     /// result directly and does not run generic preflight or rollback after it.
     fn drive_tick(&mut self, _tick: EngineTick) -> Result<ExternalTickResult> {
@@ -704,7 +567,7 @@ pub(crate) trait EngineRuntime {
     /// Drive an inactive external resource. This hook cannot publish an
     /// EngineDecision; the runtime must retain any completion for its next
     /// foreground external tick.
-    fn drive_background_tick(&mut self, _tick: BackgroundEngineTick) -> Result<()> {
+    fn drive_background_tick(&mut self) -> Result<()> {
         Ok(())
     }
 
@@ -745,28 +608,16 @@ pub(crate) struct FactoryFieldPlan {
     pub(crate) binding_defaults: Option<&'static [&'static str]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct EngineDefinition {
-    pub(crate) kind: &'static str,
-    pub(crate) renderer: &'static str,
     pub(crate) actions: Vec<ActionSpec>,
-    pub(crate) input: InputPolicy,
-    pub(crate) mount_policy: MountPolicy,
     pub(crate) factory_fields: FactoryFieldPlan,
     pub(crate) current_fields: &'static [&'static str],
 }
 
 impl EngineDefinition {
-    pub(crate) fn new(kind: &'static str, renderer: &'static str) -> Self {
-        Self {
-            kind,
-            renderer,
-            actions: Vec::new(),
-            input: InputPolicy::default(),
-            mount_policy: MountPolicy::default(),
-            factory_fields: FactoryFieldPlan::default(),
-            current_fields: &[],
-        }
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
     pub(crate) fn with_current_fields(mut self, current_fields: &'static [&'static str]) -> Self {
@@ -784,64 +635,9 @@ impl EngineDefinition {
         self
     }
 
-    pub(crate) fn with_input_policy(mut self, input: InputPolicy) -> Self {
-        self.input = input;
-        self
-    }
-
-    pub(crate) fn with_mount_policy(mut self, mount_policy: MountPolicy) -> Self {
-        self.mount_policy = mount_policy;
-        self
-    }
-
+    #[cfg(test)]
     pub(crate) fn action(&self, id: &ActionId) -> Option<&ActionSpec> {
         self.actions.iter().find(|spec| spec.id == *id)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum TerminalEofPolicy {
-    #[default]
-    Exit,
-    Close,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MountPolicy {
-    pub(crate) refresh: InputRefreshPolicy,
-    pub(crate) launcher_input_timeout: Option<i32>,
-    pub(crate) terminal_eof: TerminalEofPolicy,
-}
-
-impl Default for MountPolicy {
-    fn default() -> Self {
-        Self {
-            refresh: InputRefreshPolicy::None,
-            launcher_input_timeout: None,
-            terminal_eof: TerminalEofPolicy::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EngineBufferTarget {
-    EditorBuffer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct InputPolicy {
-    pub(crate) strategy: InputStrategy,
-    pub(crate) buffer_target: Option<EngineBufferTarget>,
-    pub(crate) focus: InputFocus,
-}
-
-impl Default for InputPolicy {
-    fn default() -> Self {
-        Self {
-            strategy: InputStrategy::Decoded,
-            buffer_target: Some(EngineBufferTarget::EditorBuffer),
-            focus: InputFocus::Focused,
-        }
     }
 }
 
@@ -875,30 +671,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn view_context_identity_advances_for_host_and_engine_publication_changes() {
-        let context = test_context();
-        assert_eq!(
-            context.identity(),
-            ViewContextIdentity::new(ViewMountId(7), 4)
-        );
-
-        let next = context.with_state(
-            EditorBuffer::new("new").snapshot(),
-            4,
-            context.parameter_snapshot().clone(),
-            true,
-            context.runtime_snapshot().clone(),
-        );
-        assert_eq!(next.input_generation, 4);
-        assert_eq!(next.identity().context_revision, 5);
-
-        let next = next.with_publication(Some(&ViewContextPublication::new(
-            serde_json::json!({"item": {"value": "new"}}),
-        )));
-        assert_eq!(next.current()["item"]["value"], "new");
-        assert_eq!(next.identity().context_revision, 6);
-    }
 
     struct TestRuntime {
         value: String,
@@ -912,10 +684,6 @@ mod tests {
                     ViewContextPublication::new(serde_json::json!({"value": self.value.clone()})),
                 ),
             )
-        }
-
-        fn tick_mode(&self) -> EngineTickMode {
-            EngineTickMode::Prepared
         }
 
         fn render_model(&self) -> RenderModel {

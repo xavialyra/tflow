@@ -181,7 +181,6 @@ pub struct Terminal {
     output_fd: libc::c_int,
     _output: File,
     original: libc::termios,
-    raw: libc::termios,
     renderer: RatatuiTerminal<CrosstermBackend<TerminalWriter>>,
     renderer_discard: Arc<AtomicBool>,
     image_picker: ImagePicker,
@@ -237,7 +236,6 @@ impl Terminal {
             output_fd: output.as_raw_fd(),
             _output: output,
             original,
-            raw,
             renderer,
             renderer_discard,
             image_picker: picker_from_protocol(output_fd, image_protocol),
@@ -275,21 +273,6 @@ impl Terminal {
         screen_result.and(settings_result)
     }
 
-    pub fn reenter(&mut self) -> Result<()> {
-        if self.active {
-            return Ok(());
-        }
-
-        if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &self.raw) } != 0 {
-            return Err(io::Error::last_os_error())
-                .context("could not re-enable terminal settings");
-        }
-        self.active = true;
-        self.screen_active = false;
-        self.reset_renderer()?;
-        self.resume_screen()
-    }
-
     pub fn resume_screen(&mut self) -> Result<()> {
         if !self.active || self.screen_active {
             return Ok(());
@@ -318,14 +301,6 @@ impl Terminal {
         } else {
             (80, 24)
         }
-    }
-
-    pub(crate) fn image_picker(&self) -> Option<ImagePicker> {
-        let mut picker = self.image_picker;
-        if let Some(font_size) = font_size_from_fd(self.output_fd) {
-            picker.font_size = font_size;
-        }
-        Some(picker)
     }
 
     pub(crate) fn copy_to_clipboard(&self, value: &str) -> Result<()> {
@@ -379,19 +354,6 @@ impl Terminal {
             return Err(error).context("could not read terminal input");
         }
         Ok(InputRead::Data(buffer[..count as usize].to_vec()))
-    }
-
-    fn reset_renderer(&mut self) -> Result<()> {
-        let output = duplicate_fd(self.output_fd)?;
-        let renderer_discard = Arc::new(AtomicBool::new(false));
-        self.renderer = RatatuiTerminal::new(CrosstermBackend::new(TerminalWriter::new(
-            output,
-            self.cancellation.clone(),
-            Arc::clone(&renderer_discard),
-        )))
-        .context("could not reset Ratatui terminal backend")?;
-        self.renderer_discard = renderer_discard;
-        Ok(())
     }
 
     fn write_output(&self, bytes: &[u8]) -> Result<()> {

@@ -72,9 +72,6 @@ impl PickerView {
             .page_commands(page_view, selected_owner)?
             .into_values()
             .filter(|value| {
-                if results_current {
-                    return true;
-                }
                 let Some(view_ref) = value
                     .pointer("/ref/view")
                     .and_then(serde_json::Value::as_str)
@@ -85,7 +82,10 @@ impl PickerView {
                 else {
                     return false;
                 };
-                self.services.is_non_selection_command(view_ref, command_id)
+                if results_current && selected_owner.is_some() {
+                    return true;
+                }
+                !self.services.command_requires_items(view_ref, command_id)
             })
             .collect::<Vec<_>>();
         let items = if results_current {

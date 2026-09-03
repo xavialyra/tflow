@@ -1999,6 +1999,7 @@ dependencies = [
  "shell-words",
  "signal-hook",
  "toml",
+ "unicode-segmentation",
  "unicode-width 0.2.2",
 ]
 

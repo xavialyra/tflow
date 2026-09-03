@@ -339,39 +339,7 @@ impl ParameterRegistry {
         self.update_input(state, source)
     }
 
-    pub(crate) fn apply_patch(
-        &self,
-        state: &mut ParameterState,
-        request: &ParameterPatchRequest,
-    ) -> Result<bool> {
-        if let Some(expected) = request.expected_revision
-            && state.revision != expected
-        {
-            bail!(
-                "parameter revision mismatch: expected {}, actual {}",
-                expected,
-                state.revision
-            );
-        }
-        let patch = request
-            .fields
-            .as_object()
-            .context("parameter patch must be a JSON object")?;
-        let mut values = self.parameter_values(state)?;
-        let object = values
-            .as_object_mut()
-            .context("plain parameters do not accept field patches")?;
-        for (name, value) in patch {
-            object.insert(name.clone(), value.clone());
-        }
-        let raw = state.raw_input.clone();
-        let changed = self.update_value(state, &values)?;
-        if request.input_policy == ParameterInputPolicy::Preserve {
-            state.raw_input = raw;
-        }
-        Ok(changed)
-    }
-
+    #[cfg(test)]
     pub(crate) fn update_value(&self, state: &mut ParameterState, value: &Value) -> Result<bool> {
         if value.is_null() {
             return Ok(false);
@@ -581,7 +549,6 @@ impl ParameterSnapshot {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn values(&self) -> &Value {
         &self.values
     }
@@ -599,19 +566,6 @@ impl ParameterSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ParameterInputPolicy {
-    Preserve,
-    Rerender,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ParameterPatchRequest {
-    pub(crate) target: crate::input::ViewMountId,
-    pub(crate) fields: Value,
-    pub(crate) expected_revision: Option<u64>,
-    pub(crate) input_policy: ParameterInputPolicy,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParameterBinding {
@@ -620,22 +574,7 @@ pub(crate) struct ParameterBinding {
     schema: ParameterSchema,
 }
 
-impl ParameterPatchRequest {
-    #[cfg(test)]
-    pub(crate) fn new(
-        target: crate::input::ViewMountId,
-        fields: Value,
-        expected_revision: Option<u64>,
-        input_policy: ParameterInputPolicy,
-    ) -> Self {
-        Self {
-            target,
-            fields,
-            expected_revision,
-            input_policy,
-        }
-    }
-}
+
 
 impl ParameterBinding {
     #[cfg(test)]
@@ -798,31 +737,6 @@ impl ParameterBinding {
         self.registry.render_input(state)
     }
 
-    pub(crate) fn apply_patch(
-        &self,
-        state: &mut ParameterState,
-        request: &ParameterPatchRequest,
-    ) -> Result<bool> {
-        anyhow::ensure!(
-            state.view_ref() == self.view_ref,
-            "parameter binding for {:?} cannot patch {:?}",
-            self.view_ref,
-            state.view_ref()
-        );
-        self.registry.apply_patch(state, request)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn update_value(&self, state: &mut ParameterState, value: &Value) -> Result<bool> {
-        anyhow::ensure!(
-            state.view_ref() == self.view_ref,
-            "parameter binding for {:?} cannot update {:?}",
-            self.view_ref,
-            state.view_ref()
-        );
-        self.registry.update_value(state, value)
-    }
-
     pub(crate) fn validate_instance(&self, state: &ParameterState) -> Result<()> {
         anyhow::ensure!(
             state.view_ref() == self.view_ref,
@@ -847,10 +761,12 @@ impl ParameterState {
         &self.raw_input
     }
 
+    #[cfg(test)]
     pub(crate) fn input_rejected(&self) -> bool {
         self.input_rejected
     }
 
+    #[cfg(test)]
     pub(crate) fn set_input_rejected(&mut self, rejected: bool) {
         self.input_rejected = rejected;
     }
@@ -1107,33 +1023,6 @@ mod tests {
         assert!(error.to_string().contains("--token is required"));
     }
 
-    #[test]
-    fn typed_parameter_patch_rejects_missing_required_fields() {
-        let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"apps": {"views": {"default": {"query": {
-                "type": "object",
-                "input_order": ["visible"],
-                "visible": {"type": "string", "default": ""},
-                "token": {"type": "string"}
-            }}}}}
-        }))
-        .unwrap();
-        let mut state = registry.instantiate("apps:default").unwrap();
-        let revision = state.revision();
-
-        let error = registry
-            .apply_patch(
-                &mut state,
-                &ParameterPatchRequest {
-                    target: crate::input::ViewMountId(1),
-                    fields: serde_json::json!({"visible": "candidate"}),
-                    expected_revision: Some(revision),
-                    input_policy: ParameterInputPolicy::Preserve,
-                },
-            )
-            .expect_err("typed patch must reject a missing required field");
-        assert!(error.to_string().contains("token"));
-    }
 
     #[test]
     fn feed_binding_rejects_nonempty_input_without_ordered_fields() {
@@ -1268,59 +1157,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parameter_patch_obeys_revision_and_input_policy() {
-        let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
-                "type": "object",
-                "input_order": ["text"],
-                "text": {"type": "string", "default": ""},
-                "enabled": {"type": "boolean", "default": false}
-            }}}}}
-        }))
-        .unwrap();
-        let mut state = registry.instantiate("data:default").unwrap();
-        registry.update_input(&mut state, "hello").unwrap();
-        let revision = state.revision();
-        registry
-            .apply_patch(
-                &mut state,
-                &ParameterPatchRequest {
-                    target: crate::input::ViewMountId(1),
-                    fields: serde_json::json!({"enabled": true}),
-                    expected_revision: Some(revision),
-                    input_policy: ParameterInputPolicy::Preserve,
-                },
-            )
-            .unwrap();
-        assert_eq!(state.raw_input, "hello");
-        assert_eq!(registry.parameter_values(&state).unwrap()["enabled"], true);
-
-        let revision = state.revision();
-        registry
-            .apply_patch(
-                &mut state,
-                &ParameterPatchRequest {
-                    target: crate::input::ViewMountId(1),
-                    fields: serde_json::json!({"text": "world"}),
-                    expected_revision: Some(revision),
-                    input_policy: ParameterInputPolicy::Rerender,
-                },
-            )
-            .unwrap();
-        assert_eq!(state.raw_input, "world");
-        let stale = registry.apply_patch(
-            &mut state,
-            &ParameterPatchRequest {
-                target: crate::input::ViewMountId(1),
-                fields: serde_json::json!({"enabled": false}),
-                expected_revision: Some(revision),
-                input_policy: ParameterInputPolicy::Preserve,
-            },
-        );
-        assert!(stale.is_err());
-        assert_eq!(registry.parameter_values(&state).unwrap()["enabled"], true);
-    }
 
     #[test]
     fn state_from_snapshot_rejects_non_string_plain_values() {

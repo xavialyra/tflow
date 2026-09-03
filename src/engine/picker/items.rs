@@ -965,7 +965,7 @@ mod tests {
         let config = crate::config::load_test_fixture().unwrap();
         let mut state = config.instantiate_parameters("selectors:commands").unwrap();
         config
-            .update_parameter_values(
+            .update_sanitized_initial_parameter_values(
                 &mut state,
                 &serde_json::json!({
                     "commands": [{

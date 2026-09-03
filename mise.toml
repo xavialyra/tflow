@@ -50,7 +50,7 @@ arg "[paths]" var=#true help="Files or directories to analyze"
 '''
 run = """
 set -eu
-paths=(src/engine src/session src/workflow)
+paths=(src/engine src/workflow src/protocol.rs src/view.rs)
 path_args="${usage_paths:-${METRICS_PATHS:-}}"
 if [ -n "$path_args" ]; then
   eval "paths=($path_args)"
@@ -78,7 +78,7 @@ arg "[paths]" var=#true help="Files or directories to measure"
 '''
 run = """
 set -eu
-paths=(src/engine src/session src/workflow/command src/workflow/config)
+paths=(src/engine src/workflow/command src/workflow/config src/protocol.rs src/view.rs)
 path_args="${usage_paths:-${METRICS_PATHS:-}}"
 if [ -n "$path_args" ]; then
   eval "paths=($path_args)"

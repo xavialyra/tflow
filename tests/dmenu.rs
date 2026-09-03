@@ -129,7 +129,7 @@ fn dmenu_can_cancel_the_global_command_selector_and_continue() {
         &[],
         b"first\nsecond\n",
         &[&b"\x0b"[..], &b"\x1b\r"[..]],
-        &["dmenu", "commands"],
+        &["first", "commands"],
     );
 
     assert_eq!(result.status, 0);

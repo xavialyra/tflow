@@ -1,11 +1,19 @@
-mod frame;
-mod input;
+mod footer;
+mod host;
+#[cfg(test)]
 mod layout;
 
+#[cfg(test)]
+mod frame;
+
+pub(crate) use footer::{FooterModel, FooterRenderer};
+pub(crate) use host::ContentHost;
+
+#[cfg(test)]
 pub(crate) use frame::ChromeFrame;
-#[allow(unused_imports)]
-pub(crate) use input::EditorBuffer;
-use input::previous_char_boundary;
+#[cfg(test)]
+use crate::input::previous_char_boundary;
+#[cfg(test)]
 use layout::ChromeLayout;
 #[cfg(test)]
 use layout::{InputLayout, Insets};
@@ -20,9 +28,29 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub(crate) struct EngineChrome {
     pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
+    #[cfg(test)]
     pub(crate) commands: Vec<(String, String)>,
+    #[cfg(test)]
     pub(crate) overflow_command: Option<(String, String)>,
+    #[cfg(test)]
     pub(crate) presentation: ChromePresentation,
+}
+
+impl EngineChrome {
+    pub(crate) fn new(title: Option<String>, status: Option<String>) -> Self {
+        #[cfg(test)]
+        {
+            Self {
+                title,
+                status,
+                ..Self::default()
+            }
+        }
+        #[cfg(not(test))]
+        {
+            Self { title, status }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +68,7 @@ impl FooterContent {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ChromePresentation {
     layout: ChromeLayout,
@@ -48,18 +77,15 @@ pub(crate) struct ChromePresentation {
     footer: Option<FooterContent>,
 }
 
+#[cfg(test)]
 impl ChromePresentation {
-    pub(crate) fn with_recognized_input_prefix(mut self, end: usize) -> Self {
-        self.recognized_input_prefix_end = Some(end);
-        self
-    }
-
     pub(crate) fn with_unfocused_input(mut self) -> Self {
         self.input_muted = true;
         self
     }
 }
 
+#[cfg(test)]
 pub(crate) fn divider_line(width: usize, label: &str) -> String {
     if width == 0 {
         return String::new();
@@ -76,7 +102,7 @@ pub(crate) fn divider_line(width: usize, label: &str) -> String {
     format!("{} {}", label, "─".repeat(width - label_width - 1))
 }
 
-fn footer_line(
+pub(super) fn footer_line(
     width: usize,
     title: Option<&str>,
     status: &str,
@@ -226,7 +252,8 @@ fn clip_footer(content: &FooterContent, width: usize) -> FooterContent {
     }
 }
 
-fn as_u16(value: usize) -> u16 {
+#[cfg(test)]
+pub(super) fn as_u16(value: usize) -> u16 {
     value.min(u16::MAX as usize) as u16
 }
 
@@ -269,6 +296,7 @@ pub(crate) fn clip(text: &str, width: usize) -> String {
     result
 }
 
+#[cfg(test)]
 fn byte_at_width(text: &str, target: usize) -> usize {
     let mut used = 0;
     for (index, character) in text.char_indices() {
@@ -280,6 +308,7 @@ fn byte_at_width(text: &str, target: usize) -> usize {
     text.len()
 }
 
+#[cfg(test)]
 fn clip_from(text: &str, width: usize) -> String {
     let mut result = String::new();
     let mut used = 0;
@@ -297,6 +326,7 @@ fn clip_from(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::EditorBuffer;
     use ratatui::style::{Color, Modifier};
 
     fn route() -> RouteDisplay {
@@ -407,6 +437,24 @@ mod tests {
         assert_eq!(layout.content_padding, Insets::ZERO);
         assert_eq!(layout.content_width(80), 78);
         assert_eq!(layout.chrome_width(80), 78);
+    }
+
+    #[test]
+    fn content_host_owns_top_and_horizontal_padding() {
+        let host = ContentHost::default();
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let content = host.content_area(area);
+        let footer = host.footer_area(area);
+
+        assert_eq!(content.x, 1);
+        assert_eq!(content.y, 1);
+        assert_eq!(content.width, 78);
+        assert_eq!(content.height, 22);
+
+        assert_eq!(footer.x, 0);
+        assert_eq!(footer.y, 23);
+        assert_eq!(footer.width, 80);
+        assert_eq!(footer.height, 1);
     }
 
     #[test]

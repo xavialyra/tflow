@@ -1,3 +1,3 @@
 mod log;
 
-pub(crate) use log::{LogLevel, LogRecord, RuntimeLog};
+pub(crate) use log::{LogLevel, RuntimeLog};

@@ -27,7 +27,6 @@ pub(crate) enum PreparedAction {
     },
     Invoke(CommandExecution),
     Execute {
-        invocation: CommandInvocation,
         prepared: PreparedProcess,
         exit: bool,
     },
@@ -115,7 +114,6 @@ fn prepare_action(
                 stage,
             )?;
             Ok(PreparedAction::Execute {
-                invocation,
                 prepared,
                 exit: payload.exit,
             })

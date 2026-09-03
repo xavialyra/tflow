@@ -1,6 +1,7 @@
 use crate::config::{Config, ViewRef};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RouteResolution {
     NotMatched,
@@ -80,6 +81,14 @@ impl Router {
         }
     }
 
+    pub(crate) fn resolve_selector(&self, selector: &str) -> Option<ViewRef> {
+        if selector.contains(':') {
+            return (valid_view_ref(selector) && self.views.contains(selector))
+                .then(|| selector.to_string());
+        }
+        self.aliases.get(selector).cloned()
+    }
+
     pub(crate) fn complete_views(&self, query: &str, current_view_ref: &str) -> Vec<ViewCandidate> {
         let query = query.trim().to_lowercase();
         let mut matches = self
@@ -101,6 +110,7 @@ impl Router {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve(&self, current_view_ref: &str, input: &str) -> RouteResolution {
         let Some((selector, query)) = split_selector(input) else {
             return RouteResolution::NotMatched;
@@ -130,20 +140,6 @@ impl Router {
                 target: target.to_string(),
                 query: query.to_string(),
             }
-        }
-    }
-
-    pub(crate) fn recognized_prefix_end(
-        &self,
-        current_view_ref: &str,
-        input: &str,
-    ) -> Option<usize> {
-        let (selector, _) = split_selector(input)?;
-        match self.resolve(current_view_ref, input) {
-            RouteResolution::Current { .. } | RouteResolution::Navigate { .. } => {
-                Some(selector.len())
-            }
-            RouteResolution::NotMatched => None,
         }
     }
 
@@ -197,6 +193,7 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<u8> {
     })
 }
 
+#[cfg(test)]
 fn split_selector(input: &str) -> Option<(&str, &str)> {
     input
         .split_once(char::is_whitespace)
