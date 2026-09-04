@@ -85,7 +85,7 @@ fn first_signal_aborts_a_blocked_final_output_write() {
         [plugins.custom.views.main.engine]
         type = "picker"
         [plugins.custom.views.main.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.custom.views.main.commands.accept]
         key = "enter"
@@ -343,7 +343,7 @@ fn signal_exit_waits_for_items_worker_cleanup() {
     .unwrap();
     fs::write(
         plugin.join("scripts/items.sh"),
-        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '[{\"label\":\"Item\"}]'\n",
+        "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '[{\"display\":\"Item\"}]'\n",
     )
     .unwrap();
     let pid_path = pid_file.to_string_lossy().to_string();
@@ -447,7 +447,7 @@ fn runtime_log_open_failure_is_reported_without_stopping_the_launcher() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item"}]
+        items = [{display = "Item"}]
         "#,
     )
     .unwrap();
@@ -477,7 +477,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
         [plugins.core.views.default.commands.exit]
         key = "enter"
         label = "Exit"
@@ -517,9 +517,9 @@ fn loads_items_and_runs_a_view_command() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
         [catalog]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -580,8 +580,8 @@ fn selected_picker_item_is_passed_to_command_when_navigating_down() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         items = [
-            { label = "FirstApp", value = "app-one" },
-            { label = "SecondApp", value = "app-two" },
+            { display = "FirstApp", value = "app-one" },
+            { display = "SecondApp", value = "app-two" },
         ]
 
         [plugins.core.views.default.commands.open]
@@ -644,8 +644,8 @@ fn selected_picker_item_is_passed_to_command_when_navigating_down_and_up() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         items = [
-            { label = "FirstApp", value = "app-one" },
-            { label = "SecondApp", value = "app-two" },
+            { display = "FirstApp", value = "app-one" },
+            { display = "SecondApp", value = "app-two" },
         ]
 
         [plugins.core.views.default.commands.open]
@@ -709,7 +709,7 @@ fn typing_space_without_route_completion_does_not_error_and_preserves_query() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         items = [
-            { label = "Google Chrome", value = "chrome" },
+            { display = "Google Chrome", value = "chrome" },
         ]
 
         [plugins.core.views.default.commands.open]
@@ -786,7 +786,7 @@ fn dynamic_items_source_metadata_is_resolved_at_execution() {
     fs::create_dir_all(&scripts).unwrap();
     fs::write(
         scripts.join("dynamic-items.sh"),
-        "printf '%s\\n' '[{\"label\":\"Dynamic source\"}]'\n",
+        "printf '%s\\n' '[{\"display\":\"Dynamic source\"}]'\n",
     )
     .unwrap();
 
@@ -814,7 +814,7 @@ fn run_command_args_resolve_to_exact_positional_arguments() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{ label = "Item", value = "value with spaces", metadata = { option = "selected mode", detail = { kind = "app" } } }]
+        items = [{ display = "Item", value = "value with spaces", metadata = { option = "selected mode", detail = { kind = "app" } } }]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -889,7 +889,7 @@ fn application_launch_detaches_started_process_from_launcher_group() {
         [plugins.apps.views.main.engine]
         type = "picker"
         [plugins.apps.views.main.engine.config]
-        items = [{ label = "App", value = "fixture.desktop" }]
+        items = [{ display = "App", value = "fixture.desktop" }]
 
         [plugins.apps.views.main.commands.open]
         key = "enter"
@@ -972,7 +972,7 @@ fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{ label = "Item", value = "value" }]
+        items = [{ display = "Item", value = "value" }]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1024,7 +1024,7 @@ fn complete_dynamic_command_args_resolve_to_an_argv_array() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{ label = "Item", value = "value" }]
+        items = [{ display = "Item", value = "value" }]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1078,7 +1078,7 @@ fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1126,7 +1126,7 @@ fn dynamic_command_handler_source_preserves_literal_template_text() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{ label = "Item", value = "value" }]
+        items = [{ display = "Item", value = "value" }]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1180,7 +1180,7 @@ fn loads_items_from_a_native_toml_array() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{ label = "Static item", value = "static-value" }]
+        items = [{ display = "Static item", value = "static-value" }]
 
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1239,7 +1239,7 @@ fn explicit_capture_view_receives_typed_query_state() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "capture"
@@ -1325,7 +1325,7 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "capture"
@@ -1363,7 +1363,7 @@ fn explicit_embedded_view_receives_typed_query_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -1440,7 +1440,7 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -1568,7 +1568,7 @@ fn embedded_view_removes_stale_launcher_environment() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
         type = "embedded"
@@ -1615,7 +1615,7 @@ fn waits_for_items_before_running_enter_command() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -1674,7 +1674,7 @@ fn route_query_and_activate_share_one_input_batch() {
         [plugins.apps.views.main.engine]
         type = "picker"
         [plugins.apps.views.main.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.apps.views.main.commands.run]
         key = "enter"
         label = "Run"
@@ -1727,7 +1727,7 @@ fn view_commands_accept_unreserved_control_bindings() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "ctrl+r"
         label = "Run"
@@ -1780,7 +1780,7 @@ fn edit_input_command_updates_the_picker_owned_editor() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.core.views.default.commands.rewrite]
         key = "ctrl+r"
@@ -1834,8 +1834,8 @@ fn view_command_overrides_printable_picker_binding() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         items = [
-            { label = "First", value = "first" },
-            { label = "Second", value = "second" },
+            { display = "First", value = "first" },
+            { display = "Second", value = "second" },
         ]
         [plugins.core.views.default.keymap]
         "space" = "select_next"
@@ -1903,7 +1903,7 @@ fn queued_keys_observe_dynamic_picker_bindings() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "First", value = "first"}]
+        items = [{display = "First", value = "first"}]
         "#,
     )
     .unwrap();
@@ -1931,7 +1931,7 @@ fn unavailable_toggle_preview_consumes_an_unbound_key() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "First", value = "first"}]
+        items = [{display = "First", value = "first"}]
         [plugins.core.views.default.keymap]
         space = "toggle_preview"
 
@@ -1985,8 +1985,8 @@ fn uppercase_printable_keymap_binding_matches_input() {
         type = "picker"
         [plugins.core.views.default.engine.config]
         items = [
-            { label = "First", value = "first" },
-            { label = "Second", value = "second" },
+            { display = "First", value = "first" },
+            { display = "Second", value = "second" },
         ]
         [plugins.core.views.default.keymap]
         a = "select_next"
@@ -2084,7 +2084,7 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.run]
         key = "tab"
@@ -2121,7 +2121,7 @@ fn unknown_input_closes_route_completion_before_escape() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
         "#,
     )
     .expect("could not write route completion config");
@@ -2155,9 +2155,9 @@ fn replacing_items_request_cancels_the_previous_script() {
 if [ -z "$query" ]; then
     printf '%s\n' "$$" > "{}"
     sleep 10
-    printf '[{{"label":"old-result"}}]\n'
+    printf '[{{"display":"old-result"}}]\n'
 else
-    printf '[{{"label":"new-result"}}]\n'
+    printf '[{{"display":"new-result"}}]\n'
 fi
 "#,
             old_pid_path.display()
@@ -2381,7 +2381,7 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = [{label = "Row", value = "row"}]
+        items = [{display = "Row", value = "row"}]
         [plugins.apps.views.default.commands.open]
         key = "enter"
         label = "Open"
@@ -2391,7 +2391,7 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         exit = true
 
         [catalog]
-        items = [{label = "Row", value = "row"}]
+        items = [{display = "Row", value = "row"}]
         "#,
     )
     .unwrap();
@@ -2445,7 +2445,7 @@ fn pending_feed_owner_command_overrides_picker_binding() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = [{label = "Row", value = "row"}]
+        items = [{display = "Row", value = "row"}]
         [plugins.apps.views.default.commands.open]
         key = "space"
         label = "Open"
@@ -2502,10 +2502,10 @@ fn feed_owners_apply_independent_query_defaults() {
         items = "{{ view.query.items }}"
         [plugins.apps.views.default.query]
         type = "object"
-        items = { type = "array<object>", default = [{label = "VALUE:source-default"}] }
+        items = { type = "array<object>", default = [{display = "VALUE:source-default"}] }
 
         [catalog]
-        items = [{label = "VALUE:{{ view.query.text }}"}]
+        items = [{display = "VALUE:{{ view.query.text }}"}]
         "#,
     )
     .unwrap();
@@ -2542,7 +2542,7 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = [{label = "Needle", value = "needle"}]
+        items = [{display = "Needle", value = "needle"}]
         "#,
     )
     .unwrap();
@@ -2593,13 +2593,13 @@ fn picker_back_clears_routed_query_before_returning_to_default() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.sys.views.default]
         alias = "sys"
         [plugins.sys.views.default.engine]
         type = "picker"
         [plugins.sys.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
     .expect("could not write route input config");
@@ -2674,13 +2674,13 @@ fn empty_picker_input_returns_to_parent_before_a_new_root_route() {
         [plugins.apps.views.default.engine]
         type = "picker"
         [plugins.apps.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.sys.views.default]
         alias = "sys"
         [plugins.sys.views.default.engine]
         type = "picker"
         [plugins.sys.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
     .expect("could not write route editing config");
@@ -2759,7 +2759,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.open]
         key = "enter"
         label = "Open"
@@ -2827,7 +2827,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -3058,7 +3058,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
         label = "Run"
@@ -3271,4 +3271,30 @@ fn ctrl_k_in_embedded_view_displays_embedded_commands() {
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn command_selector_displays_keybindings_for_commands() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"sys ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
+
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Run");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(screen.contains("Run"), "screen should contain command label 'Run': {screen}");
+    assert!(screen.contains("enter"), "screen should contain command keybinding 'enter': {screen}");
+    assert!(screen.contains("Info"), "screen should contain command label 'Info': {screen}");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
 }

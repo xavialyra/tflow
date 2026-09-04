@@ -17,11 +17,21 @@ for command in commands:
     searchable = " ".join([label, key, owner]).casefold()
     if not all(token in searchable for token in tokens):
         continue
-    items.append({
-        "label": label,
+    item = {
         "value": key,
         "metadata": {"command": ref},
-    })
+    }
+    if key:
+        item["display"] = {
+            "constraints": [{"Fill": 1}, {"Length": len(key)}],
+            "cells": [
+                {"text": label},
+                {"text": key, "align": "right", "slot": "badge"},
+            ],
+        }
+    else:
+        item["display"] = label
+    items.append(item)
 json.dump(items, sys.stdout, separators=(",", ":"))
 print()
 PY

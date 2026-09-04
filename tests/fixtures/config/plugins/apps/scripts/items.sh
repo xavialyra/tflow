@@ -3,7 +3,7 @@ command -v fzf >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
 query=${1:-}
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tui-launcher"
-cache_file="$cache_dir/desktop-apps-v2.list"
+cache_file="$cache_dir/desktop-apps-v3.list"
 refresh=true
 if [ -s "$cache_file" ]; then
   cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || printf '0')
@@ -24,8 +24,8 @@ if $refresh; then
   while IFS= read -r file; do
     name=$(sed -n 's/^Name=//p' "$file" | head -n 1)
     if [ -n "$name" ]; then
-      item=$(jq -cn --arg label "$name" --arg value "$file" \
-        '{label: $label, value: $value, metadata: {desktop_file: $value}}')
+      item=$(jq -cn --arg display "$name" --arg value "$file" \
+        '{display: $display, value: $value, metadata: {desktop_file: $value}}')
       printf '%s\t%s\n' "$name" "$item"
     fi
   done > "$tmp_file"

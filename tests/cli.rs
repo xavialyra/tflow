@@ -616,7 +616,7 @@ fn check_validates_static_return_handler_targets() {
 #[test]
 fn check_validates_items_shape_before_runtime() {
     for source in [
-        r#"items = [{ label = "{{ page.input }}" }]"#,
+        r#"items = [{ display = "{{ page.input }}" }]"#,
         r#"items = "{{ page.items }}""#,
     ] {
         let root = temporary_root();

@@ -16,5 +16,5 @@ else
   trans -b -no-ansi "$text"
 fi |
 jq -R -c --argjson query "$query" \
-  '{label: ., value: ., metadata: {query: $query}}' |
+  '{display: ., value: ., metadata: {query: $query}}' |
 jq -s '.'

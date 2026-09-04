@@ -253,7 +253,7 @@ def item_mode(context):
             else display
         )
         if matches_query(searchable, query):
-            item = {"label": display, "value": str(candidate["index"])}
+            item = {"display": display, "value": str(candidate["index"])}
             if not display:
                 item["allow_empty"] = True
             items.append(item)

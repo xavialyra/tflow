@@ -7,8 +7,8 @@ def matches_query($text):
   | ($text | ascii_downcase) as $folded
   | all($tokens[]; . as $token | $folded | contains($token));
 [
-  {label: "Show date"},
-  {label: "Show system information"}
+  {display: "Show date"},
+  {display: "Show system information"}
 ]
-| if $query == "" then . else map(select(matches_query(.label))) end
+| if $query == "" then . else map(select(matches_query(.display))) end
 '

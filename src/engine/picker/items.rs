@@ -163,7 +163,6 @@ impl FeedInstance {
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
-    #[serde(alias = "label")]
     display: super::display::ItemDisplayInput,
     #[serde(default)]
     allow_empty: bool,
@@ -726,7 +725,7 @@ mod tests {
     #[test]
     fn parses_structured_items() {
         let item: ItemValue = serde_json::from_str(
-            r#"{"label":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}"#,
+            r#"{"display":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}"#,
         )
         .unwrap();
         assert_eq!(item.display.plain_text(), "Termius");
@@ -749,7 +748,7 @@ mod tests {
         let mut result = ItemsResult::default();
         let items = Value::Array(
             (0..=MAX_ITEMS_PER_SESSION)
-                .map(|index| serde_json::json!({"label": index.to_string()}))
+                .map(|index| serde_json::json!({"display": index.to_string()}))
                 .collect(),
         );
         append_items(
@@ -773,7 +772,7 @@ mod tests {
             &mut result,
             "feed:main",
             &FeedId("feed:main".to_string()),
-            serde_json::json!([{"label": "ignored"}]),
+            serde_json::json!([{"display": "ignored"}]),
             &cancellation,
         );
         assert!(result.items.is_empty());
@@ -787,7 +786,7 @@ mod tests {
             &serde_json::json!({
                 "view": {
                     "current": {
-                        "items": [{"label": "Second"}, {"label": "First"}]
+                        "items": [{"display": "Second"}, {"display": "First"}]
                     }
                 }
             }),
@@ -828,7 +827,7 @@ mod tests {
                     engine_type: ENGINE_PICKER.to_string(),
                     config: EngineOptions {
                         items: Some(toml::Value::Array(vec![toml::Value::Table(
-                            [("label".to_string(), "SysItem".into())]
+                            [("display".to_string(), "SysItem".into())]
                                 .into_iter()
                                 .collect(),
                         )])),
@@ -907,7 +906,7 @@ mod tests {
             1,
         );
         let runtime = serde_json::json!({
-            "view": {"current": {"items": [{"label": "AppItem"}]}}
+            "view": {"current": {"items": [{"display": "AppItem"}]}}
         });
         let first_mount = load_items_for_definitions(
             &aggregate_definitions,
@@ -967,7 +966,7 @@ mod tests {
             .config
             .items = Some(toml::Value::Array(vec![toml::Value::Table(
             [(
-                "label".to_string(),
+                "display".to_string(),
                 "{{ view.ref }} <- {{ page.ref }}".into(),
             )]
             .into_iter()
@@ -1089,7 +1088,7 @@ mod tests {
             .engine
             .config
             .items = Some(toml::Value::Array(vec![toml::Value::Table(
-            [("label".to_string(), "{{ page.input }}".into())]
+            [("display".to_string(), "{{ page.input }}".into())]
                 .into_iter()
                 .collect(),
         )]));
@@ -1115,7 +1114,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "printf '%s\\n' '[{\"label\":\"manufactured source\"}]'\n",
+            "printf '%s\\n' '[{\"display\":\"manufactured source\"}]'\n",
         )
         .unwrap();
 
@@ -1166,7 +1165,7 @@ mod tests {
             &serde_json::json!({
                 "view": {
                     "current": {
-                        "items": [{"label": "Valid"}, {"value": "missing-label"}]
+                        "items": [{"display": "Valid"}, {"value": "missing-display"}]
                     }
                 }
             }),
@@ -1185,7 +1184,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "jq -cn --arg label \"$1\" '[{label: $label}]'\n",
+            "jq -cn --arg label \"$1\" '[{display: $label}]'\n",
         )
         .unwrap();
 
@@ -1264,7 +1263,7 @@ mod tests {
                 "text=$2\n",
                 "jq -cn --arg raw \"$raw\" --arg text \"$text\" \
 ",
-                "  '[{label:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
+                "  '[{display:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
             ),
         )
         .unwrap();
@@ -1348,7 +1347,7 @@ mod tests {
                 "raw=$(printf '%s' \"$payload\" | jq -r .raw_input)\n",
                 "text=$(printf '%s' \"$payload\" | jq -r .query.text)\n",
                 "jq -cn --arg raw \"$raw\" --arg text \"$text\" ",
-                "'[{label:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
+                "'[{display:(\"RAW:\" + $raw + \"|TEXT:\" + $text)}]'\n",
             ),
         )
         .unwrap();
@@ -1531,7 +1530,7 @@ mod tests {
                     config: EngineOptions {
                         items: Some(toml::Value::Array(vec![toml::Value::Table(
                             [(
-                                "label".to_string(),
+                                "display".to_string(),
                                 toml::Value::String("SysItem".to_string()),
                             )]
                             .into_iter()
@@ -1566,7 +1565,7 @@ mod tests {
             &config,
             "core:default",
             &serde_json::json!({
-                "view": {"current": {"items": [{"label": "AppItem"}]}},
+                "view": {"current": {"items": [{"display": "AppItem"}]}},
             }),
             &CancellationToken::new(),
         )
@@ -1591,7 +1590,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("items.sh"),
-            "payload=${1#query=}\njq -cn --arg label \"$(printf '%s' \"$payload\" | jq -r .text)\" '[{label:(\"VALUE:\" + $label)}]'\n",
+            "payload=${1#query=}\njq -cn --arg label \"$(printf '%s' \"$payload\" | jq -r .text)\" '[{display:(\"VALUE:\" + $label)}]'\n",
         )
         .unwrap();
 

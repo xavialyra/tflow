@@ -22,7 +22,7 @@ fn redirected_stdout_contains_only_the_default_return_result() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
@@ -92,7 +92,7 @@ fn called_picker_fields_and_commands_read_declared_query_values() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.open]
         key = "enter"
@@ -113,7 +113,7 @@ fn called_picker_fields_and_commands_read_declared_query_values() {
         [plugins.forms.views.main.engine]
         type = "picker"
         [plugins.forms.views.main.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.forms.views.main.query]
         type = "object"
@@ -160,7 +160,7 @@ fn picker_layout_and_preview_resolve_from_the_operation_scope() {
         [plugins.core.views.default.engine.config]
         layout = "{{ view.query.layout }}"
         preview = "{{ view.query.preview }}"
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.core.views.default.commands.accept]
         key = "enter"
@@ -192,7 +192,7 @@ fn result_namespace_is_rejected_outside_a_return_consumption_stage() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value"}]
+        items = [{display = "Item", value = "value"}]
 
         [plugins.core.views.default.commands.accept]
         key = "enter"
@@ -518,7 +518,7 @@ fn embedded_passthrough_command_selector_returns_to_the_embedded_view() {
         [plugins.selectors.views.commands.engine]
         type = "picker"
         [plugins.selectors.views.commands.engine.config]
-        items = [{label = "Finish", metadata = {command = {view = "core:default", id = "finish"}}}]
+        items = [{display = "Finish", metadata = {command = {view = "core:default", id = "finish"}}}]
         [plugins.selectors.views.commands.query]
         type = "object"
         input_order = ["search"]
@@ -589,7 +589,7 @@ fn embedded_successful_exit_returns_json_to_the_caller() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.form]
         key = "enter"
@@ -669,7 +669,7 @@ fn pending_launcher_bytes_are_transferred_to_embedded_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
+        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.core.views.default.commands.form]
         key = "enter"
@@ -842,7 +842,7 @@ fn return_handler_receives_argv_and_controls_raw_output_and_status() {
         default_view = "custom:default"
 
         [catalog]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         "#,
     )
     .unwrap();
@@ -857,7 +857,7 @@ fn return_handler_receives_argv_and_controls_raw_output_and_status() {
         [views.default.engine]
         type = "picker"
         [views.default.engine.config]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         [views.default.query]
         type = "object"
         tag = { type = "string", nullable = true }
@@ -925,7 +925,7 @@ fn signal_exit_terminates_a_running_return_handler() {
         r#"
         default_view = "custom:main"
         [catalog]
-        items = [{label = "Return"}]
+        items = [{display = "Return"}]
         "#,
     )
     .unwrap();
@@ -938,7 +938,7 @@ fn signal_exit_terminates_a_running_return_handler() {
         [views.main.engine]
         type = "picker"
         [views.main.engine.config]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         [views.main.commands.accept]
         key = "enter"
         label = "Accept"
@@ -986,7 +986,7 @@ fn return_handler_belongs_to_the_returning_command() {
         default_view = "custom:default"
 
         [catalog]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         "#,
     )
     .unwrap();
@@ -1001,7 +1001,7 @@ fn return_handler_belongs_to_the_returning_command() {
         [views.default.engine]
         type = "picker"
         [views.default.engine.config]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         [views.default.commands.next]
         key = "enter"
         label = "Next"
@@ -1014,7 +1014,7 @@ fn return_handler_belongs_to_the_returning_command() {
         [views.child.engine]
         type = "picker"
         [views.child.engine.config]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         [views.child.commands.accept]
         key = "enter"
         label = "Accept"
@@ -1076,7 +1076,7 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
         default_view = "core:default"
 
         [catalog]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
         "#,
     )
     .unwrap();
@@ -1091,7 +1091,7 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
         [views.main.engine]
         type = "picker"
         [views.main.engine.config]
-        items = [{label = "Item", value = "selected-value"}]
+        items = [{display = "Item", value = "selected-value"}]
 
         [views.main.query]
         type = "object"

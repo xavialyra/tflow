@@ -9,7 +9,7 @@ alias = "shell"
 type = "picker"
 
 [views.menu.engine.config]
-items = [{ label = "Open shell" }]
+items = [{ display = "Open shell" }]
 
 [views.menu.commands.open]
 key = "enter"
