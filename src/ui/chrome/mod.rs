@@ -6,7 +6,7 @@ mod layout;
 #[cfg(test)]
 mod frame;
 
-pub(crate) use footer::{FooterModel, FooterRenderer};
+pub(crate) use footer::{FooterModel, FooterRenderer, spans_from_footer_content};
 pub(crate) use host::ContentHost;
 
 #[cfg(test)]

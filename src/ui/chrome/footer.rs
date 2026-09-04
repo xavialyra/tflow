@@ -4,7 +4,7 @@
 //! and active View metadata. It never renders or inspects a View's editor,
 //! cursor, completion, or item list.
 
-use super::{FooterContent, clip, clip_footer, footer_line};
+use super::{FooterContent, clip_footer, footer_line};
 use crate::theme::Theme;
 use crate::view::{BindingSet, ViewLocation};
 use ratatui::Frame;
@@ -20,6 +20,45 @@ pub(crate) struct FooterModel {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: BindingSet,
+}
+
+impl FooterModel {
+    pub(crate) fn commands(&self) -> Vec<(String, String)> {
+        let mut commands = self
+            .bindings
+            .entries()
+            .iter()
+            .filter_map(|binding| {
+                Some((binding.key.binding_name()?, binding.label.as_ref()?.clone()))
+            })
+            .collect::<Vec<_>>();
+        commands.sort_by(|left, right| crate::command::compare_bindings(&left.0, &right.0));
+        commands
+    }
+}
+
+pub(crate) fn spans_from_footer_content(
+    content: &FooterContent,
+    base_style: ratatui::style::Style,
+    key_style: ratatui::style::Style,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for &(start, end) in &content.key_spans {
+        let start = start.max(cursor).min(content.text.len());
+        let end = end.max(start).min(content.text.len());
+        if start > cursor {
+            spans.push(Span::styled(content.text[cursor..start].to_string(), base_style));
+        }
+        if end > start {
+            spans.push(Span::styled(content.text[start..end].to_string(), key_style));
+        }
+        cursor = end;
+    }
+    if cursor < content.text.len() {
+        spans.push(Span::styled(content.text[cursor..].to_string(), base_style));
+    }
+    spans
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,15 +93,7 @@ impl FooterRenderer {
         let footer = if let Some(error) = &model.error {
             FooterContent::plain(error)
         } else {
-            let mut commands = model
-                .bindings
-                .entries()
-                .iter()
-                .filter_map(|binding| {
-                    Some((binding.key.binding_name()?, binding.label.as_ref()?.clone()))
-                })
-                .collect::<Vec<_>>();
-            commands.sort_by(|left, right| crate::command::compare_bindings(&left.0, &right.0));
+            let commands = model.commands();
 
             let view_status = match (model.title.as_deref(), model.status.as_deref()) {
                 (Some(title), Some(status)) if !title.is_empty() && !status.is_empty() => {
@@ -91,23 +122,9 @@ impl FooterRenderer {
         let key_style = theme.chrome.footer_key;
 
         let mut spans = vec![Span::raw(" ".repeat(self.left_padding.min(width)))];
-        let mut cursor = 0;
-        let text = clip(&footer.text, footer_width);
-        for &(start, end) in &footer.key_spans {
-            let start = start.max(cursor).min(text.len());
-            let end = end.max(start).min(text.len());
-            if start > cursor {
-                spans.push(Span::styled(text[cursor..start].to_string(), footer_style));
-            }
-            if end > start {
-                spans.push(Span::styled(text[start..end].to_string(), key_style));
-            }
-            cursor = end;
-        }
-        if cursor < text.len() {
-            spans.push(Span::styled(text[cursor..].to_string(), footer_style));
-        }
-        let used = UnicodeWidthStr::width(text.as_str());
+        let text_spans = spans_from_footer_content(&footer, footer_style, key_style);
+        spans.extend(text_spans);
+        let used = UnicodeWidthStr::width(footer.text.as_str());
         spans.push(Span::styled(
             " ".repeat(footer_width.saturating_sub(used)),
             footer_style,
@@ -118,5 +135,22 @@ impl FooterRenderer {
         spans.push(Span::raw(" ".repeat(remaining)));
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    pub(crate) fn render_blank(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+    ) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let width = area.width as usize;
+        let spaces = " ".repeat(width);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(spaces, theme.chrome.footer))),
+            area,
+        );
     }
 }

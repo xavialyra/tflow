@@ -610,7 +610,7 @@ impl ProtocolSession {
 
         let content_area = content_host.content_area(area);
         let render_context = RenderContext::new(self.terminal, image_picker);
-        let (view, active_render_area) = content_host.render_views(
+        let (view, active_render_area, active_popup_rect) = content_host.render_views(
             frame,
             content_area,
             self.router.stack(),
@@ -646,7 +646,12 @@ impl ProtocolSession {
             bindings,
         };
         let footer_area = content_host.footer_area(area);
-        footer_renderer.render(frame, footer_area, &footer, &self.theme);
+        if let Some(popup_rect) = active_popup_rect {
+            content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
+            footer_renderer.render_blank(frame, footer_area, &self.theme);
+        } else {
+            footer_renderer.render(frame, footer_area, &footer, &self.theme);
+        }
 
         Ok(ProtocolRenderResult { view, footer })
     }
@@ -1409,6 +1414,28 @@ mod tests {
             terminal.backend().buffer().cell((16, 4)).unwrap().symbol(),
             "c"
         );
+        // Popup bottom border contains hints
+        assert_eq!(
+            terminal.backend().buffer().cell((15, 6)).unwrap().symbol(),
+            "└"
+        );
+        assert_eq!(
+            terminal.backend().buffer().cell((24, 6)).unwrap().symbol(),
+            "┘"
+        );
+        let bottom_border: String = (15..=24)
+            .map(|x| terminal.backend().buffer().cell((x, 6)).unwrap().symbol())
+            .collect();
+        assert!(bottom_border.contains("local"));
+
+        // Global footer row (y = 9) is blank while popup is active
+        for x in 0..40 {
+            assert_eq!(
+                terminal.backend().buffer().cell((x, 9)).unwrap().symbol(),
+                " "
+            );
+        }
+
         assert_eq!(rendered.footer.location.label(), "child");
         assert_eq!(rendered.footer.status.as_deref(), Some("child"));
         assert_eq!(
@@ -1529,6 +1556,74 @@ mod tests {
             .unwrap();
         assert_eq!(session.active_error, None);
         assert_eq!(render_footer_error(&mut session, &mut terminal), None);
+    }
+
+    #[test]
+    fn focus_exclusive_status_lifecycle() {
+        let (mut session, _events, _effects) = session();
+        session.start_root(request("root")).unwrap();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        // 1. Root is focused: global footer row (y=9) has root's label and local bindings
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        let footer_row: String = (0..40)
+            .map(|x| terminal.backend().buffer().cell((x, 9)).unwrap().symbol())
+            .collect();
+        assert!(footer_row.contains("root"));
+        assert!(footer_row.contains("local"));
+
+        // 2. Open child popup ('n' key)
+        session
+            .input(InputEvent::Key {
+                key: crate::view::Key::Char('n'),
+                raw: vec![b'n'],
+            })
+            .unwrap();
+
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        // Global footer is blank
+        for x in 0..40 {
+            assert_eq!(
+                terminal.backend().buffer().cell((x, 9)).unwrap().symbol(),
+                " "
+            );
+        }
+        // Child popup (15..=24, y=6) bottom border has local key hints
+        let child_bottom: String = (15..=24)
+            .map(|x| terminal.backend().buffer().cell((x, 6)).unwrap().symbol())
+            .collect();
+        assert!(child_bottom.contains("local"));
+
+        // 3. Child returns to root ('r' key)
+        session
+            .input(InputEvent::Key {
+                key: crate::view::Key::Char('r'),
+                raw: vec![b'r'],
+            })
+            .unwrap();
+
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        // Global footer is restored with root's label and local bindings
+        let restored_footer: String = (0..40)
+            .map(|x| terminal.backend().buffer().cell((x, 9)).unwrap().symbol())
+            .collect();
+        assert!(restored_footer.contains("root"));
+        assert!(restored_footer.contains("local"));
     }
 }
 

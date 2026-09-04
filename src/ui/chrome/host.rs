@@ -15,9 +15,52 @@ use crate::theme::Theme;
 use crate::view::{RenderContext, RenderResult, ViewInstance};
 use anyhow::Result;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn block_title_bottom_alignment() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        terminal
+            .draw(|frame| {
+                let block = Block::bordered()
+                    .title(" title ")
+                    .title_bottom(Line::from(" left ").alignment(Alignment::Left))
+                    .title_bottom(Line::from(" right ").alignment(Alignment::Right));
+                frame.render_widget(block, Rect::new(0, 0, 20, 5));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let top: String = (0..20).map(|x| buffer.cell((x, 0)).unwrap().symbol()).collect();
+        let bottom: String = (0..20).map(|x| buffer.cell((x, 4)).unwrap().symbol()).collect();
+        assert!(top.contains("title"));
+        assert!(bottom.contains("left"));
+        assert!(bottom.contains("right"));
+
+        let mut terminal2 = Terminal::new(TestBackend::new(10, 4)).unwrap();
+        terminal2
+            .draw(|frame| {
+                let block = Block::bordered()
+                    .title(" child ")
+                    .title_bottom(Line::from(" l local ").alignment(Alignment::Right));
+                frame.render_widget(block, Rect::new(0, 0, 10, 4));
+            })
+            .unwrap();
+        let buffer2 = terminal2.backend().buffer();
+        let top2: String = (0..10).map(|x| buffer2.cell((x, 0)).unwrap().symbol()).collect();
+        let bottom2: String = (0..10).map(|x| buffer2.cell((x, 3)).unwrap().symbol()).collect();
+        assert!(top2.contains("child"));
+        assert!(bottom2.contains("local"));
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContentHost {
@@ -113,7 +156,7 @@ impl ContentHost {
         stack: &[ViewInstance],
         render_context: &RenderContext,
         mut render_at: F,
-    ) -> Result<(RenderResult, Rect)>
+    ) -> Result<(RenderResult, Rect, Option<Rect>)>
     where
         F: FnMut(usize, &mut Frame, Rect, &RenderContext) -> Result<RenderResult>,
     {
@@ -131,15 +174,132 @@ impl ContentHost {
         } else {
             0
         };
+        let mut active_popup_rect = None;
         for (index, item) in stack.iter().enumerate().take(active_index + 1).skip(first_popup) {
             let presentation = &item.context.presentation;
             let popup = self.popup_rect(render_area, presentation);
             frame.render_widget(Clear, popup);
-            frame.render_widget(Block::bordered(), popup);
             render_area = self.popup_inner(popup);
-            view = Some(render_at(index, frame, render_area, render_context)?);
+            let rendered = render_at(index, frame, render_area, render_context)?;
+            if index == active_index {
+                active_popup_rect = Some(popup);
+            } else {
+                let mut block = Block::bordered();
+                let label = item.context.location.label();
+                if !label.is_empty() {
+                    let title_budget = (popup.width as usize).saturating_sub(4);
+                    let clipped = super::clip(label, title_budget);
+                    if !clipped.is_empty() {
+                        block = block.title(format!(" {clipped} "));
+                    }
+                }
+                frame.render_widget(block, popup);
+            }
+            view = Some(rendered);
         }
         let view = view.expect("a non-empty Router stack must render an active View");
-        Ok((view, render_area))
+        Ok((view, render_area, active_popup_rect))
+    }
+
+    pub(crate) fn render_active_popup_border(
+        &self,
+        frame: &mut Frame,
+        popup: Rect,
+        model: &super::FooterModel,
+        theme: &Theme,
+    ) {
+        if popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        let mut block = Block::bordered();
+        let title = model
+            .title
+            .as_deref()
+            .unwrap_or_else(|| model.location.label());
+        if !title.is_empty() {
+            let title_budget = (popup.width as usize).saturating_sub(4);
+            let clipped = super::clip(title, title_budget);
+            if !clipped.is_empty() {
+                block = block.title(format!(" {clipped} "));
+            }
+        }
+
+        let bottom_width = (popup.width as usize).saturating_sub(2);
+        if bottom_width > 0 {
+            if let Some(error) = &model.error {
+                let budget = bottom_width.saturating_sub(2);
+                let clipped = super::clip(error, budget);
+                if !clipped.is_empty() {
+                    let span = ratatui::text::Span::styled(format!(" {clipped} "), theme.chrome.error);
+                    block = block.title_bottom(Line::from(span));
+                }
+            } else {
+                let commands = model.commands();
+                let status_text = model.status.as_deref().unwrap_or("");
+                let cmd_content = if commands.is_empty() {
+                    None
+                } else {
+                    Some(super::command_footer(&commands))
+                };
+                let cmd_width = cmd_content
+                    .as_ref()
+                    .map_or(0, |c| UnicodeWidthStr::width(c.text.as_str()));
+                let status_width = if status_text.is_empty() {
+                    0
+                } else {
+                    UnicodeWidthStr::width(status_text)
+                };
+
+                let can_show_both = status_width > 0
+                    && cmd_width > 0
+                    && (status_width + cmd_width + 4 <= bottom_width);
+
+                if can_show_both {
+                    let status_span = ratatui::text::Span::styled(
+                        format!(" {status_text} "),
+                        theme.chrome.footer,
+                    );
+                    block = block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
+
+                    let cmd_spans = super::spans_from_footer_content(
+                        cmd_content.as_ref().unwrap(),
+                        theme.chrome.footer,
+                        theme.chrome.footer_key,
+                    );
+                    let mut right_spans = vec![ratatui::text::Span::raw(" ")];
+                    right_spans.extend(cmd_spans);
+                    right_spans.push(ratatui::text::Span::raw(" "));
+                    block = block.title_bottom(Line::from(right_spans).alignment(Alignment::Right));
+                } else if cmd_width > 0 {
+                    let cmd_spans = if cmd_width <= bottom_width {
+                        super::spans_from_footer_content(
+                            cmd_content.as_ref().unwrap(),
+                            theme.chrome.footer,
+                            theme.chrome.footer_key,
+                        )
+                    } else {
+                        let clipped = super::clip_footer(cmd_content.as_ref().unwrap(), bottom_width);
+                        super::spans_from_footer_content(
+                            &clipped,
+                            theme.chrome.footer,
+                            theme.chrome.footer_key,
+                        )
+                    };
+                    block = block.title_bottom(Line::from(cmd_spans).alignment(Alignment::Right));
+                } else if status_width > 0 {
+                    let status_budget = bottom_width.saturating_sub(2);
+                    let clipped = super::clip(status_text, status_budget);
+                    if !clipped.is_empty() {
+                        let status_span = ratatui::text::Span::styled(
+                            format!(" {clipped} "),
+                            theme.chrome.footer,
+                        );
+                        block = block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
+                    }
+                }
+            }
+        }
+
+        frame.render_widget(block, popup);
     }
 }
