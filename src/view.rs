@@ -3,7 +3,7 @@
 //! This module is the migration boundary for the Input And Navigation Model.
 //! The existing Engine runtime can continue to be hosted by Session while new
 
-use crate::config::ViewPresentation;
+use crate::config::{ViewPresentation, ViewPresentationMode};
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
@@ -741,6 +741,7 @@ pub(crate) struct Router {
     pending_result: Option<ViewResult>,
     result_committed: bool,
     last_error: Option<RouterError>,
+    popup_closed: bool,
 }
 
 impl Router {
@@ -767,6 +768,7 @@ impl Router {
             pending_result: None,
             result_committed: false,
             last_error: None,
+            popup_closed: false,
         }
     }
 
@@ -776,6 +778,26 @@ impl Router {
 
     pub(crate) fn active(&self) -> Option<&ViewInstance> {
         self.stack.last()
+    }
+
+    pub(crate) fn take_popup_closed(&mut self) -> bool {
+        std::mem::take(&mut self.popup_closed)
+    }
+
+    fn pop_view(&mut self) -> Option<ViewInstance> {
+        let view = self.stack.pop()?;
+        if view.context.presentation.mode == ViewPresentationMode::Popup {
+            self.popup_closed = true;
+        }
+        Some(view)
+    }
+
+    fn remove_view(&mut self, index: usize) -> ViewInstance {
+        let view = self.stack.remove(index);
+        if view.context.presentation.mode == ViewPresentationMode::Popup {
+            self.popup_closed = true;
+        }
+        view
     }
 
     #[cfg(test)]
@@ -994,7 +1016,7 @@ impl Router {
             if let Err(error) = self.close_instance_at(previous) {
                 // A replace is atomic across source cleanup. The staged View
                 // must not become visible when the old View cannot close.
-                let mut rejected = self.stack.pop().expect("new View was committed");
+                let mut rejected = self.pop_view().expect("new View was committed");
                 let cleanup_error = deliver_lifecycle(
                     &mut *rejected.view,
                     &rejected.context,
@@ -1037,7 +1059,7 @@ impl Router {
                 }
                 return Err(error);
             }
-            self.stack.remove(previous);
+            self.remove_view(previous);
         }
         // The stack is committed at this point. A source callback is
         // observational, so its failure must not report the committed
@@ -1060,7 +1082,7 @@ impl Router {
             self.record_error(Some(target), &error);
             return Err(error);
         }
-        self.stack.pop();
+        self.pop_view();
         if let Some(previous) = self.stack.last_mut() {
             let previous_id = previous.id;
             previous.state = StackState::Active;
@@ -1467,11 +1489,11 @@ impl Router {
         while self.stack.len() > target + 2 {
             let index = self.stack.len() - 2;
             self.close_instance_at(index)?;
-            self.stack.remove(index);
+            self.remove_view(index);
         }
         if self.stack.len() == 1 {
             self.close_instance_at(0)?;
-            self.stack.pop();
+            self.pop_view();
             self.result_committed = self.pending_result.is_some();
             return Ok(());
         }
@@ -1518,7 +1540,7 @@ impl Router {
             }
             return Err(error);
         }
-        self.stack.pop();
+        self.pop_view();
         let Some(boundary) = call_boundary else {
             self.result_committed = self.pending_result.is_some();
             return Ok(());
@@ -1534,7 +1556,7 @@ impl Router {
     fn close_all(&mut self) -> Result<()> {
         while let Some(index) = self.stack.len().checked_sub(1) {
             self.close_instance_at(index)?;
-            self.stack.pop();
+            self.pop_view();
             if let Some(previous) = self.stack.last_mut() {
                 previous.state = StackState::Active;
             }
@@ -2812,5 +2834,38 @@ mod tests {
             router.take_result().map(|result| result.value),
             Some(Value::String("done".into()))
         );
+    }
+
+    #[test]
+    fn popup_closing_records_popup_closed_flag_in_router() {
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("root", "core:root");
+        routes.insert("child_popup", "core:child_popup");
+        let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
+
+        let root_request = NavigationRequest::new(
+            "root",
+            ParsedQuery::new("core:root", "query", Value::Null),
+        );
+        router.push(root_request).expect("mount succeeds");
+        assert!(!router.take_popup_closed());
+
+        let mut popup_request = NavigationRequest::new(
+            "child_popup",
+            ParsedQuery::new("core:child_popup", "query", Value::Null),
+        );
+        popup_request.presentation.mode = ViewPresentationMode::Popup;
+        router.push(popup_request).expect("mount popup succeeds");
+        assert!(!router.take_popup_closed());
+
+        router
+            .dispatch(ViewEvent::Input(InputEvent::Key {
+                key: Key::Enter,
+                raw: b"\r".to_vec(),
+            }))
+            .unwrap();
+
+        assert!(router.take_popup_closed());
+        assert!(!router.take_popup_closed());
     }
 }

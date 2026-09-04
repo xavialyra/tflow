@@ -530,6 +530,10 @@ impl ProtocolSession {
         &mut self.router
     }
 
+    pub(crate) fn take_popup_closed(&mut self) -> bool {
+        self.router.take_popup_closed()
+    }
+
     pub(crate) fn start_root(&mut self, request: NavigationRequest) -> Result<ViewInstanceId> {
         anyhow::ensure!(
             self.router.stack().is_empty(),
@@ -1739,6 +1743,32 @@ mod tests {
                 "height": 9
             })
         );
+    }
+
+    #[test]
+    fn session_take_popup_closed_tracks_popup_lifecycle() {
+        let (mut session, _events, _effects) = session();
+        session.start_root(request("root")).unwrap();
+        assert!(!session.take_popup_closed());
+
+        // Open child popup ('n' key)
+        session
+            .input(InputEvent::Key {
+                key: crate::view::Key::Char('n'),
+                raw: vec![b'n'],
+            })
+            .unwrap();
+        assert!(!session.take_popup_closed());
+
+        // Child returns to root ('r' key)
+        session
+            .input(InputEvent::Key {
+                key: crate::view::Key::Char('r'),
+                raw: vec![b'r'],
+            })
+            .unwrap();
+        assert!(session.take_popup_closed());
+        assert!(!session.take_popup_closed());
     }
 }
 

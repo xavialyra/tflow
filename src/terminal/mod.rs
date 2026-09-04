@@ -301,6 +301,17 @@ impl Terminal {
         Ok(())
     }
 
+    pub fn clear(&mut self) -> Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(shutdown_error()).context("could not clear Ratatui terminal");
+        }
+        self.write_output(b"\x1b[2J\x1b[H")
+            .context("could not clear terminal screen")?;
+        self.renderer.swap_buffers();
+        self.renderer.swap_buffers();
+        Ok(())
+    }
+
     pub fn size(&self) -> (u16, u16) {
         let mut window: libc::winsize = unsafe { std::mem::zeroed() };
         let result = unsafe { libc::ioctl(self.input_fd, libc::TIOCGWINSZ, &mut window) };
@@ -813,6 +824,52 @@ mod tests {
 
         let picker = terminal.image_picker().expect("image picker should be available");
         assert_eq!(picker.protocol, ProtocolType::Halfblocks);
+
+        drop(terminal);
+        unsafe {
+            libc::close(master);
+            libc::close(slave);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminal_clear_succeeds_and_resets_buffers() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut terminal = Terminal::enter_with_fds_and_cancellation(
+            slave,
+            slave,
+            ImageProtocol::Halfblocks,
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new("initial text"), frame.area());
+            })
+            .unwrap();
+
+        assert!(terminal.clear().is_ok());
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new("after clear"), frame.area());
+            })
+            .unwrap();
 
         drop(terminal);
         unsafe {
