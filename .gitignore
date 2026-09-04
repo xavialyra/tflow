@@ -1,5 +1,6 @@
 /target/
 .pi-subagents/
+.agents/
 
 # Local editor and OS files
 .idea/
