@@ -72,13 +72,25 @@ pub(crate) fn create_protocol_view(
         config.identity.view_ref
     );
     let mount_id = ViewMountId(instance.0);
+    let engine_override = request.engine_options.as_ref();
+    let show_input = engine_override
+        .and_then(|v| v.get("show_input"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let show_divider = engine_override
+        .and_then(|v| v.get("show_divider"))
+        .and_then(Value::as_bool)
+        .unwrap_or(show_input);
+    let show_prefix = engine_override
+        .and_then(|v| v.get("show_prefix"))
+        .and_then(Value::as_bool)
+        .or_else(|| config.engine.field("show_prefix").and_then(Value::as_bool))
+        .unwrap_or(false);
     let options = PickerOptions {
-        show_prefix: config
-            .engine
-            .field("show_prefix")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        show_prefix,
         preview_enabled: config.engine.field("preview").is_some(),
+        show_input,
+        show_divider,
     };
     let preview = super::preview::parse(
         config.engine.field("layout").cloned(),
@@ -88,7 +100,7 @@ pub(crate) fn create_protocol_view(
     let runtime = PickerView::new_with_preview(
         &config.identity.view_ref,
         runtime_services,
-        options,
+        options.clone(),
         preview,
     );
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
@@ -210,6 +222,7 @@ pub(crate) fn create_protocol_view(
         publication_ready: false,
         diagnostic: None,
         content_size: (1, 1),
+        options,
     }))
 }
 
@@ -303,6 +316,7 @@ struct PendingCommand {
 struct PickerProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
+    options: PickerOptions,
     keymap: PickerKeymap,
     bindings: Vec<crate::command::InputActionBinding>,
     commands: crate::protocol::ViewCommandBindings,
@@ -880,6 +894,12 @@ impl PickerProtocolView {
     }
 
     fn apply_key(&mut self, context: &ViewContext, key: Key) -> Result<ViewDecision> {
+        if !self.options.show_input {
+            return match key {
+                Key::Backspace => self.action(context, "picker.back"),
+                _ => Ok(ViewDecision::Stay),
+            };
+        }
         match key {
             Key::Char(character) => {
                 self.editor.insert(character);
@@ -1238,8 +1258,16 @@ impl View for PickerProtocolView {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, context: &RenderContext) -> Result<RenderResult> {
-        let query_height = area.height.min(1);
-        let divider_height = area.height.saturating_sub(query_height).min(1);
+        let query_height = if self.options.show_input {
+            area.height.min(1)
+        } else {
+            0
+        };
+        let divider_height = if self.options.show_divider && query_height > 0 {
+            area.height.saturating_sub(query_height).min(1)
+        } else {
+            0
+        };
         let completion_available = area
             .height
             .saturating_sub(query_height)
@@ -1858,5 +1886,124 @@ mod tests {
             .unwrap();
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn picker_layout_respects_caller_engine_overrides_to_hide_input_and_divider() {
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("core:default", "core:default");
+        let fixture = Arc::new(crate::config::load_test_fixture().unwrap());
+        let tasks = TaskRuntime::new();
+        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
+        let services = crate::engine::picker::PickerRuntimeServices::new(
+            Arc::clone(&fixture),
+            starter,
+            "core:default",
+        )
+        .view_services();
+        let picker_config = config(services);
+
+        let req = request("core:default").with_engine_options(serde_json::json!({
+            "show_input": false,
+            "show_divider": false,
+            "show_prefix": true,
+        }));
+
+        let mut view = create_protocol_view(
+            picker_config,
+            &req,
+            ViewInstanceId(1),
+            &routes,
+        )
+        .unwrap();
+
+        let context = ViewContext::new(ViewInstanceId(1), "core:default");
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context).unwrap();
+
+        view.event(
+            ViewEvent::Task(crate::view::TaskEvent {
+                instance: ViewInstanceId(1),
+                task: crate::view::TaskId(1),
+                generation: 0,
+                outcome: crate::view::TaskOutcome::Completed(serde_json::json!({
+                    "items": [{
+                        "text": "menu option",
+                        "prefix": "ctrl+m",
+                    }]
+                })),
+            }),
+            &context,
+        )
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        view.event(ViewEvent::Tick, &context).unwrap();
+
+        let render_context = RenderContext::new(
+            crate::view::TerminalSize {
+                width: 40,
+                height: 5,
+            },
+            None,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|frame| {
+                let res = view.render(frame, frame.area(), &render_context).unwrap();
+                assert!(res.cursor.is_none(), "Cursor should be hidden when show_input is false");
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // 验证第 0 行直接是列表区域（无输入框与分割线），所以列表提示 (searching...) 直接在第 0 行
+        let row0: String = (0..40).map(|x| buffer.cell((x, 0)).unwrap().symbol()).collect();
+        assert!(row0.contains("(searching...)"), "Row 0 should directly render the items region");
+
+        // 验证全屏没有任何行绘制分割线 ─
+        for y in 0..5 {
+            let row: String = (0..40).map(|x| buffer.cell((x, y)).unwrap().symbol()).collect();
+            assert!(!row.contains('─'), "No row should contain divider when show_divider is false, but row {y} was: {row}");
+        }
+
+        // 验证普通按键不会被写入隐藏的 editor
+        let decision = view.event(ViewEvent::Input(InputEvent::Key { key: Key::Char('z'), raw: vec![] }), &context).unwrap();
+        assert!(matches!(decision, ViewDecision::Stay));
+
+        // 作为对比：验证默认未覆盖时带有输入框和分割线
+        let default_view = create_protocol_view(
+            config(crate::engine::picker::PickerRuntimeServices::new(
+                fixture,
+                MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(2))),
+                "core:default",
+            ).view_services()),
+            &request("core:default"),
+            ViewInstanceId(2),
+            &routes,
+        ).unwrap();
+        let mut default_term = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        default_term.draw(|frame| {
+            let res = default_view.render(frame, frame.area(), &render_context).unwrap();
+            assert!(res.cursor.is_some(), "Cursor should be visible by default");
+        }).unwrap();
+        let def_buf = default_term.backend().buffer();
+        let def_row1: String = (0..40).map(|x| def_buf.cell((x, 1)).unwrap().symbol()).collect();
+        assert!(def_row1.contains('─'), "Default layout row 1 must be divider");
+    }
+
+    #[test]
+    fn builtin_commands_action_specifies_engine_overrides() {
+        let binding = crate::config::CommandBinding::builtin_commands();
+        let action = binding.command_action("commands").expect("commands action should exist");
+        let crate::config::CommandAction::Call { payload } = action else {
+            panic!("commands action must be Call");
+        };
+        let engine = payload.engine.expect("engine options must be configured");
+        let toml::Value::Table(table) = engine else {
+            panic!("engine options must be a table");
+        };
+        assert_eq!(table.get("show_input"), Some(&toml::Value::Boolean(false)));
+        assert_eq!(table.get("show_divider"), Some(&toml::Value::Boolean(false)));
+        assert_eq!(table.get("show_prefix"), Some(&toml::Value::Boolean(true)));
     }
 }

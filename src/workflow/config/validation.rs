@@ -157,6 +157,9 @@ pub(super) fn validate_command_action_requirements(
             if let Some(query) = &payload.query {
                 validate(query, &format!("{consumer} query"), stage)?;
             }
+            if let Some(engine) = &payload.engine {
+                validate(engine, &format!("{consumer} engine"), stage)?;
+            }
             if let Some(then) = &payload.then {
                 validate_command_action_requirements(
                     templates,
@@ -227,6 +230,9 @@ pub(super) fn validate_command_action(
         CommandAction::Call { payload } => {
             validate_target(view_ref, command_id, "call", &payload.target, views)?;
             if let Some(value) = &payload.query {
+                validate_templates(value)?;
+            }
+            if let Some(value) = &payload.engine {
                 validate_templates(value)?;
             }
             if let Some(then) = &payload.then {

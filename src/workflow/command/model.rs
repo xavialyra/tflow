@@ -30,6 +30,7 @@ pub(crate) struct NavigationRequest {
     pub(crate) input: Option<InputSeed>,
     pub(crate) parameters: Option<Value>,
     pub(crate) presentation: ViewPresentation,
+    pub(crate) engine_options: Option<Value>,
 }
 
 impl NavigationRequest {
@@ -39,6 +40,7 @@ impl NavigationRequest {
             input: Some(InputSeed::new(input)),
             parameters: None,
             presentation: ViewPresentation::default(),
+            engine_options: None,
         }
     }
 
@@ -48,6 +50,7 @@ impl NavigationRequest {
             input: None,
             parameters: None,
             presentation: ViewPresentation::default(),
+            engine_options: None,
         }
     }
 
@@ -59,6 +62,11 @@ impl NavigationRequest {
 
     pub(crate) fn with_presentation(mut self, presentation: ViewPresentation) -> Self {
         self.presentation = presentation;
+        self
+    }
+
+    pub(crate) fn with_engine_options(mut self, engine_options: Value) -> Self {
+        self.engine_options = Some(engine_options);
         self
     }
 }

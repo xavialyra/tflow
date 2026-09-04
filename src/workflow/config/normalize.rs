@@ -119,6 +119,16 @@ pub(super) fn inject_builtin_commands_value(config: &mut Value) {
         serde_json::json!({
             "target": "selectors:commands",
             "query": {"commands": "{{ page.commands }}"},
+            "presentation": {
+                "mode": "popup",
+                "width": 72,
+                "height": 16
+            },
+            "engine": {
+                "show_input": false,
+                "show_divider": false,
+                "show_prefix": true
+            },
             "then": {
                 "type": "invoke",
                 "payload": {"command": "{{ result.output.value }}"}

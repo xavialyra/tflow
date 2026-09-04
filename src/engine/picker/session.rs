@@ -21,10 +21,23 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PickerOptions {
     pub(super) show_prefix: bool,
     pub(super) preview_enabled: bool,
+    pub(super) show_input: bool,
+    pub(super) show_divider: bool,
+}
+
+impl Default for PickerOptions {
+    fn default() -> Self {
+        Self {
+            show_prefix: false,
+            preview_enabled: false,
+            show_input: true,
+            show_divider: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1372,10 +1385,7 @@ mod tests {
         let picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         (config, picker)
     }
@@ -1782,10 +1792,7 @@ mod tests {
         let mut picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         let mut first = config.instantiate_parameters("core:default").unwrap();
         let mut second = config.instantiate_parameters("core:default").unwrap();
@@ -1833,10 +1840,7 @@ mod tests {
         let mut picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         let state = config.instantiate_parameters("core:default").unwrap();
         let parameters = config
@@ -1892,10 +1896,7 @@ mod tests {
         let mut picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         let mut state = config.instantiate_parameters("core:default").unwrap();
         config
@@ -1998,10 +1999,7 @@ mod tests {
         let mut picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         picker.frame.selection.replace(vec![Item {
             prefix: String::new(),
@@ -2336,10 +2334,7 @@ mod tests {
         let mut picker = PickerView::new(
             "core:default",
             services,
-            PickerOptions {
-                show_prefix: false,
-                preview_enabled: false,
-            },
+            PickerOptions::default(),
         );
         let parameters = ParameterSnapshot::from_parts(
             serde_json::json!({"query": "current"}),
@@ -2482,8 +2477,8 @@ mod tests {
             "core:default",
             services,
             PickerOptions {
-                show_prefix: false,
                 preview_enabled: true,
+                ..Default::default()
             },
             preview,
         );

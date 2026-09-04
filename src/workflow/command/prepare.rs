@@ -145,11 +145,19 @@ fn prepare_action(
                 .as_ref()
                 .map(|value| evaluate_value(config, &snapshot, stage, value))
                 .transpose()?;
-            let request = match parameters {
+            let engine_options = payload
+                .engine
+                .as_ref()
+                .map(|value| evaluate_value(config, &snapshot, stage, value))
+                .transpose()?;
+            let mut request = match parameters {
                 Some(parameters) => NavigationRequest::new(target, "").with_parameters(parameters),
                 None => NavigationRequest::with_defaults(target),
             }
             .with_presentation(payload.presentation.clone());
+            if let Some(engine) = engine_options {
+                request = request.with_engine_options(engine);
+            }
             Ok(PreparedAction::Call(CallRequest {
                 request,
                 origin: invocation.origin(),

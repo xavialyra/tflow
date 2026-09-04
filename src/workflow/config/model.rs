@@ -431,6 +431,8 @@ pub struct CallPayload {
     #[serde(default)]
     pub presentation: ViewPresentation,
     #[serde(default)]
+    pub engine: Option<toml::Value>,
+    #[serde(default)]
     pub then: Option<Box<CommandAction>>,
 }
 
@@ -532,6 +534,10 @@ impl CommandBinding {
             "commands".to_string(),
             toml::Value::String("{{ page.commands }}".to_string()),
         );
+        let mut engine = toml::map::Map::new();
+        engine.insert("show_input".to_string(), toml::Value::Boolean(false));
+        engine.insert("show_divider".to_string(), toml::Value::Boolean(false));
+        engine.insert("show_prefix".to_string(), toml::Value::Boolean(true));
         Some(CommandAction::Call {
             payload: CallPayload {
                 target: toml::Value::String("selectors:commands".to_string()),
@@ -541,6 +547,7 @@ impl CommandBinding {
                     width: Some(72),
                     height: Some(16),
                 },
+                engine: Some(toml::Value::Table(engine)),
                 then: Some(Box::new(CommandAction::Invoke {
                     payload: InvokePayload {
                         command: toml::Value::String("{{ result.output.value }}".to_string()),

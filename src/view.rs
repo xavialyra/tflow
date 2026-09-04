@@ -287,6 +287,7 @@ pub(crate) struct NavigationRequest {
     pub(crate) query: ParsedQuery,
     pub(crate) input: Option<ViewInputSeed>,
     pub(crate) presentation: ViewPresentation,
+    pub(crate) engine_options: Option<Value>,
 }
 
 impl NavigationRequest {
@@ -296,6 +297,7 @@ impl NavigationRequest {
             query,
             input: None,
             presentation: ViewPresentation::default(),
+            engine_options: None,
         }
     }
 
@@ -306,6 +308,12 @@ impl NavigationRequest {
         }
         self.input = Some(ViewInputSeed { text, cursor });
         Ok(self)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_engine_options(mut self, engine_options: Value) -> Self {
+        self.engine_options = Some(engine_options);
+        self
     }
 }
 

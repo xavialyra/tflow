@@ -426,6 +426,7 @@ fn protocol_navigation_request(
         protocol_request = protocol_request.with_input(text, cursor)?;
     }
     protocol_request.presentation = request.presentation;
+    protocol_request.engine_options = request.engine_options;
     Ok(protocol_request)
 }
 
