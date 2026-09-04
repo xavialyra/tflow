@@ -64,7 +64,6 @@ mod tests {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContentHost {
-    pub(crate) top_padding: u16,
     pub(crate) left_padding: u16,
     pub(crate) right_padding: u16,
     pub(crate) footer_rows: u16,
@@ -73,7 +72,6 @@ pub(crate) struct ContentHost {
 impl Default for ContentHost {
     fn default() -> Self {
         Self {
-            top_padding: 1,
             left_padding: 1,
             right_padding: 1,
             footer_rows: 1,
@@ -82,15 +80,15 @@ impl Default for ContentHost {
 }
 
 impl ContentHost {
-    pub(crate) fn content_area(&self, terminal: Rect) -> Rect {
+    pub(crate) fn content_area(&self, terminal: Rect, top_padding: u16) -> Rect {
         let x = terminal.x.saturating_add(self.left_padding);
-        let y = terminal.y.saturating_add(self.top_padding);
+        let y = terminal.y.saturating_add(top_padding);
         let width = terminal
             .width
             .saturating_sub(self.left_padding.saturating_add(self.right_padding));
         let height = terminal
             .height
-            .saturating_sub(self.top_padding.saturating_add(self.footer_rows));
+            .saturating_sub(top_padding.saturating_add(self.footer_rows));
         Rect::new(x, y, width, height)
     }
 
@@ -129,12 +127,17 @@ impl ContentHost {
     }
 
     pub(crate) fn active_content_area(&self, stack: &[ViewInstance], terminal: Rect) -> Rect {
-        let mut area = self.content_area(terminal);
         let Some(active_index) = stack.len().checked_sub(1) else {
-            return area;
+            return self.content_area(terminal, 0);
         };
-        let first_popup = self
-            .visible_base_index(stack, active_index)
+        let base_index = self.visible_base_index(stack, active_index);
+        let top_padding = base_index
+            .or(Some(0))
+            .and_then(|index| stack.get(index))
+            .map(|entry| entry.view.preferred_top_inset())
+            .unwrap_or(0);
+        let mut area = self.content_area(terminal, top_padding);
+        let first_popup = base_index
             .map(|index| index.saturating_add(1))
             .unwrap_or(0);
         for item in stack.iter().take(active_index + 1).skip(first_popup) {

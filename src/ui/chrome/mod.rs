@@ -443,13 +443,19 @@ mod tests {
     fn content_host_owns_top_and_horizontal_padding() {
         let host = ContentHost::default();
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-        let content = host.content_area(area);
+        let content = host.content_area(area, 1);
         let footer = host.footer_area(area);
 
         assert_eq!(content.x, 1);
         assert_eq!(content.y, 1);
         assert_eq!(content.width, 78);
         assert_eq!(content.height, 22);
+
+        let content_zero_top = host.content_area(area, 0);
+        assert_eq!(content_zero_top.x, 1);
+        assert_eq!(content_zero_top.y, 0);
+        assert_eq!(content_zero_top.width, 78);
+        assert_eq!(content_zero_top.height, 23);
 
         assert_eq!(footer.x, 0);
         assert_eq!(footer.y, 23);

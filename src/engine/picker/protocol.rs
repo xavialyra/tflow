@@ -961,6 +961,10 @@ impl PickerProtocolView {
 }
 
 impl View for PickerProtocolView {
+    fn preferred_top_inset(&self) -> u16 {
+        1
+    }
+
     fn bindings(&self, _: &ViewContext) -> BindingSet {
         let commands = self.commands.view_bindings();
         let mut entries = commands

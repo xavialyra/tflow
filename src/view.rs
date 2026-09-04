@@ -475,6 +475,10 @@ fn validate_batch(decisions: &[ViewDecision]) -> Result<()> {
 }
 
 pub(crate) trait View {
+    fn preferred_top_inset(&self) -> u16 {
+        0
+    }
+
     fn bindings(&self, context: &ViewContext) -> BindingSet;
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {

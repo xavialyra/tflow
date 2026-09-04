@@ -608,7 +608,13 @@ impl ProtocolSession {
 
         content_host.render_frame_background(frame, area, &self.theme);
 
-        let content_area = content_host.content_area(area);
+        let base_index = content_host.visible_base_index(self.router.stack(), active_index);
+        let top_padding = base_index
+            .or(Some(0))
+            .and_then(|index| self.router.stack().get(index))
+            .map(|entry| entry.view.preferred_top_inset())
+            .unwrap_or(0);
+        let content_area = content_host.content_area(area, top_padding);
         let render_context = RenderContext::new(self.terminal, image_picker);
         let (view, active_render_area, active_popup_rect) = content_host.render_views(
             frame,
@@ -775,6 +781,14 @@ mod tests {
     }
 
     impl View for SyntheticView {
+        fn preferred_top_inset(&self) -> u16 {
+            if self.target == "zero_inset" {
+                0
+            } else {
+                1
+            }
+        }
+
         fn bindings(&self, _: &ViewContext) -> BindingSet {
             BindingSet::new([Binding {
                 key: crate::view::Key::Char('l'),
@@ -963,6 +977,7 @@ mod tests {
         routes.insert("root", "root");
         routes.insert("child", "child");
         routes.insert("grandchild", "grandchild");
+        routes.insert("zero_inset", "zero_inset");
         let router = Router::new(
             Box::new(routes),
             Box::new(Factory {
@@ -1624,6 +1639,40 @@ mod tests {
             .collect();
         assert!(restored_footer.contains("root"));
         assert!(restored_footer.contains("local"));
+    }
+
+    #[test]
+    fn view_preferred_top_inset_controls_content_area_top_offset_and_resize() {
+        let (mut session, _, _) = session();
+        session.start_root(request("zero_inset")).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        // zero_inset has preferred_top_inset() == 0, so content starts at y = 0
+        assert_eq!(
+            terminal.backend().buffer().cell((1, 0)).unwrap().symbol(),
+            "z"
+        );
+
+        // resize dispatches height = 10 - 0 (top) - 1 (footer) = 9
+        session
+            .resize(TerminalSize {
+                width: 40,
+                height: 10,
+            })
+            .unwrap();
+        assert_eq!(
+            session.router().stack()[0].view.command_snapshot().runtime,
+            serde_json::json!({
+                "width": 38,
+                "height": 9
+            })
+        );
     }
 }
 
