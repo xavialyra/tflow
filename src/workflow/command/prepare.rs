@@ -430,17 +430,29 @@ fn package_id(view_ref: &str) -> &str {
         .unwrap_or(view_ref)
 }
 
-pub(crate) fn collect_page_owner_commands(
+pub(crate) fn collect_available_commands(
     config: &Config,
     page_view: &str,
     owner_view: Option<&str>,
+    include_globals: bool,
 ) -> Result<BTreeMap<String, Value>> {
     let mut commands = BTreeMap::new();
+    if include_globals {
+        for (id, command) in config.session_commands() {
+            if id != "commands" {
+                commands.insert(
+                    format!("session/{id}"),
+                    runtime_command_value("session", &id, &command)?,
+                );
+            }
+        }
+    }
     if let Some(page) = config.view(page_view) {
         for (id, command) in &page.commands {
-            let key = normalize_key(&command.key)
-                .with_context(|| format!("invalid command key for {page_view}/{id}"))?;
-            commands.insert(key, runtime_command_value(page_view, id, command)?);
+            commands.insert(
+                format!("{page_view}/{id}"),
+                runtime_command_value(page_view, id, command)?,
+            );
         }
     }
     if let Some(owner_view) = owner_view.filter(|owner| *owner != page_view) {
@@ -448,12 +460,21 @@ pub(crate) fn collect_page_owner_commands(
             return Ok(commands);
         };
         for (id, command) in &owner.commands {
-            let key = normalize_key(&command.key)
-                .with_context(|| format!("invalid command key for {owner_view}/{id}"))?;
-            commands.insert(key, runtime_command_value(owner_view, id, command)?);
+            commands.insert(
+                format!("{owner_view}/{id}"),
+                runtime_command_value(owner_view, id, command)?,
+            );
         }
     }
     Ok(commands)
+}
+
+pub(crate) fn collect_page_owner_commands(
+    config: &Config,
+    page_view: &str,
+    owner_view: Option<&str>,
+) -> Result<BTreeMap<String, Value>> {
+    collect_available_commands(config, page_view, owner_view, false)
 }
 
 pub(crate) fn resolve_visible_command(
@@ -463,7 +484,7 @@ pub(crate) fn resolve_visible_command(
 ) -> Result<CommandInvocation> {
     let owner = (context.owner.view_ref != context.page.view_ref)
         .then_some(context.owner.view_ref.as_str());
-    let visible = collect_page_owner_commands(config, &context.page.view_ref, owner)?;
+    let visible = collect_available_commands(config, &context.page.view_ref, owner, true)?;
     let is_visible = visible.values().any(|value| {
         value.get("ref").is_some_and(|value| {
             value.get("view").and_then(Value::as_str) == Some(reference.view.as_str())
@@ -477,17 +498,35 @@ pub(crate) fn resolve_visible_command(
             reference.id
         );
     }
-    let command = config
+    if reference.view == "session" {
+        if let Some(cmd) = config.session_command(&reference.id) {
+            return Ok(CommandInvocation::session_command(
+                &context.page.view_ref,
+                &reference.id,
+                cmd,
+            ));
+        }
+    }
+    if let Some(command) = config
         .view(&reference.view)
         .and_then(|view| view.commands.get(&reference.id))
         .cloned()
-        .with_context(|| {
-            format!(
-                "command {:?} is not configured for view {:?}",
-                reference.id, reference.view
-            )
-        })?;
-    Ok(CommandInvocation::view(reference.clone(), command))
+    {
+        return Ok(CommandInvocation::view(reference.clone(), command));
+    }
+    if reference.view == context.page.view_ref {
+        if let Some(cmd) = config.session_command(&reference.id) {
+            return Ok(CommandInvocation::session_command(
+                &context.page.view_ref,
+                &reference.id,
+                cmd,
+            ));
+        }
+    }
+    bail!(
+        "command {:?} is not configured for view {:?}",
+        reference.id, reference.view
+    );
 }
 
 pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
@@ -499,8 +538,11 @@ pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 pub(crate) fn runtime_command_value(owner: &str, id: &str, command: &Command) -> Result<Value> {
-    let key = normalize_key(&command.key)
-        .with_context(|| format!("invalid command key for {owner}/{id}"))?;
+    let key = match &command.key {
+        Some(raw) => normalize_key(raw)
+            .with_context(|| format!("invalid command key for {owner}/{id}"))?,
+        None => String::new(),
+    };
     Ok(json!({
         "ref": {"view": owner, "id": id},
         "owner": owner,
@@ -601,7 +643,7 @@ mod tests {
                 id: "run".to_string(),
             },
             Command {
-                key: "enter".to_string(),
+                key: Some("enter".to_string()),
                 label: "Run".to_string(),
                 scope: CommandScope::View,
                 requires: crate::config::CommandRequirement::Input,
@@ -696,7 +738,7 @@ mod tests {
             .insert(
                 "__session_local".to_string(),
                 Command {
-                    key: "ctrl+l".to_string(),
+                    key: Some("ctrl+l".to_string()),
                     label: "Local".to_string(),
                     scope: CommandScope::View,
                     requires: crate::config::CommandRequirement::Input,

@@ -40,6 +40,23 @@ impl ViewLocation {
 pub(crate) struct ViewPublication {
     pub(crate) current: Value,
     pub(crate) ready: bool,
+    pub(crate) dynamic_commands: Vec<crate::command::CommandRef>,
+}
+
+impl ViewPublication {
+    pub(crate) fn new(current: Value, ready: bool) -> Self {
+        Self {
+            current,
+            ready,
+            dynamic_commands: Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_dynamic_commands(mut self, dynamic_commands: Vec<crate::command::CommandRef>) -> Self {
+        self.dynamic_commands = dynamic_commands;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,6 +220,8 @@ pub(crate) struct ViewChrome {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: Option<BindingSet>,
+    pub(crate) overflow_command: Option<(String, String)>,
+    pub(crate) has_unbound: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -489,6 +508,11 @@ pub(crate) trait View {
             publication: None,
             revision: 0,
         }
+    }
+
+    #[allow(dead_code)]
+    fn publication(&self) -> Option<&ViewPublication> {
+        None
     }
 
     fn chrome(&self, context: &ViewContext) -> Result<ViewChrome> {

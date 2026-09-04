@@ -3238,3 +3238,54 @@ fn qualified_view_path_navigates_to_any_engine() {
     );
     fs::remove_dir_all(root).expect("could not remove qualified route config");
 }
+
+#[test]
+fn ctrl_k_in_embedded_view_displays_embedded_commands() {
+    let root = temporary_root();
+    let marker = root.join("resource-marker");
+    let bin = root.join("bin");
+    let fake_btop = bin.join("btop");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        &fake_btop,
+        "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let mut process = spawn_launcher_with_args_and_env(
+        &fixture_config(),
+        &[],
+        &[
+            ("MONITOR_MARKER", marker.to_str().unwrap()),
+            ("PATH", &path),
+        ],
+    );
+    wait_for_ready(&process.master);
+    process.master.write_all(b"btop:main ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "btop / cpu");
+
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Next resource");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "btop / cpu");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "core:default");
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

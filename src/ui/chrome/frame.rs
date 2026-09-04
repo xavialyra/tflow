@@ -213,6 +213,7 @@ impl ChromeFrame {
                 status.as_deref().unwrap_or(""),
                 &commands,
                 overflow_command.as_ref(),
+                false,
             )
         };
         let left_padding = " ".repeat(layout.input.padding.left);

@@ -23,6 +23,14 @@ type = "navigate"
 target = "sys:output"
 query = "{{ selection.text }}"
 
+[views.main.commands.info]
+label = "Info"
+type = "navigate"
+
+[views.main.commands.info.payload]
+target = "sys:output"
+query = "{{ selection.text }}"
+
 [views.output.engine]
 type = "capture"
 

@@ -552,7 +552,7 @@ impl CommandBinding {
 
     pub(crate) fn as_command(&self, id: &str) -> Option<Command> {
         Some(Command {
-            key: self.key(id)?.to_string(),
+            key: self.key(id).map(str::to_string),
             label: self.label(id)?.to_string(),
             scope: CommandScope::View,
             requires: CommandRequirement::Input,
@@ -564,7 +564,8 @@ impl CommandBinding {
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Command {
-    pub key: String,
+    #[serde(default)]
+    pub key: Option<String>,
     pub label: String,
     #[serde(default)]
     pub scope: CommandScope,
@@ -574,6 +575,13 @@ pub struct Command {
     pub passthrough: bool,
     #[serde(flatten)]
     pub action: CommandAction,
+}
+
+impl Command {
+    #[allow(dead_code)]
+    pub fn has_key(&self) -> bool {
+        self.key.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

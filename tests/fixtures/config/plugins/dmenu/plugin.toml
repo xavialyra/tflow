@@ -46,3 +46,17 @@ args = [
   "{{ selection }}",
   "{{ page.input }}",
 ]
+
+[views.main.commands.copy]
+label = "Copy selection"
+requires = "input"
+type = "return"
+
+[views.main.commands.copy.payload]
+handler = "scripts/result.sh"
+args = [
+  "{{ view.query }}",
+  "{{ input.stdin }}",
+  "{{ selection }}",
+  "{{ page.input }}",
+]

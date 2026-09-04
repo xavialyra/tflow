@@ -86,18 +86,21 @@ fn picker_command(
     view_ref: &str,
     command_id: &str,
     command: &crate::config::Command,
-) -> Result<PickerSelectionCommand> {
-    let key_name = normalize_key(&command.key)
+) -> Result<Option<PickerSelectionCommand>> {
+    let Some(raw_key) = &command.key else {
+        return Ok(None);
+    };
+    let key_name = normalize_key(raw_key)
         .with_context(|| format!("invalid command key for {view_ref}/{command_id}"))?;
     let key = Key::parse_binding(&key_name)
         .with_context(|| format!("invalid command key for {view_ref}/{command_id}"))?;
-    Ok(PickerSelectionCommand {
+    Ok(Some(PickerSelectionCommand {
         id: command_id.to_string(),
         key,
         label: command.label.clone(),
         requires_items: command.requires == crate::config::CommandRequirement::Items,
         visibility: CommandBindingVisibility::Always,
-    })
+    }))
 }
 
 fn collect_page_item_commands(
@@ -109,7 +112,7 @@ fn collect_page_item_commands(
     };
     view.commands
         .iter()
-        .map(|(id, command)| picker_command(view_ref, id, command))
+        .filter_map(|(id, command)| picker_command(view_ref, id, command).transpose())
         .collect()
 }
 
@@ -158,10 +161,13 @@ impl PickerViewServices {
             let mut page_item_commands = Vec::new();
             let mut selection_commands = Vec::new();
             for (command_id, command) in &view.commands {
-                page_item_commands.push(picker_command(&view_ref, command_id, command)?);
-                if command.scope == CommandScope::Selection {
-                    selection_commands.push(picker_command(&view_ref, command_id, command)?);
-                } else {
+                if let Some(selection_command) = picker_command(&view_ref, command_id, command)? {
+                    page_item_commands.push(selection_command.clone());
+                    if command.scope == CommandScope::Selection {
+                        selection_commands.push(selection_command);
+                    }
+                }
+                if command.scope != CommandScope::Selection {
                     services
                         .non_selection_commands
                         .insert((view_ref.clone(), command_id.clone()));

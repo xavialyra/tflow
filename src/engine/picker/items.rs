@@ -659,7 +659,7 @@ mod tests {
                 commands: BTreeMap::from([(
                     "open".to_string(),
                     Command {
-                        key: "enter".to_string(),
+                        key: Some("enter".to_string()),
                         label: "Open".to_string(),
                         scope: crate::config::CommandScope::Selection,
                         requires: crate::config::CommandRequirement::Items,

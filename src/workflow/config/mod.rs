@@ -241,6 +241,31 @@ impl Config {
         evaluate(&state)
     }
 
+    pub(crate) fn session_command(&self, id: &str) -> Option<Command> {
+        let binding = self.commands.bindings.get(id).cloned().or_else(|| {
+            (id == "commands" && self.view("selectors:commands").is_some())
+                .then(CommandBinding::builtin_commands)
+        })?;
+        binding.as_command(id)
+    }
+
+    pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
+        let mut globals = self.commands.bindings.clone();
+        if !globals.contains_key("commands") && self.view("selectors:commands").is_some() {
+            globals.insert(
+                "commands".to_string(),
+                CommandBinding::builtin_commands(),
+            );
+        }
+        globals
+            .into_iter()
+            .filter_map(|(id, binding)| {
+                let cmd = binding.as_command(&id)?;
+                Some((id, cmd))
+            })
+            .collect()
+    }
+
 
     pub(crate) fn update_sanitized_initial_parameter_values(
         &self,
@@ -1714,5 +1739,34 @@ mod tests {
                 .and_then(toml::Value::as_str),
             Some("{{ view.query }}")
         );
+    }
+
+    #[test]
+    fn unbound_commands_are_valid_and_do_not_collide() {
+        let loaded = config(
+            r#"
+            default_view = "base:main"
+            [plugins.base.views.main.engine]
+            type = "picker"
+            [plugins.base.views.main.commands.cmd_one]
+            label = "Command One"
+            type = "return"
+            [plugins.base.views.main.commands.cmd_one.payload]
+            value = "one"
+
+            [plugins.base.views.main.commands.cmd_two]
+            label = "Command Two"
+            type = "return"
+            [plugins.base.views.main.commands.cmd_two.payload]
+            value = "two"
+            "#,
+        );
+        validate_config(&loaded).unwrap();
+        let cmd1 = &loaded.compiled.views["base:main"].commands["cmd_one"];
+        let cmd2 = &loaded.compiled.views["base:main"].commands["cmd_two"];
+        assert_eq!(cmd1.key, None);
+        assert_eq!(cmd2.key, None);
+        assert!(!cmd1.has_key());
+        assert!(!cmd2.has_key());
     }
 }

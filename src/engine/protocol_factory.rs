@@ -64,9 +64,10 @@ impl ProtocolViewFactory {
 
     fn runtime_snapshot(&self, target: &str, parameters: &ParameterSnapshot) -> Result<Value> {
         let raw = parameters.raw_input();
-        let commands = crate::command::collect_page_owner_commands(&self.config, target, None)?
-            .into_values()
-            .collect::<Vec<_>>();
+        let commands =
+            crate::command::collect_available_commands(&self.config, target, None, true)?
+                .into_values()
+                .collect::<Vec<_>>();
         Ok(serde_json::json!({
             "view": {"current": {
                 "ref": target,
@@ -226,6 +227,7 @@ impl ViewFactory for ProtocolViewFactory {
                             .current_fields,
                     )?,
                     self.cancellation.observer(),
+                    runtime_snapshot,
                     self.theme,
                 ),
                 request,

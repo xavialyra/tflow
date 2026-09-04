@@ -272,10 +272,10 @@ impl CaptureProtocolView {
 
     fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
         if let Some(publication) = emission.publication() {
-            self.publication = Some(ViewPublication {
-                current: publication.current().clone(),
-                ready: publication.ready,
-            });
+            self.publication = Some(ViewPublication::new(
+                publication.current().clone(),
+                publication.ready,
+            ));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
     }
@@ -431,10 +431,10 @@ impl CaptureProtocolView {
             self.apply_notice(&notice);
         }
         if let Some(publication) = publication {
-            self.publication = Some(ViewPublication {
-                current: publication.current,
-                ready: publication.ready,
-            });
+            self.publication = Some(ViewPublication::new(
+                publication.current,
+                publication.ready,
+            ));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
         Ok(ViewDecision::Invalidate)
@@ -473,6 +473,10 @@ impl View for CaptureProtocolView {
         )
     }
 
+    fn publication(&self) -> Option<&ViewPublication> {
+        self.publication.as_ref()
+    }
+
     fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
@@ -482,6 +486,8 @@ impl View for CaptureProtocolView {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
+            overflow_command: self.commands.overflow_command(),
+            has_unbound: self.commands.has_unbound(),
         })
     }
 
@@ -537,6 +543,23 @@ impl View for CaptureProtocolView {
             ),
             ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
                 if let Some(binding) = self.commands.binding(key) {
+                    let is_overflow = self
+                        .commands
+                        .overflow_binding
+                        .as_ref()
+                        .is_some_and(|b| b.key.binding_identity() == key.binding_identity());
+                    if is_overflow {
+                        let model = self.runtime.render_model();
+                        let chrome = self.renderer.chrome(&model);
+                        let is_active = self.commands.is_palette_active(
+                            self.content_size.0 as usize,
+                            chrome.title.as_deref(),
+                            self.status.as_deref().or(chrome.status.as_deref()),
+                        );
+                        if !is_active {
+                            return Ok(ViewDecision::Stay);
+                        }
+                    }
                     if !self
                         .publication
                         .as_ref()

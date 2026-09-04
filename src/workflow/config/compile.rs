@@ -81,12 +81,14 @@ fn validate_view_bootstrap_requirements(
             )?;
         }
         for (command_id, command) in &view.commands {
-            super::validation::validate_string_requirements(
-                templates,
-                &command.key,
-                EvaluationStage::Bootstrap,
-                &format!("view {view_ref:?} command {command_id:?} key"),
-            )?;
+            if let Some(key) = &command.key {
+                super::validation::validate_string_requirements(
+                    templates,
+                    key,
+                    EvaluationStage::Bootstrap,
+                    &format!("view {view_ref:?} command {command_id:?} key"),
+                )?;
+            }
             super::validation::validate_string_requirements(
                 templates,
                 &command.label,

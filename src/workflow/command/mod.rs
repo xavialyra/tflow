@@ -8,6 +8,6 @@ pub(crate) use model::{
     ReturnAdapter, ViewOutput, ViewOutputItem, ViewReturn,
 };
 pub(crate) use prepare::{
-    PreparedAction, collect_page_owner_commands, compare_bindings, prepare_command_action,
-    prepare_continuation, return_value,
+    PreparedAction, collect_available_commands, collect_page_owner_commands, compare_bindings,
+    prepare_command_action, prepare_continuation, return_value,
 };

@@ -102,12 +102,35 @@ pub(crate) fn divider_line(width: usize, label: &str) -> String {
     format!("{} {}", label, "─".repeat(width - label_width - 1))
 }
 
+pub(crate) fn is_palette_active(
+    width: usize,
+    title: Option<&str>,
+    status: Option<&str>,
+    commands: &[(String, String)],
+    has_unbound: bool,
+) -> bool {
+    if has_unbound {
+        return true;
+    }
+    if width == 0 {
+        return false;
+    }
+    let left = footer_label(title, status.unwrap_or(""));
+    let complete = command_footer(commands);
+    let separator_width = if !left.is_empty() && !complete.text.is_empty() { 2 } else { 0 };
+    let complete_width = UnicodeWidthStr::width(left.as_str())
+        + separator_width
+        + UnicodeWidthStr::width(complete.text.as_str());
+    complete_width > width
+}
+
 pub(super) fn footer_line(
     width: usize,
     title: Option<&str>,
     status: &str,
     commands: &[(String, String)],
     overflow_command: Option<&(String, String)>,
+    has_unbound: bool,
 ) -> FooterContent {
     if width == 0 {
         return FooterContent::default();
@@ -124,23 +147,47 @@ pub(super) fn footer_line(
     let complete_width = UnicodeWidthStr::width(left.as_str())
         + complete_separator
         + UnicodeWidthStr::width(complete.text.as_str());
-    if complete_width > width
-        && let Some(overflow_command) = overflow_command
-    {
-        visible_commands.clear();
-        visible_commands.push(overflow_command.clone());
-        for command in commands {
-            let mut candidate = visible_commands.clone();
-            candidate.insert(candidate.len() - 1, command.clone());
-            let right = command_footer(&candidate);
+    if let Some(overflow_command) = overflow_command {
+        if complete_width > width {
+            visible_commands.clear();
+            visible_commands.push(overflow_command.clone());
+            for command in commands {
+                let mut candidate = visible_commands.clone();
+                candidate.insert(candidate.len() - 1, command.clone());
+                let right = command_footer(&candidate);
+                let candidate_separator = if left.is_empty() { 0 } else { separator_width };
+                let needed = UnicodeWidthStr::width(left.as_str())
+                    + candidate_separator
+                    + UnicodeWidthStr::width(right.text.as_str());
+                if needed > width {
+                    break;
+                }
+                visible_commands = candidate;
+            }
+        } else if has_unbound {
+            visible_commands.push(overflow_command.clone());
+            let right = command_footer(&visible_commands);
             let candidate_separator = if left.is_empty() { 0 } else { separator_width };
             let needed = UnicodeWidthStr::width(left.as_str())
                 + candidate_separator
                 + UnicodeWidthStr::width(right.text.as_str());
             if needed > width {
-                break;
+                visible_commands.clear();
+                visible_commands.push(overflow_command.clone());
+                for command in commands {
+                    let mut candidate = visible_commands.clone();
+                    candidate.insert(candidate.len() - 1, command.clone());
+                    let right = command_footer(&candidate);
+                    let candidate_separator = if left.is_empty() { 0 } else { separator_width };
+                    let needed = UnicodeWidthStr::width(left.as_str())
+                        + candidate_separator
+                        + UnicodeWidthStr::width(right.text.as_str());
+                    if needed > width {
+                        break;
+                    }
+                    visible_commands = candidate;
+                }
             }
-            visible_commands = candidate;
         }
     }
     let right = command_footer(&visible_commands);

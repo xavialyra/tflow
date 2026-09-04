@@ -16,6 +16,8 @@ use ratatui::{Frame, layout::Rect};
 #[derive(Clone)]
 pub(crate) struct ViewCommandBindings {
     pub(crate) bindings: Vec<ProtocolCommandBinding>,
+    pub(crate) overflow_binding: Option<ProtocolCommandBinding>,
+    pub(crate) has_unbound: bool,
     view_invocations:
         std::collections::BTreeMap<(String, String), crate::command::CommandInvocation>,
     pub(crate) current_fields: &'static [&'static str],
@@ -25,6 +27,8 @@ pub(crate) struct ViewCommandBindings {
 pub(crate) struct ProtocolCommandBinding {
     pub(crate) key: crate::view::Key,
     pub(crate) label: Option<String>,
+    #[allow(dead_code)]
+    pub(crate) visibility: crate::config::CommandBindingVisibility,
     pub(crate) invocation: crate::command::CommandInvocation,
 }
 
@@ -36,6 +40,7 @@ impl ViewCommandBindings {
         current_fields: &'static [&'static str],
     ) -> anyhow::Result<Self> {
         let mut bindings = Vec::new();
+        let mut overflow_binding = None;
         let mut add = |id: String,
                        binding: &crate::config::CommandBinding,
                        invocation|
@@ -43,12 +48,21 @@ impl ViewCommandBindings {
             let Some(key) = binding.key(&id) else {
                 return Ok(());
             };
+            let visibility = binding
+                .visibility(&id)
+                .unwrap_or(crate::config::CommandBindingVisibility::Always);
             let key = crate::view::Key::parse_binding(&crate::config::normalize_key(key)?)?;
-            bindings.push(ProtocolCommandBinding {
+            let entry = ProtocolCommandBinding {
                 key,
                 label: binding.label(&id).map(str::to_string),
+                visibility,
                 invocation,
-            });
+            };
+            if visibility == crate::config::CommandBindingVisibility::Overflow {
+                overflow_binding = Some(entry);
+            } else {
+                bindings.push(entry);
+            }
             Ok(())
         };
         if let Some(view) = config.view(view_ref) {
@@ -56,7 +70,7 @@ impl ViewCommandBindings {
                 add(
                     id.clone(),
                     &crate::config::CommandBinding {
-                        key: Some(command.key.clone()),
+                        key: command.key.clone(),
                         label: Some(command.label.clone()),
                         visibility: None,
                         action: Some(command.action.clone()),
@@ -105,17 +119,60 @@ impl ViewCommandBindings {
                 })
             })
             .collect();
+        let has_unbound = config
+            .view(view_ref)
+            .is_some_and(|view| view.commands.values().any(|command| command.key.is_none()))
+            || config
+                .session_commands()
+                .values()
+                .any(|command| command.key.is_none());
         Ok(Self {
             bindings,
+            overflow_binding,
+            has_unbound,
             view_invocations,
             current_fields,
         })
+    }
+
+    pub(crate) fn overflow_command(&self) -> Option<(String, String)> {
+        let b = self.overflow_binding.as_ref()?;
+        Some((b.key.binding_name()?, b.label.as_ref()?.clone()))
+    }
+
+    pub(crate) fn has_unbound(&self) -> bool {
+        self.has_unbound
+    }
+
+    pub(crate) fn is_palette_active(
+        &self,
+        width: usize,
+        title: Option<&str>,
+        status: Option<&str>,
+    ) -> bool {
+        if self.overflow_binding.is_none() {
+            return false;
+        }
+        if self.has_unbound {
+            return true;
+        }
+        let regular_commands = self
+            .bindings
+            .iter()
+            .filter_map(|b| Some((b.key.binding_name()?, b.label.as_ref()?.clone())))
+            .collect::<Vec<_>>();
+        crate::chrome::is_palette_active(width, title, status, &regular_commands, self.has_unbound)
     }
 
     pub(crate) fn binding(&self, key: crate::view::Key) -> Option<&ProtocolCommandBinding> {
         self.bindings
             .iter()
             .find(|binding| binding.key.binding_identity() == key.binding_identity())
+            .or_else(|| {
+                self.overflow_binding
+                    .as_ref()
+                    .filter(|binding| binding.key.binding_identity() == key.binding_identity())
+            })
     }
 
     pub(crate) fn view_bindings(&self) -> crate::view::BindingSet {
@@ -650,6 +707,8 @@ impl ProtocolSession {
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
             bindings,
+            overflow_command: chrome_snapshot.overflow_command,
+            has_unbound: chrome_snapshot.has_unbound,
         };
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect {
@@ -887,13 +946,13 @@ mod tests {
                     Ok(ViewDecision::Invalidate)
                 }
                 ViewEvent::Task(task) => {
-                    self.publication = Some(crate::view::ViewPublication {
-                        current: serde_json::json!({
+                    self.publication = Some(crate::view::ViewPublication::new(
+                        serde_json::json!({
                             "instance": task.instance.0,
                             "generation": task.generation,
                         }),
-                        ready: true,
-                    });
+                        true,
+                    ));
                     self.revision = self.revision.wrapping_add(1);
                     Ok(ViewDecision::Invalidate)
                 }
@@ -1154,13 +1213,13 @@ mod tests {
             parameters: config.parameter_values(&parameters).unwrap(),
             raw_input: "typed".to_string(),
             runtime: Value::Null,
-            publication: Some(crate::view::ViewPublication {
-                current: serde_json::json!({
+            publication: Some(crate::view::ViewPublication::new(
+                serde_json::json!({
                     "item": null,
                     "input": "typed",
                 }),
-                ready: true,
-            }),
+                true,
+            )),
             revision: 0,
         };
 
@@ -1181,9 +1240,14 @@ mod tests {
         let adapter =
             ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer(), &[]).unwrap();
         let binding = adapter
-            .bindings
-            .iter()
-            .find(|binding| binding.invocation.id() == "commands")
+            .overflow_binding
+            .as_ref()
+            .or_else(|| {
+                adapter
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.invocation.id() == "commands")
+            })
             .expect("fixture exposes the built-in commands binding");
         let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
         let parameters = config.instantiate_parameters("dmenu:main").unwrap();
@@ -1191,8 +1255,8 @@ mod tests {
             parameters: config.parameter_values(&parameters).unwrap(),
             raw_input: String::new(),
             runtime: serde_json::json!({"revision": 2}),
-            publication: Some(crate::view::ViewPublication {
-                current: serde_json::json!({
+            publication: Some(crate::view::ViewPublication::new(
+                serde_json::json!({
                     "item": {
                         "text": "first",
                         "value": null,
@@ -1202,8 +1266,8 @@ mod tests {
                     "source": "dmenu:main",
                     "input": ""
                 }),
-                ready: true,
-            }),
+                true,
+            )),
             revision: 2,
         };
 
@@ -1498,6 +1562,7 @@ mod tests {
                     status: None,
                     error: self.0.borrow().clone(),
                     bindings: Some(self.bindings(context)),
+                    ..Default::default()
                 })
             }
         }

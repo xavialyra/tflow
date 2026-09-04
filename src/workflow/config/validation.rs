@@ -507,10 +507,12 @@ impl Config {
                         command_id
                     );
                 }
-                let key = super::normalize_key(&command.key)
-                    .with_context(|| format!("view {:?} command {:?}", view_ref, command_id))?;
-                if keys.insert(key.clone(), command_id).is_some() {
-                    bail!("view {:?} has duplicate command key {:?}", view_ref, key);
+                if let Some(raw_key) = &command.key {
+                    let key = super::normalize_key(raw_key)
+                        .with_context(|| format!("view {:?} command {:?}", view_ref, command_id))?;
+                    if keys.insert(key.clone(), command_id).is_some() {
+                        bail!("view {:?} has duplicate command key {:?}", view_ref, key);
+                    }
                 }
                 validate_command_action(
                     view_ref,

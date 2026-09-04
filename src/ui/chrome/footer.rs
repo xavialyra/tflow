@@ -20,6 +20,8 @@ pub(crate) struct FooterModel {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: BindingSet,
+    pub(crate) overflow_command: Option<(String, String)>,
+    pub(crate) has_unbound: bool,
 }
 
 impl FooterModel {
@@ -93,7 +95,10 @@ impl FooterRenderer {
         let footer = if let Some(error) = &model.error {
             FooterContent::plain(error)
         } else {
-            let commands = model.commands();
+            let mut commands = model.commands();
+            if let Some((overflow_key, _)) = &model.overflow_command {
+                commands.retain(|(key, _)| key != overflow_key);
+            }
 
             let view_status = match (model.title.as_deref(), model.status.as_deref()) {
                 (Some(title), Some(status)) if !title.is_empty() && !status.is_empty() => {
@@ -109,7 +114,8 @@ impl FooterRenderer {
                 Some(model.location.label()),
                 view_status.as_deref().unwrap_or(""),
                 &commands,
-                None,
+                model.overflow_command.as_ref(),
+                model.has_unbound,
             )
         };
 

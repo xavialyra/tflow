@@ -30,6 +30,7 @@ pub(crate) struct EmbeddedProtocolConfig {
     pub(crate) engine: EvaluatedEngineConfig,
     pub(crate) bindings: EvaluatedBindingConfig,
     pub(crate) cancellation: CancellationObserver,
+    pub(crate) runtime_snapshot: Value,
     pub(crate) theme: ResolvedTheme,
 }
 
@@ -40,6 +41,7 @@ impl EmbeddedProtocolConfig {
         bindings: EvaluatedBindingConfig,
         commands: crate::protocol::ViewCommandBindings,
         cancellation: CancellationObserver,
+        runtime_snapshot: Value,
         theme: ResolvedTheme,
     ) -> Self {
         Self {
@@ -48,6 +50,7 @@ impl EmbeddedProtocolConfig {
             engine,
             bindings,
             cancellation,
+            runtime_snapshot,
             theme,
         }
     }
@@ -100,7 +103,8 @@ fn create_protocol_view_state(
         bindings: config.bindings,
     })?;
     let renderer = create_renderer(RendererFactoryContext)?;
-    let engine_context = engine_context(instance, &identity, &parameters, &Value::Null, 0, None);
+    let engine_context =
+        engine_context(instance, &identity, &parameters, &config.runtime_snapshot, 0, None);
     let input_raw = parameters.raw_input().to_string();
     Ok(EmbeddedProtocolView {
         runtime,
@@ -110,7 +114,7 @@ fn create_protocol_view_state(
         theme: config.theme,
         input_raw,
         parameters,
-        runtime_snapshot: Value::Null,
+        runtime_snapshot: config.runtime_snapshot,
         publication: None,
         state_revision: 0,
         engine_context,
@@ -212,10 +216,10 @@ impl EmbeddedProtocolView {
 
     fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
         if let Some(publication) = emission.publication() {
-            self.publication = Some(ViewPublication {
-                current: publication.current().clone(),
-                ready: publication.ready,
-            });
+            self.publication = Some(ViewPublication::new(
+                publication.current().clone(),
+                publication.ready,
+            ));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
     }
@@ -343,10 +347,8 @@ impl RawInputReceiver for EmbeddedProtocolView {
 impl View for EmbeddedProtocolView {
     fn bindings(&self, _: &ViewContext) -> BindingSet {
         let commands = self.commands.bindings.iter().filter(|binding| {
-            (binding.invocation.view_reference().is_some()
-                && binding.invocation.command.passthrough)
-                || (binding.invocation.view_reference().is_none()
-                    && binding.invocation.id() == "commands")
+            binding.invocation.view_reference().is_some()
+                && binding.invocation.command.passthrough
         });
         BindingSet::new(
             commands
@@ -366,6 +368,10 @@ impl View for EmbeddedProtocolView {
         )
     }
 
+    fn publication(&self) -> Option<&ViewPublication> {
+        self.publication.as_ref()
+    }
+
     fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
@@ -375,6 +381,8 @@ impl View for EmbeddedProtocolView {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
+            overflow_command: self.commands.overflow_command(),
+            has_unbound: self.commands.has_unbound(),
         })
     }
 
@@ -427,13 +435,28 @@ impl View for EmbeddedProtocolView {
                 crate::view::operation_failure("Embedded does not provide an editable input"),
             ),
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                if let Some(binding) = self.commands.binding(key)
-                    && ((binding.invocation.view_reference().is_some()
-                        && binding.invocation.command.passthrough)
-                        || (binding.invocation.view_reference().is_none()
-                            && binding.invocation.id() == "commands"))
-                {
-                    return Ok(self.commands.request(binding, None));
+                if let Some(binding) = self.commands.binding(key) {
+                    let is_overflow = self
+                        .commands
+                        .overflow_binding
+                        .as_ref()
+                        .is_some_and(|b| b.key.binding_identity() == key.binding_identity());
+                    if is_overflow {
+                        let model = self.runtime.render_model();
+                        let chrome = self.renderer.chrome(&model);
+                        let is_active = self.commands.is_palette_active(
+                            self.content_size.0 as usize,
+                            chrome.title.as_deref(),
+                            self.status.as_deref().or(chrome.status.as_deref()),
+                        );
+                        if is_active {
+                            return Ok(self.commands.request(binding, None));
+                        }
+                    } else if binding.invocation.view_reference().is_some()
+                        && binding.invocation.command.passthrough
+                    {
+                        return Ok(self.commands.request(binding, None));
+                    }
                 }
                 if self.keymap_action(key).is_some() {
                     return self.action(context, ActionId::new("embedded.cancel"));
@@ -574,6 +597,7 @@ mod tests {
             )
             .unwrap(),
             crate::lifecycle::CancellationToken::new().observer(),
+            serde_json::json!({"view": {"current": {}}}),
             ResolvedTheme::terminal(),
         )
     }

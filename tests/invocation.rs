@@ -512,7 +512,6 @@ fn embedded_passthrough_command_selector_returns_to_the_embedded_view() {
         command = ["sh", "-c", "sleep 5"]
 
         [plugins.core.views.default.commands.finish]
-        key = "ctrl+b"
         label = "Finish"
         passthrough = true
         type = "return"

@@ -1353,7 +1353,6 @@ fn selection_count(selected: usize, total: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::ViewRenderer;
     use crate::engine::picker::items::FeedDefinition;
     use crate::input::EditorBuffer;
     use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};

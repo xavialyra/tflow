@@ -31,3 +31,15 @@ type = "navigate"
 target = "btop:main"
 query = "{{ view.query.next }}"
 replace = true
+
+[views.main.commands.reset]
+label = "Reset monitor"
+scope = "view"
+requires = "input"
+passthrough = true
+type = "navigate"
+
+[views.main.commands.reset.payload]
+target = "btop:main"
+query = { resource = "cpu" }
+replace = true
