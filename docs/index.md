@@ -1,0 +1,46 @@
+---
+okf_version: "0.2"
+title: "tui-launcher Knowledge Bundle"
+description: "Architecture, developer guides, and configuration references for tui-launcher"
+generated:
+  by: "maintainers"
+  at: "2026-09-05"
+tags:
+  - tui-launcher
+  - terminal
+  - workflow
+  - rust
+---
+
+# tui-launcher Documentation
+
+Welcome to the `tui-launcher` knowledge base. `tui-launcher` is an extensible terminal workflow host where configurations define plugin-owned Views powered by picker, capture, or embedded PTY engines.
+
+This documentation is organized into four core categories following the **Diátaxis** framework, packaged as an **Open Knowledge Format (OKF v0.2)** bundle for both human developers and autonomous AI agents.
+
+## Documentation Index
+
+### 1. [Tutorials](tutorials/index.md)
+*Learning-oriented paths for beginners and new contributors.*
+- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tui-launcher`.
+- [Your First Plugin](tutorials/first-plugin.md) — Create a complete plugin with custom views and items.
+
+### 2. [How-To Guides](how-to/index.md)
+*Task-oriented recipes for solving specific practical problems.*
+- [Dynamic Picker Feeds](how-to/dynamic-picker-feeds.md) — Connect scripts to stream items and dynamic preview panes.
+- [View Navigation & Popups](how-to/view-navigation-and-popups.md) — Configure popup modals, view stack transitions, and call/return flows.
+- [Custom Themes](how-to/custom-themes.md) — Define brand palettes, color schemes, and element bindings.
+- [Embedded PTY Views](how-to/embedded-pty-views.md) — Host interactive terminal programs and process PTY output.
+
+### 3. [Reference](reference/index.md)
+*Authoritative, technical specifications and syntax references.*
+- [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
+- [config.toml Specification](reference/config-toml.md) — Root configuration format, theme selection, and session command overrides.
+- [plugin.toml Specification](reference/plugin-toml.md) — Plugin manifests, view definitions, query schemas, and engine configuration.
+- [Expression Syntax](reference/expressions.md) — `{{ namespace.path }}` expression syntax, scoping rules, and resource budgets.
+
+### 4. [Explanation](explanation/index.md)
+*Understanding-oriented deep dives into architectural designs and philosophy.*
+- [Architecture Overview](explanation/architecture-overview.md) — Domain separation across configuration, session, engine, and rendering.
+- [Input & Navigation Model](explanation/input-and-navigation-model.md) — Route resolution, key binding precedence, and lossless input transport.
+- [Runtime Guarantees](explanation/runtime-guarantees.md) — Security sandboxing, execution resource budgets, and cleanup invariants.
