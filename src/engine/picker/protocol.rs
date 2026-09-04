@@ -439,8 +439,7 @@ impl PickerProtocolView {
             return Ok(None);
         }
         let Some(target) = self.route_resolutions.get(selector).cloned() else {
-            self.diagnostic = Some(format!("unknown route selector {:?}", selector));
-            return Ok(Some(ViewDecision::Invalidate));
+            return Ok(None);
         };
         let target = target.reference;
         let Some(schema) = self.route_schemas.get(&target) else {
@@ -1213,7 +1212,7 @@ impl View for PickerProtocolView {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _: &RenderContext) -> Result<RenderResult> {
+    fn render(&self, frame: &mut Frame, area: Rect, context: &RenderContext) -> Result<RenderResult> {
         let query_height = area.height.min(1);
         let divider_height = area.height.saturating_sub(query_height).min(1);
         let completion_available = area
@@ -1319,7 +1318,7 @@ impl View for PickerProtocolView {
             &model,
             &crate::engine::RenderContext {
                 theme: self.theme,
-                image_picker: None,
+                image_picker: context.image_picker,
             },
             frame,
             layout[3],
@@ -1640,12 +1639,10 @@ mod tests {
                     .render(
                         frame,
                         frame.area(),
-                        &RenderContext {
-                            terminal: crate::view::TerminalSize {
-                                width: 20,
-                                height: 5,
-                            },
-                        },
+                        &RenderContext::for_terminal(crate::view::TerminalSize {
+                            width: 20,
+                            height: 5,
+                        }),
                     )
                     .unwrap();
                 let cursor = rendered.cursor.unwrap();
@@ -1743,5 +1740,98 @@ mod tests {
             .parameter_binding("target:detail")
             .unwrap();
         assert!(parsed_route_query(&binding, "target:detail", "query", "bad").is_err());
+    }
+
+    #[test]
+    fn picker_preview_image_renders_with_image_picker() {
+        let temp_dir = std::env::temp_dir().join(format!("test-picker-img-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let image_path = temp_dir.join("test.png");
+        image::DynamicImage::new_rgba8(2, 2).save(&image_path).unwrap();
+
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("core:default", "core:default");
+        let fixture = Arc::new(crate::config::load_test_fixture().unwrap());
+        let tasks = TaskRuntime::new();
+        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
+        let services = crate::engine::picker::PickerRuntimeServices::new(
+            Arc::clone(&fixture),
+            starter,
+            "core:default",
+        )
+        .view_services();
+        let mut picker_config = config(services);
+        picker_config.engine.fields.insert(
+            "layout".to_string(),
+            serde_json::json!({
+                "panes": [
+                    {"slot": "items", "grow": 1},
+                    {"slot": "preview", "grow": 1}
+                ]
+            }),
+        );
+        picker_config.engine.fields.insert(
+            "preview".to_string(),
+            serde_json::json!({
+                "blocks": [{"type": "image", "source": "/metadata/image", "grow": 1}]
+            }),
+        );
+        let mut view = create_protocol_view(
+            picker_config,
+            &request("core:default"),
+            ViewInstanceId(1),
+            &routes,
+        )
+        .unwrap();
+
+        let context = ViewContext::new(ViewInstanceId(1), "core:default");
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context).unwrap();
+
+        view.event(
+            ViewEvent::Task(crate::view::TaskEvent {
+                instance: ViewInstanceId(1),
+                task: crate::view::TaskId(1),
+                generation: 0,
+                outcome: crate::view::TaskOutcome::Completed(serde_json::json!({
+                    "items": [{
+                        "text": "test item",
+                        "metadata": {
+                            "image": image_path.to_string_lossy(),
+                        }
+                    }]
+                })),
+            }),
+            &context,
+        )
+        .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        view.event(ViewEvent::Tick, &context).unwrap();
+
+        let image_picker = crate::terminal::ImagePicker::test_halfblocks();
+        let render_context = RenderContext::new(
+            crate::view::TerminalSize {
+                width: 80,
+                height: 24,
+            },
+            Some(image_picker),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(frame, frame.area(), &render_context).unwrap();
+            })
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        terminal
+            .draw(|frame| {
+                view.render(frame, frame.area(), &render_context).unwrap();
+            })
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

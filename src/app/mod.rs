@@ -315,9 +315,10 @@ impl App {
 
     fn draw(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut result = Ok(());
+        let image_picker = terminal.image_picker();
         terminal.draw(|frame| {
             let area = frame.area();
-            result = self.session.render(frame, area).map(|_| ());
+            result = self.session.render(frame, area, image_picker).map(|_| ());
         })?;
         result
     }

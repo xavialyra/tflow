@@ -118,12 +118,20 @@ impl Write for TerminalWriter {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ImagePicker {
     font_size: FontSize,
     protocol: ProtocolType,
     is_tmux: bool,
 }
+
+impl PartialEq for ImagePicker {
+    fn eq(&self, other: &Self) -> bool {
+        self.fingerprint() == other.fingerprint()
+    }
+}
+
+impl Eq for ImagePicker {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ImagePickerFingerprint {
@@ -301,6 +309,14 @@ impl Terminal {
         } else {
             (80, 24)
         }
+    }
+
+    pub(crate) fn image_picker(&self) -> Option<ImagePicker> {
+        let mut picker = self.image_picker;
+        if let Some(font_size) = font_size_from_fd(self.output_fd) {
+            picker.font_size = font_size;
+        }
+        Some(picker)
     }
 
     pub(crate) fn copy_to_clipboard(&self, value: &str) -> Result<()> {
@@ -764,6 +780,41 @@ mod tests {
         assert_eq!(unsafe { libc::tcgetattr(slave, &mut after) }, 0);
         assert_termios_eq(&before, &after);
 
+        unsafe {
+            libc::close(master);
+            libc::close(slave);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminal_exposes_image_picker_with_configured_protocol() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let terminal = Terminal::enter_with_fds_and_cancellation(
+            slave,
+            slave,
+            ImageProtocol::Halfblocks,
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        let picker = terminal.image_picker().expect("image picker should be available");
+        assert_eq!(picker.protocol, ProtocolType::Halfblocks);
+
+        drop(terminal);
         unsafe {
             libc::close(master);
             libc::close(slave);

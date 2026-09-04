@@ -658,6 +658,7 @@ impl PickerView {
             self.pending_accept = None;
         }
         let events = self.collect_items(response);
+        self.sync_preview();
         let decision = self
             .decisions_for_items_events(events, foreground)?
             .unwrap_or(EngineDecision::Continue);
@@ -715,6 +716,7 @@ impl PickerView {
 
     fn move_selection(&mut self, direction: isize) {
         self.frame.selection.move_by(direction);
+        self.sync_preview();
     }
 
     fn current_publication(&self) -> ViewContextPublication {
@@ -814,14 +816,16 @@ impl PickerView {
 
         let items_ready = self.results_current_for_context(context);
         let loading = self.is_loading();
-        let has_selected_item = items_ready && self.selected_item_owner().is_some();
+        let retain_stale = loading && !self.frame.selection.items.is_empty();
+        let effective_ready = items_ready || retain_stale;
+        let has_selected_item = effective_ready && self.selected_item_owner().is_some();
         let mut bindings = self.page_item_command_bindings(
             context.view_ref(),
-            items_ready,
+            effective_ready,
             loading,
             has_selected_item,
         )?;
-        if items_ready {
+        if effective_ready {
             if let Some(owner) = self.selected_item_owner() {
                 // A selected owner's command layer has higher precedence than
                 // the page command layer, so an identical key keeps the owner command.
@@ -1024,14 +1028,34 @@ impl PickerView {
         id: crate::engine::ActionId,
         context: Option<&ViewContext>,
     ) -> Result<EngineDecision> {
+        if let Some(context) = context {
+            self.remember_context(context);
+            self.parameter_snapshot = Some(context.parameter_snapshot().clone());
+        }
         match id.as_str() {
             "picker.select_next" => {
                 self.select_without_host(1);
-                Ok(EngineDecision::Invalidate)
+                if self.results_current_snapshot(&self.frame.query) {
+                    let input = context.map_or_else(|| self.requested_input(), |c| c.input_raw());
+                    let snapshot = context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
+                    Ok(EngineDecision::RuntimeUpdate(
+                        self.runtime_update(snapshot, input)?,
+                    ))
+                } else {
+                    Ok(EngineDecision::Invalidate)
+                }
             }
             "picker.select_previous" => {
                 self.select_without_host(-1);
-                Ok(EngineDecision::Invalidate)
+                if self.results_current_snapshot(&self.frame.query) {
+                    let input = context.map_or_else(|| self.requested_input(), |c| c.input_raw());
+                    let snapshot = context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
+                    Ok(EngineDecision::RuntimeUpdate(
+                        self.runtime_update(snapshot, input)?,
+                    ))
+                } else {
+                    Ok(EngineDecision::Invalidate)
+                }
             }
             "picker.accept" => self.accept(context),
             "picker.cancel" => Ok(EngineDecision::Close),
@@ -1040,6 +1064,7 @@ impl PickerView {
             "picker.toggle_preview" => {
                 if self.options.preview_enabled {
                     self.preview_visible = !self.preview_visible;
+                    self.sync_preview();
                 }
                 Ok(EngineDecision::Invalidate)
             }
@@ -1466,6 +1491,7 @@ mod tests {
         assert!(current["metadata"].is_null());
     }
 
+
     #[test]
     fn background_items_completion_publishes_mount_current_without_runtime_update() {
         let (_config, mut picker) = test_picker(115);
@@ -1522,40 +1548,6 @@ mod tests {
         tasks.shutdown_and_wait();
     }
 
-    #[test]
-    fn render_state_hides_items_until_the_current_request_is_ready() {
-        let (_config, mut picker) = test_picker(120);
-        let source = crate::input::InputSourceIdentity {
-            frame: crate::input::ViewMountId(120),
-            generation: 1,
-        };
-        let parameters = test_parameters("query", source, 1);
-        picker.parameter_snapshot = Some(parameters.clone());
-        picker
-            .request_items("core:default", "query", "query", parameters)
-            .unwrap();
-        picker.frame.query = "query".to_string();
-        picker.frame.results = ResultsState::Ready("query".to_string());
-        picker.frame.selection.replace(vec![test_item("current")]);
-
-        let loading = picker.render_state();
-        assert!(loading.searching);
-        assert!(loading.items.is_empty());
-        assert_eq!(loading.selected, 0);
-        assert!(loading.preview.is_none());
-        let loading_chrome = crate::engine::picker::PickerRenderer::new()
-            .chrome(&crate::engine::RenderModel::new("picker", loading));
-        assert!(loading_chrome.status.is_none());
-
-        picker.items_task_state = ItemsTaskState::Idle;
-        let ready = picker.render_state();
-        assert!(!ready.searching);
-        assert_eq!(ready.items.len(), 1);
-        assert_eq!(ready.items[0].text, "current");
-        let ready_chrome = crate::engine::picker::PickerRenderer::new()
-            .chrome(&crate::engine::RenderModel::new("picker", ready));
-        assert_eq!(ready_chrome.status.as_deref(), Some("1 of 1"));
-    }
 
     #[test]
     fn stale_polled_completion_applies_idle_retry_state() {

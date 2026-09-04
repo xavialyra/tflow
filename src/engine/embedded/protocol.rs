@@ -753,12 +753,10 @@ mod tests {
                 view.render(
                     frame,
                     frame.area(),
-                    &RenderContext {
-                        terminal: crate::view::TerminalSize {
-                            width: 40,
-                            height: 6,
-                        },
-                    },
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 40,
+                        height: 6,
+                    }),
                 )
                 .unwrap();
             })
@@ -830,12 +828,10 @@ mod tests {
                     view.render(
                         frame,
                         frame.area(),
-                        &RenderContext {
-                            terminal: crate::view::TerminalSize {
-                                width: 20,
-                                height: 2,
-                            },
-                        },
+                        &RenderContext::for_terminal(crate::view::TerminalSize {
+                            width: 20,
+                            height: 2,
+                        }),
                     )
                     .unwrap(),
                 );

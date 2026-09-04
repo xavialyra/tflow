@@ -403,16 +403,17 @@ mod tests {
         let _old = pool.submit(1, submit(2), completion_tx.clone());
         let _latest = pool.submit(1, submit(3), completion_tx);
         barrier.wait();
-        for _ in 0..200 {
-            if executed.lock().unwrap().as_slice() == [1, 3] {
+        let mut completions = Vec::new();
+        while completions.len() < 2 {
+            if let Ok(c) = completion.recv_timeout(Duration::from_millis(500)) {
+                completions.push(c);
+            } else {
                 break;
             }
-            thread::sleep(Duration::from_millis(1));
         }
-        let completions = completion.try_iter().count();
         first.store(true, Ordering::Release);
         assert_eq!(*executed.lock().unwrap(), [1, 3]);
-        assert_eq!(completions, 2);
+        assert_eq!(completions.len(), 2);
     }
 
     #[test]

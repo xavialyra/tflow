@@ -568,6 +568,197 @@ fn loads_items_and_runs_a_view_command() {
 }
 
 #[test]
+fn selected_picker_item_is_passed_to_command_when_navigating_down() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [
+            { label = "FirstApp", value = "app-one" },
+            { label = "SecondApp", value = "app-two" },
+        ]
+
+        [plugins.core.views.default.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "run"
+
+        [plugins.core.views.default.commands.open.payload]
+        handler = { source = "script", file = "scripts/open.sh" }
+        args = ["{{ selection.value }}"]
+        exit = true
+        "#,
+    )
+    .expect("could not write selection navigation config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/open.sh",
+        "printf 'opened:%s\\n' \"$1\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "FirstApp");
+    process
+        .master
+        .write_all(b"\x1b[B\r")
+        .expect("could not write launcher keys");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher keys");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("opened:app-two"),
+        "launcher output did not contain second item: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    fs::remove_dir_all(root).expect("could not remove test root");
+}
+
+#[test]
+fn selected_picker_item_is_passed_to_command_when_navigating_down_and_up() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [
+            { label = "FirstApp", value = "app-one" },
+            { label = "SecondApp", value = "app-two" },
+        ]
+
+        [plugins.core.views.default.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "run"
+
+        [plugins.core.views.default.commands.open.payload]
+        handler = { source = "script", file = "scripts/open.sh" }
+        args = ["{{ selection.value }}"]
+        exit = true
+        "#,
+    )
+    .expect("could not write selection navigation config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/open.sh",
+        "printf 'opened:%s\\n' \"$1\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "FirstApp");
+    // Down then Up then Enter
+    process
+        .master
+        .write_all(b"\x1b[B\x1b[A\r")
+        .expect("could not write launcher keys");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher keys");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("opened:app-one"),
+        "launcher output did not contain first item: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    fs::remove_dir_all(root).expect("could not remove test root");
+}
+
+#[test]
+fn typing_space_without_route_completion_does_not_error_and_preserves_query() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [plugins.core.views.default]
+        [plugins.core.views.default.engine]
+        type = "picker"
+        [plugins.core.views.default.engine.config]
+        items = [
+            { label = "Google Chrome", value = "chrome" },
+        ]
+
+        [plugins.core.views.default.commands.open]
+        key = "enter"
+        label = "Open"
+        type = "run"
+
+        [plugins.core.views.default.commands.open.payload]
+        handler = { source = "script", file = "scripts/open.sh" }
+        args = ["{{ selection.value }}", "{{ page.raw_input }}"]
+        exit = true
+        "#,
+    )
+    .expect("could not write test config");
+    write_plugin_script(
+        &root,
+        "core",
+        "scripts/open.sh",
+        "printf 'opened:%s:query=%s\\n' \"$1\" \"$2\"\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Google Chrome");
+    // Type "google " (word with space that has no route selector) then Enter
+    process
+        .master
+        .write_all(b"google \r")
+        .expect("could not write launcher keys");
+    process
+        .master
+        .flush()
+        .expect("could not flush launcher keys");
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(
+        status,
+        0,
+        "launcher exited with output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    let out = String::from_utf8_lossy(&output);
+    assert!(!out.contains("unknown route selector"), "reported error: {out}");
+    assert!(out.contains("opened:chrome:query=google "), "output: {out}");
+    fs::remove_dir_all(root).expect("could not remove test root");
+}
+
+#[test]
 fn dynamic_items_source_metadata_is_resolved_at_execution() {
     let root = temporary_root();
     let config = root.join("config.toml");

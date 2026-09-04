@@ -387,6 +387,13 @@ pub(crate) struct ProtocolRenderResult {
     pub(crate) footer: FooterModel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorSource {
+    StartupWarning,
+    Session,
+    View(ViewInstanceId),
+}
+
 pub(crate) struct ProtocolSession {
     router: Router,
     commands: Box<dyn CommandService>,
@@ -396,6 +403,7 @@ pub(crate) struct ProtocolSession {
     runtime_log: Option<crate::diagnostics::RuntimeLog>,
     runtime_warning: Option<String>,
     active_error: Option<String>,
+    error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
 }
 
@@ -426,6 +434,7 @@ impl ProtocolSession {
             runtime_log: None,
             runtime_warning: None,
             active_error: None,
+            error_source: None,
             last_diagnostic: None,
         }
     }
@@ -439,6 +448,7 @@ impl ProtocolSession {
         mut runtime_log: crate::diagnostics::RuntimeLog,
     ) -> Self {
         let warning = runtime_log.take_warning_record();
+        let error_source = warning.as_ref().map(|_| ErrorSource::StartupWarning);
         Self {
             router,
             commands,
@@ -448,6 +458,7 @@ impl ProtocolSession {
             runtime_log: Some(runtime_log),
             runtime_warning: warning.as_ref().map(|record| record.message.clone()),
             active_error: warning.map(|record| record.label),
+            error_source,
             last_diagnostic: None,
         }
     }
@@ -494,6 +505,11 @@ impl ProtocolSession {
     }
 
     fn dispatch(&mut self, event: ViewEvent) -> Result<ViewDecision> {
+        if matches!(event, ViewEvent::Input(_)) && self.error_source == Some(ErrorSource::Session) {
+            self.active_error = None;
+            self.error_source = None;
+            self.last_diagnostic = None;
+        }
         let active = self.router.active().map(|entry| entry.id);
         let decision = self
             .router
@@ -529,6 +545,7 @@ impl ProtocolSession {
         if self.router.active().map(|entry| entry.id) != previous {
             if previous.is_some() {
                 self.active_error = None;
+                self.error_source = None;
                 self.last_diagnostic = None;
             }
             self.dispatch_active_resize()?;
@@ -550,7 +567,12 @@ impl ProtocolSession {
         )
     }
 
-    pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) -> Result<ProtocolRenderResult> {
+    pub(crate) fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        image_picker: Option<crate::terminal::ImagePicker>,
+    ) -> Result<ProtocolRenderResult> {
         let active_index = self
             .router
             .stack()
@@ -587,9 +609,7 @@ impl ProtocolSession {
         content_host.render_frame_background(frame, area, &self.theme);
 
         let content_area = content_host.content_area(area);
-        let render_context = RenderContext {
-            terminal: self.terminal,
-        };
+        let render_context = RenderContext::new(self.terminal, image_picker);
         let (view, active_render_area) = content_host.render_views(
             frame,
             content_area,
@@ -638,6 +658,11 @@ impl ProtocolSession {
         error: Option<&str>,
     ) {
         let Some(error) = error else {
+            if self.error_source == Some(ErrorSource::View(instance)) {
+                self.active_error = None;
+                self.error_source = None;
+                self.last_diagnostic = None;
+            }
             return;
         };
         let identity = (instance, error.to_string());
@@ -645,6 +670,7 @@ impl ProtocolSession {
             return;
         }
         self.last_diagnostic = Some(identity);
+        self.error_source = Some(ErrorSource::View(instance));
         self.active_error = Some(if let Some(runtime_log) = self.runtime_log.as_mut() {
             runtime_log
                 .record(
@@ -665,7 +691,21 @@ impl ProtocolSession {
         };
         let instance = active.id;
         let view_ref = active.context.location.target.clone();
-        self.surface_diagnostic(instance, &view_ref, Some(message));
+        let label = if let Some(runtime_log) = self.runtime_log.as_mut() {
+            runtime_log
+                .record(
+                    crate::diagnostics::LogLevel::Error,
+                    Some(&view_ref),
+                    None,
+                    message,
+                )
+                .label
+        } else {
+            format!("ERROR [{view_ref}]: {message}")
+        };
+        self.active_error = Some(label);
+        self.error_source = Some(ErrorSource::Session);
+        self.last_diagnostic = Some((instance, message.to_string()));
     }
 
     pub(crate) fn take_runtime_warning(&mut self) -> Option<String> {
@@ -1217,7 +1257,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
             .draw(|frame| {
-                session.render(frame, frame.area()).unwrap();
+                session.render(frame, frame.area(), None).unwrap();
             })
             .unwrap();
         assert_eq!(
@@ -1273,7 +1313,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         let mut rendered = None;
         terminal
-            .draw(|frame| rendered = Some(session.render(frame, frame.area()).unwrap()))
+            .draw(|frame| rendered = Some(session.render(frame, frame.area(), None).unwrap()))
             .unwrap();
         assert_eq!(
             terminal.get_cursor_position().unwrap(),
@@ -1341,7 +1381,7 @@ mod tests {
         let mut rendered = None;
         terminal
             .draw(|frame| {
-                rendered = Some(session.render(frame, frame.area()).unwrap());
+                rendered = Some(session.render(frame, frame.area(), None).unwrap());
             })
             .unwrap();
         let rendered = rendered.unwrap();
@@ -1378,4 +1418,117 @@ mod tests {
         session.eof().unwrap();
         assert!(session.router().stack().is_empty());
     }
+
+    #[test]
+    fn view_diagnostic_clears_when_resolved_and_session_error_clears_on_input() {
+        let view_error = Rc::new(RefCell::new(None));
+        struct DiagView(Rc<RefCell<Option<String>>>);
+        impl View for DiagView {
+            fn bindings(&self, _: &ViewContext) -> BindingSet {
+                BindingSet::default()
+            }
+            fn command_snapshot(&self) -> ViewCommandSnapshot {
+                ViewCommandSnapshot {
+                    parameters: Value::Null,
+                    raw_input: String::new(),
+                    runtime: Value::Null,
+                    publication: None,
+                    revision: 0,
+                }
+            }
+            fn event(&mut self, _: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+                Ok(ViewDecision::Stay)
+            }
+            fn render(&self, _: &mut Frame, _: Rect, _: &RenderContext) -> Result<RenderResult> {
+                Ok(RenderResult {
+                    cursor: None,
+                    metadata: ViewMetadata {
+                        title: None,
+                        status: None,
+                        error: None,
+                        bindings: None,
+                    },
+                })
+            }
+            fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+                Ok(crate::view::ViewChrome {
+                    title: None,
+                    status: None,
+                    error: self.0.borrow().clone(),
+                    bindings: Some(self.bindings(context)),
+                })
+            }
+        }
+        struct DiagFactory(Rc<RefCell<Option<String>>>);
+        impl ViewFactory for DiagFactory {
+            fn create(
+                &self,
+                _: &NavigationRequest,
+                _: ViewInstanceId,
+                _: &ViewServices<'_>,
+            ) -> Result<Box<dyn View>> {
+                Ok(Box::new(DiagView(Rc::clone(&self.0))))
+            }
+        }
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("root", "root");
+        let router = Router::new(Box::new(routes), Box::new(DiagFactory(Rc::clone(&view_error))));
+        let mut session = ProtocolSession::new(
+            router,
+            Box::new(Effects {
+                calls: Rc::new(RefCell::new(Vec::new())),
+            }),
+        );
+        session.start_root(request("root")).unwrap();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let render_footer_error =
+            |session: &mut ProtocolSession, terminal: &mut Terminal<TestBackend>| {
+                let mut res = None;
+                terminal
+                    .draw(|frame| {
+                        res = Some(session.render(frame, frame.area(), None).unwrap().footer.error);
+                    })
+                    .unwrap();
+                res.unwrap()
+            };
+
+        // 1. Initially no error
+        assert_eq!(render_footer_error(&mut session, &mut terminal), None);
+
+        // 2. View produces an error
+        *view_error.borrow_mut() = Some("invalid input syntax".to_string());
+        assert_eq!(
+            render_footer_error(&mut session, &mut terminal),
+            Some("ERROR [root]: invalid input syntax".to_string())
+        );
+
+        // 3. View clears its error (e.g. user corrected the input)
+        *view_error.borrow_mut() = None;
+        assert_eq!(render_footer_error(&mut session, &mut terminal), None);
+        assert_eq!(session.active_error, None);
+
+        // 4. Session reports an error
+        session.report_error("session navigation failure");
+        // Render does NOT clear session error even though view_error is None
+        assert_eq!(
+            render_footer_error(&mut session, &mut terminal),
+            Some("ERROR [root]: session navigation failure".to_string())
+        );
+        assert_eq!(
+            render_footer_error(&mut session, &mut terminal),
+            Some("ERROR [root]: session navigation failure".to_string())
+        );
+
+        // 5. Next user input clears the session error
+        session
+            .input(InputEvent::Key {
+                key: crate::view::Key::Char('a'),
+                raw: vec![b'a'],
+            })
+            .unwrap();
+        assert_eq!(session.active_error, None);
+        assert_eq!(render_footer_error(&mut session, &mut terminal), None);
+    }
 }
+

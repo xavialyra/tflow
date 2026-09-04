@@ -215,21 +215,32 @@ impl PickerView {
         let frame = self.current();
         let (show_prefix, empty_message) = self.list_presentation();
         let results_ready = self.results_current(&frame.query);
+        let searching = self.is_loading();
+        let has_cached_items = !frame.selection.items.is_empty();
+        let retain_stale = searching && has_cached_items;
+
+        let (items, selected) = if results_ready || retain_stale {
+            (
+                Arc::clone(&frame.selection.items),
+                frame.selection.selected,
+            )
+        } else {
+            (Arc::new(Vec::new()), 0)
+        };
+
+        let preview = if results_ready || retain_stale {
+            self.preview_render_state()
+        } else {
+            None
+        };
+
         PickerRenderState {
-            items: if results_ready {
-                Arc::clone(&frame.selection.items)
-            } else {
-                Arc::new(Vec::new())
-            },
-            selected: if results_ready {
-                frame.selection.selected
-            } else {
-                0
-            },
-            searching: self.is_loading(),
+            items,
+            selected,
+            searching,
             show_prefix,
             preview_visible: self.preview_visible(),
-            preview: results_ready.then(|| self.preview_render_state()).flatten(),
+            preview,
             empty_message,
         }
     }
@@ -276,7 +287,7 @@ impl crate::engine::ViewRenderer for PickerRenderer {
         };
         crate::chrome::EngineChrome::new(
             None,
-            (!state.searching).then(|| format!("{current} of {}", state.items.len())),
+            Some(format!("{current} of {}", state.items.len())),
         )
     }
 

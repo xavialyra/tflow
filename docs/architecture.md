@@ -4,13 +4,16 @@ This project is a terminal workflow host. The long-term structure should keep
 configuration, session state, engine behavior, and terminal rendering as
 separate domains. A module may expose a small crate-level facade, but new
 feature code should live in the narrowest domain that owns its behavior.
-The input and navigation model establishes that each View implementation (Picker,
-Embedded, Capture) owns its own interaction model, while the Router and ProtocolSession
-host generic navigation, lifecycle, and lossless input events.
+The input and navigation ownership decision is documented in
+[`docs/input-navigation.md`](input-navigation.md) and supersedes earlier
+Session-owned editor and route-completion proposals.
 
 ## Current Boundaries
 
-The tree below is an overview of the current source structure:
+The tree below is an abbreviated snapshot of the current source. The detailed
+Picker and Session submodules are intentionally summarized here; the complete
+input/navigation ownership target is defined in
+[`docs/input-navigation.md`](input-navigation.md).
 
 The structural migrations keep existing crate paths and runtime behavior stable
 while separating the largest mixed modules:
@@ -336,7 +339,8 @@ runtime publication, and effects remain outside the Engine protocol.
 
 The runtime architecture is now fully single-track on the protocol architecture.
 Command preparation and continuation semantics operate through `ProtocolCommandService`
-and `Router`.
+and `Router`. The current baseline is recorded in
+[`docs/input-navigation.md`](input-navigation.md#current-implementation-gap).
 
 Embedded has an inert prepared start plan followed by an explicit
 post-Host-commit external PTY boundary; the child, descriptors, resize, and

@@ -845,12 +845,10 @@ mod tests {
                     view.render(
                         frame,
                         frame.area(),
-                        &RenderContext {
-                            terminal: crate::view::TerminalSize {
-                                width: 20,
-                                height: 3,
-                            },
-                        },
+                        &RenderContext::for_terminal(crate::view::TerminalSize {
+                            width: 20,
+                            height: 3,
+                        }),
                     )
                     .unwrap(),
                 );

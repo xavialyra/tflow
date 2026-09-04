@@ -214,6 +214,27 @@ pub(crate) struct RenderResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RenderContext {
     pub(crate) terminal: TerminalSize,
+    pub(crate) image_picker: Option<crate::terminal::ImagePicker>,
+}
+
+impl RenderContext {
+    pub(crate) fn new(
+        terminal: TerminalSize,
+        image_picker: Option<crate::terminal::ImagePicker>,
+    ) -> Self {
+        Self {
+            terminal,
+            image_picker,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_terminal(terminal: TerminalSize) -> Self {
+        Self {
+            terminal,
+            image_picker: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
