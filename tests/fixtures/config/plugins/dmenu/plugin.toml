@@ -10,7 +10,6 @@ cancel_exit_code = 1
 type = "picker"
 
 [views.main.engine.config]
-show_prefix = false
 
 [views.main.engine.config.items]
 source = "script"

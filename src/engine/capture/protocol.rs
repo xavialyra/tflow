@@ -643,7 +643,7 @@ impl View for CaptureProtocolView {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         let context = crate::engine::RenderContext {
-            theme: self.theme,
+            theme: self.theme.clone(),
             image_picker: None,
         };
         self.renderer.render(&model, &context, frame, area);

@@ -101,7 +101,7 @@ fn called_picker_fields_and_commands_read_declared_query_values() {
 
         [plugins.core.views.default.commands.open.payload]
         target = "forms:main"
-        query = { show_prefix = true, result = { name = "Ada" } }
+        query = { result = { name = "Ada" } }
 
         [plugins.core.views.default.commands.open.payload.then]
         type = "return"
@@ -113,13 +113,11 @@ fn called_picker_fields_and_commands_read_declared_query_values() {
         [plugins.forms.views.main.engine]
         type = "picker"
         [plugins.forms.views.main.engine.config]
-        show_prefix = "{{ view.query.show_prefix }}"
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
 
         [plugins.forms.views.main.query]
         type = "object"
         input_order = []
-        show_prefix = { type = "boolean", default = false }
         result = { type = "object", default = {} }
 
         [plugins.forms.views.main.commands.accept]
@@ -142,7 +140,7 @@ fn called_picker_fields_and_commands_read_declared_query_values() {
 }
 
 #[test]
-fn picker_layout_preview_and_prefix_resolve_from_the_operation_scope() {
+fn picker_layout_and_preview_resolve_from_the_operation_scope() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -154,14 +152,12 @@ fn picker_layout_preview_and_prefix_resolve_from_the_operation_scope() {
         [plugins.core.views.default.query]
         type = "object"
         input_order = []
-        show_prefix = { type = "boolean", default = true }
         layout = { type = "object", default = { direction = "horizontal", gap = 1, panes = [{ slot = "items", grow = 1, min = 1 }, { slot = "preview", size = 12, min = 1 }] } }
         preview = { type = "object", default = { blocks = [{ type = "separator" }] } }
 
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = "{{ view.query.show_prefix }}"
         layout = "{{ view.query.layout }}"
         preview = "{{ view.query.preview }}"
         items = [{label = "Item", value = "value"}]

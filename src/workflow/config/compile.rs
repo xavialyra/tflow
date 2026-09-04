@@ -112,6 +112,7 @@ impl Config {
         for (package_id, plugin) in raw.plugins {
             let metadata = PluginMetadata {
                 name: plugin.name.unwrap_or_else(|| package_id.clone()),
+                styles: plugin.styles,
             };
             for (view_name, view) in plugin.views {
                 let view_ref = qualify_view_ref(&package_id, &view_name)?;

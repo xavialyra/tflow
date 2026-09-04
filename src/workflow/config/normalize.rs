@@ -126,8 +126,7 @@ pub(super) fn inject_builtin_commands_value(config: &mut Value) {
             },
             "engine": {
                 "show_input": false,
-                "show_divider": false,
-                "show_prefix": true
+                "show_divider": false
             },
             "then": {
                 "type": "invoke",

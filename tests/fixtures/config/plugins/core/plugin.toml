@@ -6,7 +6,6 @@ name = "core"
 type = "picker"
 
 [views.default.engine.config]
-show_prefix = true
 
 [[views.default.engine.config.feeds]]
 view = "*:main"

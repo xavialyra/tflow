@@ -24,7 +24,8 @@ pub(crate) use evaluate::{
     field as evaluate_field, optional_string as evaluate_optional_string,
 };
 pub(crate) use picker::{
-    PickerProtocolConfig, PickerViewServices, create_protocol_view as create_picker_protocol_view,
+    PickerProtocolConfig, PickerViewServices, SlotToken,
+    create_protocol_view as create_picker_protocol_view,
 };
 pub(crate) use protocol_factory::ProtocolViewFactory;
 pub(crate) use registry::{EngineRegistry, require_field, validate_fields};

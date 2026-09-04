@@ -226,6 +226,9 @@ pub(super) fn read_plugin_package(manifest: &Path) -> Result<(String, toml::Valu
     let mut plugin_table = toml::map::Map::new();
     plugin_table.insert("name".to_string(), toml::Value::String(header.name));
     plugin_table.insert("views".to_string(), views);
+    if let Some(styles) = table.remove("styles") {
+        plugin_table.insert("styles".to_string(), styles);
+    }
     let mut plugins_table = toml::map::Map::new();
     plugins_table.insert(plugin_id.to_string(), toml::Value::Table(plugin_table));
     let mut package_table = toml::map::Map::new();

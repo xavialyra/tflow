@@ -14,9 +14,10 @@ fn default_plugin_api() -> u32 {
     1
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PluginMetadata {
     pub name: String,
+    pub styles: BTreeMap<String, crate::theme::RawStyleBinding>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -537,7 +538,6 @@ impl CommandBinding {
         let mut engine = toml::map::Map::new();
         engine.insert("show_input".to_string(), toml::Value::Boolean(false));
         engine.insert("show_divider".to_string(), toml::Value::Boolean(false));
-        engine.insert("show_prefix".to_string(), toml::Value::Boolean(true));
         Some(CommandAction::Call {
             payload: CallPayload {
                 target: toml::Value::String("selectors:commands".to_string()),
@@ -615,6 +615,8 @@ pub(super) struct Plugin {
     pub(super) name: Option<String>,
     #[serde(default)]
     pub(super) views: BTreeMap<String, View>,
+    #[serde(default)]
+    pub(super) styles: BTreeMap<String, crate::theme::RawStyleBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

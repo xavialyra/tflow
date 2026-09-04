@@ -492,7 +492,7 @@ impl View for EmbeddedProtocolView {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         let engine_context = crate::engine::RenderContext {
-            theme: self.theme,
+            theme: self.theme.clone(),
             image_picker: None,
         };
         self.renderer.render(&model, &engine_context, frame, area);

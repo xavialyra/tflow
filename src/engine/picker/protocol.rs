@@ -81,13 +81,7 @@ pub(crate) fn create_protocol_view(
         .and_then(|v| v.get("show_divider"))
         .and_then(Value::as_bool)
         .unwrap_or(show_input);
-    let show_prefix = engine_override
-        .and_then(|v| v.get("show_prefix"))
-        .and_then(Value::as_bool)
-        .or_else(|| config.engine.field("show_prefix").and_then(Value::as_bool))
-        .unwrap_or(false);
     let options = PickerOptions {
-        show_prefix,
         preview_enabled: config.engine.field("preview").is_some(),
         show_input,
         show_divider,
@@ -1370,7 +1364,7 @@ impl View for PickerProtocolView {
         self.renderer.render(
             &model,
             &crate::engine::RenderContext {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 image_picker: context.image_picker,
             },
             frame,
@@ -1906,7 +1900,6 @@ mod tests {
         let req = request("core:default").with_engine_options(serde_json::json!({
             "show_input": false,
             "show_divider": false,
-            "show_prefix": true,
         }));
 
         let mut view = create_protocol_view(
@@ -2004,6 +1997,5 @@ mod tests {
         };
         assert_eq!(table.get("show_input"), Some(&toml::Value::Boolean(false)));
         assert_eq!(table.get("show_divider"), Some(&toml::Value::Boolean(false)));
-        assert_eq!(table.get("show_prefix"), Some(&toml::Value::Boolean(true)));
     }
 }

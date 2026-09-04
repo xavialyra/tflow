@@ -3,26 +3,21 @@ use super::{Item, PickerView};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::sync::{Arc, Mutex};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone)]
 pub(crate) struct PickerRenderState {
     pub(crate) items: Arc<Vec<Item>>,
     pub(crate) selected: usize,
     pub(crate) searching: bool,
-    pub(crate) show_prefix: bool,
     pub(crate) preview_visible: bool,
     pub(crate) preview: Option<PickerPreviewRenderState>,
     pub(crate) empty_message: String,
+    pub(crate) row_height: usize,
 }
 
-const COLUMN_GAP: usize = 2;
-const SIDE_PADDING: usize = 1;
-const MARKER_WIDTH: usize = 1;
-const SCROLLBAR_WIDTH: usize = 1;
 const SCROLLBAR_THUMB_HEIGHT: usize = 2;
 
 pub(crate) fn render_picker(
@@ -33,157 +28,134 @@ pub(crate) fn render_picker(
 ) {
     let width = area.width as usize;
     let height = area.height as usize;
-    let start = if state.selected >= height && height > 0 {
-        state.selected + 1 - height
+    let row_height = state.row_height.max(1);
+    let visible_capacity = if height >= row_height {
+        height / row_height
     } else {
         0
-    };
-    let reserves_scrollbar = state.items.len() > height;
-    let show_scrollbar = scrollbar_visible(state.items.len(), height, start);
-    let right_padding = SIDE_PADDING + usize::from(reserves_scrollbar) * SCROLLBAR_WIDTH;
-    let item_width = width.saturating_sub(MARKER_WIDTH + SIDE_PADDING + right_padding);
-    let prefix_width = if state.show_prefix {
-        prefix_column_width(state.items.as_slice(), item_width)
-    } else {
-        0
-    };
-    let content_width = if state.show_prefix {
-        item_width.saturating_sub(prefix_width + COLUMN_GAP)
-    } else {
-        item_width
     };
 
-    let mut lines = Vec::new();
-    if height > 0 && state.items.is_empty() {
+    if height == 0 || width == 0 {
+        return;
+    }
+
+    if state.items.is_empty() {
         let text = if state.searching {
             "(searching...)"
         } else {
             &state.empty_message
         };
-        lines.push(Line::from(Span::styled(
-            text.to_string(),
-            theme.picker.muted,
-        )));
+        let line = Line::from(Span::styled(text.to_string(), theme.picker.muted));
+        frame.render_widget(Paragraph::new(line).style(theme.picker.text), area);
+        return;
+    }
+
+    let start = if state.selected >= visible_capacity && visible_capacity > 0 {
+        state.selected + 1 - visible_capacity
     } else {
-        let thumb_top = scrollbar_thumb_top(start, state.items.len(), height);
-        for (visible_row, (index, item)) in state
-            .items
-            .as_slice()
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(height)
-            .enumerate()
-        {
-            let selected = index == state.selected;
-            let (content, prefix_range) = if state.show_prefix {
-                let text = pad_right(&clip(&item.text, content_width), content_width);
-                let prefix = pad_left(&clip(&item.prefix, prefix_width), prefix_width);
-                let prefix_start = text.len().saturating_add(COLUMN_GAP);
-                let prefix_end = prefix_start.saturating_add(prefix.len());
-                (
-                    format!("{text}{}{prefix}", " ".repeat(COLUMN_GAP)),
-                    Some((prefix_start, prefix_end)),
-                )
-            } else {
-                (clip(&item.text, content_width), None)
-            };
-            let marker = if selected { "▌" } else { " " };
-            let leading_bytes = marker.len().saturating_add(SIDE_PADDING);
-            let prefix_range = prefix_range.map(|(start, end)| {
-                (
-                    start.saturating_add(leading_bytes),
-                    end.saturating_add(leading_bytes),
-                )
-            });
-            let mut text = pad_right(
-                &clip(
-                    &format!("{marker} {content}{}", " ".repeat(right_padding)),
-                    width,
-                ),
-                width,
+        0
+    };
+
+    let reserves_scrollbar = state.items.len() > visible_capacity;
+    let show_scrollbar = scrollbar_visible(state.items.len(), visible_capacity, start);
+    let thumb_top = scrollbar_thumb_top(start, state.items.len(), visible_capacity);
+    let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(visible_capacity);
+
+    for (visible_row, (index, item)) in state
+        .items
+        .as_slice()
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible_capacity)
+        .enumerate()
+    {
+        let selected = index == state.selected;
+        let item_y = area.y + (visible_row * row_height) as u16;
+        let item_rect = Rect {
+            x: area.x,
+            y: item_y,
+            width: area.width,
+            height: row_height as u16,
+        };
+
+        if selected {
+            frame.render_widget(
+                ratatui::widgets::Block::default().style(theme.picker.selected),
+                item_rect,
             );
-            if show_scrollbar {
-                let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(height);
-                if visible_row >= thumb_top
-                    && visible_row < thumb_top.saturating_add(thumb_height)
-                    && text.ends_with(' ')
-                {
-                    text.pop();
-                    text.push('█');
+        }
+
+        let right_padding: u16 = if reserves_scrollbar { 2 } else { 1 };
+        let h_chunks = ratatui::layout::Layout::horizontal([
+            ratatui::layout::Constraint::Length(1), // Marker
+            ratatui::layout::Constraint::Length(1), // Space after marker
+            ratatui::layout::Constraint::Fill(1),   // Content
+            ratatui::layout::Constraint::Length(right_padding), // Scrollbar column
+        ])
+        .split(item_rect);
+
+        if selected {
+            frame.render_widget(
+                Paragraph::new("▌").style(theme.picker.marker),
+                h_chunks[0],
+            );
+        }
+
+        if show_scrollbar
+            && visible_row >= thumb_top
+            && visible_row < thumb_top.saturating_add(thumb_height)
+        {
+            let scrollbar_rect = Rect {
+                x: item_rect.x + item_rect.width.saturating_sub(1),
+                y: item_rect.y,
+                width: 1,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new("█").style(theme.picker.scrollbar),
+                scrollbar_rect,
+            );
+        }
+
+        let content_area = h_chunks[2];
+        if content_area.width == 0 || content_area.height == 0 {
+            continue;
+        }
+
+        let v_chunks = ratatui::layout::Layout::vertical(vec![
+            ratatui::layout::Constraint::Length(1);
+            row_height
+        ])
+        .split(content_area);
+
+        let rows = &item.display.rows;
+        for (r_idx, v_row_rect) in v_chunks.iter().enumerate() {
+            if let Some(row) = rows.get(r_idx) {
+                let cell_chunks =
+                    ratatui::layout::Layout::horizontal(&row.constraints).split(*v_row_rect);
+
+                for (c_idx, cell) in row.cells.iter().enumerate() {
+                    if c_idx >= cell_chunks.len() {
+                        break;
+                    }
+                    let cell_area = cell_chunks[c_idx];
+                    let package_id = crate::workflow::config::package_id(&item.source_view);
+                    let spans: Vec<Span> = cell
+                        .spans
+                        .iter()
+                        .map(|s| {
+                            let style = theme.resolve_slot(package_id, &s.slot, selected);
+                            Span::styled(s.text.clone(), style)
+                        })
+                        .collect();
+
+                    let paragraph = Paragraph::new(Line::from(spans)).alignment(cell.align);
+                    frame.render_widget(paragraph, cell_area);
                 }
             }
-            lines.push(picker_line(text, selected, prefix_range, theme));
         }
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).style(theme.picker.text),
-        area,
-    );
-}
-
-fn picker_line(
-    mut text: String,
-    selected: bool,
-    prefix_range: Option<(usize, usize)>,
-    theme: &Theme,
-) -> Line<'static> {
-    let marker_style = theme.picker.marker;
-    let scrollbar_style = theme.picker.scrollbar;
-    let body = if selected {
-        theme.picker.selected
-    } else {
-        theme.picker.text
-    };
-    let prefix = if selected {
-        theme.picker.selected_muted
-    } else {
-        theme.picker.muted
-    };
-    let scrollbar = text.ends_with('█');
-    if scrollbar {
-        text.pop();
-    }
-    let has_marker = selected && text.starts_with('▌');
-    let marker_bytes = if has_marker { '▌'.len_utf8() } else { 0 };
-    if has_marker {
-        text.remove(0);
-    }
-    let prefix_range = prefix_range.and_then(|(start, end)| {
-        let start = start.checked_sub(marker_bytes)?;
-        let end = end.checked_sub(marker_bytes)?;
-        (start < end
-            && end <= text.len()
-            && text.is_char_boundary(start)
-            && text.is_char_boundary(end))
-        .then_some((start, end))
-    });
-
-    let mut spans = Vec::with_capacity(5);
-    if has_marker {
-        spans.push(Span::styled("▌", marker_style));
-    }
-    if let Some((start, end)) = prefix_range {
-        spans.push(Span::styled(text[..start].to_string(), body));
-        spans.push(Span::styled(text[start..end].to_string(), prefix));
-        spans.push(Span::styled(text[end..].to_string(), body));
-    } else {
-        spans.push(Span::styled(text, body));
-    }
-    if scrollbar {
-        spans.push(Span::styled("█", scrollbar_style));
-    }
-    Line::from(spans)
-}
-
-fn prefix_column_width(items: &[Item], width: usize) -> usize {
-    let longest = items
-        .iter()
-        .map(|item| UnicodeWidthStr::width(item.prefix.as_str()))
-        .max()
-        .unwrap_or(6)
-        .clamp(6, 20);
-    longest.min(width.saturating_sub(8).max(1))
 }
 
 fn scrollbar_visible(total: usize, visible: usize, start: usize) -> bool {
@@ -200,20 +172,11 @@ fn scrollbar_thumb_top(start: usize, total: usize, visible: usize) -> usize {
     start.saturating_mul(track_height) / scroll_range
 }
 
-fn pad_right(text: &str, width: usize) -> String {
-    let used = UnicodeWidthStr::width(text);
-    format!("{}{}", text, " ".repeat(width.saturating_sub(used)))
-}
-
-fn pad_left(text: &str, width: usize) -> String {
-    let used = UnicodeWidthStr::width(text);
-    format!("{}{}", " ".repeat(width.saturating_sub(used)), text)
-}
 
 impl PickerView {
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
-        let (show_prefix, empty_message) = self.list_presentation();
+        let empty_message = self.list_presentation();
         let results_ready = self.results_current(&frame.query);
         let searching = self.is_loading();
         let has_cached_items = !frame.selection.items.is_empty();
@@ -238,10 +201,10 @@ impl PickerView {
             items,
             selected,
             searching,
-            show_prefix,
             preview_visible: self.preview_visible(),
             preview,
             empty_message,
+            row_height: 1,
         }
     }
 }
@@ -329,7 +292,9 @@ impl crate::engine::ViewRenderer for PickerRenderer {
     }
 }
 
+#[cfg(test)]
 fn clip(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     if width == 0 || UnicodeWidthStr::width(text) <= width {
         return text.to_string();
     }
@@ -356,6 +321,7 @@ mod tests {
     use super::*;
     use crate::engine::ViewRenderer;
     use ratatui::style::{Color, Modifier, Style};
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn picker_renderer_rejects_an_incompatible_render_model() {
@@ -376,46 +342,11 @@ mod tests {
     }
 
     #[test]
-    fn picker_markers_and_scrollbars_use_their_bindings() {
+    fn theme_resolves_slot_styles_correctly() {
+        use crate::engine::picker::SlotToken;
         let mut theme = Theme::terminal();
         theme.picker.marker.fg = Some(Color::Magenta);
         theme.picker.scrollbar.fg = Some(Color::Green);
-
-        let selected = picker_line("▌ item  █".to_string(), true, None, &theme);
-        assert_eq!(selected.spans.first().unwrap().content, "▌");
-        assert_eq!(
-            selected.spans.first().unwrap().style.fg,
-            Some(Color::Magenta)
-        );
-        assert_eq!(selected.spans.last().unwrap().content, "█");
-        assert_eq!(selected.spans.last().unwrap().style.fg, Some(Color::Green));
-
-        let unselected = picker_line("  item  █".to_string(), false, None, &theme);
-        assert_eq!(unselected.spans.last().unwrap().content, "█");
-        assert_eq!(
-            unselected.spans.last().unwrap().style.fg,
-            Some(Color::Green)
-        );
-    }
-
-    #[test]
-    fn picker_prefix_uses_the_selected_container_style() {
-        let theme = Theme::terminal();
-        let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)), &theme);
-        let prefix = line
-            .spans
-            .iter()
-            .find(|span| span.content == "sys")
-            .expect("prefix span should be separate");
-        assert_eq!(prefix.style.fg, Some(Color::Cyan));
-        assert_eq!(prefix.style.bg, Some(Color::Reset));
-        assert!(!prefix.style.add_modifier.contains(Modifier::DIM));
-        assert!(!prefix.style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn selected_prefix_keeps_a_custom_muted_foreground() {
-        let mut theme = Theme::terminal();
         theme.picker.muted.fg = Some(Color::Gray);
         theme.picker.selected = Style::new()
             .fg(Color::Black)
@@ -426,28 +357,82 @@ mod tests {
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD);
 
-        let line = picker_line("▌ Item  sys ".to_string(), true, Some((10, 13)), &theme);
-        let prefix = line
-            .spans
-            .iter()
-            .find(|span| span.content == "sys")
-            .expect("prefix span should be separate");
-        assert_eq!(prefix.style.fg, Some(Color::Gray));
-        assert_eq!(prefix.style.bg, Some(Color::Green));
-        assert!(prefix.style.add_modifier.contains(Modifier::BOLD));
+        // Marker & Scrollbar
+        assert_eq!(theme.picker.marker.fg, Some(Color::Magenta));
+        assert_eq!(theme.picker.scrollbar.fg, Some(Color::Green));
 
-        let body = line
-            .spans
-            .iter()
-            .find(|span| span.content.contains("Item"))
-            .expect("selected body span should be present");
-        assert_eq!(body.style.fg, Some(Color::Black));
-        assert_eq!(body.style.bg, Some(Color::Green));
+        // Primary text
+        let unselected_text = theme.resolve_slot_style(SlotToken::Primary, false);
+        assert_eq!(unselected_text, theme.picker.text);
+        let selected_text = theme.resolve_slot_style(SlotToken::Primary, true);
+        assert_eq!(selected_text, theme.picker.selected);
+
+        // Secondary & Muted slots
+        let unselected_sec = theme.resolve_slot_style(SlotToken::Secondary, false);
+        assert_eq!(unselected_sec.fg, Some(Color::Gray));
+        let selected_sec = theme.resolve_slot_style(SlotToken::Secondary, true);
+        assert_eq!(selected_sec.fg, Some(Color::Gray));
+        assert_eq!(selected_sec.bg, Some(Color::Green));
     }
 
     #[test]
     fn clips_wide_text_without_exceeding_the_width() {
         assert_eq!(UnicodeWidthStr::width(clip("abcdefgh", 6).as_str()), 6);
         assert!(UnicodeWidthStr::width(clip("終端abcdef", 7).as_str()) <= 7);
+    }
+
+    #[test]
+    fn test_render_picker_multicell_and_slots() {
+        use crate::engine::picker::ItemDisplayInput;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::terminal();
+
+        let display_input: ItemDisplayInput = serde_json::from_str(
+            r#"{
+                "constraints": [{"Fill": 1}, {"Length": 10}],
+                "cells": [
+                    {"text": "Open File"},
+                    {"text": "Ctrl+O", "slot": "badge", "align": "right"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let item = Item {
+            text: "Open File".to_string(),
+            display: display_input.into(),
+            value: Some("open_file".to_string()),
+            metadata: serde_json::Value::Null,
+            source_view: "test".to_string(),
+            feed_id: crate::engine::picker::items::FeedId("test".to_string()),
+        };
+
+        let state = PickerRenderState {
+            items: Arc::new(vec![item]),
+            selected: 0,
+            searching: false,
+            preview_visible: false,
+            preview: None,
+            empty_message: "(no matches)".to_string(),
+            row_height: 1,
+        };
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_picker(frame, area, &state, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Row 0 should contain marker '▌' and 'Open File'
+        let content: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(content.contains('▌'));
+        assert!(content.contains("Open File"));
+        assert!(content.contains("Ctrl+O"));
     }
 }

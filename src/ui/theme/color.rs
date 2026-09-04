@@ -24,35 +24,23 @@ impl ResolvedScheme {
         raw: &RawScheme,
         source: &str,
     ) -> Result<Self> {
-        let resolve = |role: SchemeRole, value: Option<&str>| match value {
-            Some(value) => resolve_scheme_reference(value, palette, source, role),
-            None => Ok(default_scheme_color(role)),
+        let resolve = |role: SchemeRole| {
+            let value = raw.role_value(role);
+            resolve_scheme_reference(value, palette, source, role)
         };
 
         Ok(Self {
-            primary: resolve(SchemeRole::Primary, raw.primary.as_deref())?,
-            on_primary: resolve(SchemeRole::OnPrimary, raw.on_primary.as_deref())?,
-            primary_container: resolve(
-                SchemeRole::PrimaryContainer,
-                raw.primary_container.as_deref(),
-            )?,
-            on_primary_container: resolve(
-                SchemeRole::OnPrimaryContainer,
-                raw.on_primary_container.as_deref(),
-            )?,
-            surface: resolve(SchemeRole::Surface, raw.surface.as_deref())?,
-            surface_container: resolve(
-                SchemeRole::SurfaceContainer,
-                raw.surface_container.as_deref(),
-            )?,
-            on_surface: resolve(SchemeRole::OnSurface, raw.on_surface.as_deref())?,
-            on_surface_variant: resolve(
-                SchemeRole::OnSurfaceVariant,
-                raw.on_surface_variant.as_deref(),
-            )?,
-            outline: resolve(SchemeRole::Outline, raw.outline.as_deref())?,
-            error: resolve(SchemeRole::Error, raw.error.as_deref())?,
-            on_error: resolve(SchemeRole::OnError, raw.on_error.as_deref())?,
+            primary: resolve(SchemeRole::Primary)?,
+            on_primary: resolve(SchemeRole::OnPrimary)?,
+            primary_container: resolve(SchemeRole::PrimaryContainer)?,
+            on_primary_container: resolve(SchemeRole::OnPrimaryContainer)?,
+            surface: resolve(SchemeRole::Surface)?,
+            surface_container: resolve(SchemeRole::SurfaceContainer)?,
+            on_surface: resolve(SchemeRole::OnSurface)?,
+            on_surface_variant: resolve(SchemeRole::OnSurfaceVariant)?,
+            outline: resolve(SchemeRole::Outline)?,
+            error: resolve(SchemeRole::Error)?,
+            on_error: resolve(SchemeRole::OnError)?,
         })
     }
 
@@ -138,21 +126,6 @@ impl std::fmt::Display for SchemeRole {
     }
 }
 
-fn default_scheme_color(role: SchemeRole) -> Color {
-    match role {
-        SchemeRole::Primary | SchemeRole::OnPrimaryContainer => Color::Cyan,
-        SchemeRole::OnPrimary => Color::Black,
-        SchemeRole::Error => Color::Red,
-        SchemeRole::OnError => Color::White,
-        SchemeRole::PrimaryContainer
-        | SchemeRole::Surface
-        | SchemeRole::SurfaceContainer
-        | SchemeRole::OnSurface
-        | SchemeRole::OnSurfaceVariant
-        | SchemeRole::Outline => Color::Reset,
-    }
-}
-
 fn resolve_scheme_reference(
     value: &str,
     palette: &BTreeMap<String, Color>,
@@ -181,6 +154,47 @@ fn resolve_scheme_reference(
     bail!("{source} scheme.{role} must reference a color as palette:NAME or ansi:COLOR")
 }
 
+pub(crate) fn resolve_color_reference(
+    value: &str,
+    scheme: &ResolvedScheme,
+    palette: &BTreeMap<String, Color>,
+    source: &str,
+    context_desc: &str,
+) -> Result<Color> {
+    let value = value.trim();
+    if let Some(role_name) = value.strip_prefix("scheme:") {
+        let Some(role) = SchemeRole::parse(role_name) else {
+            bail!(
+                "{source} {context_desc} references unsupported scheme role {:?}; expected {}",
+                role_name,
+                SchemeRole::all_names()
+            );
+        };
+        return Ok(scheme.color(role));
+    }
+    if let Some(palette_name) = value.strip_prefix("palette:") {
+        let Some(color) = palette.get(palette_name) else {
+            bail!(
+                "{source} {context_desc} references unknown palette color {:?}",
+                palette_name
+            );
+        };
+        return Ok(*color);
+    }
+    if let Some(ansi_name) = value.strip_prefix("ansi:") {
+        return parse_ansi_color(ansi_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{source} {context_desc} references unsupported ANSI color {:?}; expected {}",
+                ansi_name,
+                ansi_color_names()
+            )
+        });
+    }
+    bail!(
+        "{source} {context_desc} must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
+    )
+}
+
 pub(super) fn resolve_palette(
     overrides: &BTreeMap<String, String>,
     source: &str,
@@ -201,7 +215,7 @@ pub(super) fn resolve_palette(
 }
 
 pub(super) fn ansi_color_names() -> &'static str {
-    "black, red, green, yellow, blue, magenta, cyan, gray, or white"
+    "black, red, green, yellow, blue, magenta, cyan, gray, white, or reset"
 }
 
 pub(super) fn parse_ansi_color(value: &str) -> Option<Color> {
@@ -215,6 +229,7 @@ pub(super) fn parse_ansi_color(value: &str) -> Option<Color> {
         "cyan" => Some(Color::Cyan),
         "gray" => Some(Color::Gray),
         "white" => Some(Color::White),
+        "reset" => Some(Color::Reset),
         _ => None,
     }
 }

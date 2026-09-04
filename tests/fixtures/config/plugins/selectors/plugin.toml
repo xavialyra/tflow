@@ -9,7 +9,6 @@ alias = "commands"
 type = "picker"
 
 [views.commands.engine.config]
-show_prefix = true
 
 [views.commands.engine.config.items]
 source = "script"

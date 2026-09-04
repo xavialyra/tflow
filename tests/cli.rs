@@ -118,9 +118,9 @@ fn check_rejects_values_that_reference_unavailable_evaluation_stages() {
         (
             "core:default",
             r#"
-            show_prefix = "{{ result }}"
+            layout = "{{ result }}"
             "#,
-            "engine field \"show_prefix\" is consumed during the operation evaluation stage",
+            "engine field \"layout\" is consumed during the operation evaluation stage",
         ),
         (
             "core:default",
@@ -310,10 +310,6 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
         (
             "preview = \"not-a-table\"",
             "picker field \"preview\" must be a table or complete dynamic path",
-        ),
-        (
-            "show_prefix = \"value={{ page.query.enabled }}\"",
-            "picker field \"show_prefix\" must be a boolean or complete dynamic path",
         ),
     ] {
         let root = temporary_root();

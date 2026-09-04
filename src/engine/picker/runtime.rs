@@ -143,7 +143,6 @@ impl PickerView {
 
 fn runtime_item_value(item: &Item) -> serde_json::Value {
     serde_json::json!({
-        "prefix": item.prefix,
         "text": item.text,
         "value": item.value,
         "metadata": item.metadata,
@@ -159,8 +158,8 @@ mod tests {
     #[test]
     fn public_item_provenance_excludes_internal_feed_state() {
         let value = runtime_item_value(&Item {
-            prefix: "app".to_string(),
             text: "Terminal".to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("Terminal".to_string()).into(),
             value: Some("terminal".to_string()),
             metadata: serde_json::json!({"kind": "app"}),
             source_view: "apps:default".to_string(),

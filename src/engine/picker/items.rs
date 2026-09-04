@@ -163,7 +163,8 @@ impl FeedInstance {
 
 #[derive(Debug, Deserialize)]
 struct ItemValue {
-    label: String,
+    #[serde(alias = "label")]
+    display: super::display::ItemDisplayInput,
     #[serde(default)]
     allow_empty: bool,
     #[serde(default)]
@@ -174,8 +175,8 @@ struct ItemValue {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Item {
-    pub(crate) prefix: String,
     pub(crate) text: String,
+    pub(crate) display: super::display::NormalizedItemDisplay,
     pub(crate) value: Option<String>,
     pub(crate) metadata: Value,
     /// Stable provenance only; the response-level context owns state and raw binding.
@@ -345,6 +346,9 @@ pub(crate) fn load_items_for_definitions(
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
     let mut result = ItemsResult::default();
+    let show_source_badge = definitions
+        .first()
+        .map_or(false, |d| d.source.source_badge(page_view));
 
     for definition in definitions {
         if cancellation.is_cancelled() {
@@ -360,10 +364,6 @@ pub(crate) fn load_items_for_definitions(
         if !definition.has_items() {
             continue;
         }
-        let prefix = definition
-            .alias
-            .clone()
-            .unwrap_or_else(|| definition.owner_view.clone());
         let instance = match FeedInstance::resolve(
             Arc::clone(definition),
             page_view,
@@ -414,11 +414,27 @@ pub(crate) fn load_items_for_definitions(
                 continue;
             }
         };
+        let badge = if show_source_badge && definition.owner_view != page_view {
+            Some(
+                definition
+                    .alias
+                    .as_deref()
+                    .unwrap_or_else(|| {
+                        definition
+                            .owner_view
+                            .split_once(':')
+                            .map(|(p, _)| p)
+                            .unwrap_or(&definition.owner_view)
+                    }),
+            )
+        } else {
+            None
+        };
         append_items_value(
             &mut result,
             &definition.owner_view,
             &feed_id,
-            &prefix,
+            badge,
             value,
             cancellation,
         );
@@ -476,7 +492,7 @@ fn append_items_value(
     result: &mut ItemsResult,
     source_ref: &str,
     feed_id: &FeedId,
-    prefix: &str,
+    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -488,14 +504,14 @@ fn append_items_value(
         ));
         return;
     }
-    append_items_array(result, source_ref, feed_id, prefix, value, cancellation);
+    append_items_array(result, source_ref, feed_id, badge, value, cancellation);
 }
 
 fn append_items_array(
     result: &mut ItemsResult,
     source_ref: &str,
     feed_id: &FeedId,
-    prefix: &str,
+    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -529,17 +545,21 @@ fn append_items_array(
                 return;
             }
         };
-        let text = sanitize_text(&parsed.label);
+        let mut display: super::display::NormalizedItemDisplay = parsed.display.into();
+        let text = sanitize_text(&display.plain_text());
+        if let Some(badge_text) = badge {
+            display.inject_badge(badge_text, super::display::SlotToken::Badge);
+        }
         if text.is_empty() && !parsed.allow_empty {
             result.errors.push(format!(
-                "{}: items JSON at index {} has an empty label",
+                "{}: items JSON at index {} has an empty display",
                 source_ref, index
             ));
             return;
         }
         parsed_items.push(Item {
-            prefix: prefix.to_string(),
             text,
+            display,
             value: parsed.value,
             metadata: parsed.metadata,
             source_view: source_ref.to_string(),
@@ -554,11 +574,10 @@ fn append_items(
     result: &mut ItemsResult,
     source_ref: &str,
     feed_id: &FeedId,
-    prefix: &str,
     value: Value,
     cancellation: &CancellationToken,
 ) {
-    append_items_array(result, source_ref, feed_id, prefix, value, cancellation);
+    append_items_array(result, source_ref, feed_id, None, value, cancellation);
 }
 
 fn run_items_source(
@@ -687,12 +706,14 @@ mod tests {
                     "core".to_string(),
                     PluginMetadata {
                         name: "core".to_string(),
+                        ..Default::default()
                     },
                 ),
                 (
                     "apps".to_string(),
                     PluginMetadata {
                         name: "applications".to_string(),
+                        ..Default::default()
                     },
                 ),
             ]),
@@ -708,9 +729,19 @@ mod tests {
             r#"{"label":"Termius","value":"termius.desktop","metadata":{"kind":"app"}}"#,
         )
         .unwrap();
-        assert_eq!(item.label, "Termius");
+        assert_eq!(item.display.plain_text(), "Termius");
         assert_eq!(item.value.as_deref(), Some("termius.desktop"));
         assert_eq!(item.metadata["kind"], "app");
+    }
+
+    #[test]
+    fn parses_display_contract_items() {
+        let item: ItemValue = serde_json::from_str(
+            r#"{"display":{"cells":[{"text":"Open Settings"},{"text":"Ctrl+,","slot":"badge","align":"right"}]},"value":"settings"}"#,
+        )
+        .unwrap();
+        assert_eq!(item.display.plain_text(), "Open Settings Ctrl+,");
+        assert_eq!(item.value.as_deref(), Some("settings"));
     }
 
     #[test]
@@ -725,7 +756,6 @@ mod tests {
             &mut result,
             "feed:main",
             &FeedId("feed:main".to_string()),
-            "feed",
             items,
             &CancellationToken::new(),
         );
@@ -743,7 +773,6 @@ mod tests {
             &mut result,
             "feed:main",
             &FeedId("feed:main".to_string()),
-            "feed",
             serde_json::json!([{"label": "ignored"}]),
             &cancellation,
         );
@@ -774,7 +803,12 @@ mod tests {
             ["Second", "First"]
         );
         assert_eq!(result.items[0].source_view, "apps:main");
-        assert_eq!(result.items[0].prefix, "app");
+        assert_eq!(result.items[0].display.rows[0].cells.len(), 2);
+        assert_eq!(result.items[0].display.rows[0].cells[1].spans[0].text, "app");
+        assert_eq!(
+            result.items[0].display.rows[0].cells[1].spans[0].slot,
+            crate::engine::picker::SlotToken::Badge
+        );
         assert_eq!(result.contexts.len(), 1, "one context per feed response");
         assert!(
             result

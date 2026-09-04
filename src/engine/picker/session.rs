@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PickerOptions {
-    pub(super) show_prefix: bool,
     pub(super) preview_enabled: bool,
     pub(super) show_input: bool,
     pub(super) show_divider: bool,
@@ -32,7 +31,6 @@ pub(super) struct PickerOptions {
 impl Default for PickerOptions {
     fn default() -> Self {
         Self {
-            show_prefix: false,
             preview_enabled: false,
             show_input: true,
             show_divider: true,
@@ -359,8 +357,8 @@ impl PickerView {
         }
     }
 
-    pub(super) fn list_presentation(&self) -> (bool, String) {
-        (self.options.show_prefix, "(no matches)".to_string())
+    pub(super) fn list_presentation(&self) -> String {
+        "(no matches)".to_string()
     }
 
     pub(crate) fn schedule_retry(&mut self) {
@@ -1415,8 +1413,8 @@ mod tests {
 
     fn test_item(text: &str) -> Item {
         Item {
-            prefix: String::new(),
             text: text.to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain(text.to_string()).into(),
             value: Some(text.to_string()),
             metadata: Value::Null,
             source_view: "core:default".to_string(),
@@ -1466,8 +1464,8 @@ mod tests {
         picker.items_task_state = ItemsTaskState::Idle;
         picker.parameter_snapshot = Some(parameters);
         picker.frame.selection.replace(vec![Item {
-            prefix: String::new(),
             text: "Application".to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("Application".to_string()).into(),
             value: Some("application".to_string()),
             metadata: Value::Null,
             source_view: "apps:main".to_string(),
@@ -2002,8 +2000,8 @@ mod tests {
             PickerOptions::default(),
         );
         picker.frame.selection.replace(vec![Item {
-            prefix: String::new(),
             text: "stale".to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("stale".to_string()).into(),
             value: Some("stale".to_string()),
             metadata: serde_json::Value::Null,
             source_view: "core:default".to_string(),
@@ -2053,7 +2051,6 @@ mod tests {
                 "pending_selection": picker.frame.pending_selection,
                 "selected": picker.frame.selection.selected,
                 "items": picker.frame.selection.items.iter().map(|item| serde_json::json!({
-                    "prefix": item.prefix,
                     "text": item.text,
                     "value": item.value,
                     "metadata": item.metadata,
@@ -2354,8 +2351,8 @@ mod tests {
         picker.frame.pending_selection = 3;
         picker.frame.selection.selected = 0;
         Arc::make_mut(&mut picker.frame.selection.items).push(Item {
-            prefix: "prefix".to_string(),
             text: "preserved".to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("preserved".to_string()).into(),
             value: Some("value".to_string()),
             metadata: serde_json::json!({"key": "value"}),
             source_view: "core:default".to_string(),
@@ -2483,8 +2480,8 @@ mod tests {
             preview,
         );
         picker.frame.selection.replace(vec![Item {
-            prefix: String::new(),
             text: "item".to_string(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("item".to_string()).into(),
             value: None,
             metadata: serde_json::json!({"image": "/missing.png"}),
             source_view: "core:default".to_string(),

@@ -178,7 +178,7 @@ impl ViewFactory for ProtocolViewFactory {
                     services: self.picker_services(target, instance)?,
                     parameter_binding,
                     parameter_bindings,
-                    theme: self.theme,
+                    theme: self.theme.clone(),
                     route_entry: target == self.config.default_view.as_deref().unwrap_or_default(),
                     query_prefix,
                     runtime_snapshot,
@@ -204,7 +204,7 @@ impl ViewFactory for ProtocolViewFactory {
                     )?,
                     self.cancellation.observer(),
                     runtime_snapshot,
-                    self.theme,
+                    self.theme.clone(),
                     services
                         .host
                         .task_runtime()
@@ -228,7 +228,7 @@ impl ViewFactory for ProtocolViewFactory {
                     )?,
                     self.cancellation.observer(),
                     runtime_snapshot,
-                    self.theme,
+                    self.theme.clone(),
                 ),
                 request,
                 instance,

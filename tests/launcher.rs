@@ -517,7 +517,6 @@ fn loads_items_and_runs_a_view_command() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value"}]
         [catalog]
         items = [{label = "Item", value = "value"}]
@@ -1240,7 +1239,6 @@ fn explicit_capture_view_receives_typed_query_state() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
@@ -1327,7 +1325,6 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
@@ -1366,7 +1363,6 @@ fn explicit_embedded_view_receives_typed_query_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
@@ -1444,7 +1440,6 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.direct]
         [plugins.core.views.direct.engine]
@@ -1620,7 +1615,6 @@ fn waits_for_items_before_running_enter_command() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -1733,7 +1727,6 @@ fn view_commands_accept_unreserved_control_bindings() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "ctrl+r"
@@ -2181,7 +2174,6 @@ fi
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [plugins.core.views.default.engine.config.items]
         source = "script"
         file = "scripts/items.sh"
@@ -2327,7 +2319,6 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = "{{ page.query }}"
 "#,
     )
@@ -2376,7 +2367,6 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [[plugins.core.views.default.engine.config.feeds]]
         view = "apps:default"
         [plugins.core.views.default.commands.page]
@@ -2503,7 +2493,6 @@ fn feed_owners_apply_independent_query_defaults() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [[plugins.core.views.default.engine.config.feeds]]
         view = "apps:default"
         [plugins.apps.views.default]
@@ -2595,7 +2584,6 @@ fn picker_back_clears_routed_query_before_returning_to_default() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [[plugins.core.views.default.engine.config.feeds]]
         view = "apps:default"
         [[plugins.core.views.default.engine.config.feeds]]
@@ -2677,7 +2665,6 @@ fn empty_picker_input_returns_to_parent_before_a_new_root_route() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [[plugins.core.views.default.engine.config.feeds]]
         view = "apps:default"
         [[plugins.core.views.default.engine.config.feeds]]
@@ -2840,7 +2827,6 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -3072,7 +3058,6 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         items = [{label = "Item", value = "value", metadata = {target = "core:capture"}}]
         [plugins.core.views.default.commands.run]
         key = "enter"
@@ -3141,7 +3126,6 @@ fn failed_view_creation_returns_to_the_current_view() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [plugins.core.views.broken]
         [plugins.core.views.broken.engine]
         type = "embedded"
@@ -3194,7 +3178,6 @@ fn qualified_view_path_navigates_to_any_engine() {
         [plugins.core.views.default.engine]
         type = "picker"
         [plugins.core.views.default.engine.config]
-        show_prefix = true
         [plugins.core.views.embedded]
         [plugins.core.views.embedded.engine]
         type = "embedded"

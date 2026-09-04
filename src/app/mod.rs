@@ -111,7 +111,7 @@ impl App {
     ) -> Result<Self> {
         Self::build(
             config,
-            *theme,
+            theme.clone(),
             runtime_log,
             engines,
             cancellation.clone(),
@@ -130,7 +130,7 @@ impl App {
     ) -> Result<Self> {
         Self::build(
             config,
-            *theme,
+            theme.clone(),
             runtime_log,
             engines,
             cancellation.clone(),
@@ -165,7 +165,7 @@ impl App {
         let routes = Box::new(crate::view::ConfigRouteCatalog::new(config));
         let factory = Box::new(ProtocolViewFactory::new(
             config,
-            theme,
+            theme.clone(),
             cancellation.clone(),
             engines,
         ));

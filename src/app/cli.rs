@@ -59,9 +59,10 @@ impl Config {
     pub(crate) fn load_app(user_path: &Path, options: &ThemeLoadOptions) -> Result<LoadedApp> {
         let engines = EngineRegistry::new();
         let loaded = Self::load_unvalidated(user_path)?;
-        let theme = theme::load(user_path, loaded.theme_selector(), options)?;
+        let mut theme = theme::load(user_path, loaded.theme_selector(), options)?;
         let config = loaded.compile()?;
         config.validate_with_engines(&engines)?;
+        theme.register_all_plugin_defaults(config.plugins())?;
         Ok(LoadedApp { config, theme })
     }
 
@@ -71,12 +72,13 @@ impl Config {
         V: EngineConfigValidator,
     {
         let loaded = Self::load_unvalidated(user_path)?;
-        let _theme = theme::load(
+        let mut theme = theme::load(
             user_path,
             loaded.theme_selector(),
             &ThemeLoadOptions::default(),
         )?;
         let config = loaded.compile()?;
+        theme.register_all_plugin_defaults(config.plugins())?;
         config.validate_with_engines(engines)?;
         Ok(config)
     }

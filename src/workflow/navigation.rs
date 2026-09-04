@@ -242,12 +242,14 @@ mod tests {
                     "core".to_string(),
                     PluginMetadata {
                         name: "core".to_string(),
+                        ..Default::default()
                     },
                 ),
                 (
                     "package-a".to_string(),
                     PluginMetadata {
                         name: "template".to_string(),
+                        ..Default::default()
                     },
                 ),
             ]),

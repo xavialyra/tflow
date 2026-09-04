@@ -387,7 +387,7 @@ impl RenderModel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct RenderContext {
     pub(crate) theme: ResolvedTheme,
     pub(crate) image_picker: Option<ImagePicker>,

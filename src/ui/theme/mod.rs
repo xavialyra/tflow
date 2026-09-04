@@ -4,7 +4,7 @@ mod load;
 mod model;
 
 pub(crate) use load::{ThemeLoadOptions, cli_named_theme, load};
-pub(crate) use model::{ResolvedTheme, Theme};
+pub(crate) use model::{RawStyleBinding, ResolvedTheme, Theme};
 
 #[cfg(test)]
 use binding::ThemeBinding;
@@ -55,6 +55,8 @@ mod tests {
             ThemeBinding::PickerMuted => theme.picker.muted,
             ThemeBinding::PickerSelected => theme.picker.selected,
             ThemeBinding::PickerSelectedMuted => theme.picker.selected_muted,
+            ThemeBinding::PickerBadge => theme.picker.badge,
+            ThemeBinding::PickerBadgeSelected => theme.picker.badge_selected,
             ThemeBinding::PickerMarker => theme.picker.marker,
             ThemeBinding::PickerScrollbar => theme.picker.scrollbar,
             ThemeBinding::PreviewText => theme.preview.text,
@@ -378,5 +380,215 @@ mod tests {
         assert_eq!(theme.picker.marker.fg, Some(Color::Yellow));
         assert_eq!(theme.picker.muted.fg, Some(Color::Gray));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn raw_colors_in_styles_are_rejected() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [plugins.git.styles.branch]
+            foreground = "#ff0000"
+            "##,
+        )
+        .unwrap();
+        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
+        assert!(error.to_string().contains("must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"));
+
+        let raw2: RawTheme = toml::from_str(
+            r#"
+            [plugins.git.styles.branch]
+            foreground = "red"
+            "#,
+        )
+        .unwrap();
+        let error2 = ResolvedTheme::from_raw(&raw2, "test theme").unwrap_err();
+        assert!(error2.to_string().contains("must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"));
+    }
+
+    #[test]
+    fn plugin_styles_and_theme_overrides_with_selected_state() {
+        use crate::engine::SlotToken;
+
+        let raw_theme: RawTheme = toml::from_str(
+            r#"
+            [palette]
+            accent-blue = "blue"
+            selection-bg = "green"
+            highlight-gold = "yellow"
+
+            [scheme]
+            primary = "palette:accent-blue"
+            primary-container = "palette:selection-bg"
+
+            [plugins.git.styles.branch]
+            bold = false
+
+            [plugins.git.styles.branch.selected]
+            foreground = "palette:highlight-gold"
+
+            [plugins.git.styles.hash]
+            foreground = "palette:highlight-gold"
+            "#,
+        )
+        .unwrap();
+        let mut theme = ResolvedTheme::from_raw(&raw_theme, "tokyonight").unwrap();
+
+        let mut plugin_styles = BTreeMap::new();
+        plugin_styles.insert(
+            "branch".to_string(),
+            RawStyleBinding {
+                foreground: Some("scheme:primary".to_string()),
+                bold: Some(true),
+                ..Default::default()
+            },
+        );
+        plugin_styles.insert(
+            "tag".to_string(),
+            RawStyleBinding {
+                foreground: Some("palette:accent-blue".to_string()),
+                reversed: Some(true),
+                ..Default::default()
+            },
+        );
+        theme.register_plugin_defaults("git", &plugin_styles).unwrap();
+
+        // 1. Normal slot: branch should have foreground = Blue (scheme:primary), and bold = false (overridden by theme)
+        let branch_normal = theme.resolve_slot("git", &SlotToken::from("branch"), false);
+        assert_eq!(branch_normal.fg, Some(Color::Blue));
+        assert!(!branch_normal.add_modifier.contains(Modifier::BOLD));
+
+        // 2. Selected slot: branch selected state was overridden with highlight-gold (Yellow).
+        // Background should automatically lock to picker.selected.bg (Green).
+        let branch_selected = theme.resolve_slot("git", &SlotToken::from("branch"), true);
+        assert_eq!(branch_selected.fg, Some(Color::Yellow));
+        assert_eq!(branch_selected.bg, Some(Color::Green));
+
+        // 3. Tag slot: not overridden by theme, default has reversed = true
+        let tag_normal = theme.resolve_slot("git", &SlotToken::from("tag"), false);
+        assert_eq!(tag_normal.fg, Some(Color::Blue));
+        assert!(tag_normal.add_modifier.contains(Modifier::REVERSED));
+
+        // Tag selected slot: no explicit selected block, so background locks to picker.selected.bg
+        let tag_selected = theme.resolve_slot("git", &SlotToken::from("tag"), true);
+        assert_eq!(tag_selected.fg, Some(Color::Blue));
+        assert_eq!(tag_selected.bg, Some(Color::Green));
+        assert!(tag_selected.add_modifier.contains(Modifier::REVERSED));
+
+        // 4. Hash slot: declared solely in theme overrides (no plugin default)
+        let hash_normal = theme.resolve_slot("git", &SlotToken::from("hash"), false);
+        assert_eq!(hash_normal.fg, Some(Color::Yellow));
+
+        // 5. Builtin slots fallback works
+        let primary_normal = theme.resolve_slot("git", &SlotToken::Primary, false);
+        assert_eq!(primary_normal, theme.picker.text);
+    }
+
+    #[test]
+    fn structured_picker_badge_and_chrome_table_syntax() {
+        use crate::engine::SlotToken;
+
+        let raw_theme: RawTheme = toml::from_str(
+            r#"
+            [palette]
+            brand = "blue"
+            badge-fg = "white"
+            badge-bg = "red"
+            sel-bg = "green"
+            sel-fg = "yellow"
+
+            [scheme]
+            primary = "palette:brand"
+            primary-container = "palette:sel-bg"
+
+            # Structured TOML table hierarchy
+            [picker.text]
+            foreground = "scheme:primary"
+
+            [picker.badge]
+            foreground = "palette:badge-fg"
+            background = "palette:badge-bg"
+            bold = true
+
+            [picker.badge.selected]
+            foreground = "palette:sel-fg"
+            background = "palette:sel-bg"
+            underline = true
+
+            [chrome.divider]
+            foreground = "palette:brand"
+            "#,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw_theme, "structured").unwrap();
+
+        // Check picker text
+        assert_eq!(theme.picker.text.fg, Some(Color::Blue));
+
+        // Check chrome divider
+        assert_eq!(theme.chrome.divider.fg, Some(Color::Blue));
+
+        // Check badge is terminal style (bold = true, NO REVERSED)
+        assert_eq!(theme.picker.badge.fg, Some(Color::White));
+        assert_eq!(theme.picker.badge.bg, Some(Color::Red));
+        assert!(theme.picker.badge.add_modifier.contains(Modifier::BOLD));
+        assert!(!theme.picker.badge.add_modifier.contains(Modifier::REVERSED));
+
+        // Check badge selected is terminal style (underline = true, NO REVERSED)
+        assert_eq!(theme.picker.badge_selected.fg, Some(Color::Yellow));
+        assert_eq!(theme.picker.badge_selected.bg, Some(Color::Green));
+        assert!(theme.picker.badge_selected.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!theme.picker.badge_selected.add_modifier.contains(Modifier::REVERSED));
+
+        // Built-in slot resolution delivers terminal styles directly
+        let unselected = theme.resolve_slot("", &SlotToken::Badge, false);
+        assert_eq!(unselected, theme.picker.badge);
+
+        let selected = theme.resolve_slot("", &SlotToken::Badge, true);
+        assert_eq!(selected, theme.picker.badge_selected);
+    }
+
+    #[test]
+    fn legacy_bindings_fallback_and_structured_precedence() {
+        let raw_theme: RawTheme = toml::from_str(
+            r#"
+            [palette]
+            c1 = "cyan"
+            c2 = "magenta"
+
+            [scheme]
+            primary = "palette:c1"
+            outline = "palette:c2"
+
+            # Legacy binding table
+            [bindings.picker-badge]
+            foreground = "scheme:primary"
+            bold = true
+
+            [bindings.chrome-divider]
+            foreground = "scheme:outline"
+
+            # Structured table overrides legacy binding
+            [picker.badge]
+            foreground = "scheme:outline"
+            italic = true
+            "#,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw_theme, "hybrid").unwrap();
+
+        // Chrome divider resolved from legacy [bindings.chrome-divider]
+        assert_eq!(theme.chrome.divider.fg, Some(Color::Magenta));
+
+        // Picker badge resolved from structured [picker.badge] with precedence over [bindings.picker-badge]
+        assert_eq!(theme.picker.badge.fg, Some(Color::Magenta));
+        assert!(theme.picker.badge.add_modifier.contains(Modifier::ITALIC));
+        assert!(!theme.picker.badge.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn default_theme_badge_is_not_reversed() {
+        let theme = ResolvedTheme::terminal();
+        assert!(!theme.picker.badge.add_modifier.contains(Modifier::REVERSED));
+        assert!(!theme.picker.badge_selected.add_modifier.contains(Modifier::REVERSED));
     }
 }

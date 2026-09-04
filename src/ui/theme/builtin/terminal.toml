@@ -1,0 +1,111 @@
+# Built-in Default Theme ("terminal")
+#
+# This file serves as both the built-in fallback theme and the canonical
+# reference template for authoring custom themes in `themes/<name>.toml`.
+
+[scheme]
+primary = "ansi:cyan"
+on-primary = "ansi:black"
+primary-container = "ansi:reset"
+on-primary-container = "ansi:cyan"
+surface = "ansi:reset"
+surface-container = "ansi:reset"
+on-surface = "ansi:reset"
+on-surface-variant = "ansi:reset"
+outline = "ansi:reset"
+error = "ansi:red"
+on-error = "ansi:white"
+
+# -----------------------------------------------------------------------------
+# Core Text Bindings
+# -----------------------------------------------------------------------------
+[bindings.text]
+foreground = "scheme:on-surface"
+background = "scheme:surface"
+
+[bindings.muted-text]
+foreground = "scheme:on-surface-variant"
+background = "scheme:surface"
+
+# -----------------------------------------------------------------------------
+# Picker List Component Styles
+# -----------------------------------------------------------------------------
+[picker.text]
+foreground = "scheme:on-surface"
+background = "scheme:surface"
+
+[picker.muted]
+foreground = "scheme:on-surface-variant"
+background = "scheme:surface"
+
+[picker.selected]
+foreground = "scheme:on-primary-container"
+background = "scheme:primary-container"
+bold = true
+
+[picker.selected_muted]
+foreground = "scheme:on-primary-container"
+background = "scheme:primary-container"
+
+[picker.badge]
+foreground = "scheme:on-surface-variant"
+background = "scheme:surface"
+
+[picker.badge.selected]
+foreground = "scheme:on-primary-container"
+bold = true
+
+[picker.marker]
+foreground = "scheme:primary"
+background = "scheme:surface"
+bold = true
+
+[picker.scrollbar]
+foreground = "scheme:primary"
+background = "scheme:surface"
+bold = true
+
+# -----------------------------------------------------------------------------
+# Chrome / Outer Framing Component Styles
+# -----------------------------------------------------------------------------
+[chrome.divider]
+foreground = "scheme:outline"
+background = "scheme:surface"
+
+[chrome.input_prefix]
+foreground = "scheme:on-primary-container"
+background = "scheme:primary-container"
+bold = true
+
+[chrome.footer]
+foreground = "scheme:on-surface-variant"
+background = "scheme:surface-container"
+
+[chrome.footer_key]
+foreground = "scheme:on-primary-container"
+background = "scheme:primary-container"
+bold = true
+
+[chrome.error]
+foreground = "scheme:on-error"
+background = "scheme:error"
+bold = true
+
+# -----------------------------------------------------------------------------
+# Preview & Capture Component Styles
+# -----------------------------------------------------------------------------
+[preview.text]
+foreground = "scheme:on-surface"
+background = "scheme:surface"
+
+[preview.border]
+foreground = "scheme:outline"
+background = "scheme:surface"
+
+[preview.error]
+foreground = "scheme:on-error"
+background = "scheme:error"
+
+[capture.text]
+foreground = "scheme:on-surface"
+background = "scheme:surface"

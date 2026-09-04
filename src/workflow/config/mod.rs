@@ -76,6 +76,7 @@ pub(crate) struct PickerItemsView {
     pub(crate) feeds: Vec<ViewRef>,
     pub(crate) items: Option<toml::Value>,
     pub(crate) binding: ParameterBinding,
+    pub(crate) source_badge: bool,
 }
 
 #[derive(Clone)]
@@ -118,6 +119,10 @@ impl PickerItemsProjection {
             if let Some(root) = config.plugin_root(&view_ref) {
                 plugin_roots.insert(package_id(&view_ref).to_string(), root.to_path_buf());
             }
+            let source_badge = match view.engine_field("source_badge") {
+                Some(toml::Value::Boolean(b)) => *b,
+                _ => !view.selected_feeds().is_empty(),
+            };
             views.insert(
                 view_ref.clone(),
                 PickerItemsView {
@@ -132,6 +137,7 @@ impl PickerItemsProjection {
                         .compiled
                         .parameter_registry
                         .parameter_binding(&view_ref)?,
+                    source_badge,
                 },
             );
         }
@@ -141,6 +147,10 @@ impl PickerItemsProjection {
             plugin_roots,
             templates: TemplateRegistry::compile_json_tree(&Value::Array(template_values))?,
         })
+    }
+
+    pub(crate) fn source_badge(&self, view_ref: &str) -> bool {
+        self.views.get(view_ref).map_or(false, |v| v.source_badge)
     }
 
     pub(crate) fn feed_views(&self, view_ref: &str) -> Result<Vec<(String, &PickerItemsView)>> {
@@ -179,6 +189,10 @@ impl PickerItemsProjection {
 }
 
 impl Config {
+    pub(crate) fn plugins(&self) -> &BTreeMap<String, PluginMetadata> {
+        &self.compiled.plugins
+    }
+
     pub(crate) fn bind_invocation_parameters(
         &self,
         view_ref: &str,
@@ -434,7 +448,7 @@ pub(crate) fn load_test_fixture() -> Result<Config> {
     Config::load(&path)
 }
 
-fn package_id(view_ref: &str) -> &str {
+pub(crate) fn package_id(view_ref: &str) -> &str {
     view_ref
         .split_once(':')
         .map(|(package, _)| package)
@@ -627,6 +641,29 @@ mod tests {
             config.compiled.views["core:default"].selected_feeds()[0].view,
             "apps:main"
         );
+    }
+
+    #[test]
+    fn plugin_styles_are_compiled_into_metadata() {
+        let config = config(
+            r#"
+            default_view = "git:branches"
+            [plugins.git.styles.branch]
+            foreground = "scheme:primary"
+            bold = true
+
+            [plugins.git.views.branches]
+            [plugins.git.views.branches.engine]
+            type = "picker"
+            [plugins.git.views.branches.engine.config]
+            items = []
+            "#,
+        );
+        let plugins = config.plugins();
+        let git_plugin = plugins.get("git").expect("git plugin must exist");
+        let branch_style = git_plugin.styles.get("branch").expect("branch style must exist");
+        assert_eq!(branch_style.foreground.as_deref(), Some("scheme:primary"));
+        assert_eq!(branch_style.bold, Some(true));
     }
 
     #[test]

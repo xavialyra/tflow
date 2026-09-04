@@ -1,3 +1,4 @@
+pub(crate) mod display;
 mod items;
 mod keymap;
 mod preview;
@@ -7,6 +8,8 @@ mod runtime;
 mod session;
 mod tasks;
 
+#[allow(unused_imports)]
+pub(crate) use self::display::{ItemDisplayInput, NormalizedItemDisplay, SlotToken};
 use self::items::{FeedDefinition, ItemsRequest, ItemsResult, PickerItemsLoader};
 use self::keymap::PickerKeymap;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
@@ -341,8 +344,8 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
             "selected_index",
         ])
         .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["show_prefix", "layout", "preview"],
-            binding: &["layout", "preview"],
+            runtime: &["layout", "preview", "source_badge"],
+            binding: &["layout", "preview", "source_badge"],
             deferred_runtime_errors: &[],
             binding_defaults: Some(&["defaults", "picker", "bindings"]),
         })
@@ -361,8 +364,8 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(name, view, &["show_prefix", "layout", "preview"])?;
-    validate_picker_bool(view.engine_field("show_prefix"), "show_prefix")?;
+    validate_fields(name, view, &["layout", "preview", "source_badge"])?;
+    validate_picker_bool(view.engine_field("source_badge"), "source_badge")?;
     validate_picker_table(view.engine_field("layout"), "layout")?;
     validate_picker_table(view.engine_field("preview"), "preview")?;
     if let Some(items) = view.selected_items() {
@@ -548,6 +551,7 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
     }
 }
 
+
 fn validate_picker_bool(value: Option<&toml::Value>, name: &str) -> Result<()> {
     let Some(value) = value else {
         return Ok(());
@@ -592,7 +596,6 @@ mod tests {
             [engine]
             type = "picker"
             [engine.config]
-            show_prefix = "{{ page.query.show_prefix }}"
             layout = "{{ page.query.layout }}"
             preview = "{{ page.query.preview }}"
             "#,
