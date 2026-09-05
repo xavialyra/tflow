@@ -44,3 +44,10 @@ This documentation is organized into four core categories following the **Diáta
 - [Architecture Overview](explanation/architecture-overview.md) — Domain separation across configuration, session, engine, and rendering.
 - [Input & Navigation Model](explanation/input-and-navigation-model.md) — Route resolution, key binding precedence, and lossless input transport.
 - [Runtime Guarantees](explanation/runtime-guarantees.md) — Security sandboxing, execution resource budgets, and cleanup invariants.
+
+---
+
+## Architecture Governance
+
+- **[Architecture Decision Records (ADRs)](adr/index.md)** — Chronological log of formal design and architectural choices.
+  - [ADR 0001: Decentralized Workflow Extensions](adr/0001-decentralized-workflow-extensions.md) — Decentralized workflow package layout, dual-mode storage, inline scripts, and CLI multiplexing.

@@ -317,8 +317,8 @@ fn prepare_run_command(
     config: &Config,
     payload: &RunPayload,
     invocation: &CommandInvocation,
-    context: &CommandContext,
-    owner: &CommandOwnerContext,
+    _context: &CommandContext,
+    _owner: &CommandOwnerContext,
     snapshot: &EvaluationSnapshot<'_>,
     stage: EvaluationStage,
 ) -> Result<PreparedProcess> {
@@ -348,60 +348,10 @@ fn prepare_run_command(
         bail!("command shell must not be empty");
     }
     let arguments = config.evaluate_argv(payload.args.as_ref(), snapshot, stage, "command args")?;
-    let item_text = current_string_field(&context.current, "text")
-        .map(str::to_string)
-        .unwrap_or_default();
-    let value = current_string_field(&context.current, "value")
-        .map(str::to_string)
-        .unwrap_or_else(|| item_text.clone());
-    let metadata = current_field(&context.current, "metadata")
-        .map(serde_json::to_string)
-        .transpose()
-        .context("could not serialize current item metadata")?
-        .unwrap_or_else(|| Value::Null.to_string());
-    let item_view = current_string_field(&context.current, "source")
-        .or_else(|| current_string_field(&context.current, "owner_view"))
-        .map(str::to_string);
-    let item_plugin = item_view
-        .as_deref()
-        .map(package_id)
-        .unwrap_or("")
-        .to_string();
     let source_view = invocation.source_view();
     let plugin_root = config
         .plugin_root(source_view)
         .map(|path| path.to_path_buf());
-    let mut environment = vec![
-        ("LAUNCHER_ITEM".to_string(), item_text),
-        ("LAUNCHER_VALUE".to_string(), value.to_string()),
-        ("LAUNCHER_METADATA".to_string(), metadata),
-        (
-            "LAUNCHER_PLUGIN".to_string(),
-            package_id(source_view).to_string(),
-        ),
-        ("LAUNCHER_VIEW".to_string(), context.page.view_ref.clone()),
-        ("LAUNCHER_VIEW_REF".to_string(), source_view.to_string()),
-        (
-            "LAUNCHER_ITEM_VIEW_REF".to_string(),
-            item_view.unwrap_or_default(),
-        ),
-        ("LAUNCHER_ITEM_PLUGIN".to_string(), item_plugin),
-        ("LAUNCHER_COMMAND".to_string(), invocation.id().to_string()),
-        ("LAUNCHER_QUERY".to_string(), owner.binding_raw.clone()),
-    ];
-    if let Some(root) = &plugin_root {
-        environment.push((
-            "LAUNCHER_PLUGIN_DIR".to_string(),
-            root.to_string_lossy().to_string(),
-        ));
-    }
-    if let Some(path) = config
-        .input_value
-        .pointer("/stdin/path")
-        .and_then(Value::as_str)
-    {
-        environment.push(("LAUNCHER_STDIN_FILE".to_string(), path.to_string()));
-    }
     let mut argv = vec![shell, "-c".to_string(), handler, "tui-launcher".to_string()];
     // With `sh -c SOURCE tui-launcher ARG...`, the fixed fourth argument is
     // `$0` inside SOURCE and configured values become `$1`, `$2`, and `"$@"`.
@@ -409,33 +359,9 @@ fn prepare_run_command(
     argv.extend(arguments);
     Ok(PreparedProcess {
         argv,
-        environment,
+        environment: Vec::new(),
         current_dir: plugin_root,
     })
-}
-
-fn current_field<'a>(current: &'a Value, field: &str) -> Option<&'a Value> {
-    current
-        .get(field)
-        .filter(|value| !value.is_null())
-        .or_else(|| {
-            current
-                .get("item")
-                .and_then(Value::as_object)
-                .and_then(|item| item.get(field))
-                .filter(|value| !value.is_null())
-        })
-}
-
-fn current_string_field<'a>(current: &'a Value, field: &str) -> Option<&'a str> {
-    current_field(current, field).and_then(Value::as_str)
-}
-
-fn package_id(view_ref: &str) -> &str {
-    view_ref
-        .split_once(':')
-        .map(|(package, _)| package)
-        .unwrap_or(view_ref)
 }
 
 pub(crate) fn collect_available_commands(
@@ -679,20 +605,7 @@ mod tests {
         let PreparedAction::Execute { prepared, .. } = prepared else {
             panic!("run action was not prepared for execution");
         };
-        assert!(
-            !prepared
-                .environment
-                .iter()
-                .any(|(key, _)| key == "LAUNCHER_LOG_FILE")
-        );
-        assert_eq!(
-            prepared
-                .environment
-                .iter()
-                .find(|(key, _)| key == "LAUNCHER_STDIN_FILE")
-                .map(|(_, value)| value.as_str()),
-            Some("/tmp/tui-launcher-captured-stdin")
-        );
+        assert!(prepared.environment.is_empty());
     }
 
     #[test]

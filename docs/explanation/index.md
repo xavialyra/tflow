@@ -12,3 +12,7 @@ This section provides understanding-oriented explanations of `tui-launcher`'s de
 
 - **[Runtime Guarantees & Safety](runtime-guarantees.md)**
   Resource bounds, process group cleanup, execution sandboxing, and terminal state restoration.
+
+---
+
+For chronological design rationale and formal records, see **[Architecture Decision Records (ADRs)](../adr/index.md)**.

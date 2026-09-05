@@ -208,26 +208,11 @@ pub(super) fn create_view(
         anyhow::bail!("embedded command must not be empty");
     }
     let _ = evaluate_optional_string(&context.config, "title")?;
-    let plugin = view_ref
-        .split_once(':')
-        .map(|(package, _)| package)
-        .unwrap_or(&view_ref)
-        .to_string();
     let plugin_root = context.config.plugin_root.clone();
-    let mut environment = vec![
-        ("LAUNCHER_VIEW_REF".to_string(), view_ref.clone()),
-        (
-            "LAUNCHER_INPUT".to_string(),
-            context.parameters.raw_input().to_string(),
-        ),
-        ("LAUNCHER_PLUGIN".to_string(), plugin),
-    ];
-    if let Some(root) = &plugin_root {
-        environment.push((
-            "LAUNCHER_PLUGIN_DIR".to_string(),
-            root.to_string_lossy().to_string(),
-        ));
-    }
+    let environment = vec![(
+        "LAUNCHER_INPUT".to_string(),
+        context.parameters.raw_input().to_string(),
+    )];
     let result = parse_result_config_value(&view_ref, evaluate_field(&context.config, "result")?)?;
     let session = EmbeddedSession::new(
         PreparedProcess {

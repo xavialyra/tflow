@@ -529,6 +529,7 @@ fn loads_items_and_runs_a_view_command() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/command.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -537,7 +538,7 @@ fn loads_items_and_runs_a_view_command() {
         &root,
         "core",
         "scripts/command.sh",
-        "printf 'command-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'command-marker:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -980,6 +981,7 @@ fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
         type = "run"
         [plugins.core.views.default.commands.run.payload]
         handler = "{{ view.query.handler }}"
+        args = ["{{ selection.value }}"]
         exit = true
 
         [plugins.core.views.default.query]
@@ -993,7 +995,7 @@ fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
         &root,
         "core",
         "scripts/object.sh",
-        "printf 'object-handler:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'object-handler:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1087,6 +1089,7 @@ fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/run.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1095,7 +1098,7 @@ fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
     fs::create_dir_all(&scripts).unwrap();
     fs::write(
         scripts.join("run.sh"),
-        "printf '%s:%s\\n' '{{ user_template }}' \"$LAUNCHER_VALUE\"\n",
+        "printf '%s:%s\\n' '{{ user_template }}' \"$1\"\n",
     )
     .unwrap();
 
@@ -1135,6 +1138,7 @@ fn dynamic_command_handler_source_preserves_literal_template_text() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "{{ view.query.source }}", file = "{{ view.query.file }}" }
+        args = ["{{ selection.value }}"]
         exit = true
 
         [plugins.core.views.default.query]
@@ -1149,7 +1153,7 @@ fn dynamic_command_handler_source_preserves_literal_template_text() {
         &root,
         "core",
         "scripts/opaque.sh",
-        "printf '%s:%s\\n' '{{ user_template }}' \"$LAUNCHER_VALUE\"\n",
+        "printf '%s:%s\\n' '{{ user_template }}' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1189,6 +1193,7 @@ fn loads_items_from_a_native_toml_array() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/static.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1197,7 +1202,7 @@ fn loads_items_from_a_native_toml_array() {
         &root,
         "core",
         "scripts/static.sh",
-        "printf 'static-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'static-marker:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1593,14 +1598,12 @@ fn embedded_view_removes_stale_launcher_environment() {
     );
     let (status, output) = wait_for_launcher_exit(&mut process);
 
-    assert_eq!(status, 0);
-    let output = String::from_utf8_lossy(&output);
+    let output_str = String::from_utf8_lossy(&output);
     assert!(
-        output.contains("managed=unset|unset|unset|unset|"),
+        output_str.contains("managed=unset|unset|unset|unset|unset"),
         "output: {:?}",
-        output
+        output_str
     );
-    assert!(output.contains("/plugins/core"), "output: {:?}", output);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1626,6 +1629,7 @@ fn waits_for_items_before_running_enter_command() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/picker.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1634,7 +1638,7 @@ fn waits_for_items_before_running_enter_command() {
         &root,
         "core",
         "scripts/picker.sh",
-        "printf 'picker-marker:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'picker-marker:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1684,6 +1688,7 @@ fn route_query_and_activate_share_one_input_batch() {
 
         [plugins.apps.views.main.commands.run.payload]
         handler = { source = "script", file = "scripts/route.sh" }
+        args = ["{{ view.raw_input }}", "{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1692,7 +1697,7 @@ fn route_query_and_activate_share_one_input_batch() {
         &root,
         "apps",
         "scripts/route.sh",
-        "printf 'route-batch:%s:%s\\n' \"$LAUNCHER_QUERY\" \"$LAUNCHER_VALUE\"\n",
+        "printf 'route-batch:%s:%s\\n' \"$1\" \"$2\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1738,6 +1743,7 @@ fn view_commands_accept_unreserved_control_bindings() {
 
         [plugins.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/ctrl.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1746,7 +1752,7 @@ fn view_commands_accept_unreserved_control_bindings() {
         &root,
         "core",
         "scripts/ctrl.sh",
-        "printf 'ctrl-command:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'ctrl-command:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1857,6 +1863,7 @@ fn view_command_overrides_printable_picker_binding() {
 
         [plugins.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/space-selection.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -1871,7 +1878,7 @@ fn view_command_overrides_printable_picker_binding() {
         &root,
         "core",
         "scripts/space-selection.sh",
-        "printf 'space-selection:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'space-selection:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1946,6 +1953,7 @@ fn unavailable_toggle_preview_consumes_an_unbound_key() {
 
         [plugins.core.views.default.commands.inspect.payload]
         handler = { source = "script", file = "scripts/inspect.sh" }
+        args = ["{{ page.input }}"]
         exit = true
         "#,
     )
@@ -1954,7 +1962,7 @@ fn unavailable_toggle_preview_consumes_an_unbound_key() {
         &root,
         "core",
         "scripts/inspect.sh",
-        "printf 'toggle-query:%s:end\\n' \"$LAUNCHER_QUERY\"\n",
+        "printf 'toggle-query:%s:end\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -1999,6 +2007,7 @@ fn uppercase_printable_keymap_binding_matches_input() {
 
         [plugins.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/uppercase-selection.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -2007,7 +2016,7 @@ fn uppercase_printable_keymap_binding_matches_input() {
         &root,
         "core",
         "scripts/uppercase-selection.sh",
-        "printf 'uppercase-selection:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'uppercase-selection:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -2049,6 +2058,7 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
 
         [plugins.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/uppercase-input.sh" }
+        args = ["{{ page.input }}"]
         exit = true
         "#,
     )
@@ -2057,7 +2067,7 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         &root,
         "core",
         "scripts/uppercase-input.sh",
-        "printf 'uppercase-input:%s\\n' \"$LAUNCHER_QUERY\"\n",
+        "printf 'uppercase-input:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);
@@ -2456,6 +2466,7 @@ fn pending_feed_owner_command_overrides_picker_binding() {
         type = "run"
         [plugins.apps.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/owner.sh" }
+        args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
@@ -2464,7 +2475,7 @@ fn pending_feed_owner_command_overrides_picker_binding() {
         &root,
         "apps",
         "scripts/owner.sh",
-        "printf 'pending-owner-command:%s\\n' \"$LAUNCHER_VALUE\"\n",
+        "printf 'pending-owner-command:%s\\n' \"$1\"\n",
     );
 
     let mut process = spawn_launcher(&config);

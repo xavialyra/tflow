@@ -4,6 +4,13 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
 ## 2026-09-06
 
+- Initialized Architecture Decision Records (ADRs) under `docs/adr/`:
+  - Created `docs/adr/index.md` registry.
+  - Added `docs/adr/0001-decentralized-workflow-extensions.md` (ADR 0001).
+  - Established decentralized workflow layout under `$XDG_CONFIG_HOME/tui-launcher/workflows/`.
+  - Defined dual-mode coexistence (single-file `.toml` and directory packages) and inline script execution.
+  - Formulated CLI entry multiplexing (`argv[0]`) and inspection.
+  - Linked ADR registry to root `docs/index.md` under Architecture Governance.
 - Refactored theme configuration schema and updated `custom-themes.md`:
   - Realigned domain boundaries by moving query prefix styling from `[chrome.input_prefix]` to `[picker.input_prefix]`.
   - Added dedicated styling slots: `[chrome.footer_title]`, `[chrome.footer_status]`, and `[chrome.border]`.
