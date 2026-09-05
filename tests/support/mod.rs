@@ -469,6 +469,7 @@ pub fn run_invocation_steps(args: &[&str], input: &[u8], key_steps: &[&[u8]]) ->
             .flush()
             .expect("could not flush invocation key input");
         if index + 1 < key_steps.len() {
+            thread::sleep(Duration::from_millis(20));
             wait_for_ready(&process.master);
         }
     }

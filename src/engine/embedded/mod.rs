@@ -207,8 +207,7 @@ pub(super) fn create_view(
     if command.is_empty() {
         anyhow::bail!("embedded command must not be empty");
     }
-    let title =
-        evaluate_optional_string(&context.config, "title")?.unwrap_or_else(|| view_ref.clone());
+    let _ = evaluate_optional_string(&context.config, "title")?;
     let plugin = view_ref
         .split_once(':')
         .map(|(package, _)| package)
@@ -242,7 +241,6 @@ pub(super) fn create_view(
     let start_plan = Some(session.prepare_start());
     Ok(Box::new(EmbeddedView {
         view_ref,
-        title,
         session,
         start_plan,
         pending_outcome: None,
@@ -276,7 +274,6 @@ pub(crate) fn create_input_bindings(
 
 struct EmbeddedView {
     view_ref: String,
-    title: String,
     session: EmbeddedSession,
     start_plan: Option<EmbeddedStartPlan>,
     pending_outcome: Option<crate::engine::embedded::pty::EmbeddedRunResult>,
@@ -396,7 +393,6 @@ impl EngineRuntime for EmbeddedView {
             "terminal",
             EmbeddedRenderModel {
                 screen: self.session.screen().map(EmbeddedTerminal::snapshot),
-                title: self.title.clone(),
             },
         )
     }
@@ -405,7 +401,6 @@ impl EngineRuntime for EmbeddedView {
 #[derive(Clone)]
 struct EmbeddedRenderModel {
     screen: Option<EmbeddedTerminalSnapshot>,
-    title: String,
 }
 
 pub(crate) struct EmbeddedRenderer;
@@ -421,14 +416,8 @@ impl crate::engine::ViewRenderer for EmbeddedRenderer {
         Ok(())
     }
 
-    fn chrome(&self, model: &RenderModel) -> crate::chrome::EngineChrome {
-        let Some(model) = model.downcast_ref::<EmbeddedRenderModel>() else {
-            return crate::chrome::EngineChrome::default();
-        };
-        crate::chrome::EngineChrome::new(
-            Some(format!("embedded: {}", model.title)),
-            Some("keys pass through".to_string()),
-        )
+    fn chrome(&self, _model: &RenderModel) -> crate::chrome::EngineChrome {
+        crate::chrome::EngineChrome::default()
     }
 
     fn render(
@@ -532,7 +521,6 @@ mod tests {
         let start_plan = Some(session.prepare_start());
         super::EmbeddedView {
             view_ref: "test:embedded".to_string(),
-            title: "test".to_string(),
             session,
             start_plan,
             pending_outcome: None,

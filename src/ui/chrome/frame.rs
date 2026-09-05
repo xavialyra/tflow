@@ -186,7 +186,6 @@ impl ChromeFrame {
         error: Option<&str>,
     ) -> Self {
         let EngineChrome {
-            title,
             status,
             commands,
             overflow_command,
@@ -209,7 +208,7 @@ impl ChromeFrame {
         } else {
             footer_line(
                 footer_width,
-                title.as_deref(),
+                None,
                 status.as_deref().unwrap_or(""),
                 &commands,
                 overflow_command.as_ref(),

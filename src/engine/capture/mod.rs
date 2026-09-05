@@ -124,7 +124,7 @@ pub(super) fn create_view(
         Ok((title, PreparedCaptureOutput::Text(output))) => (
             title.clone(),
             output.clone(),
-            "finished successfully".to_string(),
+            String::new(),
             true,
             None,
         ),
@@ -244,7 +244,6 @@ struct CaptureView {
 struct CaptureRenderModel {
     lines: std::sync::Arc<[String]>,
     status: String,
-    title: String,
 }
 
 impl CaptureView {
@@ -277,7 +276,7 @@ impl CaptureView {
         let (session, status, success) = match completion {
             CaptureCompletion::Completed(output) => (
                 CaptureSession::new(title, &output),
-                "finished successfully".to_string(),
+                String::new(),
                 true,
             ),
             CaptureCompletion::Failed(error) => (
@@ -418,7 +417,6 @@ impl EngineRuntime for CaptureView {
             CaptureRenderModel {
                 lines: self.session.shared_lines(),
                 status: self.status.clone(),
-                title: self.session.title().to_string(),
             },
         )
     }

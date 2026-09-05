@@ -215,10 +215,7 @@ impl ContentHost {
             return;
         }
         let mut block = Block::bordered();
-        let title = model
-            .title
-            .as_deref()
-            .unwrap_or_else(|| model.location.label());
+        let title = model.location.label();
         if !title.is_empty() {
             let title_budget = (popup.width as usize).saturating_sub(4);
             let clipped = super::clip(title, title_budget);

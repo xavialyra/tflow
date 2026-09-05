@@ -377,7 +377,7 @@ impl View for EmbeddedProtocolView {
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
-            title: chrome.title,
+            title: None,
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
@@ -446,7 +446,7 @@ impl View for EmbeddedProtocolView {
                         let chrome = self.renderer.chrome(&model);
                         let is_active = self.commands.is_palette_active(
                             self.content_size.0 as usize,
-                            chrome.title.as_deref(),
+                            None,
                             self.status.as_deref().or(chrome.status.as_deref()),
                         );
                         if is_active {
@@ -512,7 +512,7 @@ impl View for EmbeddedProtocolView {
         Ok(RenderResult {
             cursor,
             metadata: crate::view::ViewMetadata {
-                title: chrome.title,
+                title: None,
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
                 bindings: Some(self.bindings(&ViewContext::new(self.instance, "embedded"))),

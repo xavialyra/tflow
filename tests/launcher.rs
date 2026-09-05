@@ -1257,12 +1257,14 @@ fn explicit_capture_view_receives_typed_query_state() {
     let output = String::from_utf8_lossy(&output);
     assert!(output.contains("from-option"));
     let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    let footer = visible.lines().last().unwrap();
     assert!(
-        visible
-            .lines()
-            .last()
-            .is_some_and(|footer| footer.contains("core:direct")),
+        footer.contains("core:direct"),
         "route location is not in the footer: {visible}"
+    );
+    assert!(
+        !footer.contains("capture:") && !footer.contains("finished successfully"),
+        "footer contains redundant capture info: {visible}"
     );
 
     process.master.write_all(b"\x1b").unwrap();
@@ -1496,7 +1498,7 @@ fn btop_fixture_route_tab_and_escape_restore_the_empty_default() {
     wait_for_ready(&process.master);
     process.master.write_all(b"btop:main ").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "btop / cpu");
+    wait_for_text(&process.master, "Next resource");
     let initial = wait_for_nonempty_file(&marker);
     assert!(initial.contains("shown_boxes = ") && initial.contains("cpu"));
     assert!(
@@ -2549,7 +2551,7 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    process.master.write_all(b"app needle\r").unwrap();
+    process.master.write_all(b"app needle").unwrap();
     process.master.flush().unwrap();
     let output = wait_for_fresh_screen(&process.master, |visible| {
         visible.lines().any(|line| line.trim() == "app needle")
@@ -3252,15 +3254,15 @@ fn ctrl_k_in_embedded_view_displays_embedded_commands() {
     wait_for_ready(&process.master);
     process.master.write_all(b"btop:main ").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "btop / cpu");
+    wait_for_text(&process.master, "Next resource");
 
     process.master.write_all(b"\x0b").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "Next resource");
+    wait_for_text(&process.master, "Reset monitor");
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "btop / cpu");
+    wait_for_text(&process.master, "Next resource");
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();

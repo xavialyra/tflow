@@ -708,7 +708,6 @@ impl ProtocolSession {
         let metadata = view.metadata.clone();
         let footer = FooterModel {
             location: footer_location,
-            title: chrome_snapshot.title.or(metadata.title),
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
             bindings,

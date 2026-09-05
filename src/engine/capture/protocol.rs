@@ -482,7 +482,7 @@ impl View for CaptureProtocolView {
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
-            title: chrome.title,
+            title: None,
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
@@ -553,7 +553,7 @@ impl View for CaptureProtocolView {
                         let chrome = self.renderer.chrome(&model);
                         let is_active = self.commands.is_palette_active(
                             self.content_size.0 as usize,
-                            chrome.title.as_deref(),
+                            None,
                             self.status.as_deref().or(chrome.status.as_deref()),
                         );
                         if !is_active {
@@ -655,7 +655,7 @@ impl View for CaptureProtocolView {
                 visible: false,
             }),
             metadata: crate::view::ViewMetadata {
-                title: chrome.title,
+                title: None,
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
                 bindings: Some(self.bindings(&ViewContext::new(ViewInstanceId(0), "capture"))),
@@ -879,7 +879,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rendered.unwrap().metadata.title.as_deref(),
-            Some("capture: capture")
+            None
         );
         let text = terminal
             .backend()

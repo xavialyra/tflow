@@ -260,7 +260,7 @@ impl crate::engine::ViewRenderer for PickerRenderer {
             let current = state.selected.saturating_add(1);
             Some(format!("{current} of {}", state.items.len()))
         };
-        crate::chrome::EngineChrome::new(None, status)
+        crate::chrome::EngineChrome::new(status)
     }
 
     fn render(

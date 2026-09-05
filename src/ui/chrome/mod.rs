@@ -26,7 +26,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EngineChrome {
-    pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     #[cfg(test)]
     pub(crate) commands: Vec<(String, String)>,
@@ -37,18 +36,17 @@ pub(crate) struct EngineChrome {
 }
 
 impl EngineChrome {
-    pub(crate) fn new(title: Option<String>, status: Option<String>) -> Self {
+    pub(crate) fn new(status: Option<String>) -> Self {
         #[cfg(test)]
         {
             Self {
-                title,
                 status,
                 ..Self::default()
             }
         }
         #[cfg(not(test))]
         {
-            Self { title, status }
+            Self { status }
         }
     }
 }
@@ -390,7 +388,6 @@ mod tests {
             &route(),
             "terminal",
             EngineChrome {
-                title: None,
                 status: Some("12 results".to_string()),
                 commands: vec![("enter".to_string(), "Open".to_string())],
                 ..EngineChrome::default()

@@ -16,7 +16,6 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FooterModel {
     pub(crate) location: ViewLocation,
-    pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: BindingSet,
@@ -100,19 +99,12 @@ impl FooterRenderer {
                 commands.retain(|(key, _)| key != overflow_key);
             }
 
-            let view_status = match (model.title.as_deref(), model.status.as_deref()) {
-                (Some(title), Some(status)) if !title.is_empty() && !status.is_empty() => {
-                    Some(format!("{title} | {status}"))
-                }
-                (Some(title), _) if !title.is_empty() => Some(title.to_string()),
-                (_, Some(status)) if !status.is_empty() => Some(status.to_string()),
-                _ => None,
-            };
+            let status = model.status.as_deref().unwrap_or("");
 
             footer_line(
                 footer_width,
                 Some(model.location.label()),
-                view_status.as_deref().unwrap_or(""),
+                status,
                 &commands,
                 model.overflow_command.as_ref(),
                 model.has_unbound,
