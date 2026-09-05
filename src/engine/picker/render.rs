@@ -65,6 +65,16 @@ pub(crate) fn render_picker(
     let show_scrollbar = scrollbar_visible(state.items.len(), visible_capacity, start);
     let thumb_top = scrollbar_thumb_top(start, state.items.len(), visible_capacity);
     let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(visible_capacity);
+    let scrollbar_color = if let Some(bg) = theme.picker.scrollbar.bg {
+        if Some(bg) != theme.picker.text.bg {
+            bg
+        } else {
+            theme.picker.scrollbar.fg.unwrap_or(bg)
+        }
+    } else {
+        theme.picker.scrollbar.fg.unwrap_or(ratatui::style::Color::Reset)
+    };
+    let scrollbar_style = ratatui::style::Style::default().bg(scrollbar_color);
 
     for (visible_row, (index, item)) in state
         .items
@@ -115,10 +125,11 @@ pub(crate) fn render_picker(
                 x: item_rect.x + item_rect.width.saturating_sub(1),
                 y: item_rect.y,
                 width: 1,
-                height: 1,
+                height: row_height as u16,
             };
+            frame.render_widget(ratatui::widgets::Clear, scrollbar_rect);
             frame.render_widget(
-                Paragraph::new("█").style(theme.picker.scrollbar),
+                ratatui::widgets::Block::default().style(scrollbar_style),
                 scrollbar_rect,
             );
         }
