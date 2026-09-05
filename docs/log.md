@@ -11,6 +11,7 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
   - Defined dual-mode coexistence (single-file `.toml` and directory packages) and inline script execution.
   - Formulated CLI entry multiplexing (`argv[0]`) and inspection.
   - Linked ADR registry to root `docs/index.md` under Architecture Governance.
+  - Refined ADR 0001: established host-driven shebang resolution with robust multi-argument tokenization (e.g. `/usr/bin/env -S`) and native `noexec` immunity, temporary script materialization under `$XDG_RUNTIME_DIR` with source attribution comments and semantic file prefixing, enforced caller CWD preservation ($PWD), replaced $PATH prepending with host-side absolute path resolution, restricted single-file workflows from referencing external relative scripts, clarified CLI `argv[0]` multiplexing as direct delegation to existing argument binding pipelines, maintained cache lifecycle simplicity, and reaffirmed a pre-release clean-break policy without legacy shims.
 - Refactored theme configuration schema and updated `custom-themes.md`:
   - Realigned domain boundaries by moving query prefix styling from `[chrome.input_prefix]` to `[picker.input_prefix]`.
   - Added dedicated styling slots: `[chrome.footer_title]`, `[chrome.footer_status]`, and `[chrome.border]`.

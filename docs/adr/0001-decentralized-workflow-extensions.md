@@ -44,9 +44,10 @@ Historically, external views and commands were bundled as "plugins" located stri
 ### 1. Domain Terminology and Storage Layout: Transition to `workflows/`
 
 - **Nomenclature**: The term `plugin` is replaced by **`workflow`**. Manifest files represent declarative workflow packages rather than internal engine plugins.
-- **Directory Convention**: Workflows reside in `$XDG_CONFIG_HOME/tui-launcher/workflows/`. The legacy `.d` directory suffix is intentionally omitted in favor of a clean, standard plural collection directory.
+- **Directory Convention**: Workflows reside in `$XDG_CONFIG_HOME/tui-launcher/workflows/`.
 - **Deterministic Namespace Mapping**: The workflow namespace ID is directly derived from the file stem or directory name. No ordering prefixes are used; all workflows exist as orthogonal peers.
-- **Explicit Conflict Rejection**: If duplicate workflow IDs or duplicate view aliases are detected across manifests, the configuration compiler aborts with an explicit error. Silent shadowing or heuristic precedence overrides are prohibited.
+- **Explicit Conflict Rejection**: If duplicate workflow IDs (including collisions between a single-file `workflows/<id>.toml` and a directory `workflows/<id>/`) or duplicate view aliases are detected across manifests, the configuration compiler aborts with an immediate fatal error detailing both conflicting source paths. Silent shadowing, heuristic precedence overrides, or runtime alias rebinding are strictly prohibited.
+- **Clean Break**: No backwards compatibility is maintained for legacy `plugins/` directories or `[plugin]` table headers. As this tool is pre-release, the host cleanly and exclusively recognizes `workflows/` and `[workflow]` without legacy shims.
 
 ### 2. Dual-Mode Workflow Layout (Single File and Directory Coexistence)
 
@@ -56,13 +57,16 @@ The loader scans `workflows/` and uniformly resolves two physical layouts:
    - Primary vehicle for distribution and lightweight recipes.
    - Self-contained definitions invoking system binaries or inline scripts.
    - Namespace resolves to `<id>`.
+   - **No External Relative Scripts**: Single-file workflows are strictly self-contained and prohibited from referencing relative external script files (`script = "path/to/file"`), ensuring no ambiguous `$WORKFLOW_DIR` boundary or leakage across sibling workflows.
 2. **Directory Workflows (`workflows/<id>/workflow.toml`)**:
    - Suited for complex workflows requiring private test suites, multi-file Python/Bash scripts, or local static assets.
    - Namespace resolves to `<id>`.
-3. **Subprocess `$PATH` Prepending**:
-   - For directory workflows, the host automatically prepends `workflows/<id>/scripts/` to the child process `$PATH` during execution. Scripts and commands can invoke companion executables by bare name (e.g., `script = "checkout.sh"`) without relative path resolution.
+   - Relative script references in manifests (e.g., `script = "scripts/feed.sh"`) are resolved by the host directly to absolute paths prior to execution.
+   - The host injects `WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tui-launcher/workflows/<id>`) for inter-script asset references.
+3. **Host-Side Absolute Path Resolution (Zero `$PATH` Pollution)**:
+   - The host does not prepend or mutate the child process `$PATH`, completely eliminating the risk of system command hijacking (e.g., shadowing `git`, `cat`, `test`) and environment leakage to sub-processes.
 
-### 3. Native Multi-Line Inline Scripts
+### 3. Native Multi-Line Inline Scripts via Temporary Read-Only Files
 
 Command specifications support inline script bodies alongside external file paths:
 
@@ -70,6 +74,7 @@ Command specifications support inline script bodies alongside external file path
 [views.main.commands.checkout]
 key = "enter"
 type = "run"
+args = ["{{ current.value }}"]
 script = """
 #!/usr/bin/env bash
 set -euo pipefail
@@ -78,18 +83,34 @@ git checkout "$target"
 """
 ```
 
-Inline scripts are piped directly to the configured shell by the execution engine, eliminating mandatory companion `.sh` files for concise logic.
+- **Execution Model**: Inline scripts are materialized to temporary read-only files under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (falling back to `$XDG_CACHE_HOME/tui-launcher/scripts/`).
+  - Leveraging `$XDG_RUNTIME_DIR` mounts directly into `tmpfs` (RAM), delivering in-memory execution speed without physical disk wear.
+  - Strict user-only permissions (`0600`) prevent unauthorized access or tampering in shared environments.
+  - Written via atomic file creation (`<hash>.<pid>.tmp` renamed to `<hash>`) to guarantee race-free concurrency.
+  - Minimal content-addressed caching (hashed by script body) avoids redundant filesystem allocations during rapid picker feedback loops. To maintain architectural simplicity, the host relies on `tmpfs` lifecycle boundaries without introducing complex eviction policies or daemon cleanup machinery.
+- **Host-Driven Shebang Resolution (Native `noexec` Immunity)**:
+  - The host inspects the first line for a `#!` shebang. If declared, the host extracts the interpreter path and splits accompanying arguments (supporting multi-argument options such as `/usr/bin/env -S bash -euo pipefail` or `/usr/bin/python3 -u`). If undeclared, it defaults to `/bin/sh`.
+  - If the resolved interpreter executable does not exist or cannot be accessed on `$PATH`, the host fails early with an explicit, user-friendly diagnostic error before process dispatch.
+  - The host directly invokes the interpreter (`Command::new(interpreter)...`), passing the temporary script path as an argument. Because the script is opened in read-only mode by the system interpreter (rather than executed directly via kernel `execve`), inline scripts are completely immune to `noexec` restrictions across `/tmp`, `/run`, or cache directories.
+- **Deterministic Diagnostics & Source Attribution**:
+  - File-backed execution preserves line numbers and clear stack traces when scripts fail, while keeping standard input/output fully attached for interactive terminal workflows.
+  - **Source Attribution**: The host embeds human-readable origin comments immediately following the shebang (e.g., `# [tui-launcher] source: workflows/<id>.toml -> [views.<name>.commands.<key>]`). Temporary files incorporate semantic prefixes (`<id>_<command>_<hash>`), ensuring that any runtime stack trace or syntax error printed to stderr directly identifies the originating workflow and command definition.
 
-### 4. Multiplexed CLI Entry (`argv[0]`) & Schema Inspection
+### 4. Working Directory (CWD) Invariant
 
-- **Symlink Multiplexing**: If the launcher binary is executed under an `argv[0]` alias matching a configured view (e.g. via `ln -s tui-launcher ~/.local/bin/dmenu`), it routes directly to that view. The view's `query` schema parses and validates trailing command-line flags.
+- **Strict Caller Context Preservation**: The child process working directory (CWD) strictly remains the user's current terminal directory (`$PWD`) at invocation time.
+- **Decoupling Context from Assets**: CWD is never modified by the host to point inside workflow directories. User workspace context (e.g., current Git repository or file tree) is fully preserved, while workflow internal assets are located exclusively via host-resolved absolute paths or `$WORKFLOW_DIR`.
+
+### 5. Multiplexed CLI Entry (`argv[0]`) & Schema Inspection
+
+- **Symlink Multiplexing via Existing CLI Pipeline**: If the launcher binary is executed under an `argv[0]` alias matching a configured view (e.g. via `ln -s tui-launcher ~/.local/bin/dmenu`), it is syntactically equivalent to running `tui-launcher <argv[0]> "$@"`. The host canonicalizes `argv[0]` to the target view identifier and delegates directly to the existing CLI argument and query parameter binding pipeline (`bind_invocation_parameters`), requiring no separate CLI engine or competing execution path.
+- **CLI Flag to Query Mapping**: Trailing CLI arguments are passed as explicit CLI flags matching fields in `[views.<name>.query]`. Undeclared flags are rejected with a validation error. Note that `input_order` is purely an internal picker UI query parsing contract and does not govern CLI flag mapping.
 - **Contract Inspection**: A dedicated CLI mode (`tui-launcher inspect <view>`) outputs the view's query schema, command bindings, and return types, enabling automatic shell completion generation.
 
-### 5. Alignment with M3 Theming and Diagnostic Checks
+### 6. Alignment with M3 Theming
 
 - **M3 Scheme Primacy**: Workflows continue to consume Material Design 3 semantic color tokens (`scheme:primary`, `scheme:on-surface-variant`, etc.) in style slot declarations (`[styles.<slot>]`), ensuring out-of-the-box harmony across all user themes without per-workflow styling patches.
-- **Theme Table Compatibility**: Themes support `[workflows.<id>.styles]` as a first-class section, while preserving `[plugins.<id>.styles]` as a backwards-compatible alias.
-- **Preflight Diagnostics**: Workflows can declare required dependencies via `[workflow.requires] binaries = [...]`. `tui-launcher --check` statically verifies their availability in `$PATH`.
+- **Theme Table Nomenclature**: Themes directly configure workflow styles under `[workflows.<id>.styles]`.
 
 ---
 
@@ -98,9 +119,10 @@ Inline scripts are piped directly to the configured shell by the execution engin
 ### Positive
 - **Frictionless Sharing**: A workflow can be shared as a single text block or Gist. Installation requires only dropping the file into `~/.config/tui-launcher/workflows/`.
 - **Decoupled Architecture**: Workflows are treated as pure declarative bundles, cleanly separated from host engine mechanics.
-- **Dotfiles Native**: Clean alignment with Git submodules, Chezmoi, and GNU Stow without file-tree conflicts.
-- **CLI Versatility**: Turns any declared view into a first-class standalone CLI tool via `argv[0]` symlinks.
+- **CWD Predictability**: CLI workflows seamlessly operate on the user's active terminal directory without path-context distortion.
+- **Interpreter Versatility**: Inline scripts support arbitrary shebang interpreters with accurate line-number diagnostics.
+- **Safe Process Isolation**: No `$PATH` pollution or binary hijacking.
+- **Zero Technical Debt**: Clean break avoids compatibility shims, deprecation warnings, and legacy translation overhead.
 
-### Negative & Mitigations
-- **Configuration Migration**: Existing plugin directories require renaming from `plugins/` to `workflows/`.
-  - *Mitigation*: The configuration loader will accept `plugins/` as a fallback when `workflows/` is absent, warning the user of deprecation.
+### Negative
+- **Clean Break Requirement**: Existing configurations under `plugins/` must be manually moved to `workflows/` and updated to `[workflow]`. No fallback or automatic migration is provided.
