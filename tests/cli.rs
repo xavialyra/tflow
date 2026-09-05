@@ -407,7 +407,7 @@ fn check_validates_static_items_sources_without_running_them() {
     .unwrap();
     let items_marker = root.join("items-script-ran");
     let capture_marker = root.join("capture-script-ran");
-    let scripts = root.join("plugins/core/scripts");
+    let scripts = root.join("workflows/core/scripts");
     std::fs::create_dir_all(&scripts).unwrap();
     std::fs::write(
         scripts.join("items.sh"),
@@ -459,7 +459,7 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
         "#,
     )
     .unwrap();
-    let scripts = root.join("plugins/core/scripts");
+    let scripts = root.join("workflows/core/scripts");
     std::fs::create_dir_all(&scripts).unwrap();
     std::fs::write(scripts.join("run.sh"), "printf '{{ user_template }}\\n'\\n").unwrap();
 
@@ -561,7 +561,7 @@ fn check_rejects_invalid_run_command_args() {
             ),
         )
         .unwrap();
-        let scripts = root.join("plugins/core/scripts");
+        let scripts = root.join("workflows/core/scripts");
         std::fs::create_dir_all(&scripts).unwrap();
         std::fs::write(scripts.join("run.sh"), ":\n").unwrap();
 
@@ -707,7 +707,7 @@ fn check_accepts_dynamic_script_source_fields() {
         "#,
     )
     .unwrap();
-    let scripts = root.join("plugins/core/scripts");
+    let scripts = root.join("workflows/core/scripts");
     std::fs::create_dir_all(&scripts).unwrap();
     std::fs::write(scripts.join("items.sh"), "printf '[]\\n'\n").unwrap();
 
@@ -755,7 +755,7 @@ fn check_rejects_invalid_items_sources() {
             ),
         )
         .unwrap();
-        let scripts = root.join("plugins/core/scripts");
+        let scripts = root.join("workflows/core/scripts");
         std::fs::create_dir_all(&scripts).unwrap();
         std::fs::write(scripts.join("items.sh"), "printf '[]\\n'\n").unwrap();
 

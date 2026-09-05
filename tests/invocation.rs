@@ -834,8 +834,8 @@ fn embedded_result_pipe_enforces_its_byte_limit() {
 fn return_handler_receives_argv_and_controls_raw_output_and_status() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    let workflow = root.join("workflows/custom");
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(
         &config,
         r#"
@@ -847,9 +847,9 @@ fn return_handler_receives_argv_and_controls_raw_output_and_status() {
     )
     .unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        workflow.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
 
@@ -880,7 +880,7 @@ fn return_handler_receives_argv_and_controls_raw_output_and_status() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/result.sh"),
+        workflow.join("scripts/result.sh"),
         r#"#!/bin/sh
 options=${1#--options=}
 stdin_info=$2
@@ -917,9 +917,9 @@ exit 7
 fn signal_exit_terminates_a_running_return_handler() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
+    let workflow = root.join("workflows/custom");
     let pid_file = root.join("handler.pid");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(
         &config,
         r#"
@@ -930,9 +930,9 @@ fn signal_exit_terminates_a_running_return_handler() {
     )
     .unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        workflow.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
         [views.main.engine]
@@ -949,7 +949,7 @@ fn signal_exit_terminates_a_running_return_handler() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/result.sh"),
+        workflow.join("scripts/result.sh"),
         "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\n",
     )
     .unwrap();
@@ -978,8 +978,8 @@ fn signal_exit_terminates_a_running_return_handler() {
 fn return_handler_belongs_to_the_returning_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    let workflow = root.join("workflows/custom");
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(
         &config,
         r#"
@@ -991,9 +991,9 @@ fn return_handler_belongs_to_the_returning_command() {
     )
     .unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        workflow.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
 
@@ -1027,7 +1027,7 @@ fn return_handler_belongs_to_the_returning_command() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/result.sh"),
+        workflow.join("scripts/result.sh"),
         r#"#!/bin/sh
 selected=$1
 printf '%s' "$selected" | grep -q '"value":"selected-value"' || exit 3
@@ -1052,14 +1052,14 @@ printf 'child-command'
 fn root_return_handler_uses_the_selected_feed_owner_context() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
-    let core = root.join("plugins/core");
+    let workflow = root.join("workflows/custom");
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
+    let core = root.join("workflows/core");
     fs::create_dir_all(&core).unwrap();
     fs::write(
-        core.join("plugin.toml"),
+        core.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "core"
 
@@ -1081,9 +1081,9 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
     )
     .unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        workflow.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
 
@@ -1114,7 +1114,7 @@ fn root_return_handler_uses_the_selected_feed_owner_context() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/result.sh"),
+        workflow.join("scripts/result.sh"),
         r#"#!/bin/sh
 query=$1
 raw=$2

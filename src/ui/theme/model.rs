@@ -51,7 +51,7 @@ impl RawStyleBinding {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RawPluginThemeOverride {
+pub(super) struct RawWorkflowThemeOverride {
     #[serde(default)]
     pub(super) styles: BTreeMap<String, RawStyleBinding>,
 }
@@ -319,10 +319,10 @@ impl ResolvedTheme {
 
         let mut raw_theme_overrides = BTreeMap::new();
         let mut custom_styles = BTreeMap::new();
-        for (plugin_id, plugin_override) in &raw.plugins {
-            for (slot_name, style_binding) in &plugin_override.styles {
-                let key = (plugin_id.clone(), slot_name.clone());
-                let context = format!("plugins.{plugin_id}.styles.{slot_name}");
+        for (workflow_id, workflow_override) in raw.workflows.iter().chain(&raw.plugins) {
+            for (slot_name, style_binding) in &workflow_override.styles {
+                let key = (workflow_id.clone(), slot_name.clone());
+                let context = format!("workflows.{workflow_id}.styles.{slot_name}");
                 let resolved = resolve_raw_style_binding(
                     style_binding,
                     &scheme,
@@ -334,6 +334,7 @@ impl ResolvedTheme {
                 raw_theme_overrides.insert(key, style_binding.clone());
             }
         }
+
 
         Ok(Self {
             text: chrome_text,
@@ -375,29 +376,29 @@ impl ResolvedTheme {
         })
     }
 
-    pub(crate) fn register_plugin_defaults(
+    pub(crate) fn register_workflow_defaults(
         &mut self,
-        plugin_id: &str,
+        workflow_id: &str,
         styles: &BTreeMap<String, RawStyleBinding>,
     ) -> Result<()> {
         let mut custom_styles = (*self.custom_styles).clone();
         for (slot_name, default_binding) in styles {
-            let key = (plugin_id.to_string(), slot_name.clone());
+            let key = (workflow_id.to_string(), slot_name.clone());
             let resolved_style = if let Some(theme_override) = self.raw_theme_overrides.get(&key) {
                 let merged = theme_override.merge_with(default_binding);
                 resolve_raw_style_binding(
                     &merged,
                     &self.scheme,
                     &self.palette,
-                    &format!("theme override [plugins.{plugin_id}.styles.{slot_name}]"),
-                    &format!("plugins.{plugin_id}.styles.{slot_name}"),
+                    &format!("theme override [workflows.{workflow_id}.styles.{slot_name}]"),
+                    &format!("workflows.{workflow_id}.styles.{slot_name}"),
                 )?
             } else {
                 resolve_raw_style_binding(
                     default_binding,
                     &self.scheme,
                     &self.palette,
-                    &format!("plugin {:?} [styles.{slot_name}]", plugin_id),
+                    &format!("workflow {:?} [styles.{slot_name}]", workflow_id),
                     &format!("styles.{slot_name}"),
                 )?
             };
@@ -407,15 +408,23 @@ impl ResolvedTheme {
         Ok(())
     }
 
+    pub(crate) fn register_all_workflow_defaults(
+        &mut self,
+        workflows: &BTreeMap<String, crate::workflow::config::WorkflowMetadata>,
+    ) -> Result<()> {
+        for (workflow_id, metadata) in workflows {
+            self.register_workflow_defaults(workflow_id, &metadata.styles)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn register_all_plugin_defaults(
         &mut self,
         plugins: &BTreeMap<String, crate::workflow::config::PluginMetadata>,
     ) -> Result<()> {
-        for (plugin_id, metadata) in plugins {
-            self.register_plugin_defaults(plugin_id, &metadata.styles)?;
-        }
-        Ok(())
+        self.register_all_workflow_defaults(plugins)
     }
+
 
     pub(crate) fn resolve_slot(
         &self,
@@ -602,8 +611,11 @@ pub(super) struct RawTheme {
     #[serde(default)]
     pub(super) capture: RawCaptureTheme,
     #[serde(default)]
-    pub(super) plugins: BTreeMap<String, RawPluginThemeOverride>,
+    pub(super) workflows: BTreeMap<String, RawWorkflowThemeOverride>,
+    #[serde(default)]
+    pub(super) plugins: BTreeMap<String, RawWorkflowThemeOverride>,
 }
+
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

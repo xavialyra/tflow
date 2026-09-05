@@ -32,10 +32,11 @@ The compiled binary will be located at `target/release/tui-launcher`. You can ad
 $XDG_CONFIG_HOME/tui-launcher/
 ├── config.toml         # Main launcher settings
 ├── themes/             # Named themes
-└── plugins/            # Installed plugins
-    └── <plugin-id>/
-        ├── plugin.toml # Plugin manifest
-        └── scripts/    # Local shell scripts
+└── workflows/          # Workflows (single-file .toml or package directories)
+    ├── hello.toml      # Single-file workflow
+    └── git/            # Directory workflow package
+        ├── workflow.toml
+        └── scripts/
 ```
 
 If `$XDG_CONFIG_HOME` is unset, it defaults to `$HOME/.config/tui-launcher/`.
@@ -43,15 +44,15 @@ If `$XDG_CONFIG_HOME` is unset, it defaults to `$HOME/.config/tui-launcher/`.
 Create this directory structure now:
 
 ```bash
-mkdir -p ~/.config/tui-launcher/plugins/hello
+mkdir -p ~/.config/tui-launcher/workflows
 ```
 
-## 3. Create a Minimal Plugin
+## 3. Create a Minimal Workflow
 
-Inside `~/.config/tui-launcher/plugins/hello/plugin.toml`, declare a simple plugin with a `picker` view:
+Create a single-file workflow at `~/.config/tui-launcher/workflows/hello.toml`:
 
 ```toml
-[plugin]
+[workflow]
 api = 1
 name = "Hello Launcher"
 
@@ -104,5 +105,5 @@ You will see an interactive picker containing your items. Pressing `Enter` runs 
 ## Next Steps
 
 Now that you have a working launcher:
-- Follow [Your First Plugin](first-plugin.md) to explore parameters and script execution.
+- Follow [Your First Workflow](first-workflow.md) to explore parameters and script execution.
 - Learn how to build [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) using external shell scripts.

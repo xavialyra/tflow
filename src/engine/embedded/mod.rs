@@ -207,18 +207,38 @@ pub(super) fn create_view(
     if command.is_empty() {
         anyhow::bail!("embedded command must not be empty");
     }
+    let command = if let Some(root) = context.config.plugin_root.as_ref() {
+        command
+            .into_iter()
+            .map(|arg| {
+                let path = std::path::Path::new(&arg);
+                if !path.is_absolute() && root.join(path).is_file() {
+                    root.join(path).to_string_lossy().into_owned()
+                } else {
+                    arg
+                }
+            })
+            .collect()
+    } else {
+        command
+    };
     let _ = evaluate_optional_string(&context.config, "title")?;
-    let plugin_root = context.config.plugin_root.clone();
-    let environment = vec![(
+    let mut environment = vec![(
         "LAUNCHER_INPUT".to_string(),
         context.parameters.raw_input().to_string(),
     )];
+    if let Some(root) = context.config.plugin_root.as_ref() {
+        environment.push((
+            "WORKFLOW_DIR".to_string(),
+            root.to_string_lossy().into_owned(),
+        ));
+    }
     let result = parse_result_config_value(&view_ref, evaluate_field(&context.config, "result")?)?;
     let session = EmbeddedSession::new(
         PreparedProcess {
             argv: command,
             environment,
-            current_dir: plugin_root,
+            current_dir: None,
         },
         result,
         context.cancellation,

@@ -26,23 +26,25 @@ impl ParameterRegistry {
         config: &Value,
         templates: &TemplateRegistry,
     ) -> Result<Self> {
-        let plugins = config
-            .get("plugins")
+        let workflows = config
+            .get("workflows")
+            .or_else(|| config.get("plugins"))
             .and_then(Value::as_object)
-            .context("configuration plugins must be an object")?;
+            .context("configuration workflows must be an object")?;
         let mut views = BTreeMap::new();
-        for (plugin_id, plugin) in plugins {
-            let view_values = plugin
+        for (workflow_id, workflow) in workflows {
+            let view_values = workflow
                 .get("views")
                 .and_then(Value::as_object)
-                .with_context(|| format!("plugin {:?} views must be an object", plugin_id))?;
+                .with_context(|| format!("workflow {:?} views must be an object", workflow_id))?;
             for (view_name, view) in view_values {
-                let view_ref = format!("{plugin_id}:{view_name}");
+                let view_ref = format!("{workflow_id}:{view_name}");
                 if let Some(query) = view.get("query") {
                     templates.requirements_for_value(query)?.validate_stage(
                         EvaluationStage::Bootstrap,
                         &format!("view {view_ref:?} query schema"),
                     )?;
+
                 }
                 views.insert(
                     view_ref,

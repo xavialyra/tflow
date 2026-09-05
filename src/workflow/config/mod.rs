@@ -32,7 +32,7 @@ pub(crate) use evaluation::{
 };
 
 #[cfg(test)]
-use loader::{merge_values, resolve_config_path, validate_plugin_id};
+use loader::{merge_values, resolve_config_path, validate_workflow_id};
 pub(crate) use model::validate_script_source_args;
 pub(crate) use model::*;
 #[cfg(test)]
@@ -59,9 +59,9 @@ pub(crate) struct Config {
 #[derive(Debug, Clone)]
 struct CompiledConfig {
     views: BTreeMap<ViewRef, View>,
-    plugins: BTreeMap<String, PluginMetadata>,
+    workflows: BTreeMap<String, WorkflowMetadata>,
     defaults: Defaults,
-    plugin_roots: BTreeMap<String, PathBuf>,
+    workflow_roots: BTreeMap<String, PathBuf>,
     config_value: Value,
     template_registry: TemplateRegistry,
     parameter_registry: Arc<ParameterRegistry>,
@@ -182,15 +182,23 @@ impl PickerItemsProjection {
         &self.input
     }
 
-    pub(crate) fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
+    pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
         let package = package_id(view_ref);
         self.plugin_roots.get(package).map(PathBuf::as_path)
+    }
+
+    pub(crate) fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
+        self.workflow_root(view_ref)
     }
 }
 
 impl Config {
-    pub(crate) fn plugins(&self) -> &BTreeMap<String, PluginMetadata> {
-        &self.compiled.plugins
+    pub(crate) fn workflows(&self) -> &BTreeMap<String, WorkflowMetadata> {
+        &self.compiled.workflows
+    }
+
+    pub(crate) fn plugins(&self) -> &BTreeMap<String, WorkflowMetadata> {
+        self.workflows()
     }
 
     pub(crate) fn bind_invocation_parameters(
@@ -330,8 +338,13 @@ impl Config {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_workflow_roots_mut(&mut self) -> &mut BTreeMap<String, PathBuf> {
+        &mut self.compiled.workflow_roots
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_plugin_roots_mut(&mut self) -> &mut BTreeMap<String, PathBuf> {
-        &mut self.compiled.plugin_roots
+        self.test_workflow_roots_mut()
     }
 
     pub fn view(&self, view_ref: &str) -> Option<&View> {
@@ -346,37 +359,31 @@ impl Config {
         self.compiled.views.len()
     }
 
-    pub(crate) fn plugin_display_name(&self, package_id: &str) -> Option<&str> {
+    pub(crate) fn workflow_display_name(&self, package_id: &str) -> Option<&str> {
         self.compiled
-            .plugins
+            .workflows
             .get(package_id)
-            .map(|plugin| plugin.name.as_str())
+            .map(|workflow| workflow.name.as_str())
     }
 
-    pub(crate) fn resolve_view(&self, selector: &str) -> Result<ViewRef> {
+    pub(crate) fn plugin_display_name(&self, package_id: &str) -> Option<&str> {
+        self.workflow_display_name(package_id)
+    }
+
+
+    pub fn resolve_view(&self, selector: &str) -> Result<String> {
         if self.compiled.views.contains_key(selector) {
             return Ok(selector.to_string());
         }
-        let matches = self
-            .compiled
-            .views
-            .iter()
-            .filter_map(|(view_ref, view)| {
-                (view.alias.as_deref() == Some(selector)).then_some(view_ref.clone())
-            })
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [view_ref] => Ok(view_ref.clone()),
-            [] => bail!("view {:?} is not configured", selector),
-            _ => bail!(
-                "view alias {:?} is ambiguous: {}",
-                selector,
-                matches.join(", ")
-            ),
+        for (view_ref, view) in &self.compiled.views {
+            if view.alias.as_deref() == Some(selector) {
+                return Ok(view_ref.clone());
+            }
         }
+        bail!("unknown view {:?}", selector);
     }
 
-    pub fn engine(&self, view_ref: &str) -> Result<&str> {
+    pub fn view_engine_type(&self, view_ref: &str) -> Result<&str> {
         let view = self
             .compiled
             .views
@@ -385,9 +392,17 @@ impl Config {
         Ok(view.selected_engine_type())
     }
 
+    pub fn engine(&self, view_ref: &str) -> Result<&str> {
+        self.view_engine_type(view_ref)
+    }
+
+    pub fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
+        let workflow = package_id(view_ref);
+        self.compiled.workflow_roots.get(workflow).map(PathBuf::as_path)
+    }
+
     pub fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
-        let plugin = package_id(view_ref);
-        self.compiled.plugin_roots.get(plugin).map(PathBuf::as_path)
+        self.workflow_root(view_ref)
     }
 
     pub fn feed_views<'a>(&'a self, view_ref: &str) -> Result<Vec<(String, &'a View)>> {
@@ -566,12 +581,12 @@ mod tests {
             std::process::id()
         ));
         fs::remove_dir_all(&root).ok();
-        let plugin_root = root.join("plugins/ghost");
+        let plugin_root = root.join("workflows/ghost");
         fs::create_dir_all(&plugin_root).unwrap();
         fs::write(
-            plugin_root.join("plugin.toml"),
+            plugin_root.join("workflow.toml"),
             r#"
-            [plugin]
+            [workflow]
             name = "Ghost"
 
             [views.main]
@@ -584,12 +599,12 @@ mod tests {
             "#,
         )
         .unwrap();
-        let core_root = root.join("plugins/core");
+        let core_root = root.join("workflows/core");
         fs::create_dir_all(&core_root).unwrap();
         fs::write(
-            core_root.join("plugin.toml"),
+            core_root.join("workflow.toml"),
             r#"
-            [plugin]
+            [workflow]
             name = "core"
 
             [views.default.engine]
@@ -1003,8 +1018,8 @@ mod tests {
         );
 
         validate_config(&config).unwrap();
-        assert_eq!(config.compiled.plugins["package-a"].name, "template");
-        assert_eq!(config.compiled.plugins["package-b"].name, "template");
+        assert_eq!(config.compiled.workflows["package-a"].name, "template");
+        assert_eq!(config.compiled.workflows["package-b"].name, "template");
     }
 
     #[test]
@@ -1107,8 +1122,8 @@ mod tests {
     }
 
     #[test]
-    fn plugin_api_defaults_to_one() {
-        let header: PluginHeader = toml::from_str(
+    fn workflow_api_defaults_to_one() {
+        let header: WorkflowHeader = toml::from_str(
             r#"
             name = "template"
             "#,
@@ -1118,23 +1133,23 @@ mod tests {
     }
 
     #[test]
-    fn plugin_directory_names_are_valid_view_namespace_components() {
-        assert!(validate_plugin_id("apps").is_ok());
-        assert!(validate_plugin_id("my-app").is_ok());
-        assert!(validate_plugin_id("bad:name").is_err());
-        assert!(validate_plugin_id("bad name").is_err());
+    fn workflow_names_are_valid_view_namespace_components() {
+        assert!(validate_workflow_id("apps").is_ok());
+        assert!(validate_workflow_id("my-app").is_ok());
+        assert!(validate_workflow_id("bad:name").is_err());
+        assert!(validate_workflow_id("bad name").is_err());
     }
 
     #[test]
     fn file_backed_plugin_scripts_are_loaded_and_rooted() {
         let root = env::temp_dir().join(format!("tui-launcher-plugin-test-{}", std::process::id()));
-        let plugin_root = root.join("plugins/filetest");
+        let plugin_root = root.join("workflows/filetest");
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(plugin_root.join("scripts")).unwrap();
         fs::write(
-            plugin_root.join("plugin.toml"),
+            plugin_root.join("workflow.toml"),
             r#"
-            [plugin]
+            [workflow]
             name = "file test"
 
             [views.main]
@@ -1160,12 +1175,12 @@ mod tests {
         )
         .unwrap();
         fs::write(plugin_root.join("scripts/run.sh"), "printf 'run\\n'\\n").unwrap();
-        let core_root = root.join("plugins/core");
+        let core_root = root.join("workflows/core");
         fs::create_dir_all(&core_root).unwrap();
         fs::write(
-            core_root.join("plugin.toml"),
+            core_root.join("workflow.toml"),
             r#"
-            [plugin]
+            [workflow]
             name = "core"
 
             [views.default.engine]
@@ -1198,15 +1213,12 @@ mod tests {
             items.get("file").and_then(toml::Value::as_str),
             Some("scripts/items.sh")
         );
-        let CommandAction::Run { payload } =
-            &config.compiled.views["filetest:main"].commands["run"].action
-        else {
-            panic!("file command did not deserialize as a run action");
-        };
+        let action = &config.compiled.views["filetest:main"].commands["run"].action;
+        let payload = action.run_payload().expect("file command did not deserialize as a run action");
         assert_eq!(
             payload.handler,
-            toml::from_str::<toml::Value>("source = \"script\"\nfile = \"scripts/run.sh\"\n")
-                .unwrap()
+            Some(toml::from_str::<toml::Value>("source = \"script\"\nfile = \"scripts/run.sh\"\n")
+                .unwrap())
         );
         assert_eq!(
             config.plugin_root("filetest:main"),
@@ -1300,7 +1312,7 @@ mod tests {
         )
         .unwrap();
         let resolved = ResolvedScriptSource::parse(&resolved_value).unwrap();
-        assert_eq!(resolved.file, "scripts/items.sh");
+        assert_eq!(resolved.file(), Some("scripts/items.sh"));
         assert_eq!(resolved.max_output_bytes, Some(128));
         assert_eq!(
             resolved.args,

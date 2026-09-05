@@ -17,7 +17,7 @@ The root `config.toml` file configures application-wide settings, default views,
 
 ```toml
 # Main settings
-default_view = "plugin:view"
+default_view = "workflow:view"
 theme = "theme_name"
 
 # Global engine defaults
@@ -36,7 +36,7 @@ key = "ctrl+k"
 ## Top-Level Fields
 
 ### `default_view`
-- **Type**: `string` (Format: `<plugin-id>:<view-name>` or `<alias>`)
+- **Type**: `string` (Format: `<workflow-id>:<view-name>` or `<alias>`)
 - **Description**: The default view presented when `tui-launcher` is started without explicit arguments.
 - **Example**: `default_view = "core:default"`
 

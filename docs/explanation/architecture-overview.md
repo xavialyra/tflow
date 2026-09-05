@@ -52,7 +52,7 @@ src/
 To prevent coupling and architectural drift, the codebase strictly enforces 14 fundamental dependency rules:
 
 1. **`workflow/config/model`** contains purely data and `serde` definitions. It must not depend on `session`, `ratatui`, or terminal I/O.
-2. **`workflow/config/loader`** owns filesystem access and plugin package discovery. Runtime session code must never load files directly.
+2. **`workflow/config/loader`** owns filesystem access and workflow package discovery. Runtime session code must never load files directly.
 3. **`workflow/config/validation`** owns static safety and schema checks. Runtime code may invoke validation APIs, but must not duplicate validation logic.
 4. **`workflow/config/evaluation`** projects explicitly allowlisted values from runtime state. Expressions must never receive the complete runtime JSON tree.
 5. **`engine`** owns the View Engine protocol and concrete View implementations. The runtime `Router` owns View navigation and transitions; `session` owns the terminal host and orchestration around the `Router`.

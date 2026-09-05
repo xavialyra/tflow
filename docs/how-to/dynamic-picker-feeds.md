@@ -73,4 +73,4 @@ You can allow users to toggle the preview pane visibility using engine keymap ac
 Script execution within feeds is protected by the launcher runtime:
 - Standard script execution timeout is **10 seconds**.
 - Default `stdout` is capped at **1 MiB** (can be configured up to **64 MiB** for large feeds).
-- Paths are strictly confined within the owning plugin's root directory.
+- Paths are strictly confined within the owning workflow's root directory.

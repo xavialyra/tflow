@@ -1,4 +1,4 @@
-[plugin]
+[workflow]
 api = 1
 name = "selectors"
 

@@ -47,7 +47,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 
 ## 3. Route Resolution and Query Contracts
 
-- **Prefix Routing**: In the default view, typing `<alias> <query>` or `<plugin:view> <query>` automatically commits the route and switches to the target view with the remainder parsed as its query argument.
+- **Prefix Routing**: In the default view, typing `<alias> <query>` or `<workflow:view> <query>` automatically commits the route and switches to the target view with the remainder parsed as its query argument.
 - **Route Query Scope**: Arguments passed via CLI or navigation actions are validated against the target view's declared `[views.<name>.query]` schema before the view is mounted.
 
 ## 4. View Lifecycle Sequences

@@ -4,7 +4,7 @@ use crate::config::{
     EvaluationData, EvaluationSnapshot, InvocationScope, OwnerViewScope, PickerItemsProjection,
     ResolvedScriptSource, SessionScope, toml_to_json,
 };
-use crate::execution::{ensure_script_success, run_script};
+use crate::execution::{ensure_script_success, run_resolved_script};
 use crate::expression::EvaluationStage;
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
@@ -658,15 +658,15 @@ fn run_items_source(
     source: &ResolvedScriptSource,
     cancellation: &CancellationToken,
 ) -> Result<Value> {
-    let root = definition
-        .plugin_root()
-        .with_context(|| format!("items source {:?} has no plugin root", source_ref))?;
+    let root = definition.plugin_root();
+    let workflow_id = crate::config::package_id(&definition.owner_view);
     let args = source.script_args("picker script args")?;
-    let output = run_script(
+    let output = run_resolved_script(
+        workflow_id,
+        source_ref,
         root,
-        &source.file,
+        source,
         &args,
-        source.max_output_bytes,
         cancellation,
     )?;
     ensure_script_success(&output)?;
@@ -674,7 +674,7 @@ fn run_items_source(
         bail!("script produced no JSON output");
     }
     serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("script {} did not produce valid JSON", source.file))
+        .with_context(|| format!("script {} did not produce valid JSON", source.target_display()))
 }
 
 fn value_type(value: &Value) -> &'static str {
@@ -755,17 +755,18 @@ mod tests {
                         scope: crate::config::CommandScope::Selection,
                         requires: crate::config::CommandRequirement::Items,
                         passthrough: false,
-                        action: CommandAction::Run {
-                            payload: crate::config::RunPayload {
-                                handler: crate::config::ScriptSourceSpec::script_file(
+                        action: CommandAction::new_run(crate::config::RunPayload {
+                            script: None,
+                            handler: Some(
+                                crate::config::ScriptSourceSpec::script_file(
                                     "scripts/run.sh",
                                 )
                                 .as_toml_value(),
-                                args: None,
-                                shell: None,
-                                exit: false,
-                            },
-                        },
+                            ),
+                            args: None,
+                            shell: None,
+                            exit: false,
+                        }),
                     },
                 )]),
             },

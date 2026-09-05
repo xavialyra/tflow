@@ -14,7 +14,7 @@ tags:
 
 # tui-launcher Documentation
 
-Welcome to the `tui-launcher` knowledge base. `tui-launcher` is an extensible terminal workflow host where configurations define plugin-owned Views powered by picker, capture, or embedded PTY engines.
+Welcome to the `tui-launcher` knowledge base. `tui-launcher` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, or embedded PTY engines.
 
 This documentation is organized into four core categories following the **Diátaxis** framework, packaged as an **Open Knowledge Format (OKF v0.2)** bundle for both human developers and autonomous AI agents.
 
@@ -23,7 +23,7 @@ This documentation is organized into four core categories following the **Diáta
 ### 1. [Tutorials](tutorials/index.md)
 *Learning-oriented paths for beginners and new contributors.*
 - [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tui-launcher`.
-- [Your First Plugin](tutorials/first-plugin.md) — Create a complete plugin with custom views and items.
+- [Your First Workflow](tutorials/first-workflow.md) — Create a complete workflow with custom views and items.
 
 ### 2. [How-To Guides](how-to/index.md)
 *Task-oriented recipes for solving specific practical problems.*
@@ -36,7 +36,7 @@ This documentation is organized into four core categories following the **Diáta
 *Authoritative, technical specifications and syntax references.*
 - [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
 - [config.toml Specification](reference/config-toml.md) — Root configuration format, theme selection, and session command overrides.
-- [plugin.toml Specification](reference/plugin-toml.md) — Plugin manifests, view definitions, query schemas, and engine configuration.
+- [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
 - [Expression Syntax](reference/expressions.md) — `{{ namespace.path }}` expression syntax, scoping rules, and resource budgets.
 
 ### 4. [Explanation](explanation/index.md)

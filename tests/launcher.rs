@@ -15,7 +15,7 @@ use support::{
 };
 
 fn write_plugin_script(root: &Path, plugin: &str, file: &str, source: &str) {
-    let path = root.join("plugins").join(plugin).join(file);
+    let path = root.join("workflows").join(plugin).join(file);
     fs::create_dir_all(path.parent().expect("script path has no parent")).unwrap();
     fs::write(path, source).unwrap();
 }
@@ -69,11 +69,11 @@ fn normal_exit_restores_terminal_state() {
 fn first_signal_aborts_a_blocked_final_output_write() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin_root = root.join("plugins/custom");
+    let plugin_root = root.join("workflows/custom");
     fs::create_dir_all(plugin_root.join("scripts")).unwrap();
     fs::write(
-        plugin_root.join("plugin.toml"),
-        "[plugin]\napi = 1\nname = \"custom\"\n\n[views.main.engine]\ntype = \"picker\"\n[views.main.engine.config]\nitems = []\n",
+        plugin_root.join("workflow.toml"),
+        "[workflow]\napi = 1\nname = \"custom\"\n\n[views.main.engine]\ntype = \"picker\"\n[views.main.engine.config]\nitems = []\n",
     )
     .unwrap();
     write_test_config(
@@ -197,13 +197,13 @@ fn escaped_dynamic_opener_remains_literal_at_runtime() {
 fn capture_script_source_renders_its_json_string() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
+    let plugin = root.join("workflows/custom");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        plugin.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
         [views.main.engine]
@@ -235,13 +235,13 @@ fn capture_script_source_renders_its_json_string() {
 fn dynamic_capture_output_can_resolve_to_a_script_source() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
+    let plugin = root.join("workflows/custom");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        plugin.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
         [views.main.engine]
@@ -275,14 +275,14 @@ fn dynamic_capture_output_can_resolve_to_a_script_source() {
 fn signal_exit_terminates_capture_script_source() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
+    let plugin = root.join("workflows/custom");
     let pid_file = root.join("capture.pid");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        plugin.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
         [views.main.engine]
@@ -317,7 +317,7 @@ fn signal_exit_terminates_capture_script_source() {
 fn signal_exit_waits_for_items_worker_cleanup() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("plugins/custom");
+    let plugin = root.join("workflows/custom");
     let pid_file = root.join("items.pid");
     fs::create_dir_all(plugin.join("scripts")).unwrap();
     fs::write(
@@ -328,9 +328,9 @@ fn signal_exit_waits_for_items_worker_cleanup() {
     )
     .unwrap();
     fs::write(
-        plugin.join("plugin.toml"),
+        plugin.join("workflow.toml"),
         r#"
-        [plugin]
+        [workflow]
         api = 1
         name = "custom"
         [views.main.engine]
@@ -783,7 +783,7 @@ fn dynamic_items_source_metadata_is_resolved_at_execution() {
         "#,
     )
     .unwrap();
-    let scripts = root.join("plugins/core/scripts");
+    let scripts = root.join("workflows/core/scripts");
     fs::create_dir_all(&scripts).unwrap();
     fs::write(
         scripts.join("dynamic-items.sh"),
@@ -1094,7 +1094,7 @@ fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
         "#,
     )
     .unwrap();
-    let scripts = root.join("plugins/core/scripts");
+    let scripts = root.join("workflows/core/scripts");
     fs::create_dir_all(&scripts).unwrap();
     fs::write(
         scripts.join("run.sh"),
@@ -1596,7 +1596,7 @@ fn embedded_view_removes_stale_launcher_environment() {
             ("LAUNCHER_PLUGIN_DIR", "/tmp/stale"),
         ],
     );
-    let (status, output) = wait_for_launcher_exit(&mut process);
+    let (_status, output) = wait_for_launcher_exit(&mut process);
 
     let output_str = String::from_utf8_lossy(&output);
     assert!(
@@ -2151,14 +2151,14 @@ fn unknown_input_closes_route_completion_before_escape() {
 fn replacing_items_request_cancels_the_previous_script() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin_root = root.join("plugins/core");
+    let plugin_root = root.join("workflows/core");
     let script_root = plugin_root.join("scripts");
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
-        plugin_root.join("plugin.toml"),
-        "[plugin]\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
+        plugin_root.join("workflow.toml"),
+        "[workflow]\napi = 1\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
     )
-    .expect("could not write cancellation plugin manifest");
+    .expect("could not write cancellation workflow manifest");
     let old_pid_path = root.join("old.pid");
     fs::write(
         script_root.join("items.sh"),

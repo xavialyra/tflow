@@ -60,6 +60,23 @@ pub(super) fn validate_optional_string_requirements(
     validate_string_requirements(templates, value, stage, consumer)
 }
 
+pub(super) fn validate_run_payload(
+    payload: &super::RunPayload,
+    script_root: Option<&Path>,
+    owner: &str,
+) -> Result<()> {
+    if let Some(script) = &payload.script {
+        if script.trim().is_empty() {
+            bail!("{} has an empty script body", owner);
+        }
+        return Ok(());
+    }
+    let Some(handler) = &payload.handler else {
+        bail!("{} run command must define either script or handler", owner);
+    };
+    validate_run_handler(handler, script_root, owner)
+}
+
 pub(super) fn validate_run_handler(
     handler: &toml::Value,
     script_root: Option<&Path>,
@@ -83,13 +100,25 @@ pub(super) fn validate_run_handler(
             );
             return Ok(());
         }
+        toml::Value::String(source) if source.starts_with("#!") || source.contains('\n') => {
+            return Ok(());
+        }
+        toml::Value::String(file) => {
+            return validate_script_file_target(file, script_root, owner);
+        }
         _ => {
             bail!(
-                "{} command handler must be a script source table or complete dynamic path",
+                "{} command handler must be a script source table, inline script, or complete dynamic path",
                 owner
             )
         }
     };
+    if let Some(script) = spec.script_value() {
+        if script.trim().is_empty() {
+            bail!("{} has an empty command handler script", owner);
+        }
+        return Ok(());
+    }
     let Some(file) = spec.file_value() else {
         bail!(
             "{} command handler file must be a string or dynamic path",
@@ -102,10 +131,27 @@ pub(super) fn validate_run_handler(
     if is_dynamic_string(file) {
         return Ok(());
     }
-    let root = script_root
-        .with_context(|| format!("{} file-backed command handler has no plugin root", owner))?;
-    spec.validate_target(root)
+    spec.validate_target(script_root)
         .with_context(|| format!("{} has an invalid command handler file", owner))
+}
+
+fn validate_script_file_target(file: &str, script_root: Option<&Path>, owner: &str) -> Result<()> {
+    if is_dynamic_string(file) {
+        return Ok(());
+    }
+    let path = Path::new(file);
+    if let Some(root) = script_root {
+        crate::execution::validate_script_target(root, file)
+            .with_context(|| format!("{} has an invalid command handler file", owner))
+    } else if path.is_relative() {
+        bail!(
+            "single-file workflow {} cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
+            owner,
+            file
+        );
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn validate_argv_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {
@@ -131,8 +177,11 @@ pub(super) fn validate_command_action_requirements(
         validate_toml_requirements(templates, value, value_stage, label)
     };
     match action {
-        CommandAction::Run { payload } => {
-            validate(&payload.handler, &format!("{consumer} handler"), stage)?;
+        CommandAction::Run { .. } => {
+            let payload = action.run_payload().unwrap_or_default();
+            if let Some(handler) = &payload.handler {
+                validate(handler, &format!("{consumer} handler"), stage)?;
+            }
             if let Some(args) = &payload.args {
                 validate(args, &format!("{consumer} args"), stage)?;
             }
@@ -170,7 +219,8 @@ pub(super) fn validate_command_action_requirements(
                 )?;
             }
         }
-        CommandAction::Return { payload } => {
+        CommandAction::Return { .. } => {
+            let payload = action.return_payload().unwrap_or_default();
             if let Some(value) = &payload.value {
                 validate(value, &format!("{consumer} value"), stage)?;
             }
@@ -198,7 +248,20 @@ pub(super) fn validate_command_action_requirements(
     Ok(())
 }
 
-pub(super) fn validate_command_action(
+#[allow(dead_code)]
+pub(super) fn validate_view_commands(
+    view_ref: &str,
+    commands: &BTreeMap<String, super::Command>,
+    views: &BTreeMap<ViewRef, View>,
+    script_root: Option<&Path>,
+) -> Result<()> {
+    for (command_id, command) in commands {
+        validate_command_action(view_ref, command_id, &command.action, views, script_root, 0)?;
+    }
+    Ok(())
+}
+
+fn validate_command_action(
     view_ref: &str,
     command_id: &str,
     action: &CommandAction,
@@ -215,12 +278,14 @@ pub(super) fn validate_command_action(
     }
     let owner = format!("{}:{}", view_ref, command_id);
     match action {
-        CommandAction::Run { payload } => {
-            validate_run_handler(&payload.handler, script_root, &owner)?;
+        CommandAction::Run { .. } => {
+            let payload = action.run_payload().context("invalid run action")?;
+            validate_run_payload(&payload, script_root, &owner)?;
             if let Some(args) = &payload.args {
                 validate_run_arguments(args, &owner)?;
             }
         }
+
         CommandAction::Navigate { payload } => {
             validate_target(view_ref, command_id, "navigation", &payload.target, views)?;
             if let Some(query) = &payload.query {
@@ -239,7 +304,8 @@ pub(super) fn validate_command_action(
                 validate_command_action(view_ref, command_id, then, views, script_root, depth + 1)?;
             }
         }
-        CommandAction::Return { payload } => {
+        CommandAction::Return { .. } => {
+            let payload = action.return_payload().unwrap_or_default();
             if depth > 0 && (payload.handler.is_some() || payload.args.is_some()) {
                 bail!(
                     "view {:?} command {:?} continuation return cannot define handler or args",
@@ -398,9 +464,9 @@ impl Config {
                 "root capture defaults",
             )?;
         }
-        for (package_id, plugin) in &self.compiled.plugins {
-            if plugin.name.trim().is_empty() {
-                bail!("plugin package {:?} has an empty name", package_id);
+        for (package_id, workflow) in &self.compiled.workflows {
+            if workflow.name.trim().is_empty() {
+                bail!("workflow {:?} has an empty name", package_id);
             }
         }
 

@@ -16,6 +16,15 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
   - Realigned domain boundaries by moving query prefix styling from `[chrome.input_prefix]` to `[picker.input_prefix]`.
   - Added dedicated styling slots: `[chrome.footer_title]`, `[chrome.footer_status]`, and `[chrome.border]`.
   - Rewrote `docs/how-to/custom-themes.md` to document structured theme tables and remove obsolete/non-existent binding references.
+- Implemented ADR 0001 (Decentralized Workflow Extensions) and updated documentation:
+  - Transitioned domain from plugins to workflows: replaced `plugins/` with `workflows/`, and `[plugin]` with `[workflow]`.
+  - Implemented dual-mode workflow loading: single-file `.toml` and directory packages (`workflow.toml`).
+  - Added strict conflict detection for duplicate workflow IDs and duplicate view aliases.
+  - Implemented caller CWD preservation ($PWD) and `$WORKFLOW_DIR` environment injection for directory workflows.
+  - Implemented multi-line inline script materialization with `0600` permissions, source attribution, and host-side shebang tokenization.
+  - Added CLI `argv[0]` multiplexing and contract inspection (`inspect <view>` / `--inspect <view>`).
+  - Renamed `docs/tutorials/first-plugin.md` -> `first-workflow.md` and `docs/reference/plugin-toml.md` -> `workflow-toml.md`.
+  - Updated `docs/index.md`, `docs/tutorials/index.md`, `docs/tutorials/getting-started.md`, `docs/reference/index.md`, `docs/reference/config-toml.md`, `docs/reference/cli.md`, `docs/how-to/index.md`, `docs/how-to/dynamic-picker-feeds.md`, `docs/explanation/architecture-overview.md`, `docs/explanation/input-and-navigation-model.md`, and `docs/explanation/runtime-guarantees.md` to reflect workflow terminology and contracts.
 
 ## 2026-09-05
 

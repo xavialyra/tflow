@@ -1,8 +1,9 @@
 #!/bin/sh
 query=${1:-}
+workflow_dir="${WORKFLOW_DIR:-.}"
 if command -v python3 >/dev/null 2>&1; then
-  if [ -f "scripts/apps.py" ]; then
-    exec python3 scripts/apps.py "$query"
+  if [ -f "$workflow_dir/scripts/apps.py" ]; then
+    exec python3 "$workflow_dir/scripts/apps.py" "$query"
   fi
 fi
 

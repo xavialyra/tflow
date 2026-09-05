@@ -343,14 +343,15 @@ impl Config {
     }
 
     fn view_config(&self, view_ref: &str) -> Result<&Value> {
-        let (plugin, view) = view_ref
+        let (workflow, view) = view_ref
             .split_once(':')
             .with_context(|| format!("invalid view reference {:?}", view_ref))?;
         self.compiled
             .config_value
-            .get("plugins")
-            .and_then(|plugins| plugins.get(plugin))
-            .and_then(|plugin| plugin.get("views"))
+            .get("workflows")
+            .or_else(|| self.compiled.config_value.get("plugins"))
+            .and_then(|workflows| workflows.get(workflow))
+            .and_then(|workflow| workflow.get("views"))
             .and_then(|views| views.get(view))
             .with_context(|| format!("view {:?} configuration disappeared", view_ref))
     }

@@ -1,6 +1,6 @@
 use super::{
     CommandBinding, CompiledConfig, Config, Defaults, ENGINE_PICKER, FeedSpec, ParameterState,
-    PluginMetadata, RawConfig, View, ViewRef,
+    RawConfig, View, ViewRef, WorkflowMetadata,
 };
 use crate::expression::{EvaluationStage, TemplateRegistry, is_dynamic_string};
 use crate::parameter::ParameterRegistry;
@@ -15,37 +15,38 @@ use std::{
 impl CompiledConfig {
     fn build(
         views: BTreeMap<ViewRef, View>,
-        plugins: BTreeMap<String, PluginMetadata>,
+        workflows: BTreeMap<String, WorkflowMetadata>,
         defaults: Defaults,
-        plugin_roots: BTreeMap<String, PathBuf>,
+        workflow_roots: BTreeMap<String, PathBuf>,
         config_value: Value,
     ) -> Result<Self> {
         let template_value = if config_value
             .as_object()
             .is_some_and(serde_json::Map::is_empty)
         {
-            views_config_value(&views, &plugins)?
+            views_config_value(&views, &workflows)?
         } else {
             config_value.clone()
         };
         let template_registry = TemplateRegistry::compile_json_tree(&template_value)?;
         validate_view_bootstrap_requirements(&views, &template_registry)?;
-        let parameter_registry = if config_value.get("plugins").is_some() {
+        let parameter_registry = if config_value.get("workflows").is_some() || config_value.get("plugins").is_some() {
             ParameterRegistry::compile_with_templates(&config_value, &template_registry)?
         } else {
             ParameterRegistry::default()
         };
         Ok(Self {
             views,
-            plugins,
+            workflows,
             defaults,
-            plugin_roots,
+            workflow_roots,
             config_value,
             template_registry,
             parameter_registry: Arc::new(parameter_registry),
         })
     }
 }
+
 
 fn validate_view_bootstrap_requirements(
     views: &BTreeMap<ViewRef, View>,
@@ -103,24 +104,29 @@ fn validate_view_bootstrap_requirements(
 impl Config {
     pub(super) fn from_raw(
         mut raw: RawConfig,
-        plugin_roots: BTreeMap<ViewRef, PathBuf>,
+        workflow_roots: BTreeMap<ViewRef, PathBuf>,
         mut config_value: Value,
     ) -> Result<Self> {
         let default_view = raw.default_view;
         let mut views = BTreeMap::new();
-        let mut plugins = BTreeMap::new();
-        for (package_id, plugin) in raw.plugins {
-            let metadata = PluginMetadata {
-                name: plugin.name.unwrap_or_else(|| package_id.clone()),
-                styles: plugin.styles,
+        let mut workflows = BTreeMap::new();
+        for (package_id, workflow) in raw.workflows {
+            let metadata = WorkflowMetadata {
+                name: workflow.name.unwrap_or_else(|| package_id.clone()),
+                styles: workflow.styles,
             };
-            for (view_name, view) in plugin.views {
+            for (view_name, mut view) in workflow.views {
+                for (cmd_id, command) in &mut view.commands {
+                    if command.label.is_empty() {
+                        command.label = cmd_id.clone();
+                    }
+                }
                 let view_ref = qualify_view_ref(&package_id, &view_name)?;
                 if views.insert(view_ref.clone(), view).is_some() {
                     bail!("duplicate view {:?}", view_ref);
                 }
             }
-            plugins.insert(package_id, metadata);
+            workflows.insert(package_id, metadata);
         }
         expand_feed_patterns(&mut views)?;
         if views.contains_key("selectors:commands") {
@@ -131,7 +137,7 @@ impl Config {
             super::normalize::inject_builtin_commands_value(&mut config_value);
         }
         let compiled =
-            CompiledConfig::build(views, plugins, raw.defaults, plugin_roots, config_value)?;
+            CompiledConfig::build(views, workflows, raw.defaults, workflow_roots, config_value)?;
         super::validation::validate_optional_string_requirements(
             &compiled.template_registry,
             default_view.as_deref(),
@@ -153,8 +159,8 @@ impl Config {
     pub(crate) fn test_new(
         default_view: Option<ViewRef>,
         views: BTreeMap<ViewRef, View>,
-        plugins: BTreeMap<String, PluginMetadata>,
-        plugin_roots: BTreeMap<String, PathBuf>,
+        workflows: BTreeMap<String, WorkflowMetadata>,
+        workflow_roots: BTreeMap<String, PathBuf>,
         mut config_value: Value,
     ) -> Result<Self> {
         let mut commands = super::CommandConfig::default();
@@ -166,9 +172,9 @@ impl Config {
         }
         let compiled = CompiledConfig::build(
             views,
-            plugins,
+            workflows,
             Defaults::default(),
-            plugin_roots,
+            workflow_roots,
             config_value,
         )?;
         Ok(Self {
@@ -191,9 +197,9 @@ impl Config {
     pub(crate) fn test_rebuild_compiled(&mut self) -> Result<()> {
         self.compiled = CompiledConfig::build(
             self.compiled.views.clone(),
-            self.compiled.plugins.clone(),
+            self.compiled.workflows.clone(),
             self.compiled.defaults.clone(),
-            self.compiled.plugin_roots.clone(),
+            self.compiled.workflow_roots.clone(),
             self.compiled.config_value.clone(),
         )?;
         Ok(())
@@ -202,11 +208,11 @@ impl Config {
 
 fn views_config_value(
     views: &BTreeMap<ViewRef, View>,
-    plugins: &BTreeMap<String, PluginMetadata>,
+    workflows: &BTreeMap<String, WorkflowMetadata>,
 ) -> Result<Value> {
-    let mut plugin_values = serde_json::Map::new();
-    for (package, metadata) in plugins {
-        plugin_values.insert(
+    let mut workflow_values = serde_json::Map::new();
+    for (package, metadata) in workflows {
+        workflow_values.insert(
             package.clone(),
             serde_json::json!({"name": metadata.name, "views": {}}),
         );
@@ -215,20 +221,24 @@ fn views_config_value(
         let (package, name) = view_ref
             .split_once(':')
             .with_context(|| format!("test view {:?} is not namespaced", view_ref))?;
-        let plugin = plugin_values
+        let workflow = workflow_values
             .entry(package.to_string())
             .or_insert_with(|| serde_json::json!({"name": package, "views": {}}));
-        let views = plugin
+        let views = workflow
             .get_mut("views")
             .and_then(Value::as_object_mut)
-            .context("test plugin views must be an object")?;
+            .context("test workflow views must be an object")?;
         views.insert(name.to_string(), serde_json::to_value(view)?);
     }
-    let mut value = serde_json::json!({"plugins": plugin_values});
+    let mut value = serde_json::json!({
+        "workflows": workflow_values,
+        "plugins": workflow_values
+    });
     remove_null_fields(&mut value);
     super::normalize::normalize_engine_configs(&mut value);
     Ok(value)
 }
+
 
 fn remove_null_fields(value: &mut Value) {
     match value {

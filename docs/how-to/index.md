@@ -1,6 +1,6 @@
 # How-To Guides
 
-How-to guides provide recipes and solutions for specific, task-focused challenges when building views and plugins for `tui-launcher`.
+How-to guides provide recipes and solutions for specific, task-focused challenges when building views and workflows for `tui-launcher`.
 
 ## Guides
 

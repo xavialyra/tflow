@@ -106,7 +106,7 @@ pub(crate) fn finish(
                 adapter.command.id, adapter.command.view
             )
         })?;
-    let crate::config::CommandAction::Return { payload } = &command.action else {
+    let Some(payload) = command.action.return_payload() else {
         anyhow::bail!(
             "command {:?} for view {:?} is not a return command",
             adapter.command.id,

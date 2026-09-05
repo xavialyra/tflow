@@ -10,7 +10,7 @@ use color::{ResolvedScheme, SchemeRole};
 #[cfg(test)]
 use model::RawTheme;
 #[cfg(test)]
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier};
 #[cfg(test)]
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -409,7 +409,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        theme.register_plugin_defaults("git", &plugin_styles).unwrap();
+        theme.register_workflow_defaults("git", &plugin_styles).unwrap();
 
         // 1. Normal slot: branch should have foreground = Blue (scheme:primary), and bold = false (overridden by theme)
         let branch_normal = theme.resolve_slot("git", &SlotToken::from("branch"), false);

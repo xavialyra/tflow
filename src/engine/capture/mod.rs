@@ -18,7 +18,7 @@ use crate::command::ResolvedInputAction;
 use crate::config::{
     Defaults, ResolvedScriptSource, ScriptSourceSpec, View, toml_to_json,
 };
-use crate::execution::{ensure_script_success, run_script};
+use crate::execution::ensure_script_success;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -68,11 +68,8 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         source
             .validate_capture_source()
             .with_context(|| format!("view {:?} capture output", name))?;
-        let root = context
-            .script_root
-            .with_context(|| format!("view {:?} has no plugin root", name))?;
         source
-            .validate_target(root)
+            .validate_target(context.script_root)
             .with_context(|| format!("view {:?} has invalid capture source target", name))?;
     }
     Ok(())
@@ -96,7 +93,9 @@ pub(super) fn validate_keymap(name: &str, view: &View) -> Result<()> {
 
 #[derive(Clone)]
 struct PendingCaptureScript {
-    root: PathBuf,
+    workflow_id: String,
+    view_ref: String,
+    root: Option<PathBuf>,
     source: ResolvedScriptSource,
     args: Vec<String>,
 }
@@ -104,7 +103,7 @@ struct PendingCaptureScript {
 enum PreparedCaptureOutput {
     Text(String),
     Script {
-        root: PathBuf,
+        root: Option<PathBuf>,
         source: ResolvedScriptSource,
         args: Vec<String>,
     },
@@ -114,11 +113,11 @@ pub(super) fn create_view(
     context: RuntimeFactoryContext,
 ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
     let default_title = context.identity.view_ref.clone();
-    let evaluated = (|| {
+    let evaluated: Result<_, anyhow::Error> = (|| {
         let title = evaluate_optional_string(&context.config, "title")?
             .unwrap_or_else(|| default_title.clone());
         let output = prepare_output(&context.config, context.config.plugin_root.as_deref())?;
-        Ok::<_, anyhow::Error>((title, output))
+        Ok((title, output))
     })();
     let (title, output, status, success, pending_script) = match evaluated {
         Ok((title, PreparedCaptureOutput::Text(output))) => (
@@ -128,13 +127,23 @@ pub(super) fn create_view(
             true,
             None,
         ),
-        Ok((title, PreparedCaptureOutput::Script { root, source, args })) => (
-            title,
-            String::new(),
-            "starting".to_string(),
-            false,
-            Some(PendingCaptureScript { root, source, args }),
-        ),
+        Ok((title, PreparedCaptureOutput::Script { root, source, args })) => {
+            let workflow_id = crate::config::package_id(&context.identity.view_ref).to_string();
+            let view_ref = context.identity.view_ref.clone();
+            (
+                title,
+                String::new(),
+                "starting".to_string(),
+                false,
+                Some(PendingCaptureScript {
+                    workflow_id,
+                    view_ref,
+                    root,
+                    source,
+                    args,
+                }),
+            )
+        }
         Err(error) => (
             default_title,
             error.to_string(),
@@ -192,9 +201,7 @@ fn prepare_output(
 
     let source = ResolvedScriptSource::parse(&output)
         .context("capture output must evaluate to a string or script source")?;
-    let root = plugin_root
-        .context("capture source has no plugin root")?
-        .to_path_buf();
+    let root = plugin_root.map(Path::to_path_buf);
     let args = source.script_args("capture script args")?;
     Ok(PreparedCaptureOutput::Script { root, source, args })
 }
@@ -203,11 +210,12 @@ fn run_capture_script(
     plan: &PendingCaptureScript,
     cancellation: &crate::lifecycle::CancellationObserver,
 ) -> Result<String> {
-    let output = run_script(
-        &plan.root,
-        &plan.source.file,
+    let output = crate::execution::run_resolved_script(
+        &plan.workflow_id,
+        &format!("[views.{}.output]", plan.view_ref),
+        plan.root.as_deref(),
+        &plan.source,
         &plan.args,
-        plan.source.max_output_bytes,
         cancellation,
     )?;
     ensure_script_success(&output)?;
@@ -215,7 +223,7 @@ fn run_capture_script(
         bail!("script produced no JSON output");
     }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("script {} did not produce valid JSON", plan.source.file))?;
+        .with_context(|| format!("script {} did not produce valid JSON", plan.source.target_display()))?;
     value
         .as_str()
         .map(str::to_string)

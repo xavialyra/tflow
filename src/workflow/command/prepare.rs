@@ -103,10 +103,11 @@ fn prepare_action(
         EvaluationStage::Operation
     };
     match action {
-        CommandAction::Run { payload } => {
+        CommandAction::Run { .. } => {
+            let payload = action.run_payload().context("invalid run action")?;
             let prepared = prepare_run_command(
                 config,
-                payload,
+                &payload,
                 &invocation,
                 &context,
                 owner,
@@ -118,6 +119,7 @@ fn prepare_action(
                 exit: payload.exit,
             })
         }
+
         CommandAction::Navigate { payload } => {
             let (target, parameters) = evaluate_target(config, payload, &snapshot, stage)?;
             let request = match parameters {
@@ -165,7 +167,8 @@ fn prepare_action(
                 then: payload.then.clone(),
             }))
         }
-        CommandAction::Return { payload } => {
+        CommandAction::Return { .. } => {
+            let payload = action.return_payload().unwrap_or_default();
             let output = match &payload.value {
                 Some(value) => ViewOutput::Value {
                     value: evaluate_value(config, &snapshot, stage, value)?,
@@ -191,6 +194,7 @@ fn prepare_action(
                 adapter,
             }))
         }
+
         CommandAction::EditInput { payload } => {
             let value = evaluate_value(config, &snapshot, stage, &payload.value)?
                 .as_str()
@@ -295,24 +299,6 @@ fn evaluate_value(
     config.evaluate_value(snapshot, stage, value)
 }
 
-fn evaluate_string_value(
-    config: &Config,
-    source: &str,
-    snapshot: &EvaluationSnapshot<'_>,
-    stage: EvaluationStage,
-    label: &str,
-) -> Result<String> {
-    evaluate_value(
-        config,
-        snapshot,
-        stage,
-        &toml::Value::String(source.to_string()),
-    )?
-    .as_str()
-    .map(str::to_string)
-    .with_context(|| format!("{label} must evaluate to a string"))
-}
-
 fn prepare_run_command(
     config: &Config,
     payload: &RunPayload,
@@ -322,47 +308,80 @@ fn prepare_run_command(
     snapshot: &EvaluationSnapshot<'_>,
     stage: EvaluationStage,
 ) -> Result<PreparedProcess> {
-    let view = config
-        .view(invocation.source_view())
-        .with_context(|| format!("view {:?} disappeared", invocation.source_view()))?;
-    let shell_source = payload
-        .shell
-        .as_deref()
-        .or(view.run_shell.as_deref())
-        .unwrap_or("/bin/sh");
-    let shell = evaluate_string_value(config, shell_source, snapshot, stage, "command shell")?;
-    let handler_value = config.evaluate_value(snapshot, stage, &payload.handler)?;
-    let handler_source = ResolvedScriptSource::parse(&handler_value)
-        .context("command handler must resolve to a script source")?;
-    let handler_file = handler_source.command_file()?;
-    let root = config
-        .plugin_root(invocation.source_view())
-        .with_context(|| {
-            format!(
-                "command {:?} has a file handler but no plugin root",
-                invocation.id()
-            )
-        })?;
-    let handler = crate::execution::read_script(root, handler_file)?;
-    if shell.is_empty() {
-        bail!("command shell must not be empty");
-    }
-    let arguments = config.evaluate_argv(payload.args.as_ref(), snapshot, stage, "command args")?;
     let source_view = invocation.source_view();
-    let plugin_root = config
-        .plugin_root(source_view)
-        .map(|path| path.to_path_buf());
-    let mut argv = vec![shell, "-c".to_string(), handler, "tui-launcher".to_string()];
-    // With `sh -c SOURCE tui-launcher ARG...`, the fixed fourth argument is
-    // `$0` inside SOURCE and configured values become `$1`, `$2`, and `"$@"`.
-    // They are appended as process arguments, not interpolated into SOURCE.
-    argv.extend(arguments);
+    let (workflow_id, _view_name) = source_view
+        .split_once(':')
+        .unwrap_or((source_view, source_view));
+    let command_id = invocation.id();
+    let source_label = format!("{source_view}.commands.{command_id}");
+    let arguments = config.evaluate_argv(payload.args.as_ref(), snapshot, stage, "command args")?;
+
+    let workflow_root = config.workflow_root(source_view);
+    let mut environment = Vec::new();
+    if let Some(root) = workflow_root {
+        environment.push((
+            "WORKFLOW_DIR".to_string(),
+            root.to_string_lossy().into_owned(),
+        ));
+    }
+
+    let argv = if let Some(script_body) = &payload.script {
+        crate::execution::prepare_inline_script_command(
+            workflow_id,
+            &source_label,
+            script_body,
+            &arguments,
+        )?
+    } else if let Some(handler_raw) = &payload.handler {
+        let handler_value = config.evaluate_value(snapshot, stage, handler_raw)?;
+        let handler_source = ResolvedScriptSource::parse(&handler_value)
+            .context("command handler must resolve to a script source")?;
+        match handler_source.command_target()? {
+            crate::config::ResolvedScriptTarget::Inline(script_body) => {
+                crate::execution::prepare_inline_script_command(
+                    workflow_id,
+                    &source_label,
+                    script_body,
+                    &arguments,
+                )?
+            }
+            crate::config::ResolvedScriptTarget::File(file) => {
+                let (script_path, script_content) = if std::path::Path::new(file).is_absolute() {
+                    let path = std::path::PathBuf::from(file);
+                    let content = std::fs::read_to_string(&path)
+                        .with_context(|| format!("could not read script {}", path.display()))?;
+                    (path, content)
+                } else if let Some(root) = workflow_root {
+                    let content = crate::execution::read_script(root, file)?;
+                    (root.join(file), content)
+                } else {
+                    bail!(
+                        "single-file workflow {:?} cannot reference relative script file {:?}",
+                        source_view,
+                        file
+                    );
+                };
+                let shebang = crate::execution::parse_shebang(&script_content);
+                crate::execution::verify_interpreter(&shebang.interpreter)?;
+                let mut argv = Vec::new();
+                argv.push(shebang.interpreter);
+                argv.extend(shebang.args);
+                argv.push(script_path.to_string_lossy().into_owned());
+                argv.extend(arguments);
+                argv
+            }
+        }
+    } else {
+        bail!("command {:?} has neither script nor handler", invocation.id());
+    };
+
     Ok(PreparedProcess {
         argv,
-        environment: Vec::new(),
-        current_dir: plugin_root,
+        environment,
+        current_dir: None,
     })
 }
+
 
 pub(crate) fn collect_available_commands(
     config: &Config,
@@ -582,15 +601,16 @@ mod tests {
                 scope: CommandScope::View,
                 requires: crate::config::CommandRequirement::Input,
                 passthrough: false,
-                action: CommandAction::Run {
-                    payload: crate::config::RunPayload {
-                        handler: crate::config::ScriptSourceSpec::script_file("scripts/items.sh")
+                action: CommandAction::new_run(crate::config::RunPayload {
+                    script: None,
+                    handler: Some(
+                        crate::config::ScriptSourceSpec::script_file("scripts/items.sh")
                             .as_toml_value(),
-                        args: None,
-                        shell: None,
-                        exit: false,
-                    },
-                },
+                    ),
+                    args: None,
+                    shell: None,
+                    exit: false,
+                }),
             },
         );
         let prepared = prepare_command_action(
@@ -605,7 +625,7 @@ mod tests {
         let PreparedAction::Execute { prepared, .. } = prepared else {
             panic!("run action was not prepared for execution");
         };
-        assert!(prepared.environment.is_empty());
+        assert!(!prepared.environment.iter().any(|(key, _)| key.contains("LOG")));
     }
 
     #[test]
@@ -664,9 +684,7 @@ mod tests {
                     scope: CommandScope::View,
                     requires: crate::config::CommandRequirement::Input,
                     passthrough: false,
-                    action: CommandAction::Return {
-                        payload: crate::config::ReturnPayload::default(),
-                    },
+                    action: CommandAction::new_return(crate::config::ReturnPayload::default()),
                 },
             );
         let context = CommandContext {

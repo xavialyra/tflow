@@ -10,15 +10,18 @@ fn default_engine_type() -> String {
     super::ENGINE_PICKER.to_string()
 }
 
-fn default_plugin_api() -> u32 {
+fn default_workflow_api() -> u32 {
     1
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PluginMetadata {
+pub struct WorkflowMetadata {
     pub name: String,
     pub styles: BTreeMap<String, crate::theme::RawStyleBinding>,
 }
+
+pub type PluginMetadata = WorkflowMetadata;
+
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -67,22 +70,34 @@ pub struct FeedSpec {
     pub view: ViewRef,
 }
 
-/// A file-backed script source descriptor shared by data-source engines and
-/// `run` commands. Script contents are never part of the configuration tree.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptSourceSpec {
+    #[serde(default = "default_script_source_val")]
     source: toml::Value,
-    file: toml::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    script: Option<toml::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     args: Option<toml::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_output_bytes: Option<toml::Value>,
 }
 
+fn default_script_source_val() -> toml::Value {
+    toml::Value::String("script".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResolvedScriptTarget {
+    File(String),
+    Inline(String),
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedScriptSource {
-    pub(crate) file: String,
+    pub(crate) target: ResolvedScriptTarget,
     pub(crate) args: Option<Value>,
     pub(crate) max_output_bytes: Option<usize>,
 }
@@ -92,7 +107,8 @@ impl ScriptSourceSpec {
     pub(crate) fn script_file(file: impl Into<String>) -> Self {
         Self {
             source: toml::Value::String("script".to_string()),
-            file: toml::Value::String(file.into()),
+            file: Some(toml::Value::String(file.into())),
+            script: None,
             args: None,
             max_output_bytes: None,
         }
@@ -102,7 +118,12 @@ impl ScriptSourceSpec {
     pub(crate) fn as_toml_value(&self) -> toml::Value {
         let mut table = toml::map::Map::new();
         table.insert("source".to_string(), self.source.clone());
-        table.insert("file".to_string(), self.file.clone());
+        if let Some(file) = &self.file {
+            table.insert("file".to_string(), file.clone());
+        }
+        if let Some(script) = &self.script {
+            table.insert("script".to_string(), script.clone());
+        }
         if let Some(args) = &self.args {
             table.insert("args".to_string(), args.clone());
         }
@@ -114,14 +135,26 @@ impl ScriptSourceSpec {
 
     pub(crate) fn validate(&self) -> Result<()> {
         validate_script_source_name(&self.source)?;
-        validate_script_source_file(&self.file)?;
+        if self.file.is_none() && self.script.is_none() {
+            bail!("script source requires either file or script");
+        }
+        if let Some(file) = &self.file {
+            validate_script_source_file(file)?;
+        }
+        if let Some(script) = &self.script {
+            validate_script_source_body(script)?;
+        }
         validate_script_source_args(self.args.as_ref())?;
         validate_script_source_limit(self.max_output_bytes.as_ref())?;
         Ok(())
     }
 
     pub(crate) fn file_value(&self) -> Option<&str> {
-        self.file.as_str()
+        self.file.as_ref().and_then(toml::Value::as_str)
+    }
+
+    pub(crate) fn script_value(&self) -> Option<&str> {
+        self.script.as_ref().and_then(toml::Value::as_str)
     }
 
     pub(crate) fn validate_picker_source(&self) -> Result<()> {
@@ -143,14 +176,31 @@ impl ScriptSourceSpec {
         Ok(())
     }
 
-    pub(crate) fn validate_target(&self, root: &Path) -> Result<()> {
-        let Some(file) = self.file.as_str() else {
+    pub(crate) fn validate_target(&self, root: Option<&Path>) -> Result<()> {
+        if self.script.is_some() {
+            return Ok(());
+        }
+        let Some(file_val) = &self.file else {
+            return Ok(());
+        };
+        let Some(file) = file_val.as_str() else {
             return Ok(());
         };
         if is_dynamic_string(file) {
             return Ok(());
         }
-        crate::execution::validate_script_target(root, file)
+        if let Some(root) = root {
+            crate::execution::validate_script_target(root, file)
+        } else {
+            let path = Path::new(file);
+            if path.is_relative() {
+                bail!(
+                    "single-file workflow cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
+                    file
+                );
+            }
+            Ok(())
+        }
     }
 
     pub(crate) fn parse(value: &toml::Value) -> Result<Self> {
@@ -166,33 +216,70 @@ impl ScriptSourceSpec {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResolvedScriptSourceConfig {
+    #[serde(default = "default_script_source_str")]
     source: String,
-    file: String,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    script: Option<String>,
     #[serde(default)]
     args: Option<Value>,
     #[serde(default)]
     max_output_bytes: Option<usize>,
 }
 
+fn default_script_source_str() -> String {
+    "script".to_string()
+}
+
 impl ResolvedScriptSource {
     pub(crate) fn is_candidate(value: &Value) -> bool {
+        if let Some(s) = value.as_str() {
+            return s.starts_with("#!") || s.contains('\n');
+        }
         value
             .as_object()
-            .is_some_and(|fields| fields.contains_key("source"))
+            .is_some_and(|fields| {
+                fields.contains_key("source")
+                    || fields.contains_key("file")
+                    || fields.contains_key("script")
+            })
     }
 
     pub(crate) fn parse(value: &Value) -> Result<Self> {
+        if let Some(s) = value.as_str() {
+            let target = if s.starts_with("#!") || s.contains('\n') {
+                ResolvedScriptTarget::Inline(s.to_string())
+            } else {
+                ResolvedScriptTarget::File(s.to_string())
+            };
+            return Ok(Self {
+                target,
+                args: None,
+                max_output_bytes: None,
+            });
+        }
         let source: ResolvedScriptSourceConfig = serde_json::from_value(value.clone())
-            .context("script source must resolve to an object with source and file fields")?;
-        if source.source != "script" {
+            .context("script source must resolve to an object with source and file/script fields")?;
+        if source.source != "script" && source.source != "inline" {
             bail!("unsupported script source {:?}", source.source);
         }
-        if source.file.is_empty() {
-            bail!("script source file must be non-empty");
-        }
+        let target = if let Some(script) = source.script {
+            if script.is_empty() {
+                bail!("script source body must be non-empty");
+            }
+            ResolvedScriptTarget::Inline(script)
+        } else if let Some(file) = source.file {
+            if file.is_empty() {
+                bail!("script source file must be non-empty");
+            }
+            ResolvedScriptTarget::File(file)
+        } else {
+            bail!("script source requires either 'file' or 'script'");
+        };
         crate::execution::validate_max_output_bytes(source.max_output_bytes)?;
         Ok(Self {
-            file: source.file,
+            target,
             args: source.args,
             max_output_bytes: source.max_output_bytes,
         })
@@ -202,7 +289,7 @@ impl ResolvedScriptSource {
         crate::execution::resolve_argv(self.args.as_ref(), label)
     }
 
-    pub(crate) fn command_file(&self) -> Result<&str> {
+    pub(crate) fn command_target(&self) -> Result<&ResolvedScriptTarget> {
         anyhow::ensure!(
             self.args.is_none(),
             "run command handler source cannot define args; configure payload args"
@@ -211,9 +298,24 @@ impl ResolvedScriptSource {
             self.max_output_bytes.is_none(),
             "run command handler source cannot define max_output_bytes"
         );
-        Ok(&self.file)
+        Ok(&self.target)
+    }
+
+    pub(crate) fn file(&self) -> Option<&str> {
+        match &self.target {
+            ResolvedScriptTarget::File(file) => Some(file.as_str()),
+            ResolvedScriptTarget::Inline(_) => None,
+        }
+    }
+
+    pub(crate) fn target_display(&self) -> &str {
+        match &self.target {
+            ResolvedScriptTarget::File(file) => file.as_str(),
+            ResolvedScriptTarget::Inline(_) => "<inline script>",
+        }
     }
 }
+
 
 fn validate_script_source_name(value: &toml::Value) -> Result<()> {
     let source = value
@@ -221,8 +323,21 @@ fn validate_script_source_name(value: &toml::Value) -> Result<()> {
         .context("script source must be a string or dynamic path")?;
     if is_dynamic_string(source) {
         Template::parse(source)?;
-    } else if source != "script" {
+    } else if source != "script" && source != "inline" {
         bail!("unsupported script source {:?}", source);
+    }
+    Ok(())
+}
+
+fn validate_script_source_body(value: &toml::Value) -> Result<()> {
+    let script = value
+        .as_str()
+        .context("script source body must be a string or dynamic path")?;
+    if script.is_empty() {
+        bail!("script source body must be non-empty");
+    }
+    if is_dynamic_string(script) {
+        Template::parse(script)?;
     }
     Ok(())
 }
@@ -375,7 +490,18 @@ pub enum CommandRequirement {
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
     Run {
-        payload: RunPayload,
+        #[serde(default)]
+        payload: Option<RunPayload>,
+        #[serde(default)]
+        script: Option<String>,
+        #[serde(default)]
+        handler: Option<toml::Value>,
+        #[serde(default)]
+        args: Option<toml::Value>,
+        #[serde(default)]
+        shell: Option<String>,
+        #[serde(default)]
+        exit: bool,
     },
     Navigate {
         payload: NavigatePayload,
@@ -385,7 +511,13 @@ pub enum CommandAction {
     },
     Return {
         #[serde(default)]
-        payload: ReturnPayload,
+        payload: Option<ReturnPayload>,
+        #[serde(default)]
+        value: Option<toml::Value>,
+        #[serde(default)]
+        handler: Option<toml::Value>,
+        #[serde(default)]
+        args: Option<toml::Value>,
     },
     EditInput {
         payload: EditInputPayload,
@@ -395,13 +527,92 @@ pub enum CommandAction {
     },
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+impl CommandAction {
+    pub fn run_payload(&self) -> Option<RunPayload> {
+        match self {
+            CommandAction::Run {
+                payload,
+                script,
+                handler,
+                args,
+                shell,
+                exit,
+            } => {
+                let mut p = payload.clone().unwrap_or_default();
+                if p.script.is_none() {
+                    p.script = script.clone();
+                }
+                if p.handler.is_none() {
+                    p.handler = handler.clone();
+                }
+                if p.args.is_none() {
+                    p.args = args.clone();
+                }
+                if p.shell.is_none() {
+                    p.shell = shell.clone();
+                }
+                if !p.exit {
+                    p.exit = *exit;
+                }
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn return_payload(&self) -> Option<ReturnPayload> {
+        match self {
+            CommandAction::Return {
+                payload,
+                value,
+                handler,
+                args,
+            } => {
+                let mut p = payload.clone().unwrap_or_default();
+                if p.value.is_none() {
+                    p.value = value.clone();
+                }
+                if p.handler.is_none() {
+                    p.handler = handler.clone();
+                }
+                if p.args.is_none() {
+                    p.args = args.clone();
+                }
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn new_run(payload: RunPayload) -> Self {
+        CommandAction::Run {
+            payload: Some(payload),
+            script: None,
+            handler: None,
+            args: None,
+            shell: None,
+            exit: false,
+        }
+    }
+
+    pub fn new_return(payload: ReturnPayload) -> Self {
+        CommandAction::Return {
+            payload: Some(payload),
+            value: None,
+            handler: None,
+            args: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunPayload {
-    pub handler: toml::Value,
-    /// Positional arguments passed to the file-backed handler after dynamic
-    /// evaluation. The handler retains terminal stdin/stdout rather than using
-    /// the bounded non-interactive script runner.
+    #[serde(default)]
+    pub handler: Option<toml::Value>,
+    #[serde(default)]
+    pub script: Option<String>,
+    /// Positional arguments passed to the handler after dynamic evaluation.
     #[serde(default)]
     pub args: Option<toml::Value>,
     #[serde(default)]
@@ -409,6 +620,7 @@ pub struct RunPayload {
     #[serde(default)]
     pub exit: bool,
 }
+
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -573,6 +785,7 @@ impl CommandBinding {
 pub struct Command {
     #[serde(default)]
     pub key: Option<String>,
+    #[serde(default)]
     pub label: String,
     #[serde(default)]
     pub scope: CommandScope,
@@ -603,14 +816,14 @@ pub(super) struct RawConfig {
     pub(super) commands: CommandConfig,
     #[serde(default)]
     pub(super) theme: Option<String>,
-    #[serde(default)]
-    pub(super) plugins: BTreeMap<String, Plugin>,
+    #[serde(default, alias = "plugins")]
+    pub(super) workflows: BTreeMap<String, Workflow>,
     #[serde(default)]
     pub(super) defaults: Defaults,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct Plugin {
+pub(super) struct Workflow {
     #[serde(default)]
     pub(super) name: Option<String>,
     #[serde(default)]
@@ -620,8 +833,8 @@ pub(super) struct Plugin {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct PluginHeader {
-    #[serde(default = "default_plugin_api")]
+pub(super) struct WorkflowHeader {
+    #[serde(default = "default_workflow_api")]
     pub(super) api: u32,
     pub(super) name: String,
 }

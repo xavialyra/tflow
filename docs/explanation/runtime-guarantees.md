@@ -13,10 +13,13 @@ description: "Explanation of security boundaries, resource budgets, execution sa
 
 `tui-launcher` enforces strict execution limits and sandboxing policies to guarantee terminal integrity, system responsiveness, and bounded resource consumption.
 
-## 1. Filesystem & Plugin Isolation
+## 1. Filesystem & Workflow Isolation
 
-Plugins operate under strict directory boundaries:
-- **Root Confinement**: All script references (`source = "script", file = "..."`) are resolved and validated strictly within the plugin directory root (`$XDG_CONFIG_HOME/tui-launcher/plugins/<plugin-id>/`).
+Workflows operate under strict directory and execution boundaries:
+- **Directory Workflow Confinement**: In directory workflows (`$XDG_CONFIG_HOME/tui-launcher/workflows/<workflow-id>/workflow.toml`), companion script references (`source = "script", file = "..."`) are resolved and validated strictly within the workflow root.
+- **Single-File Isolation**: Single-file workflows (`$XDG_CONFIG_HOME/tui-launcher/workflows/<workflow-id>.toml`) must not reference external relative scripts; their executable logic must be declared as inline scripts (`source = "inline"`) or invoke absolute host binaries.
+- **Caller Working Directory ($PWD)**: Host process invocations preserve the caller's working directory (`$PWD`). The launcher injects `$WORKFLOW_DIR` into child process environments for directory workflows so scripts can reliably reference companion resources.
+- **Multi-Line Inline Script Materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (with cache fallback) with strict `0600` permissions and provenance attribution comments. They are executed via shebang interpretation or direct binary invocation.
 - **Path Traversal Prevention**: Relative path traversal attempts (e.g., `../../etc/passwd`) or symlink escapements are caught during configuration validation (`--check`) and runtime startup.
 - **Special File Rejection**: The launcher refuses to load configuration or script files from device nodes, sockets, or named pipes.
 

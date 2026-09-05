@@ -277,40 +277,40 @@ fn with_test_config(source: &str) -> String {
 pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
     let mut config: toml::Value = toml::from_str(&with_test_config(source))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let plugins = config
+    let workflows = config
         .as_table_mut()
-        .and_then(|table| table.remove("plugins"));
-    let Some(plugins) = plugins else {
+        .and_then(|table| table.remove("workflows").or_else(|| table.remove("plugins")));
+    let Some(workflows) = workflows else {
         return fs::write(path, toml::to_string(&config).map_err(io::Error::other)?);
     };
-    let toml::Value::Table(plugins) = plugins else {
+    let toml::Value::Table(workflows) = workflows else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "test plugins must be a TOML table",
+            "test workflows must be a TOML table",
         ));
     };
     let config_root = path.parent().unwrap_or_else(|| Path::new("."));
-    for (plugin_id, plugin) in plugins {
-        materialize_test_plugin(config_root, &plugin_id, plugin)?;
+    for (workflow_id, workflow) in workflows {
+        materialize_test_workflow(config_root, &workflow_id, workflow)?;
     }
     let config_source = toml::to_string(&config).map_err(io::Error::other)?;
     fs::write(path, config_source)
 }
 
-fn materialize_test_plugin(
+fn materialize_test_workflow(
     config_root: &Path,
-    plugin_id: &str,
-    plugin: toml::Value,
+    workflow_id: &str,
+    workflow: toml::Value,
 ) -> io::Result<()> {
-    let toml::Value::Table(plugin) = plugin else {
+    let toml::Value::Table(workflow) = workflow else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("test plugin {plugin_id:?} must be a TOML table"),
+            format!("test workflow {workflow_id:?} must be a TOML table"),
         ));
     };
-    let plugin_root = config_root.join("plugins").join(plugin_id);
-    fs::create_dir_all(&plugin_root)?;
-    let manifest_path = plugin_root.join("plugin.toml");
+    let workflow_root = config_root.join("workflows").join(workflow_id);
+    fs::create_dir_all(&workflow_root)?;
+    let manifest_path = workflow_root.join("workflow.toml");
     let mut manifest = if manifest_path.is_file() {
         let source = fs::read_to_string(&manifest_path)?;
         toml::from_str(&source)
@@ -321,30 +321,30 @@ fn materialize_test_plugin(
     let manifest_table = manifest.as_table_mut().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("test plugin manifest {manifest_path:?} must be a TOML table"),
+            format!("test workflow manifest {manifest_path:?} must be a TOML table"),
         )
     })?;
     let header = manifest_table
-        .entry("plugin".to_string())
+        .entry("workflow".to_string())
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
     let header = header.as_table_mut().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("test plugin manifest {manifest_path:?} has an invalid plugin header"),
+            format!("test workflow manifest {manifest_path:?} has an invalid workflow header"),
         )
     })?;
     header
         .entry("api".to_string())
         .or_insert(toml::Value::Integer(1));
-    if let Some(name) = plugin.get("name") {
+    if let Some(name) = workflow.get("name") {
         header.insert("name".to_string(), name.clone());
     } else {
         header
             .entry("name".to_string())
-            .or_insert_with(|| toml::Value::String(plugin_id.to_string()));
+            .or_insert_with(|| toml::Value::String(workflow_id.to_string()));
     }
 
-    let views = plugin
+    let views = workflow
         .get("views")
         .cloned()
         .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
@@ -519,7 +519,13 @@ pub fn run_tty_invocation_with_blocked_stdout_signal(
 fn finish_tty_invocation(process: &mut DmenuProcess, keys: &[u8]) -> RunResult {
     process.master.write_all(keys).unwrap();
     process.master.flush().unwrap();
-    let status = wait_for_exit(process);
+    let (status, terminal_output) = wait_for_exit_with_output(process);
+    if status != 0 {
+        eprintln!(
+            "TERMINAL OUTPUT (status={status}):\n{}",
+            String::from_utf8_lossy(&terminal_output)
+        );
+    }
     let mut stdout = Vec::new();
     process.output.read_to_end(&mut stdout).unwrap();
     RunResult { status, stdout }

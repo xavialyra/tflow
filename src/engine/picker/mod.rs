@@ -542,7 +542,6 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
                 .file_value()
                 .is_some_and(|file| !is_dynamic_string(file))
             {
-                let root = root.context("script items source has no plugin root")?;
                 spec.validate_target(root)?;
             }
             Ok(())

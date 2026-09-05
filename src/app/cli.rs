@@ -35,6 +35,10 @@ struct Args {
     #[arg(long)]
     check: bool,
 
+    /// Output the view contract (query schema, commands, engine) in JSON and exit.
+    #[arg(long, value_name = "VIEW")]
+    inspect: Option<String>,
+
     /// View to start directly; defaults to the configured root view.
     #[arg(value_name = "VIEW")]
     view: Option<String>,
@@ -47,6 +51,56 @@ struct Args {
         trailing_var_arg = true
     )]
     view_options: Vec<String>,
+}
+
+fn effective_cli_args() -> Vec<String> {
+    let args: Vec<String> = env::args().collect();
+    if args.is_empty() {
+        return args;
+    }
+    let stem = Path::new(&args[0])
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    if !stem.is_empty()
+        && stem != "tui-launcher"
+        && stem != "tui_launcher"
+        && !stem.starts_with("tui-launcher-")
+        && !stem.starts_with("launcher-")
+        && stem != "cargo"
+    {
+        if args.iter().any(|a| a == "--check" || a == "-C" || a == "--inspect") {
+            return args;
+        }
+        let mut global_prefix = Vec::new();
+        let mut remainder = Vec::new();
+        let mut iter = args.into_iter();
+        let exe = iter.next().unwrap();
+
+        while let Some(arg) = iter.next() {
+            if arg == "--config" || arg == "-c" || arg == "--theme" || arg == "-t" || arg == "--inspect" {
+                global_prefix.push(arg);
+                if let Some(val) = iter.next() {
+                    global_prefix.push(val);
+                }
+            } else if arg == "--check" || arg == "-C" {
+                global_prefix.push(arg);
+            } else {
+                remainder.push(arg);
+                remainder.extend(iter);
+                break;
+            }
+        }
+
+        let mut new_args = vec![exe];
+        new_args.extend(global_prefix);
+        new_args.push(stem);
+        new_args.extend(remainder);
+        return new_args;
+    }
+    args
 }
 
 impl Config {
@@ -85,7 +139,8 @@ impl Config {
 }
 
 pub(crate) fn run() -> Result<i32> {
-    let args = Args::parse();
+    let cli_args = effective_cli_args();
+    let args = Args::parse_from(cli_args);
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
     let selector = args.theme.map(theme::cli_named_theme);
     let theme_options = ThemeLoadOptions { selector };
@@ -107,6 +162,41 @@ pub(crate) fn run() -> Result<i32> {
         println!("configuration is valid: {}", config_path.display());
         return Ok(0);
     }
+
+    let inspect_target = if let Some(target) = &args.inspect {
+        Some(target.as_str())
+    } else if args.view.as_deref() == Some("inspect") {
+        let target = args
+            .view_options
+            .first()
+            .context("inspect requires a view argument, e.g. `tui-launcher inspect <view>`")?;
+        Some(target.as_str())
+    } else {
+        None
+    };
+
+    if let Some(target) = inspect_target {
+        let view_ref = config.resolve_view(target)?;
+        let view = config.view(&view_ref).context("view disappeared")?;
+        let output = serde_json::json!({
+            "view": view_ref,
+            "alias": view.alias,
+            "engine": view.selected_engine_type(),
+            "query": view.query,
+            "commands": view.commands.iter().map(|(id, cmd)| {
+                serde_json::json!({
+                    "id": id,
+                    "key": cmd.key,
+                    "label": cmd.label,
+                    "scope": cmd.scope,
+                    "requires": cmd.requires,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(0);
+    }
+
 
     let explicit_view = args.view.is_some();
     let root_view = match args.view {
