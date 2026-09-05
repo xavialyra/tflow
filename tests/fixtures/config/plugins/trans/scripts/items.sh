@@ -1,11 +1,18 @@
 #!/bin/sh
 query=${1:-{}}
-source=$(printf '%s\n' "$query" | jq -r '.source // empty' 2>/dev/null)
-target=$(printf '%s\n' "$query" | jq -r '.target // empty' 2>/dev/null)
-text=$(printf '%s\n' "$query" | jq -r '.text // empty' 2>/dev/null)
+
+# Fast path for empty text in query
+if [ -z "$query" ] || [ "$query" = "{}" ] || ! printf '%s' "$query" | grep -q '"text"[[:space:]]*:[[:space:]]*"[^"]'; then
+  printf '[]\n'
+  exit 0
+fi
+
+IFS='	' read -r source target text << EOF
+$(printf '%s' "$query" | jq -r '[(.source // ""), (.target // ""), (.text // "")] | @tsv' 2>/dev/null)
+EOF
 
 if [ -z "$text" ]; then
-  printf '%s\n' '[]'
+  printf '[]\n'
   exit 0
 fi
 

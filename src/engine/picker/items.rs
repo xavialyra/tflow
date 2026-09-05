@@ -336,6 +336,100 @@ pub(crate) trait PickerItemsLoader: Send + Sync {
     ) -> Result<ItemsResult>;
 }
 
+struct FeedLoadOutput {
+    feed_id: FeedId,
+    owner_view: String,
+    badge: Option<String>,
+    context: Option<(FeedId, FeedInstance)>,
+    value: std::result::Result<Option<Value>, String>,
+}
+
+fn load_single_feed(
+    definition: &Arc<FeedDefinition>,
+    page_view: &str,
+    page_parameters: &ParameterSnapshot,
+    binding_raw: &str,
+    runtime: &Value,
+    show_source_badge: bool,
+    cancellation: &CancellationToken,
+) -> Option<FeedLoadOutput> {
+    if cancellation.is_cancelled() || !definition.has_items() {
+        return None;
+    }
+    let feed_id = definition.feed_id.clone();
+    let owner_view = definition.owner_view.clone();
+    let badge = if show_source_badge && definition.owner_view != page_view {
+        Some(
+            definition
+                .alias
+                .as_deref()
+                .unwrap_or_else(|| {
+                    definition
+                        .owner_view
+                        .split_once(':')
+                        .map(|(p, _)| p)
+                        .unwrap_or(&definition.owner_view)
+                })
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    let instance = match FeedInstance::resolve(
+        Arc::clone(definition),
+        page_view,
+        page_parameters,
+        binding_raw,
+    ) {
+        Ok(instance) => instance,
+        Err(error) => {
+            return Some(FeedLoadOutput {
+                feed_id,
+                owner_view: owner_view.clone(),
+                badge,
+                context: None,
+                value: Err(format!("{}: {}", owner_view, error)),
+            });
+        }
+    };
+
+    let context = Some((feed_id.clone(), instance.clone()));
+    let owner_scope =
+        OwnerViewScope::new(&instance.definition.owner_view, &instance.parameters)
+            .with_binding_raw(Some(&instance.binding_raw));
+    let snapshot = EvaluationSnapshot::new(
+        InvocationScope::new(instance.definition.input_value()),
+        SessionScope::new(runtime),
+        Some(owner_scope),
+        Some(cancellation),
+    );
+    let value = match instance.definition.items_value(&snapshot) {
+        Ok(Some(value)) if ResolvedScriptSource::is_candidate(&value) => {
+            ResolvedScriptSource::parse(&value)
+                .and_then(|source| {
+                    run_items_source(
+                        &instance.definition,
+                        &instance.definition.owner_view,
+                        &source,
+                        cancellation,
+                    )
+                })
+                .map(Some)
+        }
+        value => value,
+    };
+    let value = value.map_err(|error| format!("{}: {}", owner_view, error));
+
+    Some(FeedLoadOutput {
+        feed_id,
+        owner_view,
+        badge,
+        context,
+        value,
+    })
+}
+
 pub(crate) fn load_items_for_definitions(
     definitions: &[Arc<FeedDefinition>],
     page_view: &str,
@@ -349,94 +443,73 @@ pub(crate) fn load_items_for_definitions(
         .first()
         .map_or(false, |d| d.source.source_badge(page_view));
 
-    for definition in definitions {
-        if cancellation.is_cancelled() {
-            return Ok(result);
-        }
-        if result.items.len() >= MAX_ITEMS_PER_SESSION {
-            result.errors.push(format!(
-                "items exceeded the session limit of {}",
-                MAX_ITEMS_PER_SESSION
-            ));
-            break;
-        }
-        if !definition.has_items() {
-            continue;
-        }
-        let instance = match FeedInstance::resolve(
-            Arc::clone(definition),
-            page_view,
-            page_parameters,
-            binding_raw,
-        ) {
-            Ok(instance) => instance,
-            Err(error) => {
-                result
-                    .errors
-                    .push(format!("{}: {}", definition.owner_view, error));
-                continue;
-            }
-        };
-        let feed_id = definition.feed_id.clone();
-        result.contexts.insert(feed_id.clone(), instance.clone());
-        let owner_scope =
-            OwnerViewScope::new(&instance.definition.owner_view, &instance.parameters)
-                .with_binding_raw(Some(&instance.binding_raw));
-        let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(instance.definition.input_value()),
-            SessionScope::new(runtime),
-            Some(owner_scope),
-            Some(cancellation),
-        );
-        let value = match instance.definition.items_value(&snapshot) {
-            Ok(Some(value)) if ResolvedScriptSource::is_candidate(&value) => {
-                ResolvedScriptSource::parse(&value)
-                    .and_then(|source| {
-                        run_items_source(
-                            &instance.definition,
-                            &instance.definition.owner_view,
-                            &source,
+    let outputs: Vec<Option<FeedLoadOutput>> = if definitions.len() <= 1 {
+        definitions
+            .iter()
+            .map(|definition| {
+                load_single_feed(
+                    definition,
+                    page_view,
+                    page_parameters,
+                    binding_raw,
+                    runtime,
+                    show_source_badge,
+                    cancellation,
+                )
+            })
+            .collect()
+    } else {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = definitions
+                .iter()
+                .map(|definition| {
+                    s.spawn(|| {
+                        load_single_feed(
+                            definition,
+                            page_view,
+                            page_parameters,
+                            binding_raw,
+                            runtime,
+                            show_source_badge,
                             cancellation,
                         )
                     })
-                    .map(Some)
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    };
+
+    for output in outputs.into_iter().flatten() {
+        if cancellation.is_cancelled() {
+            return Ok(result);
+        }
+        if let Some((feed_id, instance)) = output.context {
+            result.contexts.insert(feed_id, instance);
+        }
+        match output.value {
+            Ok(Some(value)) => {
+                if result.items.len() >= MAX_ITEMS_PER_SESSION {
+                    result.errors.push(format!(
+                        "items exceeded the session limit of {}",
+                        MAX_ITEMS_PER_SESSION
+                    ));
+                    break;
+                }
+                append_items_value(
+                    &mut result,
+                    &output.owner_view,
+                    &output.feed_id,
+                    output.badge.as_deref(),
+                    value,
+                    cancellation,
+                );
             }
-            value => value,
-        };
-        let value = match value {
-            Ok(Some(value)) => value,
-            Ok(None) => continue,
+            Ok(None) => {}
             Err(error) => {
-                result
-                    .errors
-                    .push(format!("{}: {}", definition.owner_view, error));
-                continue;
+                result.errors.push(error);
             }
-        };
-        let badge = if show_source_badge && definition.owner_view != page_view {
-            Some(
-                definition
-                    .alias
-                    .as_deref()
-                    .unwrap_or_else(|| {
-                        definition
-                            .owner_view
-                            .split_once(':')
-                            .map(|(p, _)| p)
-                            .unwrap_or(&definition.owner_view)
-                    }),
-            )
-        } else {
-            None
-        };
-        append_items_value(
-            &mut result,
-            &definition.owner_view,
-            &feed_id,
-            badge,
-            value,
-            cancellation,
-        );
+        }
         if cancellation.is_cancelled() {
             return Ok(result);
         }

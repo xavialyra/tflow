@@ -285,7 +285,7 @@ impl Terminal {
         if !self.active || self.screen_active {
             return Ok(());
         }
-        self.write_output(b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
+        self.write_output(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
             .context("could not resume launcher screen")?;
         self.screen_active = true;
         Ok(())

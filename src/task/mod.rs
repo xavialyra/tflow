@@ -317,6 +317,25 @@ impl TaskRuntime {
             .collect()
     }
 
+    pub(crate) fn has_active_tasks(&self) -> bool {
+        let state = self
+            .owner
+            .registry
+            .state
+            .lock()
+            .expect("task registry state was poisoned");
+        state.active.is_some() || !state.pending.is_empty()
+    }
+
+    pub(crate) fn has_pending_events(&self) -> bool {
+        !self
+            .owner
+            .events
+            .lock()
+            .expect("task event queue was poisoned")
+            .is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn cancel_all(&self) {
         self.owner.registry.cancel_all();

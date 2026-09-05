@@ -1079,9 +1079,7 @@ impl View for PickerProtocolView {
                     self.runtime.activate(self.engine_context.clone())?
                 };
                 self.map_emission(context, emission)?;
-                if restoring {
-                    self.activate_ready_work(context)?;
-                }
+                self.activate_ready_work(context)?;
                 // Lifecycle transitions are transactional in Router and may
                 // only return Stay or Invalidate. Runtime publications have
                 // already been applied to the mutable ViewContext above.
@@ -1930,8 +1928,8 @@ mod tests {
         )
         .unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
         view.event(ViewEvent::Tick, &context).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         let render_context = RenderContext::new(
             crate::view::TerminalSize {

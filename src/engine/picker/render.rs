@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct PickerRenderState {
     pub(crate) items: Arc<Vec<Item>>,
     pub(crate) selected: usize,
+    pub(crate) initial_loading: bool,
     pub(crate) searching: bool,
     pub(crate) preview_visible: bool,
     pub(crate) preview: Option<PickerPreviewRenderState>,
@@ -42,11 +43,15 @@ pub(crate) fn render_picker(
     if state.items.is_empty() {
         let text = if state.searching {
             "(searching...)"
+        } else if state.initial_loading {
+            ""
         } else {
             &state.empty_message
         };
-        let line = Line::from(Span::styled(text.to_string(), theme.picker.muted));
-        frame.render_widget(Paragraph::new(line).style(theme.picker.text), area);
+        if !text.is_empty() {
+            let line = Line::from(Span::styled(text.to_string(), theme.picker.muted));
+            frame.render_widget(Paragraph::new(line).style(theme.picker.text), area);
+        }
         return;
     }
 
@@ -178,11 +183,12 @@ impl PickerView {
         let frame = self.current();
         let empty_message = self.list_presentation();
         let results_ready = self.results_current(&frame.query);
-        let searching = self.is_loading();
-        let has_cached_items = !frame.selection.items.is_empty();
-        let retain_stale = searching && has_cached_items;
+        let in_grace_period = self.is_in_grace_period();
+        let initial_loading = !self.has_completed_initial_load();
+        let searching = self.is_loading() && !in_grace_period;
+        let should_retain = results_ready || in_grace_period;
 
-        let (items, selected) = if results_ready || retain_stale {
+        let (items, selected) = if should_retain || !frame.selection.items.is_empty() {
             (
                 Arc::clone(&frame.selection.items),
                 frame.selection.selected,
@@ -191,7 +197,7 @@ impl PickerView {
             (Arc::new(Vec::new()), 0)
         };
 
-        let preview = if results_ready || retain_stale {
+        let preview = if should_retain || self.preview_is_configured() {
             self.preview_render_state()
         } else {
             None
@@ -200,6 +206,7 @@ impl PickerView {
         PickerRenderState {
             items,
             selected,
+            initial_loading,
             searching,
             preview_visible: self.preview_visible(),
             preview,
@@ -243,15 +250,17 @@ impl crate::engine::ViewRenderer for PickerRenderer {
         let Some(state) = model.downcast_ref::<PickerRenderState>() else {
             return crate::chrome::EngineChrome::default();
         };
-        let current = if state.items.is_empty() {
-            0
+        let status = if state.items.is_empty() {
+            if state.initial_loading {
+                None
+            } else {
+                Some("0 of 0".to_string())
+            }
         } else {
-            state.selected.saturating_add(1)
+            let current = state.selected.saturating_add(1);
+            Some(format!("{current} of {}", state.items.len()))
         };
-        crate::chrome::EngineChrome::new(
-            None,
-            Some(format!("{current} of {}", state.items.len())),
-        )
+        crate::chrome::EngineChrome::new(None, status)
     }
 
     fn render(
@@ -414,6 +423,7 @@ mod tests {
         let state = PickerRenderState {
             items: Arc::new(vec![item]),
             selected: 0,
+            initial_loading: false,
             searching: false,
             preview_visible: false,
             preview: None,

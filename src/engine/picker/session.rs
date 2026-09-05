@@ -21,6 +21,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+const SEARCH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(80);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PickerOptions {
     pub(super) preview_enabled: bool,
@@ -130,10 +132,20 @@ enum ItemsTaskState {
     #[default]
     Idle,
     Prepared(ItemsRequest),
-    Running(FeedRequestIdentity),
+    Running {
+        identity: FeedRequestIdentity,
+        started_at: std::time::Instant,
+    },
 }
 
 impl ItemsTaskState {
+    fn running(identity: FeedRequestIdentity) -> Self {
+        Self::Running {
+            identity,
+            started_at: std::time::Instant::now(),
+        }
+    }
+
     fn is_loading(&self) -> bool {
         !matches!(self, Self::Idle)
     }
@@ -218,6 +230,7 @@ pub(crate) struct PickerState {
     pending_accept: Option<PendingAccept>,
     items_task_state: ItemsTaskState,
     preview_visible: bool,
+    initial_load_completed: bool,
 }
 
 #[derive(Clone)]
@@ -275,6 +288,7 @@ impl PickerView {
                 pending_accept: None,
                 items_task_state: ItemsTaskState::Idle,
                 preview_visible,
+                initial_load_completed: false,
             },
             services,
             options,
@@ -380,6 +394,32 @@ impl PickerView {
         self.frame.input_is_loading() || self.items_task_state.is_loading()
     }
 
+    pub(crate) fn is_in_grace_period(&self) -> bool {
+        match &self.items_task_state {
+            ItemsTaskState::Running { started_at, .. } => {
+                started_at.elapsed() < SEARCH_GRACE_PERIOD
+            }
+            ItemsTaskState::Prepared(_) => true,
+            ItemsTaskState::Idle => false,
+        }
+    }
+
+    pub(crate) fn has_completed_initial_load(&self) -> bool {
+        self.initial_load_completed
+    }
+
+    pub(crate) fn preview_is_configured(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn running_items_task_identity(&self) -> Option<FeedRequestIdentity> {
+        match &self.items_task_state {
+            ItemsTaskState::Running { identity, .. } => Some(identity.clone()),
+            _ => None,
+        }
+    }
+
     fn results_current_snapshot(&self, input: &str) -> bool {
         let Some(parameters) = self.parameter_snapshot.as_ref() else {
             return false;
@@ -459,7 +499,7 @@ impl PickerView {
     }
 
     fn running_items_task_matches_request(&self, identity: &FeedRequestIdentity) -> bool {
-        matches!(&self.items_task_state, ItemsTaskState::Running(running) if running == identity)
+        matches!(&self.items_task_state, ItemsTaskState::Running { identity: running, .. } if running == identity)
             && self
                 .requested_request_ref()
                 .is_some_and(|request| request.identity == *identity)
@@ -563,6 +603,7 @@ impl PickerView {
         let mut events = Vec::new();
         self.frame.input_refresh = InputRefreshState::Stable;
         self.items_task_state = ItemsTaskState::Idle;
+        self.initial_load_completed = true;
         let ItemsResponse {
             view,
             identity,
@@ -642,6 +683,7 @@ impl PickerView {
         self.frame.pending_selection = 0;
         self.frame.selection.clear();
         Arc::make_mut(&mut self.feed_instances).clear();
+        self.initial_load_completed = true;
         self.schedule_retry();
     }
 
@@ -1144,7 +1186,7 @@ impl PickerView {
         &mut self,
     ) -> Result<Option<(FeedRequestIdentity, ItemsCompletion)>> {
         let identity = match &self.items_task_state {
-            ItemsTaskState::Running(identity) => identity.clone(),
+            ItemsTaskState::Running { identity, .. } => identity.clone(),
             ItemsTaskState::Idle | ItemsTaskState::Prepared(_) => {
                 self.items_task.take();
                 self.items_completion = None;
@@ -1309,7 +1351,7 @@ impl EngineRuntime for PickerView {
             let task = self
                 .services
                 .start_items(starter, request, runtime_snapshot.clone());
-            self.items_task_state = ItemsTaskState::Running(identity);
+            self.items_task_state = ItemsTaskState::running(identity);
             self.items_task = Some(task);
         } else {
             self.items_task_state = prepared;
@@ -1520,7 +1562,7 @@ mod tests {
             .requested_identity()
             .expect("background request should have an identity")
             .clone();
-        picker.items_task_state = ItemsTaskState::Running(identity.clone());
+        picker.items_task_state = ItemsTaskState::running(identity.clone());
         let response = response_value(
             &parameters,
             identity.generation,
@@ -1569,7 +1611,7 @@ mod tests {
             .request_items("core:default", "stale", "stale", parameters.clone())
             .unwrap();
         let identity = picker.requested_identity().unwrap().clone();
-        picker.items_task_state = ItemsTaskState::Running(identity.clone());
+        picker.items_task_state = ItemsTaskState::running(identity.clone());
         let response = response_value(
             &parameters,
             identity.generation,
@@ -2416,7 +2458,7 @@ mod tests {
             .requested_identity()
             .expect("current request should have an identity")
             .clone();
-        picker.items_task_state = ItemsTaskState::Running(identity.clone());
+        picker.items_task_state = ItemsTaskState::running(identity.clone());
         picker.frame.query = "current".to_string();
         picker.frame.results = ResultsState::Ready("current".to_string());
         picker.frame.selection.replace(vec![test_item("old")]);
@@ -2589,7 +2631,7 @@ mod tests {
         );
         picker.start_prepared_work(&starter, &serde_json::json!({}));
 
-        assert_eq!(picker.items_task_state, ItemsTaskState::Running(identity));
+        assert_eq!(picker.running_items_task_identity(), Some(identity));
         assert!(picker.items_task.is_some());
         tasks.shutdown_and_wait();
     }

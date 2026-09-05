@@ -1,7 +1,13 @@
 #!/bin/sh
+query=${1:-}
+if command -v python3 >/dev/null 2>&1; then
+  if [ -f "scripts/apps.py" ]; then
+    exec python3 scripts/apps.py "$query"
+  fi
+fi
+
 command -v fzf >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' '[]'; exit 0; }
-query=${1:-}
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tui-launcher"
 cache_file="$cache_dir/desktop-apps-v3.list"
 refresh=true

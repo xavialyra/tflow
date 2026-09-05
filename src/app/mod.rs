@@ -221,7 +221,12 @@ impl App {
                     .expect("protocol terminal size lock poisoned") = size;
                 self.session.resize(size)?;
             }
-            let read = pipeline.read_normal(terminal, 50)?;
+            let poll_timeout = if self.tasks.has_active_tasks() || self.tasks.has_pending_events() {
+                5
+            } else {
+                50
+            };
+            let read = pipeline.read_normal(terminal, poll_timeout)?;
             if let Some(outcome) = self.tick_session(terminal, &mut pipeline)? {
                 return Ok(outcome);
             }
