@@ -1,4 +1,3 @@
-use super::binding::validate_bindings;
 use super::color::{ResolvedScheme, resolve_palette};
 use anyhow::Result;
 use ratatui::style::{Color, Style};
@@ -66,11 +65,9 @@ pub(crate) struct ResolvedCustomStyle {
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTheme {
     pub(crate) text: Style,
-    #[cfg(test)]
     pub(crate) muted_text: Style,
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
-    pub(crate) preview: PreviewTheme,
     pub(crate) capture: CaptureTheme,
     pub(super) scheme: ResolvedScheme,
     pub(super) palette: Arc<BTreeMap<String, Color>>,
@@ -80,9 +77,13 @@ pub(crate) struct ResolvedTheme {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChromeTheme {
+    pub(crate) text: Style,
+    pub(crate) muted_text: Style,
     pub(crate) divider: Style,
-    pub(crate) input_prefix: Style,
+    pub(crate) border: Style,
     pub(crate) footer: Style,
+    pub(crate) footer_title: Style,
+    pub(crate) footer_status: Style,
     pub(crate) footer_key: Style,
     pub(crate) error: Style,
 }
@@ -91,12 +92,14 @@ pub(crate) struct ChromeTheme {
 pub(crate) struct PickerTheme {
     pub(crate) text: Style,
     pub(crate) muted: Style,
+    pub(crate) input_prefix: Style,
     pub(crate) selected: Style,
     pub(crate) selected_muted: Style,
     pub(crate) badge: Style,
     pub(crate) badge_selected: Style,
     pub(crate) marker: Style,
     pub(crate) scrollbar: Style,
+    pub(crate) preview: PreviewTheme,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -137,65 +140,59 @@ impl ResolvedTheme {
     pub(super) fn from_raw(raw: &RawTheme, source: &str) -> Result<Self> {
         let default_raw = default_raw_theme();
         let palette = Arc::new(resolve_palette(&raw.palette, source)?);
-        validate_bindings(&raw.bindings, source)?;
         let scheme = ResolvedScheme::resolve(&palette, &raw.scheme, source)?;
 
         let resolve_component = |configured: Option<&RawStyleBinding>,
-                                 legacy_name: Option<&str>,
                                  default: &RawStyleBinding,
                                  desc: &str|
          -> Result<ResolvedCustomStyle> {
             let mut merged = default.clone();
             if let Some(conf) = configured {
                 merged = conf.merge_with(&merged);
-            } else if let Some(leg_name) = legacy_name {
-                if let Some(leg) = raw.bindings.get(leg_name) {
-                    merged = leg.to_style_binding().merge_with(&merged);
-                }
             }
             resolve_raw_style_binding(&merged, &scheme, &palette, source, desc)
         };
 
         let picker_text = resolve_component(
             raw.picker.text.as_ref(),
-            Some("picker-text"),
             default_raw.picker.text.as_ref().unwrap(),
             "picker.text",
         )?.normal;
 
         let picker_muted = resolve_component(
             raw.picker.muted.as_ref(),
-            Some("picker-muted"),
             default_raw.picker.muted.as_ref().unwrap(),
             "picker.muted",
         )?.normal;
 
         let picker_selected = resolve_component(
             raw.picker.selected.as_ref(),
-            Some("picker-selected"),
             default_raw.picker.selected.as_ref().unwrap(),
             "picker.selected",
         )?.normal;
 
         let picker_selected_muted = resolve_component(
             raw.picker.selected_muted.as_ref(),
-            Some("picker-selected-muted"),
             default_raw.picker.selected_muted.as_ref().unwrap(),
             "picker.selected_muted",
         )?.normal;
 
         let picker_marker = resolve_component(
             raw.picker.marker.as_ref(),
-            Some("picker-marker"),
             default_raw.picker.marker.as_ref().unwrap(),
             "picker.marker",
         )?.normal;
 
         let picker_scrollbar = resolve_component(
             raw.picker.scrollbar.as_ref(),
-            Some("picker-scrollbar"),
             default_raw.picker.scrollbar.as_ref().unwrap(),
             "picker.scrollbar",
+        )?.normal;
+
+        let picker_input_prefix = resolve_component(
+            raw.picker.input_prefix.as_ref(),
+            default_raw.picker.input_prefix.as_ref().unwrap(),
+            "picker.input_prefix",
         )?.normal;
 
         let badge_default = default_raw.picker.badge.as_ref().unwrap();
@@ -208,25 +205,15 @@ impl ResolvedTheme {
                 }));
             }
             m
-        } else {
+        } else if let Some(conf_sel) = raw.picker.badge_selected.as_ref() {
             let mut m = badge_default.clone();
-            if let Some(leg) = raw.bindings.get("picker-badge") {
-                m = leg.to_style_binding().merge_with(&m);
-            }
-            if let Some(leg_sel) = raw.bindings.get("picker-badge-selected") {
-                let sel_patch = leg_sel.to_style_binding();
-                m.selected = Some(Box::new(match m.selected {
-                    Some(existing) => sel_patch.merge_with(&existing),
-                    None => sel_patch,
-                }));
-            }
-            if let Some(conf_sel) = raw.picker.badge_selected.as_ref() {
-                m.selected = Some(Box::new(match m.selected {
-                    Some(existing) => conf_sel.merge_with(&existing),
-                    None => conf_sel.clone(),
-                }));
-            }
+            m.selected = Some(Box::new(match m.selected {
+                Some(existing) => conf_sel.merge_with(&existing),
+                None => conf_sel.clone(),
+            }));
             m
+        } else {
+            badge_default.clone()
         };
         let resolved_badge = resolve_raw_style_binding(
             &badge_merged,
@@ -252,85 +239,82 @@ impl ResolvedTheme {
             s
         };
 
+        let chrome_text = resolve_component(
+            raw.chrome.text.as_ref(),
+            default_raw.chrome.text.as_ref().unwrap(),
+            "chrome.text",
+        )?.normal;
+
+        let chrome_muted_text = resolve_component(
+            raw.chrome.muted_text.as_ref(),
+            default_raw.chrome.muted_text.as_ref().unwrap(),
+            "chrome.muted_text",
+        )?.normal;
+
         let chrome_divider = resolve_component(
             raw.chrome.divider.as_ref(),
-            Some("chrome-divider"),
             default_raw.chrome.divider.as_ref().unwrap(),
             "chrome.divider",
         )?.normal;
 
-        let chrome_input_prefix = resolve_component(
-            raw.chrome.input_prefix.as_ref(),
-            Some("chrome-input-prefix"),
-            default_raw.chrome.input_prefix.as_ref().unwrap(),
-            "chrome.input_prefix",
+        let chrome_border = resolve_component(
+            raw.chrome.border.as_ref(),
+            default_raw.chrome.border.as_ref().unwrap(),
+            "chrome.border",
         )?.normal;
 
         let chrome_footer = resolve_component(
             raw.chrome.footer.as_ref(),
-            Some("chrome-footer"),
             default_raw.chrome.footer.as_ref().unwrap(),
             "chrome.footer",
         )?.normal;
 
+        let chrome_footer_title = resolve_component(
+            raw.chrome.footer_title.as_ref(),
+            default_raw.chrome.footer_title.as_ref().unwrap(),
+            "chrome.footer_title",
+        )?.normal;
+
+        let chrome_footer_status = resolve_component(
+            raw.chrome.footer_status.as_ref(),
+            default_raw.chrome.footer_status.as_ref().unwrap(),
+            "chrome.footer_status",
+        )?.normal;
+
         let chrome_footer_key = resolve_component(
             raw.chrome.footer_key.as_ref(),
-            Some("chrome-footer-key"),
             default_raw.chrome.footer_key.as_ref().unwrap(),
             "chrome.footer_key",
         )?.normal;
 
         let chrome_error = resolve_component(
             raw.chrome.error.as_ref(),
-            Some("chrome-error"),
             default_raw.chrome.error.as_ref().unwrap(),
             "chrome.error",
         )?.normal;
 
         let preview_text = resolve_component(
-            raw.preview.text.as_ref(),
-            Some("preview-text"),
-            default_raw.preview.text.as_ref().unwrap(),
-            "preview.text",
+            raw.picker.preview.text.as_ref(),
+            default_raw.picker.preview.text.as_ref().unwrap(),
+            "picker.preview.text",
         )?.normal;
 
         let preview_error = resolve_component(
-            raw.preview.error.as_ref(),
-            Some("preview-error"),
-            default_raw.preview.error.as_ref().unwrap(),
-            "preview.error",
+            raw.picker.preview.error.as_ref(),
+            default_raw.picker.preview.error.as_ref().unwrap(),
+            "picker.preview.error",
         )?.normal;
 
         let preview_border = resolve_component(
-            raw.preview.border.as_ref(),
-            Some("preview-border"),
-            default_raw.preview.border.as_ref().unwrap(),
-            "preview.border",
+            raw.picker.preview.border.as_ref(),
+            default_raw.picker.preview.border.as_ref().unwrap(),
+            "picker.preview.border",
         )?.normal;
 
         let capture_text = resolve_component(
             raw.capture.text.as_ref(),
-            Some("capture-text"),
             default_raw.capture.text.as_ref().unwrap(),
             "capture.text",
-        )?.normal;
-
-        let text_default = default_raw.bindings.get("text").unwrap().to_style_binding();
-        let text = resolve_component(
-            None,
-            Some("text"),
-            &text_default,
-            "text",
-        )?.normal;
-
-        #[cfg(test)]
-        let muted_text_default = default_raw.bindings.get("muted-text").unwrap().to_style_binding();
-        #[cfg(test)]
-        let muted_text = resolve_component(
-            None,
-            Some("muted-text"),
-            &muted_text_default,
-            "muted-text",
         )?.normal;
 
         let mut raw_theme_overrides = BTreeMap::new();
@@ -352,30 +336,34 @@ impl ResolvedTheme {
         }
 
         Ok(Self {
-            text,
-            #[cfg(test)]
-            muted_text,
+            text: chrome_text,
+            muted_text: chrome_muted_text,
             chrome: ChromeTheme {
+                text: chrome_text,
+                muted_text: chrome_muted_text,
                 divider: chrome_divider,
-                input_prefix: chrome_input_prefix,
+                border: chrome_border,
                 footer: chrome_footer,
+                footer_title: chrome_footer_title,
+                footer_status: chrome_footer_status,
                 footer_key: chrome_footer_key,
                 error: chrome_error,
             },
             picker: PickerTheme {
                 text: picker_text,
                 muted: picker_muted,
+                input_prefix: picker_input_prefix,
                 selected: picker_selected,
                 selected_muted: picker_selected_muted,
                 badge: picker_badge,
                 badge_selected: picker_badge_selected,
                 marker: picker_marker,
                 scrollbar: picker_scrollbar,
-            },
-            preview: PreviewTheme {
-                text: preview_text,
-                error: preview_error,
-                border: preview_border,
+                preview: PreviewTheme {
+                    text: preview_text,
+                    error: preview_error,
+                    border: preview_border,
+                },
             },
             capture: CaptureTheme {
                 text: capture_text,
@@ -608,13 +596,9 @@ pub(super) struct RawTheme {
     #[serde(default)]
     pub(super) scheme: RawScheme,
     #[serde(default)]
-    pub(super) bindings: BTreeMap<String, RawBinding>,
-    #[serde(default)]
     pub(super) picker: RawPickerTheme,
     #[serde(default)]
     pub(super) chrome: RawChromeTheme,
-    #[serde(default)]
-    pub(super) preview: RawPreviewTheme,
     #[serde(default)]
     pub(super) capture: RawCaptureTheme,
     #[serde(default)]
@@ -628,6 +612,8 @@ pub(super) struct RawPickerTheme {
     pub(super) text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) muted: Option<RawStyleBinding>,
+    #[serde(default, alias = "input-prefix", alias = "input_prefix", alias = "prefix")]
+    pub(super) input_prefix: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) selected: Option<RawStyleBinding>,
     #[serde(default, alias = "selected-muted", alias = "selected_muted")]
@@ -640,17 +626,27 @@ pub(super) struct RawPickerTheme {
     pub(super) marker: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) scrollbar: Option<RawStyleBinding>,
+    #[serde(default)]
+    pub(super) preview: RawPreviewTheme,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawChromeTheme {
     #[serde(default)]
+    pub(super) text: Option<RawStyleBinding>,
+    #[serde(default, alias = "muted-text", alias = "muted_text")]
+    pub(super) muted_text: Option<RawStyleBinding>,
+    #[serde(default)]
     pub(super) divider: Option<RawStyleBinding>,
-    #[serde(default, alias = "input-prefix", alias = "input_prefix")]
-    pub(super) input_prefix: Option<RawStyleBinding>,
+    #[serde(default)]
+    pub(super) border: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) footer: Option<RawStyleBinding>,
+    #[serde(default, alias = "footer-title", alias = "footer_title")]
+    pub(super) footer_title: Option<RawStyleBinding>,
+    #[serde(default, alias = "footer-status", alias = "footer_status")]
+    pub(super) footer_status: Option<RawStyleBinding>,
     #[serde(default, alias = "footer-key", alias = "footer_key")]
     pub(super) footer_key: Option<RawStyleBinding>,
     #[serde(default)]
@@ -740,43 +736,6 @@ impl RawScheme {
             SchemeRole::Outline => self.outline.as_deref(),
             SchemeRole::Error => self.error.as_deref(),
             SchemeRole::OnError => self.on_error.as_deref(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawBinding {
-    #[serde(default)]
-    pub(super) foreground: Option<String>,
-    #[serde(default)]
-    pub(super) background: Option<String>,
-    #[serde(default)]
-    pub(super) bold: Option<bool>,
-    #[serde(default)]
-    pub(super) italic: Option<bool>,
-    #[serde(default)]
-    pub(super) underline: Option<bool>,
-    #[serde(default)]
-    pub(super) strikethrough: Option<bool>,
-    #[serde(default)]
-    pub(super) dim: Option<bool>,
-    #[serde(default)]
-    pub(super) reversed: Option<bool>,
-}
-
-impl RawBinding {
-    pub(super) fn to_style_binding(&self) -> RawStyleBinding {
-        RawStyleBinding {
-            foreground: self.foreground.clone(),
-            background: self.background.clone(),
-            bold: self.bold,
-            italic: self.italic,
-            underline: self.underline,
-            strikethrough: self.strikethrough,
-            dim: self.dim,
-            reversed: self.reversed,
-            selected: None,
         }
     }
 }

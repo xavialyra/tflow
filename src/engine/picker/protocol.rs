@@ -1297,7 +1297,7 @@ impl View for PickerProtocolView {
                 }
                 spans.push(Span::styled(
                     query.text[highlight.clone()].to_string(),
-                    self.theme.chrome.input_prefix,
+                    self.theme.picker.input_prefix,
                 ));
                 offset = highlight.end;
             }

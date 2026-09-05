@@ -1,4 +1,3 @@
-mod binding;
 mod color;
 mod load;
 mod model;
@@ -6,8 +5,6 @@ mod model;
 pub(crate) use load::{ThemeLoadOptions, cli_named_theme, load};
 pub(crate) use model::{RawStyleBinding, ResolvedTheme, Theme};
 
-#[cfg(test)]
-use binding::ThemeBinding;
 #[cfg(test)]
 use color::{ResolvedScheme, SchemeRole};
 #[cfg(test)]
@@ -42,30 +39,6 @@ mod tests {
         path
     }
 
-    fn resolved_binding_style(theme: &ResolvedTheme, binding: ThemeBinding) -> Style {
-        match binding {
-            ThemeBinding::Text => theme.text,
-            ThemeBinding::MutedText => theme.muted_text,
-            ThemeBinding::ChromeDivider => theme.chrome.divider,
-            ThemeBinding::ChromeInputPrefix => theme.chrome.input_prefix,
-            ThemeBinding::ChromeFooter => theme.chrome.footer,
-            ThemeBinding::ChromeFooterKey => theme.chrome.footer_key,
-            ThemeBinding::ChromeError => theme.chrome.error,
-            ThemeBinding::PickerText => theme.picker.text,
-            ThemeBinding::PickerMuted => theme.picker.muted,
-            ThemeBinding::PickerSelected => theme.picker.selected,
-            ThemeBinding::PickerSelectedMuted => theme.picker.selected_muted,
-            ThemeBinding::PickerBadge => theme.picker.badge,
-            ThemeBinding::PickerBadgeSelected => theme.picker.badge_selected,
-            ThemeBinding::PickerMarker => theme.picker.marker,
-            ThemeBinding::PickerScrollbar => theme.picker.scrollbar,
-            ThemeBinding::PreviewText => theme.preview.text,
-            ThemeBinding::PreviewError => theme.preview.error,
-            ThemeBinding::PreviewBorder => theme.preview.border,
-            ThemeBinding::CaptureText => theme.capture.text,
-        }
-    }
-
     #[test]
     fn scheme_role_names_cover_raw_and_resolved_fields() {
         let mut names = Vec::new();
@@ -85,38 +58,27 @@ mod tests {
     }
 
     #[test]
-    fn binding_names_cover_raw_and_resolved_fields() {
-        let mut names = Vec::new();
-        for &binding in ThemeBinding::ALL {
-            let name = binding.name();
-            assert!(names.iter().all(|known| *known != name));
-            names.push(name);
-            assert_eq!(ThemeBinding::parse(name), Some(binding));
-
-            let raw: RawTheme =
-                toml::from_str(&format!("[bindings.{name}]\nitalic = true\n")).unwrap();
-            let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
-            assert!(
-                resolved_binding_style(&theme, binding)
-                    .add_modifier
-                    .contains(Modifier::ITALIC),
-                "binding {name} did not resolve"
-            );
-        }
-        assert_eq!(ThemeBinding::all_names(), names.join(", "));
-    }
-
-    #[test]
     fn terminal_theme_contains_default_bindings() {
         let theme = ResolvedTheme::terminal();
 
         assert_eq!(theme.text.fg, Some(Color::Reset));
         assert_eq!(theme.text.bg, Some(Color::Reset));
-        assert_eq!(theme.chrome.input_prefix.fg, Some(Color::Cyan));
-        assert_eq!(theme.chrome.input_prefix.bg, Some(Color::Reset));
+        assert_eq!(theme.chrome.text.fg, Some(Color::Reset));
+        assert_eq!(theme.chrome.muted_text.fg, Some(Color::Reset));
+        assert_eq!(theme.chrome.border.fg, Some(Color::Reset));
+        assert_eq!(theme.chrome.footer_title.fg, Some(Color::Cyan));
         assert!(
             theme
                 .chrome
+                .footer_title
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(theme.picker.input_prefix.fg, Some(Color::Cyan));
+        assert_eq!(theme.picker.input_prefix.bg, Some(Color::Reset));
+        assert!(
+            theme
+                .picker
                 .input_prefix
                 .add_modifier
                 .contains(Modifier::BOLD)
@@ -126,10 +88,10 @@ mod tests {
         assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
         assert_eq!(theme.chrome.error.fg, Some(Color::White));
         assert_eq!(theme.chrome.error.bg, Some(Color::Red));
-        assert_eq!(theme.preview.text.fg, Some(Color::Reset));
-        assert_eq!(theme.preview.error.fg, Some(Color::White));
-        assert_eq!(theme.preview.error.bg, Some(Color::Red));
-        assert_eq!(theme.preview.border.fg, Some(Color::Reset));
+        assert_eq!(theme.picker.preview.text.fg, Some(Color::Reset));
+        assert_eq!(theme.picker.preview.error.fg, Some(Color::White));
+        assert_eq!(theme.picker.preview.error.bg, Some(Color::Red));
+        assert_eq!(theme.picker.preview.border.fg, Some(Color::Reset));
         assert_eq!(theme.capture.text.fg, Some(Color::Reset));
     }
 
@@ -151,7 +113,7 @@ mod tests {
             on-surface-variant = "palette:brand"
             outline = "palette:brand"
 
-            [bindings.picker-selected]
+            [picker.selected]
             foreground = "scheme:on-primary-container"
             background = "scheme:primary-container"
             bold = true
@@ -159,21 +121,21 @@ mod tests {
             underline = true
             strikethrough = true
 
-            [bindings.chrome-divider]
+            [chrome.divider]
             foreground = "scheme:outline"
 
-            [bindings.chrome-error]
+            [chrome.error]
             foreground = "scheme:on-error"
             background = "scheme:error"
 
-            [bindings.preview-text]
+            [picker.preview.text]
             foreground = "scheme:on-surface-variant"
 
-            [bindings.preview-error]
+            [picker.preview.error]
             foreground = "scheme:on-error"
             background = "scheme:error"
 
-            [bindings.capture-text]
+            [capture.text]
             foreground = "scheme:primary"
             "##,
         )
@@ -210,9 +172,9 @@ mod tests {
         assert_eq!(theme.text.bg, Some(Color::Rgb(242, 233, 225)));
         assert_eq!(theme.chrome.error.fg, Some(Color::White));
         assert_eq!(theme.chrome.error.bg, Some(Color::Red));
-        assert_eq!(theme.preview.text.fg, Some(Color::Rgb(16, 32, 48)));
-        assert_eq!(theme.preview.error.fg, Some(Color::White));
-        assert_eq!(theme.preview.error.bg, Some(Color::Red));
+        assert_eq!(theme.picker.preview.text.fg, Some(Color::Rgb(16, 32, 48)));
+        assert_eq!(theme.picker.preview.error.fg, Some(Color::White));
+        assert_eq!(theme.picker.preview.error.bg, Some(Color::Red));
         assert_eq!(theme.capture.text.fg, Some(Color::Rgb(16, 32, 48)));
     }
 
@@ -229,7 +191,7 @@ mod tests {
             [scheme]
             outline = "ansi:cyan"
 
-            [bindings.text]
+            [chrome.text]
             foreground = "scheme:on-primary"
             "##,
         )
@@ -254,7 +216,7 @@ mod tests {
             [scheme]
             on-surface-variant = "palette:quiet"
 
-            [bindings.picker-marker]
+            [picker.marker]
             bold = false
             "##,
         )
@@ -278,11 +240,8 @@ mod tests {
     #[test]
     fn theme_tables_reject_unknown_fields() {
         assert!(toml::from_str::<RawTheme>("[scheme]\nprimaryy = \"palette:cyan\"\n").is_err());
-
-        let raw: RawTheme =
-            toml::from_str("[bindings.unknown]\nforeground = \"scheme:primary\"\n").unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("unknown"));
+        assert!(toml::from_str::<RawTheme>("[chrome]\nunknown = {}\n").is_err());
+        assert!(toml::from_str::<RawTheme>("[picker]\nunknown = {}\n").is_err());
     }
 
     #[test]
@@ -292,7 +251,7 @@ mod tests {
         assert!(ref_error.to_string().contains("mystery"));
 
         let field_error =
-            toml::from_str::<RawTheme>("[bindings.text]\nforegroundd = \"scheme:primary\"\n")
+            toml::from_str::<RawTheme>("[chrome.text]\nforegroundd = \"scheme:primary\"\n")
                 .unwrap_err();
         assert!(field_error.to_string().contains("foregroundd"));
     }
@@ -548,47 +507,51 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bindings_fallback_and_structured_precedence() {
-        let raw_theme: RawTheme = toml::from_str(
-            r#"
-            [palette]
-            c1 = "cyan"
-            c2 = "magenta"
-
-            [scheme]
-            primary = "palette:c1"
-            outline = "palette:c2"
-
-            # Legacy binding table
-            [bindings.picker-badge]
-            foreground = "scheme:primary"
-            bold = true
-
-            [bindings.chrome-divider]
-            foreground = "scheme:outline"
-
-            # Structured table overrides legacy binding
-            [picker.badge]
-            foreground = "scheme:outline"
-            italic = true
-            "#,
-        )
-        .unwrap();
-        let theme = ResolvedTheme::from_raw(&raw_theme, "hybrid").unwrap();
-
-        // Chrome divider resolved from legacy [bindings.chrome-divider]
-        assert_eq!(theme.chrome.divider.fg, Some(Color::Magenta));
-
-        // Picker badge resolved from structured [picker.badge] with precedence over [bindings.picker-badge]
-        assert_eq!(theme.picker.badge.fg, Some(Color::Magenta));
-        assert!(theme.picker.badge.add_modifier.contains(Modifier::ITALIC));
-        assert!(!theme.picker.badge.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
     fn default_theme_badge_is_not_reversed() {
         let theme = ResolvedTheme::terminal();
         assert!(!theme.picker.badge.add_modifier.contains(Modifier::REVERSED));
         assert!(!theme.picker.badge_selected.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn picker_input_prefix_and_chrome_footer_title_resolve() {
+        let raw_theme: RawTheme = toml::from_str(
+            r#"
+            [palette]
+            accent = "yellow"
+            border_col = "green"
+            title_col = "magenta"
+            status_col = "gray"
+
+            [scheme]
+            primary = "palette:accent"
+
+            [picker.input_prefix]
+            foreground = "palette:accent"
+            bold = true
+
+            [chrome.border]
+            foreground = "palette:border_col"
+
+            [chrome.footer_title]
+            foreground = "palette:title_col"
+            bold = true
+
+            [chrome.footer_status]
+            foreground = "palette:status_col"
+            dim = true
+            "#,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw_theme, "picker_and_chrome_ext").unwrap();
+
+        assert_eq!(theme.picker.input_prefix.fg, Some(Color::Yellow));
+        assert!(theme.picker.input_prefix.add_modifier.contains(Modifier::BOLD));
+
+        assert_eq!(theme.chrome.border.fg, Some(Color::Green));
+        assert_eq!(theme.chrome.footer_title.fg, Some(Color::Magenta));
+        assert!(theme.chrome.footer_title.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(theme.chrome.footer_status.fg, Some(Color::Gray));
+        assert!(theme.chrome.footer_status.add_modifier.contains(Modifier::DIM));
     }
 }

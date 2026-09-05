@@ -55,6 +55,8 @@ impl EngineChrome {
 pub(crate) struct FooterContent {
     pub(crate) text: String,
     pub(crate) key_spans: Vec<(usize, usize)>,
+    pub(crate) title_span: Option<(usize, usize)>,
+    pub(crate) status_span: Option<(usize, usize)>,
 }
 
 impl FooterContent {
@@ -62,6 +64,8 @@ impl FooterContent {
         Self {
             text: text.into(),
             key_spans: Vec::new(),
+            title_span: None,
+            status_span: None,
         }
     }
 }
@@ -133,7 +137,7 @@ pub(super) fn footer_line(
     if width == 0 {
         return FooterContent::default();
     }
-    let left = footer_label(title, status);
+    let (left, title_span, status_span) = footer_label_spans(title, status);
     let mut visible_commands = commands.to_vec();
     let complete = command_footer(commands);
     let separator_width = 2;
@@ -190,7 +194,14 @@ pub(super) fn footer_line(
     }
     let right = command_footer(&visible_commands);
     if right.text.is_empty() {
-        return FooterContent::plain(clip(&left, width));
+        let text = clip(&left, width);
+        let visible_end = text.len();
+        return FooterContent {
+            text,
+            key_spans: Vec::new(),
+            title_span: title_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
+            status_span: status_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
+        };
     }
     if left.is_empty() {
         let right = clip_footer(&right, width);
@@ -210,6 +221,8 @@ pub(super) fn footer_line(
         let padding = width - full_width;
         let mut result = FooterContent::default();
         append_plain(&mut result, &left);
+        result.title_span = title_span;
+        result.status_span = status_span;
         append_plain(&mut result, &" ".repeat(padding));
         append_plain(&mut result, separator);
         append_content(&mut result, &right);
@@ -227,27 +240,51 @@ pub(super) fn footer_line(
         return clip_footer(&right, width);
     }
     let left = clip(&left, left_budget);
+    let visible_end = left.len();
     let used = UnicodeWidthStr::width(left.as_str())
         + separator_width
         + UnicodeWidthStr::width(right.text.as_str());
     let padding = width.saturating_sub(used);
     let mut result = FooterContent::default();
     append_plain(&mut result, &left);
+    result.title_span = title_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
+    result.status_span = status_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
     append_plain(&mut result, &" ".repeat(padding));
     append_plain(&mut result, separator);
     append_content(&mut result, &right);
     result
 }
 
-fn footer_label(title: Option<&str>, status: &str) -> String {
-    let mut parts = Vec::new();
+fn footer_label_spans(
+    title: Option<&str>,
+    status: &str,
+) -> (String, Option<(usize, usize)>, Option<(usize, usize)>) {
+    let mut text = String::new();
+    let mut title_span = None;
+    let mut status_span = None;
+
     if let Some(title) = title.filter(|title| !title.is_empty()) {
-        parts.push(title.to_string());
+        let start = text.len();
+        text.push_str(title);
+        let end = text.len();
+        title_span = Some((start, end));
     }
+
     if !status.is_empty() {
-        parts.push(status.to_string());
+        if !text.is_empty() {
+            text.push_str(" | ");
+        }
+        let start = text.len();
+        text.push_str(status);
+        let end = text.len();
+        status_span = Some((start, end));
     }
-    parts.join(" | ")
+
+    (text, title_span, status_span)
+}
+
+fn footer_label(title: Option<&str>, status: &str) -> String {
+    footer_label_spans(title, status).0
 }
 
 pub(crate) fn command_footer(commands: &[(String, String)]) -> FooterContent {
@@ -294,6 +331,16 @@ fn clip_footer(content: &FooterContent, width: usize) -> FooterContent {
                 (*start < visible_end).then_some((*start, (*end).min(visible_end)))
             })
             .collect(),
+        title_span: content
+            .title_span
+            .and_then(|(start, end)| {
+                (start < visible_end).then_some((start, end.min(visible_end)))
+            }),
+        status_span: content
+            .status_span
+            .and_then(|(start, end)| {
+                (start < visible_end).then_some((start, end.min(visible_end)))
+            }),
     }
 }
 

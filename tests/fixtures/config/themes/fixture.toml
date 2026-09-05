@@ -11,17 +11,17 @@ on-primary-container = "palette:muted"
 on-surface-variant = "palette:muted"
 outline = "ansi:magenta"
 
-[bindings.chrome-footer-key]
+[chrome.footer_key]
 foreground = "scheme:primary"
 background = "scheme:primary-container"
 bold = true
 
-[bindings.picker-selected]
+[picker.selected]
 foreground = "scheme:on-surface"
 background = "scheme:surface"
 bold = true
 
-[bindings.picker-selected-muted]
+[picker.selected_muted]
 foreground = "scheme:on-surface-variant"
 background = "scheme:surface"
 bold = true

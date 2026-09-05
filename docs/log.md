@@ -2,6 +2,13 @@
 
 This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
+## 2026-09-06
+
+- Refactored theme configuration schema and updated `custom-themes.md`:
+  - Realigned domain boundaries by moving query prefix styling from `[chrome.input_prefix]` to `[picker.input_prefix]`.
+  - Added dedicated styling slots: `[chrome.footer_title]`, `[chrome.footer_status]`, and `[chrome.border]`.
+  - Rewrote `docs/how-to/custom-themes.md` to document structured theme tables and remove obsolete/non-existent binding references.
+
 ## 2026-09-05
 
 - Initialized OKF v0.2 knowledge bundle and restructured documentation under Diátaxis framework:

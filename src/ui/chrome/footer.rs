@@ -42,17 +42,31 @@ pub(crate) fn spans_from_footer_content(
     content: &FooterContent,
     base_style: ratatui::style::Style,
     key_style: ratatui::style::Style,
+    title_style: ratatui::style::Style,
+    status_style: ratatui::style::Style,
 ) -> Vec<Span<'static>> {
+    let mut styled_intervals: Vec<((usize, usize), ratatui::style::Style)> = Vec::new();
+    if let Some((start, end)) = content.title_span {
+        styled_intervals.push(((start, end), title_style));
+    }
+    if let Some((start, end)) = content.status_span {
+        styled_intervals.push(((start, end), status_style));
+    }
+    for &(start, end) in &content.key_spans {
+        styled_intervals.push(((start, end), key_style));
+    }
+    styled_intervals.sort_by_key(|(range, _)| range.0);
+
     let mut spans = Vec::new();
     let mut cursor = 0;
-    for &(start, end) in &content.key_spans {
+    for &((start, end), style) in &styled_intervals {
         let start = start.max(cursor).min(content.text.len());
         let end = end.max(start).min(content.text.len());
         if start > cursor {
             spans.push(Span::styled(content.text[cursor..start].to_string(), base_style));
         }
         if end > start {
-            spans.push(Span::styled(content.text[start..end].to_string(), key_style));
+            spans.push(Span::styled(content.text[start..end].to_string(), style));
         }
         cursor = end;
     }
@@ -120,7 +134,13 @@ impl FooterRenderer {
         let key_style = theme.chrome.footer_key;
 
         let mut spans = vec![Span::raw(" ".repeat(self.left_padding.min(width)))];
-        let text_spans = spans_from_footer_content(&footer, footer_style, key_style);
+        let text_spans = spans_from_footer_content(
+            &footer,
+            footer_style,
+            key_style,
+            theme.chrome.footer_title,
+            theme.chrome.footer_status,
+        );
         spans.extend(text_spans);
         let used = UnicodeWidthStr::width(footer.text.as_str());
         spans.push(Span::styled(

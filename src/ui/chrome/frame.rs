@@ -422,7 +422,7 @@ fn input_spans(
     }) else {
         return vec![span(text)];
     };
-    let prefix_style = theme.chrome.input_prefix;
+    let prefix_style = theme.picker.input_prefix;
     let mut spans = Vec::new();
     if start > 0 {
         spans.push(span(text[..start].to_string()));

@@ -591,7 +591,7 @@ fn render_separator(
     frame.render_widget(
         Block::new()
             .borders(borders)
-            .border_style(theme.preview.border),
+            .border_style(theme.picker.preview.border),
         area,
     );
 }
@@ -609,7 +609,7 @@ fn render_block(
         frame.render_widget(
             Block::new()
                 .borders(Borders::TOP)
-                .border_style(theme.preview.border),
+                .border_style(theme.picker.preview.border),
             area,
         );
         return;
@@ -618,7 +618,7 @@ fn render_block(
         PreviewRenderBlockState::Empty => {}
         PreviewRenderBlockState::Text(text) => frame.render_widget(
             Paragraph::new(text.as_str())
-                .style(theme.preview.text)
+                .style(theme.picker.preview.text)
                 .wrap(Wrap { trim: false }),
             area,
         ),
@@ -631,7 +631,7 @@ fn render_block(
             } else if let Some(error) = protocols.error(key) {
                 frame.render_widget(
                     Paragraph::new(error)
-                        .style(theme.preview.error)
+                        .style(theme.picker.preview.error)
                         .wrap(Wrap { trim: false }),
                     area,
                 );
@@ -641,7 +641,7 @@ fn render_block(
             error: Some(error), ..
         } => frame.render_widget(
             Paragraph::new(error.as_str())
-                .style(theme.preview.error)
+                .style(theme.picker.preview.error)
                 .wrap(Wrap { trim: false }),
             area,
         ),
@@ -837,8 +837,8 @@ mod tests {
         let mut preview = PickerPreview::new(config);
         preview.blocks[0] = PreviewBlockState::Text("summary".to_string());
         let mut theme = Theme::terminal();
-        theme.preview.text.fg = Some(Color::Magenta);
-        theme.preview.text.bg = Some(Color::Green);
+        theme.picker.preview.text.fg = Some(Color::Magenta);
+        theme.picker.preview.text.bg = Some(Color::Green);
         let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
         let render_state = preview.render_state();
         let mut protocols = ImageProtocolCache::new();
@@ -874,8 +874,8 @@ mod tests {
             error: Some("image failed".to_string()),
         };
         let mut theme = Theme::terminal();
-        theme.preview.error.fg = Some(Color::Magenta);
-        theme.preview.error.bg = Some(Color::Green);
+        theme.picker.preview.error.fg = Some(Color::Magenta);
+        theme.picker.preview.error.bg = Some(Color::Green);
         let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
         let render_state = preview.render_state();
         let mut protocols = ImageProtocolCache::new();

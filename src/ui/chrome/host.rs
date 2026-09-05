@@ -214,13 +214,13 @@ impl ContentHost {
         if popup.width == 0 || popup.height == 0 {
             return;
         }
-        let mut block = Block::bordered();
+        let mut block = Block::bordered().border_style(theme.chrome.border);
         let title = model.location.label();
         if !title.is_empty() {
             let title_budget = (popup.width as usize).saturating_sub(4);
             let clipped = super::clip(title, title_budget);
             if !clipped.is_empty() {
-                block = block.title(format!(" {clipped} "));
+                block = block.title(Line::styled(format!(" {clipped} "), theme.chrome.footer_title));
             }
         }
 
@@ -257,7 +257,7 @@ impl ContentHost {
                 if can_show_both {
                     let status_span = ratatui::text::Span::styled(
                         format!(" {status_text} "),
-                        theme.chrome.footer,
+                        theme.chrome.footer_status,
                     );
                     block = block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
 
@@ -265,6 +265,8 @@ impl ContentHost {
                         cmd_content.as_ref().unwrap(),
                         theme.chrome.footer,
                         theme.chrome.footer_key,
+                        theme.chrome.footer_title,
+                        theme.chrome.footer_status,
                     );
                     let mut right_spans = vec![ratatui::text::Span::raw(" ")];
                     right_spans.extend(cmd_spans);
@@ -276,6 +278,8 @@ impl ContentHost {
                             cmd_content.as_ref().unwrap(),
                             theme.chrome.footer,
                             theme.chrome.footer_key,
+                            theme.chrome.footer_title,
+                            theme.chrome.footer_status,
                         )
                     } else {
                         let clipped = super::clip_footer(cmd_content.as_ref().unwrap(), bottom_width);
@@ -283,6 +287,8 @@ impl ContentHost {
                             &clipped,
                             theme.chrome.footer,
                             theme.chrome.footer_key,
+                            theme.chrome.footer_title,
+                            theme.chrome.footer_status,
                         )
                     };
                     block = block.title_bottom(Line::from(cmd_spans).alignment(Alignment::Right));
@@ -292,7 +298,7 @@ impl ContentHost {
                     if !clipped.is_empty() {
                         let status_span = ratatui::text::Span::styled(
                             format!(" {clipped} "),
-                            theme.chrome.footer,
+                            theme.chrome.footer_status,
                         );
                         block = block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
                     }
