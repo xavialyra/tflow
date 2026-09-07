@@ -2,9 +2,9 @@ use super::schema::{
     ParameterSchema, ParameterType, ViewParameterSchema, compile_parameter_schema,
     render_input_value, validate_required,
 };
-use crate::expression::{EvaluationStage, TemplateRegistry};
 use crate::input::InputSourceIdentity;
 use crate::terminal::sanitize_terminal_text;
+use crate::workflow::expression::{EvaluationStage, TemplateRegistry};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +28,6 @@ impl ParameterRegistry {
     ) -> Result<Self> {
         let workflows = config
             .get("workflows")
-            .or_else(|| config.get("plugins"))
             .and_then(Value::as_object)
             .context("configuration workflows must be an object")?;
         let mut views = BTreeMap::new();
@@ -44,7 +43,6 @@ impl ParameterRegistry {
                         EvaluationStage::Bootstrap,
                         &format!("view {view_ref:?} query schema"),
                     )?;
-
                 }
                 views.insert(
                     view_ref,
@@ -568,15 +566,12 @@ impl ParameterSnapshot {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct ParameterBinding {
     registry: Arc<ParameterRegistry>,
     view_ref: String,
     schema: ParameterSchema,
 }
-
-
 
 impl ParameterBinding {
     #[cfg(test)]
@@ -780,7 +775,7 @@ mod tests {
 
     fn config() -> Value {
         serde_json::json!({
-            "plugins": { "trans": { "views": { "default": {
+            "workflows": { "trans": { "views": { "default": {
                 "query": {
                     "type": "object",
                     "input_order": ["source", "target", "text"],
@@ -832,7 +827,7 @@ mod tests {
     #[test]
     fn cli_parses_untyped_values_using_their_declared_types() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"core": {"views": {"default": {"query": {
+            "workflows": {"core": {"views": {"default": {"query": {
                 "type":"object", "count":{"type":"integer", "default":1},
                 "enabled":{"type":"boolean", "default":false}
             }}}}}
@@ -849,7 +844,7 @@ mod tests {
 
     #[test]
     fn plain_query_is_still_implicit() {
-        let config = serde_json::json!({"plugins":{"core":{"views":{"default":{}}}}});
+        let config = serde_json::json!({"workflows":{"core":{"views":{"default":{}}}}});
         let registry = ParameterRegistry::compile(&config).unwrap();
         let mut state = registry.instantiate("core:default").unwrap();
         registry.update_input(&mut state, "needle").unwrap();
@@ -860,7 +855,7 @@ mod tests {
     fn unknown_view_binding_keeps_implicit_plain_cli_behavior() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"core": {"views": {"default": {}}}}
+                "workflows": {"core": {"views": {"default": {}}}}
             }))
             .unwrap(),
         );
@@ -884,7 +879,7 @@ mod tests {
     fn sanitizing_plain_empty_values_is_a_noop_for_implicit_and_configured_queries() {
         let implicit_registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"core": {"views": {"default": {}}}}
+                "workflows": {"core": {"views": {"default": {}}}}
             }))
             .unwrap(),
         );
@@ -902,7 +897,7 @@ mod tests {
 
         let configured_registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"core": {"views": {"default": {
+                "workflows": {"core": {"views": {"default": {
                     "query": {"type": "string"}
                 }}}}
             }))
@@ -925,7 +920,7 @@ mod tests {
     fn sanitizing_terminal_controls_updates_typed_values_once() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"core": {"views": {"default": {
+                "workflows": {"core": {"views": {"default": {
                     "query": {"type": "string"}
                 }}}}
             }))
@@ -952,7 +947,7 @@ mod tests {
     fn sanitizing_nested_objects_preserves_keys_and_entries() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"data": {"views": {"default": {
+                "workflows": {"data": {"views": {"default": {
                     "query": {
                         "type": "object",
                         "payload": {"type": "object", "default": {}}
@@ -989,7 +984,7 @@ mod tests {
     #[test]
     fn instance_validation_checks_required_fields_outside_input_order() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"apps": {"views": {"default": {"query": {
+            "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": [],
                 "token": {"type": "string"}
@@ -1006,7 +1001,7 @@ mod tests {
     #[test]
     fn initial_input_allows_missing_required_fields_but_user_input_does_not() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"apps": {"views": {"default": {"query": {
+            "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": ["visible"],
                 "visible": {"type": "string", "default": ""},
@@ -1025,11 +1020,10 @@ mod tests {
         assert!(error.to_string().contains("--token is required"));
     }
 
-
     #[test]
     fn feed_binding_rejects_nonempty_input_without_ordered_fields() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"apps": {"views": {"default": {"query": {
+            "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": [],
                 "token": {"type": "string", "default": "fixed"}
@@ -1051,9 +1045,9 @@ mod tests {
     }
 
     #[test]
-    fn nullable_and_json_fields_keep_the_legacy_input_projection() {
+    fn nullable_and_json_fields_keep_the_canonical_input_projection() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
+            "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": ["maybe", "items", "object"],
                 "maybe": {"type": "string", "nullable": true},
@@ -1078,7 +1072,7 @@ mod tests {
     #[test]
     fn interactive_input_rejects_array_and_object_fields_with_json_error() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
+            "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": ["items"],
                 "items": {"type": "array<string>", "default": []}
@@ -1092,7 +1086,7 @@ mod tests {
         assert!(format!("{error:#}").contains("array<string> input requires JSON"));
 
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
+            "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": ["object"],
                 "object": {"type": "object", "default": {}}
@@ -1109,7 +1103,7 @@ mod tests {
     #[test]
     fn nullable_empty_input_token_remains_an_empty_string() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
+            "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
                 "input_order": ["maybe", "other"],
                 "maybe": {"type": "string", "nullable": true},
@@ -1125,7 +1119,7 @@ mod tests {
     #[test]
     fn typed_json_input_still_accepts_array_and_object_fields() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {"query": {
+            "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
                 "items": {"type": "array<string>"},
                 "object": {"type": "object"}
@@ -1159,11 +1153,10 @@ mod tests {
         );
     }
 
-
     #[test]
     fn state_from_snapshot_rejects_non_string_plain_values() {
         let registry =
-            Arc::new(ParameterRegistry::compile(&serde_json::json!({"plugins": {}})).unwrap());
+            Arc::new(ParameterRegistry::compile(&serde_json::json!({"workflows": {}})).unwrap());
         let binding = registry.parameter_binding("unknown:view").unwrap();
 
         for value in [
@@ -1188,7 +1181,7 @@ mod tests {
     fn state_from_snapshot_preserves_structured_typed_values_without_text_parsing() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"data": {"views": {"default": {"query": {
+                "workflows": {"data": {"views": {"default": {"query": {
                     "type": "object",
                     "items": {"type": "array<string>"},
                     "metadata": {"type": "object"}
@@ -1220,7 +1213,7 @@ mod tests {
     fn initial_parameter_snapshot_allows_missing_required_fields() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
-                "plugins": {"apps": {"views": {"default": {"query": {
+                "workflows": {"apps": {"views": {"default": {"query": {
                     "type": "object",
                     "input_order": ["visible"],
                     "visible": {"type": "string", "default": ""},
@@ -1249,7 +1242,7 @@ mod tests {
     #[test]
     fn parameter_snapshot_carries_mount_identity_and_committed_raw_input() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
-            "plugins": {"data": {"views": {"default": {}}}}
+            "workflows": {"data": {"views": {"default": {}}}}
         }))
         .unwrap();
         let state = registry.instantiate("data:default").unwrap();

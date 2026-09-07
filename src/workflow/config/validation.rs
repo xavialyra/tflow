@@ -1,8 +1,8 @@
 use super::{
-    CommandAction, CommandBindingVisibility, Config, Defaults, ScriptSourceSpec, View, ViewRef,
-    validate_script_source_args,
+    CommandAction, CommandBindingVisibility, CompiledConfig, Defaults, ScriptSourceSpec, View,
+    ViewRef, validate_script_source_args,
 };
-use crate::expression::{EvaluationStage, Template, TemplateRegistry, is_dynamic_string};
+use crate::workflow::expression::{EvaluationStage, Template, TemplateRegistry, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, path::Path};
 pub(crate) trait EngineConfigValidator {
     fn validate_defaults(&self, defaults: &Defaults) -> Result<()>;
     fn validate_view(&self, name: &str, view: &View, script_root: Option<&Path>) -> Result<()>;
-    fn validate_relations(&self, config: &Config) -> Result<()>;
+    fn validate_relations(&self, config: &CompiledConfig) -> Result<()>;
 }
 
 pub(super) fn validate_json_requirements(
@@ -140,7 +140,12 @@ pub(super) fn validate_command_action_requirements(
         CommandAction::Run { .. } => {
             let payload = action.run_payload().unwrap_or_default();
             if let Some(handler) = &payload.handler {
-                validate(handler, &format!("{consumer} handler"), stage)?;
+                validate_run_handler_requirements(
+                    templates,
+                    handler,
+                    stage,
+                    &format!("{consumer} handler"),
+                )?;
             }
             if let Some(args) = &payload.args {
                 validate(args, &format!("{consumer} args"), stage)?;
@@ -206,6 +211,19 @@ pub(super) fn validate_command_action_requirements(
         }
     }
     Ok(())
+}
+
+fn validate_run_handler_requirements(
+    templates: &TemplateRegistry,
+    handler: &toml::Value,
+    stage: EvaluationStage,
+    consumer: &str,
+) -> Result<()> {
+    let mut handler = handler.clone();
+    if let Some(handler) = handler.as_table_mut() {
+        handler.remove("script");
+    }
+    validate_toml_requirements(templates, &handler, stage, consumer)
 }
 
 #[allow(dead_code)]
@@ -360,7 +378,7 @@ fn validate_result_handler(
         return Ok(());
     }
     let root =
-        script_root.with_context(|| format!("{} result handler has no plugin root", owner))?;
+        script_root.with_context(|| format!("{} result handler has no workflow root", owner))?;
     let path = Path::new(handler);
     if handler.trim().is_empty()
         || path.is_absolute()
@@ -398,7 +416,7 @@ pub(crate) fn validate_templates(value: &toml::Value) -> Result<()> {
     Ok(())
 }
 
-impl Config {
+impl CompiledConfig {
     pub(crate) fn validate_with_engines<V>(&self, engines: &V) -> Result<()>
     where
         V: EngineConfigValidator,
@@ -406,25 +424,29 @@ impl Config {
         if let Some(default_view) = &self.default_view {
             self.engine(default_view)?;
         }
+        let defaults = &self.defaults;
+        let template_registry = &self.template_registry;
+        let workflows = &self.workflows;
+        let views = &self.views;
 
-        engines.validate_defaults(&self.compiled.defaults)?;
-        if let Some(bindings) = &self.compiled.defaults.picker.bindings {
+        engines.validate_defaults(defaults)?;
+        if let Some(bindings) = &defaults.picker.bindings {
             validate_toml_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 bindings,
                 EvaluationStage::Operation,
                 "root picker defaults",
             )?;
         }
-        if let Some(bindings) = &self.compiled.defaults.capture.bindings {
+        if let Some(bindings) = &defaults.capture.bindings {
             validate_toml_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 bindings,
                 EvaluationStage::Operation,
                 "root capture defaults",
             )?;
         }
-        for (package_id, workflow) in &self.compiled.workflows {
+        for (package_id, workflow) in workflows {
             if workflow.name.trim().is_empty() {
                 bail!("workflow {:?} has an empty name", package_id);
             }
@@ -456,13 +478,13 @@ impl Config {
                 .visibility(id)
                 .with_context(|| format!("session command binding {id:?} has no visibility"))?;
             validate_string_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 key_source,
                 EvaluationStage::Bootstrap,
                 &format!("session command binding {id:?} key"),
             )?;
             validate_string_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 label,
                 EvaluationStage::Bootstrap,
                 &format!("session command binding {id:?} label"),
@@ -483,12 +505,12 @@ impl Config {
                 self.default_view.as_deref().unwrap_or("<root>"),
                 &format!("session:command:{id}"),
                 &action,
-                &self.compiled.views,
+                &views,
                 None,
                 0,
             )?;
             validate_command_action_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 &action,
                 EvaluationStage::Operation,
                 &format!("session command binding {id:?}"),
@@ -500,7 +522,7 @@ impl Config {
         }
 
         let mut aliases = BTreeMap::<&str, &str>::new();
-        for (view_ref, view) in &self.compiled.views {
+        for (view_ref, view) in views {
             validate_view_ref(view_ref)?;
             if let Some(alias) = &view.alias {
                 if alias.trim().is_empty()
@@ -519,11 +541,11 @@ impl Config {
                 }
             }
             let items = view.selected_items();
-            engines.validate_view(view_ref, view, self.plugin_root(view_ref))?;
+            engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
             self.validate_view_operation_requirements(view_ref, view)?;
             if let Some(items) = items {
                 validate_toml_requirements(
-                    &self.compiled.template_registry,
+                    &template_registry,
                     items,
                     EvaluationStage::Operation,
                     &format!("view {view_ref:?} items"),
@@ -550,8 +572,8 @@ impl Config {
                     view_ref,
                     command_id,
                     &command.action,
-                    &self.compiled.views,
-                    self.plugin_root(view_ref),
+                    &views,
+                    self.workflow_root(view_ref),
                     0,
                 )?;
             }
@@ -562,9 +584,10 @@ impl Config {
     }
 
     fn validate_view_operation_requirements(&self, view_ref: &str, view: &View) -> Result<()> {
+        let template_registry = &self.template_registry;
         for (field, value) in view.selected_engine_config() {
             validate_toml_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 value,
                 EvaluationStage::Operation,
                 &format!("view {view_ref:?} engine field {field:?}"),
@@ -572,21 +595,21 @@ impl Config {
         }
         if let Some(keymap) = &view.keymap {
             validate_toml_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 keymap,
                 EvaluationStage::Operation,
                 &format!("view {view_ref:?} keymap"),
             )?;
         }
         validate_optional_string_requirements(
-            &self.compiled.template_registry,
+            &template_registry,
             view.run_shell.as_deref(),
             EvaluationStage::Operation,
             &format!("view {view_ref:?} run_shell"),
         )?;
         for (command_id, command) in &view.commands {
             validate_command_action_requirements(
-                &self.compiled.template_registry,
+                &template_registry,
                 &command.action,
                 EvaluationStage::Operation,
                 &format!("view {view_ref:?} command {command_id:?}"),
@@ -598,10 +621,10 @@ impl Config {
 }
 
 fn validate_view_ref(view_ref: &str) -> Result<()> {
-    let Some((plugin, view)) = view_ref.split_once(':') else {
-        bail!("view reference {:?} must use plugin:view form", view_ref);
+    let Some((workflow, view)) = view_ref.split_once(':') else {
+        bail!("view reference {:?} must use workflow:view form", view_ref);
     };
-    if plugin.is_empty() || view.is_empty() || view.contains(':') {
+    if workflow.is_empty() || view.is_empty() || view.contains(':') {
         bail!("invalid view reference {:?}", view_ref);
     }
     Ok(())

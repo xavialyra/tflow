@@ -5,7 +5,7 @@
 //! cursor, completion, or item list.
 
 use super::{FooterContent, clip_footer, footer_line};
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use crate::view::{BindingSet, ViewLocation};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -33,7 +33,8 @@ impl FooterModel {
                 Some((binding.key.binding_name()?, binding.label.as_ref()?.clone()))
             })
             .collect::<Vec<_>>();
-        commands.sort_by(|left, right| crate::command::compare_bindings(&left.0, &right.0));
+        commands
+            .sort_by(|left, right| crate::workflow::command::compare_bindings(&left.0, &right.0));
         commands
     }
 }
@@ -63,7 +64,10 @@ pub(crate) fn spans_from_footer_content(
         let start = start.max(cursor).min(content.text.len());
         let end = end.max(start).min(content.text.len());
         if start > cursor {
-            spans.push(Span::styled(content.text[cursor..start].to_string(), base_style));
+            spans.push(Span::styled(
+                content.text[cursor..start].to_string(),
+                base_style,
+            ));
         }
         if end > start {
             spans.push(Span::styled(content.text[start..end].to_string(), style));
@@ -92,18 +96,13 @@ impl Default for FooterRenderer {
 }
 
 impl FooterRenderer {
-    pub(crate) fn render(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        model: &FooterModel,
-        theme: &Theme,
-    ) {
+    pub(crate) fn render(&self, frame: &mut Frame, area: Rect, model: &FooterModel, theme: &Theme) {
         if area.width == 0 || area.height == 0 {
             return;
         }
         let width = area.width as usize;
-        let footer_width = width.saturating_sub(self.left_padding.saturating_add(self.right_padding));
+        let footer_width =
+            width.saturating_sub(self.left_padding.saturating_add(self.right_padding));
         let is_error = model.error.is_some();
         let footer = if let Some(error) = &model.error {
             FooterContent::plain(error)
@@ -155,12 +154,7 @@ impl FooterRenderer {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    pub(crate) fn render_blank(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        theme: &Theme,
-    ) {
+    pub(crate) fn render_blank(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if area.width == 0 || area.height == 0 {
             return;
         }

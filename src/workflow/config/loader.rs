@@ -1,5 +1,5 @@
 use super::{
-    Config, RawConfig, WorkflowHeader,
+    CompiledConfig, RawConfig, WorkflowHeader,
     normalize::{
         normalize_engine_configs, normalize_keymap_tables, normalize_view_keymaps,
         remove_disabled_workflows,
@@ -25,7 +25,7 @@ impl LoadedConfig {
         self.theme_selector.as_deref()
     }
 
-    pub(crate) fn compile(self) -> Result<Config> {
+    pub(crate) fn compile(self) -> Result<CompiledConfig> {
         let LoadedConfig {
             raw,
             mut merged,
@@ -40,14 +40,14 @@ impl LoadedConfig {
         let mut config_value = super::toml_to_json(&merged)
             .context("merged configuration cannot be represented as JSON")?;
         normalize_engine_configs(&mut config_value);
-        let mut config = Config::from_raw(raw, workflow_roots, config_value)
+        let mut config = CompiledConfig::from_raw(raw, workflow_roots, config_value)
             .context("could not compile dynamic configuration values")?;
         config.log_file = log_file;
         Ok(config)
     }
 }
 
-impl Config {
+impl CompiledConfig {
     pub(crate) fn load_unvalidated(user_path: &Path) -> Result<LoadedConfig> {
         let user_source = fs::read_to_string(user_path)
             .with_context(|| format!("could not read config {}", user_path.display()))?;
@@ -57,7 +57,6 @@ impl Config {
         let disabled_workflows = disabled_workflows(Some(&user_config))?;
         if let Some(table) = user_config.as_table_mut() {
             table.remove("disabled_workflows");
-            table.remove("disabled_plugins");
         }
         remove_disabled_workflows(&mut user_config, &disabled_workflows);
         normalize_keymap_tables(&mut user_config)
@@ -108,10 +107,7 @@ pub(super) fn disabled_workflows(user_config: Option<&toml::Value>) -> Result<BT
         return Ok(disabled);
     };
 
-    if let Some(value) = table
-        .get("disabled_workflows")
-        .or_else(|| table.get("disabled_plugins"))
-    {
+    if let Some(value) = table.get("disabled_workflows") {
         let entries = value
             .as_array()
             .with_context(|| "disabled_workflows must be an array of workflow IDs")?;

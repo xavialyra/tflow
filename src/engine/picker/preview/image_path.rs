@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-pub(crate) fn resolve(plugin_root: Option<&Path>, path: &str) -> PathBuf {
+pub(crate) fn resolve(workflow_root: Option<&Path>, path: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let path = expand_home(home.as_deref(), path);
     if path.is_absolute() {
         path
-    } else if let Some(root) = plugin_root {
+    } else if let Some(root) = workflow_root {
         root.join(path)
     } else {
         path
@@ -43,10 +43,10 @@ mod tests {
     }
 
     #[test]
-    fn resolves_relative_paths_from_plugin_root() {
+    fn resolves_relative_paths_from_workflow_root() {
         assert_eq!(
-            resolve(Some(Path::new("/plugins/images")), "cover.png"),
-            Path::new("/plugins/images/cover.png")
+            resolve(Some(Path::new("/workflows/images")), "cover.png"),
+            Path::new("/workflows/images/cover.png")
         );
     }
 }

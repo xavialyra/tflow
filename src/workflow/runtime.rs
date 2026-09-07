@@ -65,7 +65,8 @@ mod tests {
     #[test]
     fn apply_pointer_updates_nested_values() {
         let root = serde_json::json!({"view": {"current": {"input": "old"}}});
-        let updated = apply_pointer(&root, "/view/current/input", serde_json::json!("new")).unwrap();
+        let updated =
+            apply_pointer(&root, "/view/current/input", serde_json::json!("new")).unwrap();
         assert_eq!(updated["view"]["current"]["input"], "new");
     }
 }

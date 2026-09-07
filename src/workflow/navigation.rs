@@ -1,4 +1,4 @@
-use crate::config::{Config, ViewRef};
+use crate::workflow::config::{CompiledConfig, ViewRef};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
@@ -25,7 +25,7 @@ impl RouteDisplay {
 pub(crate) struct ViewCandidate {
     pub(crate) view_ref: ViewRef,
     pub(crate) alias: Option<String>,
-    pub(crate) plugin_name: String,
+    pub(crate) workflow_name: String,
     pub(crate) engine_type: String,
 }
 
@@ -38,7 +38,7 @@ pub(crate) struct Router {
 }
 
 impl Router {
-    pub(crate) fn new(config: &Config) -> Self {
+    pub(crate) fn new(config: &CompiledConfig) -> Self {
         let views = config
             .iter_views()
             .map(|(view_ref, _)| view_ref.clone())
@@ -47,13 +47,13 @@ impl Router {
         let mut display = BTreeMap::new();
         let mut candidates = Vec::with_capacity(config.view_count());
         for (view_ref, view) in config.iter_views() {
-            let plugin = view_ref
+            let workflow = view_ref
                 .split_once(':')
-                .map(|(plugin, _)| plugin)
+                .map(|(workflow, _)| workflow)
                 .unwrap_or(view_ref);
-            let plugin_name = config
-                .plugin_display_name(plugin)
-                .unwrap_or(plugin)
+            let workflow_name = config
+                .workflow_display_name(workflow)
+                .unwrap_or(workflow)
                 .to_string();
             if let Some(alias) = &view.alias {
                 aliases.insert(alias.clone(), view_ref.clone());
@@ -68,7 +68,7 @@ impl Router {
             candidates.push(ViewCandidate {
                 view_ref: view_ref.clone(),
                 alias: view.alias.clone(),
-                plugin_name,
+                workflow_name,
                 engine_type: view.selected_engine_type().to_string(),
             });
         }
@@ -165,8 +165,8 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<u8> {
         .unwrap_or_default()
         .to_lowercase();
     let view_ref = candidate.view_ref.to_lowercase();
-    let plugin_name = candidate.plugin_name.to_lowercase();
-    let fields = [&alias, &view_ref, &plugin_name];
+    let workflow_name = candidate.workflow_name.to_lowercase();
+    let fields = [&alias, &view_ref, &workflow_name];
     if !query
         .split_whitespace()
         .all(|token| fields.iter().any(|field| field.contains(token)))
@@ -182,7 +182,7 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<u8> {
         2
     } else if view_ref.starts_with(query) {
         3
-    } else if plugin_name.starts_with(query) {
+    } else if workflow_name.starts_with(query) {
         4
     } else if alias.contains(query) {
         5
@@ -210,7 +210,9 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ENGINE_PICKER, EngineOptions, EngineSpec, PluginMetadata, View};
+    use crate::workflow::config::{
+        ENGINE_PICKER, EngineOptions, EngineSpec, View, WorkflowMetadata,
+    };
     use serde_json::Value;
     use std::collections::BTreeMap;
 
@@ -229,8 +231,8 @@ mod tests {
         }
     }
 
-    fn config() -> Config {
-        Config::test_new(
+    fn config() -> CompiledConfig {
+        CompiledConfig::test_new(
             Some("core:default".to_string()),
             BTreeMap::from([
                 ("core:default".to_string(), view(None)),
@@ -240,14 +242,14 @@ mod tests {
             BTreeMap::from([
                 (
                     "core".to_string(),
-                    PluginMetadata {
+                    WorkflowMetadata {
                         name: "core".to_string(),
                         ..Default::default()
                     },
                 ),
                 (
                     "package-a".to_string(),
-                    PluginMetadata {
+                    WorkflowMetadata {
                         name: "template".to_string(),
                         ..Default::default()
                     },
@@ -300,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_searches_aliases_references_and_plugin_names() {
+    fn completion_searches_aliases_references_and_workflow_names() {
         let router = Router::new(&config());
         assert_eq!(
             router.complete_views("det", "core:default")[0].view_ref,
@@ -321,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_plugin_id_does_not_expand_to_default() {
+    fn plain_workflow_id_does_not_expand_to_default() {
         let router = Router::new(&config());
         assert_eq!(
             router.resolve("core:default", "package-a query"),

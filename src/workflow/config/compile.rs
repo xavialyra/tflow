@@ -1,9 +1,9 @@
 use super::{
-    CommandBinding, CompiledConfig, Config, Defaults, ENGINE_PICKER, FeedSpec, ParameterState,
-    RawConfig, View, ViewRef, WorkflowMetadata,
+    CommandBinding, CompiledConfig, Defaults, ENGINE_PICKER, FeedSpec, RawConfig, View, ViewRef,
+    WorkflowMetadata,
 };
-use crate::expression::{EvaluationStage, TemplateRegistry, is_dynamic_string};
-use crate::parameter::ParameterRegistry;
+use crate::workflow::expression::{EvaluationStage, TemplateRegistry, is_dynamic_string};
+use crate::workflow::parameter::ParameterRegistry;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{
@@ -28,14 +28,19 @@ impl CompiledConfig {
         } else {
             config_value.clone()
         };
-        let template_registry = TemplateRegistry::compile_json_tree(&template_value)?;
+        let template_registry =
+            TemplateRegistry::compile_json_tree(&template_registry_value(template_value))?;
         validate_view_bootstrap_requirements(&views, &template_registry)?;
-        let parameter_registry = if config_value.get("workflows").is_some() || config_value.get("plugins").is_some() {
+        let parameter_registry = if config_value.get("workflows").is_some() {
             ParameterRegistry::compile_with_templates(&config_value, &template_registry)?
         } else {
             ParameterRegistry::default()
         };
         Ok(Self {
+            default_view: None,
+            image_protocol: super::ImageProtocol::default(),
+            log_file: None,
+            commands: super::CommandConfig::default(),
             views,
             workflows,
             defaults,
@@ -47,6 +52,49 @@ impl CompiledConfig {
     }
 }
 
+/// Inline run scripts are executable source, not dynamic configuration. Their
+/// contents are deliberately omitted from the template registry because command
+/// preparation passes them to the script runner verbatim.
+fn template_registry_value(mut value: Value) -> Value {
+    exclude_run_script_bodies(&mut value);
+    value
+}
+
+fn exclude_run_script_bodies(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                exclude_run_script_bodies(value);
+            }
+        }
+        Value::Object(values) => {
+            if values.get("type").and_then(Value::as_str) == Some("run") {
+                values.remove("script");
+                if let Some(payload) = values.get_mut("payload").and_then(Value::as_object_mut) {
+                    payload.remove("script");
+                    // A run handler's `script` field is also executable source
+                    // when its source resolves to `inline`.
+                    if let Some(handler) = payload.get_mut("handler") {
+                        exclude_run_handler_script_body(handler);
+                    }
+                }
+                if let Some(handler) = values.get_mut("handler") {
+                    exclude_run_handler_script_body(handler);
+                }
+            }
+            for value in values.values_mut() {
+                exclude_run_script_bodies(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn exclude_run_handler_script_body(handler: &mut Value) {
+    if let Some(handler) = handler.as_object_mut() {
+        handler.remove("script");
+    }
+}
 
 fn validate_view_bootstrap_requirements(
     views: &BTreeMap<ViewRef, View>,
@@ -101,7 +149,7 @@ fn validate_view_bootstrap_requirements(
     Ok(())
 }
 
-impl Config {
+impl CompiledConfig {
     pub(super) fn from_raw(
         mut raw: RawConfig,
         workflow_roots: BTreeMap<ViewRef, PathBuf>,
@@ -149,9 +197,13 @@ impl Config {
             image_protocol: raw.image_protocol,
             log_file: raw.log_file,
             commands: raw.commands,
-            input_value: Value::Null,
-            invocation_parameters: ParameterState::default(),
-            compiled,
+            views: compiled.views,
+            workflows: compiled.workflows,
+            defaults: compiled.defaults,
+            workflow_roots: compiled.workflow_roots,
+            config_value: compiled.config_value,
+            template_registry: compiled.template_registry,
+            parameter_registry: compiled.parameter_registry,
         })
     }
 
@@ -182,9 +234,13 @@ impl Config {
             image_protocol: super::ImageProtocol::default(),
             log_file: None,
             commands,
-            input_value: Value::Null,
-            invocation_parameters: ParameterState::default(),
-            compiled,
+            views: compiled.views,
+            workflows: compiled.workflows,
+            defaults: compiled.defaults,
+            workflow_roots: compiled.workflow_roots,
+            config_value: compiled.config_value,
+            template_registry: compiled.template_registry,
+            parameter_registry: compiled.parameter_registry,
         })
     }
 
@@ -195,13 +251,20 @@ impl Config {
 
     #[cfg(test)]
     pub(crate) fn test_rebuild_compiled(&mut self) -> Result<()> {
-        self.compiled = CompiledConfig::build(
-            self.compiled.views.clone(),
-            self.compiled.workflows.clone(),
-            self.compiled.defaults.clone(),
-            self.compiled.workflow_roots.clone(),
-            self.compiled.config_value.clone(),
+        let rebuilt = CompiledConfig::build(
+            self.views.clone(),
+            self.workflows.clone(),
+            self.defaults.clone(),
+            self.workflow_roots.clone(),
+            self.config_value.clone(),
         )?;
+        self.views = rebuilt.views;
+        self.workflows = rebuilt.workflows;
+        self.defaults = rebuilt.defaults;
+        self.workflow_roots = rebuilt.workflow_roots;
+        self.config_value = rebuilt.config_value;
+        self.template_registry = rebuilt.template_registry;
+        self.parameter_registry = rebuilt.parameter_registry;
         Ok(())
     }
 }
@@ -230,15 +293,11 @@ fn views_config_value(
             .context("test workflow views must be an object")?;
         views.insert(name.to_string(), serde_json::to_value(view)?);
     }
-    let mut value = serde_json::json!({
-        "workflows": workflow_values,
-        "plugins": workflow_values
-    });
+    let mut value = serde_json::json!({"workflows": workflow_values});
     remove_null_fields(&mut value);
     super::normalize::normalize_engine_configs(&mut value);
     Ok(value)
 }
-
 
 fn remove_null_fields(value: &mut Value) {
     match value {
@@ -312,13 +371,17 @@ fn expand_feed_patterns(views: &mut BTreeMap<ViewRef, View>) -> Result<()> {
     Ok(())
 }
 
-fn qualify_view_ref(plugin: &str, view: &str) -> Result<ViewRef> {
-    if plugin.trim().is_empty()
+fn qualify_view_ref(workflow: &str, view: &str) -> Result<ViewRef> {
+    if workflow.trim().is_empty()
         || view.trim().is_empty()
-        || plugin.contains(':')
+        || workflow.contains(':')
         || view.contains(':')
     {
-        bail!("invalid view reference components {:?}:{:?}", plugin, view);
+        bail!(
+            "invalid view reference components {:?}:{:?}",
+            workflow,
+            view
+        );
     }
-    Ok(format!("{}:{}", plugin, view))
+    Ok(format!("{}:{}", workflow, view))
 }

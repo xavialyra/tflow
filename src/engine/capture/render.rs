@@ -1,4 +1,4 @@
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
@@ -30,16 +30,16 @@ impl crate::engine::ViewRenderer for CaptureRenderer {
         Ok(())
     }
 
-    fn chrome(&self, model: &crate::engine::RenderModel) -> crate::chrome::EngineChrome {
+    fn chrome(&self, model: &crate::engine::RenderModel) -> crate::ui::chrome::EngineChrome {
         let Some(model) = model.downcast_ref::<super::CaptureRenderModel>() else {
-            return crate::chrome::EngineChrome::default();
+            return crate::ui::chrome::EngineChrome::default();
         };
         let status = if model.status.is_empty() {
             None
         } else {
             Some(model.status.clone())
         };
-        crate::chrome::EngineChrome::new(status)
+        crate::ui::chrome::EngineChrome::new(status)
     }
 
     fn render(

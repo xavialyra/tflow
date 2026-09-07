@@ -345,27 +345,31 @@ mod tests {
     fn raw_colors_in_styles_are_rejected() {
         let raw: RawTheme = toml::from_str(
             r##"
-            [plugins.git.styles.branch]
+            [workflows.git.styles.branch]
             foreground = "#ff0000"
             "##,
         )
         .unwrap();
         let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"));
+        assert!(error.to_string().contains(
+            "must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
+        ));
 
         let raw2: RawTheme = toml::from_str(
             r#"
-            [plugins.git.styles.branch]
+            [workflows.git.styles.branch]
             foreground = "red"
             "#,
         )
         .unwrap();
         let error2 = ResolvedTheme::from_raw(&raw2, "test theme").unwrap_err();
-        assert!(error2.to_string().contains("must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"));
+        assert!(error2.to_string().contains(
+            "must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
+        ));
     }
 
     #[test]
-    fn plugin_styles_and_theme_overrides_with_selected_state() {
+    fn workflow_styles_and_theme_overrides_with_selected_state() {
         use crate::engine::SlotToken;
 
         let raw_theme: RawTheme = toml::from_str(
@@ -379,21 +383,21 @@ mod tests {
             primary = "palette:accent-blue"
             primary-container = "palette:selection-bg"
 
-            [plugins.git.styles.branch]
+            [workflows.git.styles.branch]
             bold = false
 
-            [plugins.git.styles.branch.selected]
+            [workflows.git.styles.branch.selected]
             foreground = "palette:highlight-gold"
 
-            [plugins.git.styles.hash]
+            [workflows.git.styles.hash]
             foreground = "palette:highlight-gold"
             "#,
         )
         .unwrap();
         let mut theme = ResolvedTheme::from_raw(&raw_theme, "tokyonight").unwrap();
 
-        let mut plugin_styles = BTreeMap::new();
-        plugin_styles.insert(
+        let mut workflow_styles = BTreeMap::new();
+        workflow_styles.insert(
             "branch".to_string(),
             RawStyleBinding {
                 foreground: Some("scheme:primary".to_string()),
@@ -401,7 +405,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        plugin_styles.insert(
+        workflow_styles.insert(
             "tag".to_string(),
             RawStyleBinding {
                 foreground: Some("palette:accent-blue".to_string()),
@@ -409,7 +413,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        theme.register_workflow_defaults("git", &plugin_styles).unwrap();
+        theme
+            .register_workflow_defaults("git", &workflow_styles)
+            .unwrap();
 
         // 1. Normal slot: branch should have foreground = Blue (scheme:primary), and bold = false (overridden by theme)
         let branch_normal = theme.resolve_slot("git", &SlotToken::from("branch"), false);
@@ -433,7 +439,7 @@ mod tests {
         assert_eq!(tag_selected.bg, Some(Color::Green));
         assert!(tag_selected.add_modifier.contains(Modifier::REVERSED));
 
-        // 4. Hash slot: declared solely in theme overrides (no plugin default)
+        // 4. Hash slot: declared solely in theme overrides (no workflow default)
         let hash_normal = theme.resolve_slot("git", &SlotToken::from("hash"), false);
         assert_eq!(hash_normal.fg, Some(Color::Yellow));
 
@@ -495,8 +501,20 @@ mod tests {
         // Check badge selected is terminal style (underline = true, NO REVERSED)
         assert_eq!(theme.picker.badge_selected.fg, Some(Color::Yellow));
         assert_eq!(theme.picker.badge_selected.bg, Some(Color::Green));
-        assert!(theme.picker.badge_selected.add_modifier.contains(Modifier::UNDERLINED));
-        assert!(!theme.picker.badge_selected.add_modifier.contains(Modifier::REVERSED));
+        assert!(
+            theme
+                .picker
+                .badge_selected
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert!(
+            !theme
+                .picker
+                .badge_selected
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
 
         // Built-in slot resolution delivers terminal styles directly
         let unselected = theme.resolve_slot("", &SlotToken::Badge, false);
@@ -510,7 +528,13 @@ mod tests {
     fn default_theme_badge_is_not_reversed() {
         let theme = ResolvedTheme::terminal();
         assert!(!theme.picker.badge.add_modifier.contains(Modifier::REVERSED));
-        assert!(!theme.picker.badge_selected.add_modifier.contains(Modifier::REVERSED));
+        assert!(
+            !theme
+                .picker
+                .badge_selected
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
     }
 
     #[test]
@@ -546,12 +570,30 @@ mod tests {
         let theme = ResolvedTheme::from_raw(&raw_theme, "picker_and_chrome_ext").unwrap();
 
         assert_eq!(theme.picker.input_prefix.fg, Some(Color::Yellow));
-        assert!(theme.picker.input_prefix.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            theme
+                .picker
+                .input_prefix
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
 
         assert_eq!(theme.chrome.border.fg, Some(Color::Green));
         assert_eq!(theme.chrome.footer_title.fg, Some(Color::Magenta));
-        assert!(theme.chrome.footer_title.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            theme
+                .chrome
+                .footer_title
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
         assert_eq!(theme.chrome.footer_status.fg, Some(Color::Gray));
-        assert!(theme.chrome.footer_status.add_modifier.contains(Modifier::DIM));
+        assert!(
+            theme
+                .chrome
+                .footer_status
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
     }
 }

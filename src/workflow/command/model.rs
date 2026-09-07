@@ -1,7 +1,7 @@
-use crate::config::{Command, CommandAction, ViewPresentation};
 use crate::engine::ActionId;
 use crate::input::Key;
-use crate::parameter::ParameterSnapshot;
+use crate::workflow::config::{Command, CommandAction, ViewPresentation};
+use crate::workflow::parameter::ParameterSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -76,7 +76,6 @@ pub(crate) enum NavigationMode {
     Push,
     Replace,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditorAction {

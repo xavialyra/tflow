@@ -4,9 +4,9 @@ use super::{
 };
 #[cfg(test)]
 use super::{byte_at_width, clip_from, divider_line, previous_char_boundary};
+use crate::ui::theme::Theme;
 #[cfg(test)]
-use crate::router::RouteDisplay;
-use crate::theme::Theme;
+use crate::workflow::navigation::RouteDisplay;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};

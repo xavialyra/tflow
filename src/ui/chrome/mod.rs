@@ -10,18 +10,18 @@ pub(crate) use footer::{FooterModel, FooterRenderer, spans_from_footer_content};
 pub(crate) use host::ContentHost;
 
 #[cfg(test)]
-pub(crate) use frame::ChromeFrame;
-#[cfg(test)]
 use crate::input::previous_char_boundary;
+#[cfg(test)]
+pub(crate) use frame::ChromeFrame;
 #[cfg(test)]
 use layout::ChromeLayout;
 #[cfg(test)]
 use layout::{InputLayout, Insets};
 
 #[cfg(test)]
-use crate::router::RouteDisplay;
+use crate::ui::theme::Theme;
 #[cfg(test)]
-use crate::theme::Theme;
+use crate::workflow::navigation::RouteDisplay;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Default)]
@@ -119,7 +119,11 @@ pub(crate) fn is_palette_active(
     }
     let left = footer_label(title, status.unwrap_or(""));
     let complete = command_footer(commands);
-    let separator_width = if !left.is_empty() && !complete.text.is_empty() { 2 } else { 0 };
+    let separator_width = if !left.is_empty() && !complete.text.is_empty() {
+        2
+    } else {
+        0
+    };
     let complete_width = UnicodeWidthStr::width(left.as_str())
         + separator_width
         + UnicodeWidthStr::width(complete.text.as_str());
@@ -199,8 +203,10 @@ pub(super) fn footer_line(
         return FooterContent {
             text,
             key_spans: Vec::new(),
-            title_span: title_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
-            status_span: status_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
+            title_span: title_span
+                .and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
+            status_span: status_span
+                .and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end)))),
         };
     }
     if left.is_empty() {
@@ -247,8 +253,10 @@ pub(super) fn footer_line(
     let padding = width.saturating_sub(used);
     let mut result = FooterContent::default();
     append_plain(&mut result, &left);
-    result.title_span = title_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
-    result.status_span = status_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
+    result.title_span =
+        title_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
+    result.status_span =
+        status_span.and_then(|(s, e)| (s < visible_end).then_some((s, e.min(visible_end))));
     append_plain(&mut result, &" ".repeat(padding));
     append_plain(&mut result, separator);
     append_content(&mut result, &right);
@@ -331,16 +339,12 @@ fn clip_footer(content: &FooterContent, width: usize) -> FooterContent {
                 (*start < visible_end).then_some((*start, (*end).min(visible_end)))
             })
             .collect(),
-        title_span: content
-            .title_span
-            .and_then(|(start, end)| {
-                (start < visible_end).then_some((start, end.min(visible_end)))
-            }),
-        status_span: content
-            .status_span
-            .and_then(|(start, end)| {
-                (start < visible_end).then_some((start, end.min(visible_end)))
-            }),
+        title_span: content.title_span.and_then(|(start, end)| {
+            (start < visible_end).then_some((start, end.min(visible_end)))
+        }),
+        status_span: content.status_span.and_then(|(start, end)| {
+            (start < visible_end).then_some((start, end.min(visible_end)))
+        }),
     }
 }
 
@@ -756,10 +760,10 @@ mod tests {
         use std::path::Path;
 
         let config_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config");
-        let theme = crate::theme::load(
+        let theme = crate::ui::theme::load(
             &config_root.join("config.toml"),
             Some("contrast"),
-            &crate::theme::ThemeLoadOptions::default(),
+            &crate::ui::theme::ThemeLoadOptions::default(),
         )
         .unwrap();
         let frame = ChromeFrame::compose(

@@ -1,4 +1,6 @@
-use crate::execution::run_bounded_command_with_stdin;
+use crate::execution::{
+    BoundedCommandOutcome, run_bounded_command_with_stdin, run_bounded_command_with_stdin_outcome,
+};
 use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
 use crate::lifecycle::CancellationToken;
@@ -21,7 +23,7 @@ const MAX_SCRIPT_STDERR: usize = 64 * 1024;
 const MAX_SCRIPT_ARGS: usize = 64 * 1024;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 
-/// Run a plugin-relative script with argv arguments and return its raw output.
+/// Run a workflow-relative script with argv arguments and return its raw output.
 ///
 /// The launcher owns transport concerns here—path confinement, cancellation,
 /// timeouts, and I/O limits—but deliberately does not interpret stdout or
@@ -64,103 +66,116 @@ pub(crate) fn run_script(
     .with_context(|| format!("could not run script {}", path.display()))
 }
 
-pub(crate) fn run_resolved_script(
+/// Execute a resolved script while preserving whether its managed child was
+/// actually reaped, including error paths after spawn.
+pub(crate) fn run_resolved_script_with_outcome(
     workflow_id: &str,
     source_label: &str,
     root: Option<&Path>,
-    source: &crate::config::ResolvedScriptSource,
+    source: &crate::workflow::config::ResolvedScriptSource,
     args: &[String],
     cancellation: &dyn CancellationStatus,
-) -> Result<Output> {
-    validate_max_output_bytes(source.max_output_bytes)?;
-    let max_output_bytes = source.max_output_bytes.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
-    match &source.target {
-        crate::config::ResolvedScriptTarget::Inline(script_body) => {
-            let argv = crate::execution::prepare_inline_script_command(
-                workflow_id,
-                source_label,
-                script_body,
-                args,
-            )?;
-            let mut process = ProcessCommand::new(&argv[0]);
-            process.args(&argv[1..]);
-            if let Some(root) = root {
-                process.env("WORKFLOW_DIR", root);
-            }
-            run_bounded_command_with_stdin(
-                process,
-                None,
-                SCRIPT_TIMEOUT,
-                max_output_bytes,
-                MAX_SCRIPT_STDERR,
-                cancellation,
-            )
-            .with_context(|| format!("could not run inline script for {}", source_label))
-        }
-        crate::config::ResolvedScriptTarget::File(target) => {
-            if target.is_empty() {
-                bail!("script source requires a non-empty file");
-            }
-            let target_path = Path::new(target);
-            let (display_path, script_path, _file, shebang, interpreter) = if target_path
-                .is_absolute()
-            {
-                let content = fs::read_to_string(target_path)
-                    .with_context(|| format!("could not read script {}", target_path.display()))?;
-                let shebang = crate::execution::parse_shebang(&content);
-                let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
-                (target.clone(), target.clone(), None, shebang, interpreter)
-            } else {
-                let root = root.with_context(|| {
-                    format!(
-                        "single-file workflow cannot reference relative script file {:?}",
-                        target
-                    )
-                })?;
-                let content = read_script(root, target)?;
-                let shebang = crate::execution::parse_shebang(&content);
-                let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
-                let (path, file) = open_confined_script(root, target)?;
-                #[cfg(target_os = "linux")]
-                {
-                    clear_close_on_exec(file.as_raw_fd())?;
-                    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
-                    (
-                        path.display().to_string(),
-                        fd_path,
-                        Some(file),
-                        shebang,
-                        interpreter,
-                    )
+) -> BoundedCommandOutcome {
+    let mut managed_child_reaped = false;
+    let result = (|| -> Result<Output> {
+        validate_max_output_bytes(source.max_output_bytes)?;
+        let max_output_bytes = source.max_output_bytes.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
+        match &source.target {
+            crate::workflow::config::ResolvedScriptTarget::Inline(script_body) => {
+                let argv = crate::execution::prepare_inline_script_command(
+                    workflow_id,
+                    source_label,
+                    script_body,
+                    args,
+                )?;
+                let mut process = ProcessCommand::new(&argv[0]);
+                process.args(&argv[1..]);
+                if let Some(root) = root {
+                    process.env("WORKFLOW_DIR", root);
                 }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    (
-                        path.display().to_string(),
-                        path.to_string_lossy().into_owned(),
-                        Some(file),
-                        shebang,
-                        interpreter,
-                    )
-                }
-            };
-            let mut process = ProcessCommand::new(interpreter);
-            process.args(&shebang.args);
-            process.arg(script_path).args(args);
-            if let Some(root) = root {
-                process.env("WORKFLOW_DIR", root);
+                let outcome = run_bounded_command_with_stdin_outcome(
+                    process,
+                    None,
+                    SCRIPT_TIMEOUT,
+                    max_output_bytes,
+                    MAX_SCRIPT_STDERR,
+                    cancellation,
+                );
+                managed_child_reaped = outcome.managed_child_reaped();
+                outcome
+                    .into_result()
+                    .with_context(|| format!("could not run inline script for {}", source_label))
             }
-            run_bounded_command_with_stdin(
-                process,
-                None,
-                SCRIPT_TIMEOUT,
-                max_output_bytes,
-                MAX_SCRIPT_STDERR,
-                cancellation,
-            )
-            .with_context(|| format!("could not run script {}", display_path))
+            crate::workflow::config::ResolvedScriptTarget::File(target) => {
+                if target.is_empty() {
+                    bail!("script source requires a non-empty file");
+                }
+                let target_path = Path::new(target);
+                let (display_path, script_path, _file, shebang, interpreter) = if target_path
+                    .is_absolute()
+                {
+                    let content = fs::read_to_string(target_path).with_context(|| {
+                        format!("could not read script {}", target_path.display())
+                    })?;
+                    let shebang = crate::execution::parse_shebang(&content);
+                    let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
+                    (target.clone(), target.clone(), None, shebang, interpreter)
+                } else {
+                    let root = root.with_context(|| {
+                        format!(
+                            "single-file workflow cannot reference relative script file {:?}",
+                            target
+                        )
+                    })?;
+                    let content = read_script(root, target)?;
+                    let shebang = crate::execution::parse_shebang(&content);
+                    let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
+                    let (path, file) = open_confined_script(root, target)?;
+                    #[cfg(target_os = "linux")]
+                    {
+                        clear_close_on_exec(file.as_raw_fd())?;
+                        let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+                        (
+                            path.display().to_string(),
+                            fd_path,
+                            Some(file),
+                            shebang,
+                            interpreter,
+                        )
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        (
+                            path.display().to_string(),
+                            path.to_string_lossy().into_owned(),
+                            Some(file),
+                            shebang,
+                            interpreter,
+                        )
+                    }
+                };
+                let mut process = ProcessCommand::new(interpreter);
+                process.args(&shebang.args);
+                process.arg(script_path).args(args);
+                if let Some(root) = root {
+                    process.env("WORKFLOW_DIR", root);
+                }
+                let outcome = run_bounded_command_with_stdin_outcome(
+                    process,
+                    None,
+                    SCRIPT_TIMEOUT,
+                    max_output_bytes,
+                    MAX_SCRIPT_STDERR,
+                    cancellation,
+                );
+                managed_child_reaped = outcome.managed_child_reaped();
+                outcome
+                    .into_result()
+                    .with_context(|| format!("could not run script {}", display_path))
+            }
         }
-    }
+    })();
+    BoundedCommandOutcome::from_result_and_reap(result, managed_child_reaped)
 }
 
 /// Preserve the common diagnostic for a script that did not complete

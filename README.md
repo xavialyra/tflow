@@ -1,6 +1,6 @@
 # tui-launcher
 
-`tui-launcher` is an extensible terminal workflow host. It coordinates plugin-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
+`tui-launcher` is an extensible terminal workflow host. It coordinates workflow-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ Full documentation is organized using the **Diátaxis** framework and structured
 
 - **[Tutorials](docs/tutorials/index.md)**
   - [Getting Started](docs/tutorials/getting-started.md)
-  - [Building Your First Plugin](docs/tutorials/first-plugin.md)
+  - [Building Your First Workflow](docs/tutorials/first-workflow.md)
 - **[How-To Guides](docs/how-to/index.md)**
   - [Dynamic Picker Feeds & Previews](docs/how-to/dynamic-picker-feeds.md)
   - [View Navigation & Popups](docs/how-to/view-navigation-and-popups.md)
@@ -44,7 +44,7 @@ Full documentation is organized using the **Diátaxis** framework and structured
 - **[Technical Reference](docs/reference/index.md)**
   - [CLI Reference](docs/reference/cli.md)
   - [config.toml Specification](docs/reference/config-toml.md)
-  - [plugin.toml Specification](docs/reference/plugin-toml.md)
+  - [workflow.toml Specification](docs/reference/workflow-toml.md)
   - [Expression Syntax & Budgets](docs/reference/expressions.md)
 - **[Architecture & Concepts (Explanation)](docs/explanation/index.md)**
   - [Architecture Overview & Dependency Rules](docs/explanation/architecture-overview.md)

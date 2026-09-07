@@ -40,6 +40,7 @@ pub struct LauncherProcess {
     pub master: File,
     observer: PtyObserverKey,
     original_termios: libc::termios,
+    stdout: Option<File>,
     state_home: PathBuf,
     finished: bool,
 }
@@ -60,6 +61,10 @@ impl LauncherProcess {
             0
         );
         settings
+    }
+
+    pub fn take_stdout(&mut self) -> Option<File> {
+        self.stdout.take()
     }
 }
 
@@ -279,7 +284,7 @@ pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let workflows = config
         .as_table_mut()
-        .and_then(|table| table.remove("workflows").or_else(|| table.remove("plugins")));
+        .and_then(|table| table.remove("workflows"));
     let Some(workflows) = workflows else {
         return fs::write(path, toml::to_string(&config).map_err(io::Error::other)?);
     };
@@ -594,6 +599,69 @@ pub fn spawn_launcher_with_args_and_env(
         master,
         observer,
         original_termios,
+        stdout: None,
+        state_home,
+        finished: false,
+    }
+}
+
+pub fn spawn_launcher_with_redirected_stdout(config: &Path) -> LauncherProcess {
+    let binary = binary_path();
+    let arguments = vec![
+        binary.to_string_lossy().into_owned(),
+        "--config".to_string(),
+        config.to_string_lossy().into_owned(),
+    ];
+    let prepared = prepare_exec(arguments, &[]);
+    let state_home = prepared.state_home.clone();
+    let output_pipe = create_cloexec_pipe();
+    let window = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let gate = create_cloexec_pipe();
+    let mut master = -1;
+    let pid =
+        unsafe { libc::forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), &window) };
+    assert!(pid >= 0, "could not create redirected-output launcher PTY");
+
+    if pid == 0 {
+        close_fd(gate[1]);
+        close_fd(output_pipe[0]);
+        close_fd(master);
+        let mut byte = 0_u8;
+        if unsafe { libc::read(gate[0], (&mut byte as *mut u8).cast(), 1) } != 1
+            || unsafe { libc::dup2(output_pipe[1], libc::STDOUT_FILENO) } < 0
+        {
+            unsafe { libc::_exit(127) };
+        }
+        close_fd(gate[0]);
+        close_fd(output_pipe[1]);
+        exec_prepared(&prepared);
+    }
+
+    close_fd(gate[0]);
+    close_fd(output_pipe[1]);
+    set_cloexec(master);
+    let mut original_termios = unsafe { std::mem::zeroed::<libc::termios>() };
+    assert_eq!(unsafe { libc::tcgetattr(master, &mut original_termios) }, 0);
+    let byte = 1_u8;
+    assert_eq!(
+        unsafe { libc::write(gate[1], (&byte as *const u8).cast(), 1) },
+        1
+    );
+    close_fd(gate[1]);
+    set_nonblocking(master);
+    let master = unsafe { File::from_raw_fd(master) };
+    let observer = register_pty_observer(&master);
+    LauncherProcess {
+        pid,
+        master,
+        observer,
+        original_termios,
+        stdout: Some(unsafe { File::from_raw_fd(output_pipe[0]) }),
         state_home,
         finished: false,
     }

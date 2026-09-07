@@ -1,6 +1,6 @@
 use super::preview::{ImageProtocolCache, PickerPreviewRenderState};
 use super::{Item, PickerView};
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -72,7 +72,11 @@ pub(crate) fn render_picker(
             theme.picker.scrollbar.fg.unwrap_or(bg)
         }
     } else {
-        theme.picker.scrollbar.fg.unwrap_or(ratatui::style::Color::Reset)
+        theme
+            .picker
+            .scrollbar
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
     };
     let scrollbar_style = ratatui::style::Style::default().bg(scrollbar_color);
 
@@ -103,18 +107,15 @@ pub(crate) fn render_picker(
 
         let right_padding: u16 = if reserves_scrollbar { 2 } else { 1 };
         let h_chunks = ratatui::layout::Layout::horizontal([
-            ratatui::layout::Constraint::Length(1), // Marker
-            ratatui::layout::Constraint::Length(1), // Space after marker
-            ratatui::layout::Constraint::Fill(1),   // Content
+            ratatui::layout::Constraint::Length(1),             // Marker
+            ratatui::layout::Constraint::Length(1),             // Space after marker
+            ratatui::layout::Constraint::Fill(1),               // Content
             ratatui::layout::Constraint::Length(right_padding), // Scrollbar column
         ])
         .split(item_rect);
 
         if selected {
-            frame.render_widget(
-                Paragraph::new("▌").style(theme.picker.marker),
-                h_chunks[0],
-            );
+            frame.render_widget(Paragraph::new("▌").style(theme.picker.marker), h_chunks[0]);
         }
 
         if show_scrollbar
@@ -139,11 +140,12 @@ pub(crate) fn render_picker(
             continue;
         }
 
-        let v_chunks = ratatui::layout::Layout::vertical(vec![
-            ratatui::layout::Constraint::Length(1);
-            row_height
-        ])
-        .split(content_area);
+        let v_chunks =
+            ratatui::layout::Layout::vertical(vec![
+                ratatui::layout::Constraint::Length(1);
+                row_height
+            ])
+            .split(content_area);
 
         let rows = &item.display.rows;
         for (r_idx, v_row_rect) in v_chunks.iter().enumerate() {
@@ -188,7 +190,6 @@ fn scrollbar_thumb_top(start: usize, total: usize, visible: usize) -> usize {
     start.saturating_mul(track_height) / scroll_range
 }
 
-
 impl PickerView {
     pub(crate) fn render_state(&self) -> PickerRenderState {
         let frame = self.current();
@@ -200,10 +201,7 @@ impl PickerView {
         let should_retain = results_ready || in_grace_period;
 
         let (items, selected) = if should_retain || !frame.selection.items.is_empty() {
-            (
-                Arc::clone(&frame.selection.items),
-                frame.selection.selected,
-            )
+            (Arc::clone(&frame.selection.items), frame.selection.selected)
         } else {
             (Arc::new(Vec::new()), 0)
         };
@@ -257,9 +255,9 @@ impl crate::engine::ViewRenderer for PickerRenderer {
         Ok(())
     }
 
-    fn chrome(&self, model: &crate::engine::RenderModel) -> crate::chrome::EngineChrome {
+    fn chrome(&self, model: &crate::engine::RenderModel) -> crate::ui::chrome::EngineChrome {
         let Some(state) = model.downcast_ref::<PickerRenderState>() else {
-            return crate::chrome::EngineChrome::default();
+            return crate::ui::chrome::EngineChrome::default();
         };
         let status = if state.items.is_empty() {
             if state.initial_loading {
@@ -271,7 +269,7 @@ impl crate::engine::ViewRenderer for PickerRenderer {
             let current = state.selected.saturating_add(1);
             Some(format!("{current} of {}", state.items.len()))
         };
-        crate::chrome::EngineChrome::new(status)
+        crate::ui::chrome::EngineChrome::new(status)
     }
 
     fn render(
@@ -404,8 +402,8 @@ mod tests {
     #[test]
     fn test_render_picker_multicell_and_slots() {
         use crate::engine::picker::ItemDisplayInput;
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).unwrap();

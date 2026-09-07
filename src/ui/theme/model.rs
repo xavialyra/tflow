@@ -157,43 +157,50 @@ impl ResolvedTheme {
             raw.picker.text.as_ref(),
             default_raw.picker.text.as_ref().unwrap(),
             "picker.text",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_muted = resolve_component(
             raw.picker.muted.as_ref(),
             default_raw.picker.muted.as_ref().unwrap(),
             "picker.muted",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_selected = resolve_component(
             raw.picker.selected.as_ref(),
             default_raw.picker.selected.as_ref().unwrap(),
             "picker.selected",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_selected_muted = resolve_component(
             raw.picker.selected_muted.as_ref(),
             default_raw.picker.selected_muted.as_ref().unwrap(),
             "picker.selected_muted",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_marker = resolve_component(
             raw.picker.marker.as_ref(),
             default_raw.picker.marker.as_ref().unwrap(),
             "picker.marker",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_scrollbar = resolve_component(
             raw.picker.scrollbar.as_ref(),
             default_raw.picker.scrollbar.as_ref().unwrap(),
             "picker.scrollbar",
-        )?.normal;
+        )?
+        .normal;
 
         let picker_input_prefix = resolve_component(
             raw.picker.input_prefix.as_ref(),
             default_raw.picker.input_prefix.as_ref().unwrap(),
             "picker.input_prefix",
-        )?.normal;
+        )?
+        .normal;
 
         let badge_default = default_raw.picker.badge.as_ref().unwrap();
         let badge_merged = if let Some(conf) = raw.picker.badge.as_ref() {
@@ -215,13 +222,8 @@ impl ResolvedTheme {
         } else {
             badge_default.clone()
         };
-        let resolved_badge = resolve_raw_style_binding(
-            &badge_merged,
-            &scheme,
-            &palette,
-            source,
-            "picker.badge",
-        )?;
+        let resolved_badge =
+            resolve_raw_style_binding(&badge_merged, &scheme, &palette, source, "picker.badge")?;
         let picker_badge = resolved_badge.normal;
         let picker_badge_selected = if let Some(sel) = resolved_badge.selected {
             let mut s = sel;
@@ -243,98 +245,105 @@ impl ResolvedTheme {
             raw.chrome.text.as_ref(),
             default_raw.chrome.text.as_ref().unwrap(),
             "chrome.text",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_muted_text = resolve_component(
             raw.chrome.muted_text.as_ref(),
             default_raw.chrome.muted_text.as_ref().unwrap(),
             "chrome.muted_text",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_divider = resolve_component(
             raw.chrome.divider.as_ref(),
             default_raw.chrome.divider.as_ref().unwrap(),
             "chrome.divider",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_border = resolve_component(
             raw.chrome.border.as_ref(),
             default_raw.chrome.border.as_ref().unwrap(),
             "chrome.border",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_footer = resolve_component(
             raw.chrome.footer.as_ref(),
             default_raw.chrome.footer.as_ref().unwrap(),
             "chrome.footer",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_footer_title = resolve_component(
             raw.chrome.footer_title.as_ref(),
             default_raw.chrome.footer_title.as_ref().unwrap(),
             "chrome.footer_title",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_footer_status = resolve_component(
             raw.chrome.footer_status.as_ref(),
             default_raw.chrome.footer_status.as_ref().unwrap(),
             "chrome.footer_status",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_footer_key = resolve_component(
             raw.chrome.footer_key.as_ref(),
             default_raw.chrome.footer_key.as_ref().unwrap(),
             "chrome.footer_key",
-        )?.normal;
+        )?
+        .normal;
 
         let chrome_error = resolve_component(
             raw.chrome.error.as_ref(),
             default_raw.chrome.error.as_ref().unwrap(),
             "chrome.error",
-        )?.normal;
+        )?
+        .normal;
 
         let preview_text = resolve_component(
             raw.picker.preview.text.as_ref(),
             default_raw.picker.preview.text.as_ref().unwrap(),
             "picker.preview.text",
-        )?.normal;
+        )?
+        .normal;
 
         let preview_error = resolve_component(
             raw.picker.preview.error.as_ref(),
             default_raw.picker.preview.error.as_ref().unwrap(),
             "picker.preview.error",
-        )?.normal;
+        )?
+        .normal;
 
         let preview_border = resolve_component(
             raw.picker.preview.border.as_ref(),
             default_raw.picker.preview.border.as_ref().unwrap(),
             "picker.preview.border",
-        )?.normal;
+        )?
+        .normal;
 
         let capture_text = resolve_component(
             raw.capture.text.as_ref(),
             default_raw.capture.text.as_ref().unwrap(),
             "capture.text",
-        )?.normal;
+        )?
+        .normal;
 
         let mut raw_theme_overrides = BTreeMap::new();
         let mut custom_styles = BTreeMap::new();
-        for (workflow_id, workflow_override) in raw.workflows.iter().chain(&raw.plugins) {
+        for (workflow_id, workflow_override) in &raw.workflows {
             for (slot_name, style_binding) in &workflow_override.styles {
                 let key = (workflow_id.clone(), slot_name.clone());
                 let context = format!("workflows.{workflow_id}.styles.{slot_name}");
-                let resolved = resolve_raw_style_binding(
-                    style_binding,
-                    &scheme,
-                    &palette,
-                    source,
-                    &context,
-                )?;
+                let resolved =
+                    resolve_raw_style_binding(style_binding, &scheme, &palette, source, &context)?;
                 custom_styles.insert(key.clone(), resolved);
                 raw_theme_overrides.insert(key, style_binding.clone());
             }
         }
-
 
         Ok(Self {
             text: chrome_text,
@@ -366,9 +375,7 @@ impl ResolvedTheme {
                     border: preview_border,
                 },
             },
-            capture: CaptureTheme {
-                text: capture_text,
-            },
+            capture: CaptureTheme { text: capture_text },
             scheme,
             palette,
             raw_theme_overrides: Arc::new(raw_theme_overrides),
@@ -418,26 +425,19 @@ impl ResolvedTheme {
         Ok(())
     }
 
-    pub(crate) fn register_all_plugin_defaults(
-        &mut self,
-        plugins: &BTreeMap<String, crate::workflow::config::PluginMetadata>,
-    ) -> Result<()> {
-        self.register_all_workflow_defaults(plugins)
-    }
-
-
     pub(crate) fn resolve_slot(
         &self,
-        plugin_id: &str,
+        workflow_id: &str,
         slot: &crate::engine::SlotToken,
         selected: bool,
     ) -> Style {
         if let Some(custom) = self
             .custom_styles
-            .get(&(plugin_id.to_string(), slot.as_str().to_string()))
+            .get(&(workflow_id.to_string(), slot.as_str().to_string()))
             .or_else(|| {
-                if !plugin_id.is_empty() {
-                    self.custom_styles.get(&("".to_string(), slot.as_str().to_string()))
+                if !workflow_id.is_empty() {
+                    self.custom_styles
+                        .get(&("".to_string(), slot.as_str().to_string()))
                 } else {
                     None
                 }
@@ -467,11 +467,7 @@ impl ResolvedTheme {
         }
     }
 
-    fn resolve_builtin_slot(
-        &self,
-        slot: &crate::engine::SlotToken,
-        selected: bool,
-    ) -> Style {
+    fn resolve_builtin_slot(&self, slot: &crate::engine::SlotToken, selected: bool) -> Style {
         use crate::engine::SlotToken;
         use ratatui::style::Modifier;
 
@@ -612,10 +608,7 @@ pub(super) struct RawTheme {
     pub(super) capture: RawCaptureTheme,
     #[serde(default)]
     pub(super) workflows: BTreeMap<String, RawWorkflowThemeOverride>,
-    #[serde(default)]
-    pub(super) plugins: BTreeMap<String, RawWorkflowThemeOverride>,
 }
-
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -624,7 +617,12 @@ pub(super) struct RawPickerTheme {
     pub(super) text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) muted: Option<RawStyleBinding>,
-    #[serde(default, alias = "input-prefix", alias = "input_prefix", alias = "prefix")]
+    #[serde(
+        default,
+        alias = "input-prefix",
+        alias = "input_prefix",
+        alias = "prefix"
+    )]
     pub(super) input_prefix: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) selected: Option<RawStyleBinding>,

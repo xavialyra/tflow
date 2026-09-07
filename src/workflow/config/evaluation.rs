@@ -1,9 +1,9 @@
-use super::Config;
-use crate::expression::{
+use super::CompiledConfig;
+use crate::lifecycle::CancellationToken;
+use crate::workflow::expression::{
     Budget, ContextRequirements, EvalContext, EvaluationStage, Namespace, TemplateRegistry,
     clone_json_value_with_budget, evaluate_json_value_with_budget,
 };
-use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{borrow::Cow, cell::RefCell};
@@ -15,14 +15,14 @@ pub(crate) enum ConfigSource<'a> {
 }
 
 /// The immutable data required by dynamic configuration evaluation. Engines
-/// may provide a narrow projection instead of retaining the complete Config.
+/// may provide a narrow projection instead of retaining the complete CompiledConfig.
 pub(crate) trait EvaluationData {
     fn template_registry(&self) -> &TemplateRegistry;
 
     fn view_value(
         &self,
         view_ref: &str,
-        parameters: &crate::parameter::ParameterSnapshot,
+        parameters: &crate::workflow::parameter::ParameterSnapshot,
         binding_raw: Option<&str>,
     ) -> Result<Value>;
 }
@@ -104,7 +104,7 @@ impl<'a> SessionScope<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OwnerViewScope<'a> {
     view_ref: &'a str,
-    parameters: &'a crate::parameter::ParameterSnapshot,
+    parameters: &'a crate::workflow::parameter::ParameterSnapshot,
     /// Feed defaults retain the coordinating page's committed raw binding.
     binding_raw: Option<&'a str>,
 }
@@ -112,7 +112,7 @@ pub(crate) struct OwnerViewScope<'a> {
 impl<'a> OwnerViewScope<'a> {
     pub(crate) fn new(
         view_ref: &'a str,
-        parameters: &'a crate::parameter::ParameterSnapshot,
+        parameters: &'a crate::workflow::parameter::ParameterSnapshot,
     ) -> Self {
         Self {
             view_ref,
@@ -259,11 +259,11 @@ impl<'a> EvaluationSnapshot<'a> {
             )?;
             requirements.validate_current_fields(
                 self.current_fields
-                    .unwrap_or(crate::expression::current_fields()),
+                    .unwrap_or(crate::workflow::expression::current_fields()),
             )?;
             context.insert(
                 Namespace::Current.name().to_string(),
-                crate::expression::clone_json_value_with_budget(
+                crate::workflow::expression::clone_json_value_with_budget(
                     current,
                     self.cancellation,
                     budget,
@@ -300,7 +300,7 @@ impl<'a> EvaluationSnapshot<'a> {
     }
 }
 
-impl Config {
+impl CompiledConfig {
     pub(crate) fn get(
         &self,
         source: ConfigSource<'_>,
@@ -346,10 +346,8 @@ impl Config {
         let (workflow, view) = view_ref
             .split_once(':')
             .with_context(|| format!("invalid view reference {:?}", view_ref))?;
-        self.compiled
-            .config_value
+        self.config_value
             .get("workflows")
-            .or_else(|| self.compiled.config_value.get("plugins"))
             .and_then(|workflows| workflows.get(workflow))
             .and_then(|workflow| workflow.get("views"))
             .and_then(|views| views.get(view))
@@ -358,12 +356,11 @@ impl Config {
 
     fn source_config_value(&self, source: ConfigSource<'_>) -> Result<Cow<'_, Value>> {
         match source {
-            ConfigSource::Root => Ok(Cow::Borrowed(&self.compiled.config_value)),
+            ConfigSource::Root => Ok(Cow::Borrowed(&self.config_value)),
             ConfigSource::View(view_ref) => match self.view_config(view_ref) {
                 Ok(value) => Ok(Cow::Borrowed(value)),
                 Err(_)
                     if self
-                        .compiled
                         .config_value
                         .as_object()
                         .is_some_and(|value| value.is_empty()) =>
@@ -393,18 +390,18 @@ impl Config {
     }
 }
 
-impl EvaluationData for Config {
+impl EvaluationData for CompiledConfig {
     fn template_registry(&self) -> &TemplateRegistry {
-        &self.compiled.template_registry
+        &self.template_registry
     }
 
     fn view_value(
         &self,
         view_ref: &str,
-        parameters: &crate::parameter::ParameterSnapshot,
+        parameters: &crate::workflow::parameter::ParameterSnapshot,
         binding_raw: Option<&str>,
     ) -> Result<Value> {
-        Config::view_value(self, view_ref, parameters, binding_raw)
+        CompiledConfig::view_value(self, view_ref, parameters, binding_raw)
     }
 }
 

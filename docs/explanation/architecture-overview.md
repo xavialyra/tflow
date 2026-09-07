@@ -17,7 +17,7 @@ A module may expose a small crate-level facade, but code must live in the narrow
 
 ## Core Domain Layout
 
-The layout below describes architectural roles, not an exact inventory of the current filesystem. In the reviewed implementation, routing and session orchestration still live largely in `src/view.rs` and `src/protocol.rs`. The [Architecture Convergence implementation plan](architecture-convergence.md) records the reviewed baseline, target ownership, incremental stages, and contract gates.
+The layout below describes architectural roles, not an exact inventory of the current filesystem. In the reviewed implementation, routing lives in `src/view.rs`, while protocol contracts, command adaptation, and session orchestration live under `src/protocol/`. The [Architecture Convergence implementation plan](architecture-convergence.md) records the reviewed baseline, target ownership, incremental stages, and contract gates.
 
 ```text
 src/
@@ -64,7 +64,7 @@ The following 14 dependency rules define the intended architecture. They are des
    - Neither component owns or renders View-private input, query text, completion rows, or cursor state.
 7. **Interactive query editing is Picker-owned**. Terminal byte decoding and event transport remain independent infrastructure; shared UI must not own or duplicate Picker input state.
 8. **`ui/theme/model` and `color`** must not read files. Only `ui/theme/load` may depend on the filesystem.
-9. **Engines consume stable configuration queries**. Code should not reach into `Config::compiled` or `config_value` directly.
+9. **Engines consume stable configuration queries**. Code should not reach into `CompiledConfig` internals or `config_value` directly.
 10. **Encapsulation over visibility**: New crate-visible fields are not a substitute for an API; prefer private fields with focused constructors and accessors.
 11. **`task` owns generic background scheduling, cancellation, and task handles**. It must not depend on a concrete engine or picker item types. Task closures must cooperate with cancellation; latest-wins replacement must use an explicit lane.
 12. **`session` depends on abstract contracts** (`ViewFactory` and `TaskRuntime`), not on concrete `EngineRegistry` or `engine::picker` types.

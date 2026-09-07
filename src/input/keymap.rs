@@ -1,5 +1,5 @@
-use crate::expression::{Template, is_dynamic_string};
 use crate::input::{BindingKey, Key};
+use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};

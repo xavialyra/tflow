@@ -1,15 +1,15 @@
+use crate::execution::{ensure_script_success, run_resolved_script_with_outcome};
+use crate::input::{InputSourceIdentity, ViewMountId};
+use crate::lifecycle::CancellationToken;
+use crate::terminal::sanitize_text;
 #[cfg(test)]
-use crate::config::Config;
-use crate::config::{
+use crate::workflow::config::CompiledConfig;
+use crate::workflow::config::{
     EvaluationData, EvaluationSnapshot, InvocationScope, OwnerViewScope, PickerItemsProjection,
     ResolvedScriptSource, SessionScope, toml_to_json,
 };
-use crate::execution::{ensure_script_success, run_resolved_script};
-use crate::expression::EvaluationStage;
-use crate::input::{InputSourceIdentity, ViewMountId};
-use crate::lifecycle::CancellationToken;
-use crate::parameter::{ParameterBinding, ParameterSnapshot};
-use crate::terminal::sanitize_text;
+use crate::workflow::expression::EvaluationStage;
+use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -86,13 +86,13 @@ impl FeedDefinition {
         self.source.input_value()
     }
 
-    fn plugin_root(&self) -> Option<&Path> {
-        self.source.plugin_root(&self.owner_view)
+    fn workflow_root(&self) -> Option<&Path> {
+        self.source.workflow_root(&self.owner_view)
     }
 }
 
 impl EvaluationData for FeedDefinition {
-    fn template_registry(&self) -> &crate::expression::TemplateRegistry {
+    fn template_registry(&self) -> &crate::workflow::expression::TemplateRegistry {
         self.source.template_registry()
     }
 
@@ -327,13 +327,28 @@ pub(crate) struct ItemsEvent {
 
 pub(crate) type ItemsTaskHandle = crate::task::TaskHandle<ItemsResponse>;
 
+pub(crate) struct ItemsLoadOutcome {
+    pub(crate) result: Result<ItemsResult>,
+    pub(crate) managed_child_reaped: bool,
+}
+
+impl ItemsLoadOutcome {
+    #[cfg(test)]
+    pub(crate) fn without_managed_child(result: Result<ItemsResult>) -> Self {
+        Self {
+            result,
+            managed_child_reaped: false,
+        }
+    }
+}
+
 pub(crate) trait PickerItemsLoader: Send + Sync {
     fn load(
         &self,
         request: &ItemsRequest,
         runtime: &Value,
         cancellation: &CancellationToken,
-    ) -> Result<ItemsResult>;
+    ) -> ItemsLoadOutcome;
 }
 
 struct FeedLoadOutput {
@@ -342,6 +357,7 @@ struct FeedLoadOutput {
     badge: Option<String>,
     context: Option<(FeedId, FeedInstance)>,
     value: std::result::Result<Option<Value>, String>,
+    managed_child_reaped: bool,
 }
 
 fn load_single_feed(
@@ -390,34 +406,36 @@ fn load_single_feed(
                 badge,
                 context: None,
                 value: Err(format!("{}: {}", owner_view, error)),
+                managed_child_reaped: false,
             });
         }
     };
 
     let context = Some((feed_id.clone(), instance.clone()));
-    let owner_scope =
-        OwnerViewScope::new(&instance.definition.owner_view, &instance.parameters)
-            .with_binding_raw(Some(&instance.binding_raw));
+    let owner_scope = OwnerViewScope::new(&instance.definition.owner_view, &instance.parameters)
+        .with_binding_raw(Some(&instance.binding_raw));
     let snapshot = EvaluationSnapshot::new(
         InvocationScope::new(instance.definition.input_value()),
         SessionScope::new(runtime),
         Some(owner_scope),
         Some(cancellation),
     );
-    let value = match instance.definition.items_value(&snapshot) {
+    let (value, managed_child_reaped) = match instance.definition.items_value(&snapshot) {
         Ok(Some(value)) if ResolvedScriptSource::is_candidate(&value) => {
-            ResolvedScriptSource::parse(&value)
-                .and_then(|source| {
-                    run_items_source(
+            match ResolvedScriptSource::parse(&value) {
+                Ok(source) => {
+                    let outcome = run_items_source(
                         &instance.definition,
                         &instance.definition.owner_view,
                         &source,
                         cancellation,
-                    )
-                })
-                .map(Some)
+                    );
+                    (outcome.result.map(Some), outcome.managed_child_reaped)
+                }
+                Err(error) => (Err(error), false),
+            }
         }
-        value => value,
+        value => (value, false),
     };
     let value = value.map_err(|error| format!("{}: {}", owner_view, error));
 
@@ -427,9 +445,11 @@ fn load_single_feed(
         badge,
         context,
         value,
+        managed_child_reaped,
     })
 }
 
+#[cfg(test)]
 pub(crate) fn load_items_for_definitions(
     definitions: &[Arc<FeedDefinition>],
     page_view: &str,
@@ -438,6 +458,25 @@ pub(crate) fn load_items_for_definitions(
     runtime: &Value,
     cancellation: &CancellationToken,
 ) -> Result<ItemsResult> {
+    load_items_for_definitions_with_outcome(
+        definitions,
+        page_view,
+        page_parameters,
+        binding_raw,
+        runtime,
+        cancellation,
+    )
+    .result
+}
+
+pub(crate) fn load_items_for_definitions_with_outcome(
+    definitions: &[Arc<FeedDefinition>],
+    page_view: &str,
+    page_parameters: &ParameterSnapshot,
+    binding_raw: &str,
+    runtime: &Value,
+    cancellation: &CancellationToken,
+) -> ItemsLoadOutcome {
     let mut result = ItemsResult::default();
     let show_source_badge = definitions
         .first()
@@ -480,9 +519,16 @@ pub(crate) fn load_items_for_definitions(
         })
     };
 
+    let managed_child_reaped = outputs
+        .iter()
+        .flatten()
+        .any(|output| output.managed_child_reaped);
     for output in outputs.into_iter().flatten() {
         if cancellation.is_cancelled() {
-            return Ok(result);
+            return ItemsLoadOutcome {
+                result: Ok(result),
+                managed_child_reaped,
+            };
         }
         if let Some((feed_id, instance)) = output.context {
             result.contexts.insert(feed_id, instance);
@@ -511,11 +557,17 @@ pub(crate) fn load_items_for_definitions(
             }
         }
         if cancellation.is_cancelled() {
-            return Ok(result);
+            return ItemsLoadOutcome {
+                result: Ok(result),
+                managed_child_reaped,
+            };
         }
     }
 
-    Ok(result)
+    ItemsLoadOutcome {
+        result: Ok(result),
+        managed_child_reaped,
+    }
 }
 
 #[cfg(test)]
@@ -540,7 +592,7 @@ pub(crate) fn load_items_for_page(
 
 #[cfg(test)]
 fn load_items(
-    config: &Config,
+    config: &CompiledConfig,
     view_ref: &str,
     runtime: &Value,
     cancellation: &CancellationToken,
@@ -549,7 +601,7 @@ fn load_items(
     config.test_rebuild_compiled()?;
     let page_state = config.instantiate_parameters(view_ref)?;
     let page_parameters = config.parameter_snapshot(&page_state, InputSourceIdentity::default())?;
-    let projection = PickerItemsProjection::from_config(&config, view_ref)?;
+    let projection = PickerItemsProjection::from_config(&config, &Value::Null, view_ref)?;
     load_items_for_page(
         &projection,
         view_ref,
@@ -652,29 +704,53 @@ fn append_items(
     append_items_array(result, source_ref, feed_id, None, value, cancellation);
 }
 
+struct ItemsScriptOutcome {
+    result: Result<Value>,
+    managed_child_reaped: bool,
+}
+
 fn run_items_source(
     definition: &FeedDefinition,
     source_ref: &str,
     source: &ResolvedScriptSource,
     cancellation: &CancellationToken,
-) -> Result<Value> {
-    let root = definition.plugin_root();
-    let workflow_id = crate::config::package_id(&definition.owner_view);
-    let args = source.script_args("picker script args")?;
-    let output = run_resolved_script(
+) -> ItemsScriptOutcome {
+    let args = match source.script_args("picker script args") {
+        Ok(args) => args,
+        Err(error) => {
+            return ItemsScriptOutcome {
+                result: Err(error),
+                managed_child_reaped: false,
+            };
+        }
+    };
+    let root = definition.workflow_root();
+    let workflow_id = crate::workflow::config::package_id(&definition.owner_view);
+    let output = run_resolved_script_with_outcome(
         workflow_id,
         source_ref,
         root,
         source,
         &args,
         cancellation,
-    )?;
-    ensure_script_success(&output)?;
-    if output.stdout.is_empty() {
-        bail!("script produced no JSON output");
+    );
+    let managed_child_reaped = output.managed_child_reaped();
+    let result = output.into_result().and_then(|output| {
+        ensure_script_success(&output)?;
+        if output.stdout.is_empty() {
+            bail!("script produced no JSON output");
+        }
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "script {} did not produce valid JSON",
+                source.target_display()
+            )
+        })
+    });
+    ItemsScriptOutcome {
+        result,
+        managed_child_reaped,
     }
-    serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("script {} did not produce valid JSON", source.target_display()))
 }
 
 fn value_type(value: &Value) -> &'static str {
@@ -691,9 +767,9 @@ fn value_type(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        Command, CommandAction, ENGINE_PICKER, EngineOptions, EngineSpec, FeedSpec, PluginMetadata,
-        View,
+    use crate::workflow::config::{
+        Command, CommandAction, ENGINE_PICKER, EngineOptions, EngineSpec, FeedSpec, View,
+        WorkflowMetadata,
     };
     use std::collections::BTreeMap;
     use std::env;
@@ -710,7 +786,7 @@ mod tests {
         toml::Value::Table(source)
     }
 
-    fn test_config() -> Config {
+    fn test_config() -> CompiledConfig {
         let mut views = BTreeMap::new();
         views.insert(
             "core:default".to_string(),
@@ -752,13 +828,13 @@ mod tests {
                     Command {
                         key: Some("enter".to_string()),
                         label: "Open".to_string(),
-                        scope: crate::config::CommandScope::Selection,
-                        requires: crate::config::CommandRequirement::Items,
+                        scope: crate::workflow::config::CommandScope::Selection,
+                        requires: crate::workflow::config::CommandRequirement::Items,
                         passthrough: false,
-                        action: CommandAction::new_run(crate::config::RunPayload {
+                        action: CommandAction::new_run(crate::workflow::config::RunPayload {
                             script: None,
                             handler: Some(
-                                crate::config::ScriptSourceSpec::script_file(
+                                crate::workflow::config::ScriptSourceSpec::script_file(
                                     "scripts/run.sh",
                                 )
                                 .as_toml_value(),
@@ -771,20 +847,20 @@ mod tests {
                 )]),
             },
         );
-        Config::test_new(
+        CompiledConfig::test_new(
             Some("core:default".to_string()),
             views,
             BTreeMap::from([
                 (
                     "core".to_string(),
-                    PluginMetadata {
+                    WorkflowMetadata {
                         name: "core".to_string(),
                         ..Default::default()
                     },
                 ),
                 (
                     "apps".to_string(),
-                    PluginMetadata {
+                    WorkflowMetadata {
                         name: "applications".to_string(),
                         ..Default::default()
                     },
@@ -877,7 +953,10 @@ mod tests {
         );
         assert_eq!(result.items[0].source_view, "apps:main");
         assert_eq!(result.items[0].display.rows[0].cells.len(), 2);
-        assert_eq!(result.items[0].display.rows[0].cells[1].spans[0].text, "app");
+        assert_eq!(
+            result.items[0].display.rows[0].cells[1].spans[0].text,
+            "app"
+        );
         assert_eq!(
             result.items[0].display.rows[0].cells[1].spans[0].slot,
             crate::engine::picker::SlotToken::Badge
@@ -930,8 +1009,9 @@ mod tests {
                 view: "sys:main".to_string(),
             },
         ];
-        let projection =
-            Arc::new(PickerItemsProjection::from_config(&config, "core:default").unwrap());
+        let projection = Arc::new(
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap(),
+        );
         let ordinary_definitions =
             FeedDefinition::collection(Arc::clone(&projection), "apps:main").unwrap();
         let aggregate_definitions = FeedDefinition::collection(projection, "core:default").unwrap();
@@ -1069,7 +1149,7 @@ mod tests {
 
     #[test]
     fn called_picker_items_read_declared_query_values() {
-        let config = crate::config::load_test_fixture().unwrap();
+        let config = crate::workflow::config::load_test_fixture().unwrap();
         let mut state = config.instantiate_parameters("selectors:commands").unwrap();
         config
             .update_sanitized_initial_parameter_values(
@@ -1084,7 +1164,9 @@ mod tests {
                 }),
             )
             .unwrap();
-        let projection = PickerItemsProjection::from_config(&config, "selectors:commands").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "selectors:commands")
+                .unwrap();
         let result = load_items_for_page(
             &projection,
             "selectors:commands",
@@ -1201,7 +1283,7 @@ mod tests {
             .config
             .items = Some("{{ page.query }}".into());
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "apps": {
                     "views": {
                         "main": {
@@ -1215,7 +1297,7 @@ mod tests {
         config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("apps".to_string(), root.clone());
         let result = load_items(
             &config,
@@ -1274,7 +1356,7 @@ mod tests {
             Some(toml::Value::Array(vec!["{{ view.query }}".into()])),
         ));
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "core": {
                     "views": {
                         "default": {"type": "picker", "feeds": [{"view": "apps:main"}]}
@@ -1294,13 +1376,14 @@ mod tests {
         config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_parameters("core:default").unwrap();
         let page_parameters = config
             .parameter_snapshot(&page_state, InputSourceIdentity::default())
             .unwrap();
-        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap();
         let result = load_items_for_page(
             &projection,
             "core:default",
@@ -1357,7 +1440,7 @@ mod tests {
             ])),
         ));
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "apps": {
                     "views": {
                         "main": {
@@ -1376,13 +1459,14 @@ mod tests {
         config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_parameters("core:default").unwrap();
         let page_parameters = config
             .parameter_snapshot(&page_state, InputSourceIdentity::default())
             .unwrap();
-        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap();
         let result = load_items_for_page(
             &projection,
             "core:default",
@@ -1470,7 +1554,7 @@ mod tests {
             },
         ];
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "apps": {
                     "views": {
                         "main": {
@@ -1502,16 +1586,17 @@ mod tests {
         config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("apps".to_string(), root.clone());
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("sys".to_string(), root.clone());
         let page_state = config.instantiate_parameters("core:default").unwrap();
         let page_parameters = config
             .parameter_snapshot(&page_state, InputSourceIdentity::default())
             .unwrap();
-        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap();
         let result = load_items_for_page(
             &projection,
             "core:default",
@@ -1552,7 +1637,7 @@ mod tests {
             .config
             .items = Some("{{ page.query.provider_should_not_run }}".into());
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "apps": {
                     "views": {
                         "main": {
@@ -1575,7 +1660,8 @@ mod tests {
             .parameter_snapshot(&page_state, InputSourceIdentity::default())
             .unwrap();
 
-        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap();
         let result = load_items_for_page(
             &projection,
             "core:default",
@@ -1680,7 +1766,7 @@ mod tests {
             Some(toml::Value::Array(vec!["query={{ view.query }}".into()])),
         ));
         *config.test_config_value_mut() = serde_json::json!({
-            "plugins": {
+            "workflows": {
                 "apps": {
                     "views": {
                         "main": {
@@ -1699,13 +1785,14 @@ mod tests {
         config.test_rebuild_parameter_registry().unwrap();
         config.rebuild_template_registry().unwrap();
         config
-            .test_plugin_roots_mut()
+            .test_workflow_roots_mut()
             .insert("apps".to_string(), root.clone());
         let page_state = config.instantiate_parameters("core:default").unwrap();
         let page_parameters = config
             .parameter_snapshot(&page_state, InputSourceIdentity::default())
             .unwrap();
-        let projection = PickerItemsProjection::from_config(&config, "core:default").unwrap();
+        let projection =
+            PickerItemsProjection::from_config(&config, &Value::Null, "core:default").unwrap();
         let result = load_items_for_page(
             &projection,
             "core:default",

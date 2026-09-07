@@ -1,6 +1,6 @@
 use super::api::EngineValidationContext;
-use crate::config::{Config, Defaults, EngineConfigValidator, View};
-use crate::expression::validate_json_value;
+use crate::workflow::config::{CompiledConfig, Defaults, EngineConfigValidator, View};
+use crate::workflow::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -15,7 +15,7 @@ impl EngineConfigValidator for EngineRegistry {
         self.validate_view_with_root(name, view, script_root)
     }
 
-    fn validate_relations(&self, config: &Config) -> Result<()> {
+    fn validate_relations(&self, config: &CompiledConfig) -> Result<()> {
         EngineRegistry::validate_relations(self, config)
     }
 }
@@ -27,7 +27,7 @@ impl EngineRegistry {
 
     pub(crate) fn definition(
         &self,
-        config: &Config,
+        config: &CompiledConfig,
         view_ref: &str,
     ) -> Result<crate::engine::EngineDefinition> {
         let engine_type = config.engine(view_ref)?;
@@ -40,9 +40,9 @@ impl EngineRegistry {
         engine_type: &str,
     ) -> Option<crate::engine::EngineDefinition> {
         match engine_type {
-            crate::config::ENGINE_PICKER => Some(super::picker::definition()),
-            crate::config::ENGINE_CAPTURE => Some(super::capture::definition()),
-            crate::config::ENGINE_EMBEDDED => Some(super::embedded::definition()),
+            crate::workflow::config::ENGINE_PICKER => Some(super::picker::definition()),
+            crate::workflow::config::ENGINE_CAPTURE => Some(super::capture::definition()),
+            crate::workflow::config::ENGINE_EMBEDDED => Some(super::embedded::definition()),
             _ => None,
         }
     }
@@ -70,23 +70,23 @@ impl EngineRegistry {
             script_root,
         };
         match view.selected_engine_type() {
-            crate::config::ENGINE_PICKER => {
+            crate::workflow::config::ENGINE_PICKER => {
                 super::picker::validate_config(context)?;
                 super::picker::validate_keymap(name, view)
             }
-            crate::config::ENGINE_CAPTURE => {
+            crate::workflow::config::ENGINE_CAPTURE => {
                 super::capture::validate_config(context)?;
                 super::capture::validate_keymap(name, view)
             }
-            crate::config::ENGINE_EMBEDDED => {
+            crate::workflow::config::ENGINE_EMBEDDED => {
                 super::embedded::validate_config(context)?;
-                default_validate_keymap(crate::config::ENGINE_EMBEDDED, name, view)
+                default_validate_keymap(crate::workflow::config::ENGINE_EMBEDDED, name, view)
             }
             engine_type => bail!("view {:?} uses unsupported engine {:?}", name, engine_type),
         }
     }
 
-    pub(crate) fn validate_relations(&self, config: &Config) -> Result<()> {
+    pub(crate) fn validate_relations(&self, config: &CompiledConfig) -> Result<()> {
         super::picker::validate_relations(config)
     }
 }
@@ -156,7 +156,7 @@ mod tests {
         let registry = EngineRegistry::new();
         assert_eq!(
             registry
-                .definition_for_engine(crate::config::ENGINE_PICKER)
+                .definition_for_engine(crate::workflow::config::ENGINE_PICKER)
                 .unwrap()
                 .current_fields,
             [
@@ -170,14 +170,14 @@ mod tests {
         );
         assert_eq!(
             registry
-                .definition_for_engine(crate::config::ENGINE_CAPTURE)
+                .definition_for_engine(crate::workflow::config::ENGINE_CAPTURE)
                 .unwrap()
                 .current_fields,
             ["value"]
         );
         assert_eq!(
             registry
-                .definition_for_engine(crate::config::ENGINE_EMBEDDED)
+                .definition_for_engine(crate::workflow::config::ENGINE_EMBEDDED)
                 .unwrap()
                 .current_fields,
             [] as [&str; 0]

@@ -1,10 +1,10 @@
 use super::api::ViewIdentity;
-use crate::command::ViewOutput;
-use crate::config::CommandBindingVisibility;
 use crate::input::{EditorSnapshot, Key, ViewMountId};
-use crate::parameter::ParameterSnapshot;
 use crate::terminal::ImagePicker;
-use crate::theme::ResolvedTheme;
+use crate::ui::theme::ResolvedTheme;
+use crate::workflow::command::ViewOutput;
+use crate::workflow::config::CommandBindingVisibility;
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
@@ -252,7 +252,6 @@ pub(crate) struct EngineTick {
     pub(crate) content_size: (u16, u16),
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EngineNotice {
     Info { view_ref: String, message: String },
@@ -313,7 +312,6 @@ impl EngineCommandBinding {
         }
     }
 }
-
 
 #[derive(Clone)]
 pub(crate) struct EngineCommandProjection {
@@ -398,8 +396,8 @@ pub(crate) trait ViewRenderer {
 
     fn render(&self, model: &RenderModel, context: &RenderContext, frame: &mut Frame, area: Rect);
 
-    fn chrome(&self, _model: &RenderModel) -> crate::chrome::EngineChrome {
-        crate::chrome::EngineChrome::default()
+    fn chrome(&self, _model: &RenderModel) -> crate::ui::chrome::EngineChrome {
+        crate::ui::chrome::EngineChrome::default()
     }
 }
 
@@ -452,7 +450,6 @@ impl BackgroundOutcome {
         self
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ExternalTickAction {
@@ -538,7 +535,8 @@ pub(crate) trait EngineRuntime {
         &mut self,
         _starter: &crate::task::MountTaskStarter,
         _runtime_snapshot: &Value,
-    ) {
+    ) -> bool {
+        false
     }
 
     /// Poll foreground Engine-owned work. A completion is consumed once and
@@ -585,7 +583,7 @@ pub(crate) trait EngineRuntime {
         &self,
         _context: &ViewContext,
         _owner: &str,
-    ) -> Result<Option<crate::command::CommandOwnerContext>> {
+    ) -> Result<Option<crate::workflow::command::CommandOwnerContext>> {
         Ok(None)
     }
 
@@ -645,7 +643,7 @@ impl EngineDefinition {
 mod tests {
     use super::*;
     use crate::input::{EditorBuffer, InputSourceIdentity};
-    use crate::parameter::ParameterSnapshot;
+    use crate::workflow::parameter::ParameterSnapshot;
 
     fn test_context() -> ViewContext {
         let mount_id = ViewMountId(7);
@@ -670,7 +668,6 @@ mod tests {
             revision: 4,
         })
     }
-
 
     struct TestRuntime {
         value: String,

@@ -85,8 +85,7 @@ impl EmbeddedSession {
 
     pub(crate) fn deactivate(&mut self) {
         // Dropping EmbeddedRuntime closes the PTY and terminates the process
-        // group. Taking it here makes the lifecycle cleanup explicit and
-        // idempotent for both legacy Session and protocol Views.
+        // group. Taking it here makes lifecycle cleanup explicit and idempotent.
         self.runtime.take();
         self.pending_input.clear();
     }

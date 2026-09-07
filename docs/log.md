@@ -4,6 +4,8 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
 ## 2026-09-07
 
+- Corrected the workflow manifest reference: capture views accept required `output` and optional `title`, and `[workflow].api` is optional with a default of `1`.
+- Added the ignored Stage 5 scheduler evidence collector and recorded release artifact `target/stage5/scheduler-20260907-092158Z/`: five 40-iteration serialized-worker samples met the initial 250 ms pooled-p95 queue-wait and cancellation-to-reap objectives. The architecture plan retains the serialized worker based on this TaskRuntime/process baseline and explicitly records that private preview and full input/render workload evidence remain outstanding.
 - Added `docs/explanation/architecture-convergence.md` as an implementation plan based on commit `ff50f2c` plus the reviewed working tree.
 - Recorded current partial protocol foundations and six incremental work areas: foreground execution lifecycle, task correlation, configuration ownership, protocol placement, measured scheduling, and documentation alignment.
 - Specified navigation commit sequencing, task correlation ownership, the foreground terminal-handoff state machine, configuration roles, telemetry, service objectives, migration gates, and production-path contract coverage.

@@ -1,21 +1,21 @@
 mod support;
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use support::{
     discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
-    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env, temporary_root,
-    wait_for_fresh_screen, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
-    wait_for_nonempty_file, wait_for_output, wait_for_process_exit, wait_for_ready, wait_for_text,
-    write_test_config,
+    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
+    spawn_launcher_with_redirected_stdout, temporary_root, wait_for_fresh_screen,
+    wait_for_launcher_exit, wait_for_launcher_exit_without_reading, wait_for_nonempty_file,
+    wait_for_output, wait_for_process_exit, wait_for_ready, wait_for_text, write_test_config,
 };
 
-fn write_plugin_script(root: &Path, plugin: &str, file: &str, source: &str) {
-    let path = root.join("workflows").join(plugin).join(file);
+fn write_workflow_script(root: &Path, workflow: &str, file: &str, source: &str) {
+    let path = root.join("workflows").join(workflow).join(file);
     fs::create_dir_all(path.parent().expect("script path has no parent")).unwrap();
     fs::write(path, source).unwrap();
 }
@@ -69,10 +69,10 @@ fn normal_exit_restores_terminal_state() {
 fn first_signal_aborts_a_blocked_final_output_write() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin_root = root.join("workflows/custom");
-    fs::create_dir_all(plugin_root.join("scripts")).unwrap();
+    let workflow_root = root.join("workflows/custom");
+    fs::create_dir_all(workflow_root.join("scripts")).unwrap();
     fs::write(
-        plugin_root.join("workflow.toml"),
+        workflow_root.join("workflow.toml"),
         "[workflow]\napi = 1\nname = \"custom\"\n\n[views.main.engine]\ntype = \"picker\"\n[views.main.engine.config]\nitems = []\n",
     )
     .unwrap();
@@ -81,23 +81,23 @@ fn first_signal_aborts_a_blocked_final_output_write() {
         r#"
         default_view = "custom:main"
 
-        [plugins.custom.views.main]
-        [plugins.custom.views.main.engine]
+        [workflows.custom.views.main]
+        [workflows.custom.views.main.engine]
         type = "picker"
-        [plugins.custom.views.main.engine.config]
+        [workflows.custom.views.main.engine.config]
         items = [{display = "Item", value = "value"}]
 
-        [plugins.custom.views.main.commands.accept]
+        [workflows.custom.views.main.commands.accept]
         key = "enter"
         label = "Accept"
         type = "return"
-        [plugins.custom.views.main.commands.accept.payload]
+        [workflows.custom.views.main.commands.accept.payload]
         handler = "scripts/large.sh"
         "#,
     )
     .unwrap();
     fs::write(
-        plugin_root.join("scripts/large.sh"),
+        workflow_root.join("scripts/large.sh"),
         "head -c 16777216 /dev/zero\n",
     )
     .unwrap();
@@ -123,10 +123,10 @@ fn first_signal_exits_when_outer_terminal_stops_reading() {
         r#"
         default_view = "custom:main"
 
-        [plugins.custom.views.main]
-        [plugins.custom.views.main.engine]
+        [workflows.custom.views.main]
+        [workflows.custom.views.main.engine]
         type = "embedded"
-        [plugins.custom.views.main.engine.config]
+        [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "while :; do printf x; done"]
         escape-cancels = false
         "#,
@@ -175,9 +175,9 @@ fn escaped_dynamic_opener_remains_literal_at_runtime() {
         &config,
         r#"
         default_view = "core:main"
-        [plugins.core.views.main.engine]
+        [workflows.core.views.main.engine]
         type = "capture"
-        [plugins.core.views.main.engine.config]
+        [workflows.core.views.main.engine.config]
         output = '''literal \{{ page.input }}'''
         "#,
     )
@@ -197,11 +197,11 @@ fn escaped_dynamic_opener_remains_literal_at_runtime() {
 fn capture_script_source_renders_its_json_string() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("workflows/custom");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    let workflow = root.join("workflows/custom");
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("workflow.toml"),
+        workflow.join("workflow.toml"),
         r#"
         [workflow]
         api = 1
@@ -216,7 +216,7 @@ fn capture_script_source_renders_its_json_string() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/output.sh"),
+        workflow.join("scripts/output.sh"),
         "printf '\"capture-source-output\"\\n'\n",
     )
     .unwrap();
@@ -235,11 +235,11 @@ fn capture_script_source_renders_its_json_string() {
 fn dynamic_capture_output_can_resolve_to_a_script_source() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("workflows/custom");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    let workflow = root.join("workflows/custom");
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("workflow.toml"),
+        workflow.join("workflow.toml"),
         r#"
         [workflow]
         api = 1
@@ -256,7 +256,7 @@ fn dynamic_capture_output_can_resolve_to_a_script_source() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/output.sh"),
+        workflow.join("scripts/output.sh"),
         "printf '%s\\n' '\"dynamic-capture-output\"'\n",
     )
     .unwrap();
@@ -275,12 +275,12 @@ fn dynamic_capture_output_can_resolve_to_a_script_source() {
 fn signal_exit_terminates_capture_script_source() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("workflows/custom");
+    let workflow = root.join("workflows/custom");
     let pid_file = root.join("capture.pid");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
     fs::write(
-        plugin.join("workflow.toml"),
+        workflow.join("workflow.toml"),
         r#"
         [workflow]
         api = 1
@@ -294,7 +294,7 @@ fn signal_exit_terminates_capture_script_source() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/output.sh"),
+        workflow.join("scripts/output.sh"),
         "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '\"done\"\\n'\n",
     )
     .unwrap();
@@ -317,9 +317,9 @@ fn signal_exit_terminates_capture_script_source() {
 fn signal_exit_waits_for_items_worker_cleanup() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin = root.join("workflows/custom");
+    let workflow = root.join("workflows/custom");
     let pid_file = root.join("items.pid");
-    fs::create_dir_all(plugin.join("scripts")).unwrap();
+    fs::create_dir_all(workflow.join("scripts")).unwrap();
     fs::write(
         &config,
         r#"
@@ -328,7 +328,7 @@ fn signal_exit_waits_for_items_worker_cleanup() {
     )
     .unwrap();
     fs::write(
-        plugin.join("workflow.toml"),
+        workflow.join("workflow.toml"),
         r#"
         [workflow]
         api = 1
@@ -342,7 +342,7 @@ fn signal_exit_waits_for_items_worker_cleanup() {
     )
     .unwrap();
     fs::write(
-        plugin.join("scripts/items.sh"),
+        workflow.join("scripts/items.sh"),
         "#!/bin/sh\nprintf '%s' $$ > \"$PID_FILE\"\nsleep 30\nprintf '[{\"display\":\"Item\"}]'\n",
     )
     .unwrap();
@@ -363,6 +363,233 @@ fn signal_exit_waits_for_items_worker_cleanup() {
 }
 
 #[test]
+fn foreground_command_failure_resumes_the_launcher_terminal() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Item", value = "value"}]
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [workflows.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/fail.sh" }
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "core",
+        "scripts/fail.sh",
+        "printf failure-marker\n; exit 7\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "external effect failed");
+    assert!(
+        String::from_utf8_lossy(&output).contains("external effect failed"),
+        "launcher output: {:?}",
+        output
+    );
+    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Item", value = "value"}]
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [workflows.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/sleep.sh" }
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "core",
+        "scripts/sleep.sh",
+        "printf 'foreground-ready\\n'\nsleep 30\n",
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "foreground-ready");
+    process.master.write_all(b"\x1a").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "external effect failed");
+    assert!(
+        String::from_utf8_lossy(&output).contains("external effect failed"),
+        "launcher output: {output:?}"
+    );
+    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {output:?}");
+    assert_terminal_restored(&process, &output);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn foreground_command_uses_the_controlling_terminal_and_restores_the_launcher() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Item", value = "value"}]
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [workflows.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/read-terminal.sh" }
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "core",
+        "scripts/read-terminal.sh",
+        "printf 'child-ready\\n'\nIFS= read -r input\nprintf 'child-read:%s\\n' \"$input\"\nprintf 'child-stderr\\n' >&2\nIFS= read -r _\n",
+    );
+
+    let mut process = spawn_launcher_with_redirected_stdout(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "child-ready");
+    process.master.write_all(b"terminal-input\n").unwrap();
+    process.master.flush().unwrap();
+    let child_output = wait_for_text(&process.master, "child-stderr");
+    let child_output = String::from_utf8_lossy(&child_output);
+    assert!(child_output.contains("child-read:terminal-input"));
+    assert!(child_output.contains("child-stderr"));
+
+    process.master.write_all(b"continue\n").unwrap();
+    process.master.flush().unwrap();
+    let resumed = wait_for_fresh_screen(&process.master, |visible| visible.contains("Item"));
+    assert!(
+        String::from_utf8_lossy(&resumed).contains("Item"),
+        "launcher did not redraw after foreground command: {resumed:?}"
+    );
+    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {output:?}");
+    assert_terminal_restored(&process, &output);
+    let mut redirected_stdout = process.take_stdout().unwrap();
+    let mut redirected_output = Vec::new();
+    redirected_stdout
+        .read_to_end(&mut redirected_output)
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&redirected_output).contains("child-"),
+        "foreground child used redirected launcher stdout: {redirected_output:?}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn foreground_command_cancellation_restores_terminal_and_reaps_descendant() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let descendant_pid = root.join("foreground-descendant.pid");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Item", value = "value"}]
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        [workflows.core.views.default.commands.run.payload]
+        handler = { source = "script", file = "scripts/foreground.sh" }
+        exit = true
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "core",
+        "scripts/foreground.sh",
+        "#!/bin/sh\nsh -c 'trap \"\" TERM; printf \"%s\" $$ > \"$DESCENDANT_PID\"; while :; do sleep 1; done' &\nwhile :; do sleep 1; done\n",
+    );
+    let descendant_pid_path = descendant_pid.to_string_lossy().into_owned();
+    let mut process = spawn_launcher_with_args_and_env(
+        &config,
+        &[],
+        &[("DESCENDANT_PID", descendant_pid_path.as_str())],
+    );
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let child_pid = wait_for_nonempty_file(&descendant_pid)
+        .trim()
+        .parse::<libc::pid_t>()
+        .unwrap();
+
+    process.send_signal(libc::SIGTERM);
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 128 + libc::SIGTERM, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+    wait_for_process_exit(child_pid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn signal_exit_terminates_embedded_process() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -372,10 +599,10 @@ fn signal_exit_terminates_embedded_process() {
         r#"
         default_view = "custom:main"
 
-        [plugins.custom.views.main]
-        [plugins.custom.views.main.engine]
+        [workflows.custom.views.main]
+        [workflows.custom.views.main.engine]
         type = "embedded"
-        [plugins.custom.views.main.engine.config]
+        [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; sleep 30"]
         escape-cancels = false
         "#,
@@ -408,10 +635,10 @@ fn embedded_pty_disconnect_cancels_a_running_child() {
         r#"
         default_view = "custom:main"
 
-        [plugins.custom.views.main]
-        [plugins.custom.views.main.engine]
+        [workflows.custom.views.main]
+        [workflows.custom.views.main.engine]
         type = "embedded"
-        [plugins.custom.views.main.engine.config]
+        [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; exec 0<&- 1>&- 2>&-; sleep 30"]
         escape-cancels = false
         "#,
@@ -443,10 +670,10 @@ fn runtime_log_open_failure_is_reported_without_stopping_the_launcher() {
         default_view = "core:default"
         log_file = "/dev/full"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item"}]
         "#,
     )
@@ -473,22 +700,22 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         default_view = "core:default"
         log_file = "/dev/full"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value"}]
-        [plugins.core.views.default.commands.exit]
+        [workflows.core.views.default.commands.exit]
         key = "enter"
         label = "Exit"
         type = "run"
-        [plugins.core.views.default.commands.exit.payload]
+        [workflows.core.views.default.commands.exit.payload]
         handler = { source = "script", file = "scripts/exit.sh" }
         exit = true
         "#,
     )
     .unwrap();
-    write_plugin_script(&root, "core", "scripts/exit.sh", "printf 'done\\n'\n");
+    write_workflow_script(&root, "core", "scripts/exit.sh", "printf 'done\\n'\n");
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
     process.master.write_all(b"\r").unwrap();
@@ -513,28 +740,28 @@ fn loads_items_and_runs_a_view_command() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value"}]
         [catalog]
         items = [{display = "Item", value = "value"}]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/command.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write items command config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/command.sh",
@@ -559,6 +786,7 @@ fn loads_items_and_runs_a_view_command() {
         "launcher exited with output: {:?}",
         String::from_utf8_lossy(&output)
     );
+    assert_terminal_restored(&process, &output);
     assert!(
         String::from_utf8_lossy(&output).contains("command-marker:value"),
         "launcher output did not contain command marker: {:?}",
@@ -576,28 +804,28 @@ fn selected_picker_item_is_passed_to_command_when_navigating_down() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [
             { display = "FirstApp", value = "app-one" },
             { display = "SecondApp", value = "app-two" },
         ]
 
-        [plugins.core.views.default.commands.open]
+        [workflows.core.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
 
-        [plugins.core.views.default.commands.open.payload]
+        [workflows.core.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/open.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write selection navigation config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/open.sh",
@@ -640,28 +868,28 @@ fn selected_picker_item_is_passed_to_command_when_navigating_down_and_up() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [
             { display = "FirstApp", value = "app-one" },
             { display = "SecondApp", value = "app-two" },
         ]
 
-        [plugins.core.views.default.commands.open]
+        [workflows.core.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
 
-        [plugins.core.views.default.commands.open.payload]
+        [workflows.core.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/open.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write selection navigation config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/open.sh",
@@ -705,27 +933,27 @@ fn typing_space_without_route_completion_does_not_error_and_preserves_query() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [
             { display = "Google Chrome", value = "chrome" },
         ]
 
-        [plugins.core.views.default.commands.open]
+        [workflows.core.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
 
-        [plugins.core.views.default.commands.open.payload]
+        [workflows.core.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/open.sh" }
         args = ["{{ selection.value }}", "{{ page.raw_input }}"]
         exit = true
         "#,
     )
     .expect("could not write test config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/open.sh",
@@ -770,15 +998,15 @@ fn dynamic_items_source_metadata_is_resolved_at_execution() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config.items]
+        [workflows.core.views.default.engine.config.items]
         source = "{{ view.query.source }}"
         file = "{{ view.query.file }}"
         max_output_bytes = "{{ view.query.limit }}"
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         source = { type = "string", default = "script" }
         file = { type = "string", default = "scripts/dynamic-items.sh" }
@@ -814,17 +1042,17 @@ fn run_command_args_resolve_to_exact_positional_arguments() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{ display = "Item", value = "value with spaces", metadata = { option = "selected mode", detail = { kind = "app" } } }]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/args.sh" }
         args = [
           "--option={{ selection.metadata.option }}",
@@ -835,14 +1063,14 @@ fn run_command_args_resolve_to_exact_positional_arguments() {
         ]
         exit = true
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         input_order = []
         extra = { type = "string", default = "query value" }
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/args.sh",
@@ -889,23 +1117,23 @@ fn application_launch_detaches_started_process_from_launcher_group() {
         r#"
         default_view = "apps:main"
 
-        [plugins.apps.views.main]
-        [plugins.apps.views.main.engine]
+        [workflows.apps.views.main]
+        [workflows.apps.views.main.engine]
         type = "picker"
-        [plugins.apps.views.main.engine.config]
+        [workflows.apps.views.main.engine.config]
         items = [{ display = "App", value = "fixture.desktop" }]
 
-        [plugins.apps.views.main.commands.open]
+        [workflows.apps.views.main.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
-        [plugins.apps.views.main.commands.open.payload]
+        [workflows.apps.views.main.commands.open.payload]
         handler = { source = "script", file = "scripts/open.sh" }
         exit = true
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "apps",
         "scripts/open.sh",
@@ -972,29 +1200,29 @@ fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{ display = "Item", value = "value" }]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "{{ view.query.handler.source }}", file = "{{ view.query.handler.file }}" }
         args = ["{{ selection.value }}"]
         exit = true
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         input_order = []
         handler = { type = "object", default = { source = "script", file = "scripts/object.sh" } }
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/object.sh",
@@ -1025,29 +1253,29 @@ fn complete_dynamic_command_args_resolve_to_an_argv_array() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{ display = "Item", value = "value" }]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/args.sh" }
         args = "{{ view.query.arguments }}"
         exit = true
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         input_order = []
         arguments = { type = "array<string>", default = ["--mode=dynamic", "two words"] }
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/args.sh",
@@ -1079,18 +1307,18 @@ fn file_backed_command_handler_keeps_template_text_opaque_at_execution() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value"}]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/run.sh" }
         args = ["{{ selection.value }}"]
         exit = true
@@ -1128,23 +1356,23 @@ fn dynamic_command_handler_source_preserves_literal_template_text() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{ display = "Item", value = "value" }]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "{{ view.query.source }}", file = "{{ view.query.file }}" }
         args = ["{{ selection.value }}"]
         exit = true
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         input_order = []
         source = { type = "string", default = "script" }
@@ -1152,7 +1380,7 @@ fn dynamic_command_handler_source_preserves_literal_template_text() {
         "#,
     )
     .expect("could not write opaque handler config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/opaque.sh",
@@ -1183,25 +1411,25 @@ fn loads_items_from_a_native_toml_array() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{ display = "Static item", value = "static-value" }]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/static.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write static items config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/static.sh",
@@ -1243,17 +1471,17 @@ fn explicit_capture_view_receives_typed_query_state() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.direct]
-        [plugins.core.views.direct.engine]
+        [workflows.core.views.direct]
+        [workflows.core.views.direct.engine]
         type = "capture"
-        [plugins.core.views.direct.engine.config]
+        [workflows.core.views.direct.engine.config]
         output = "{{ view.query.message }}"
-        [plugins.core.views.direct.query]
+        [workflows.core.views.direct.query]
         type = "object"
         message = { type = "string" }
         "#,
@@ -1291,11 +1519,11 @@ fn capture_does_not_render_its_private_query_as_a_host_input_row() {
         r#"
         default_view = "core:capture"
 
-        [plugins.core.views.capture.engine]
+        [workflows.core.views.capture.engine]
         type = "capture"
-        [plugins.core.views.capture.engine.config]
+        [workflows.core.views.capture.engine.config]
         output = "fixed-capture"
-        [plugins.core.views.capture.query]
+        [workflows.core.views.capture.query]
         type = "object"
         secret = { type = "string" }
         "#,
@@ -1331,17 +1559,17 @@ fn explicit_capture_view_receives_typed_runtime_input() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.direct]
-        [plugins.core.views.direct.engine]
+        [workflows.core.views.direct]
+        [workflows.core.views.direct.engine]
         type = "capture"
-        [plugins.core.views.direct.engine.config]
+        [workflows.core.views.direct.engine.config]
         output = "{{ page.input }}"
-        [plugins.core.views.direct.query]
+        [workflows.core.views.direct.query]
         type = "object"
         input_order = ["text"]
         text = { type = "string", default = "" }
@@ -1369,17 +1597,17 @@ fn explicit_embedded_view_receives_typed_query_input() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.direct]
-        [plugins.core.views.direct.engine]
+        [workflows.core.views.direct]
+        [workflows.core.views.direct.engine]
         type = "embedded"
-        [plugins.core.views.direct.engine.config]
+        [workflows.core.views.direct.engine.config]
         command = ["sh", "-lc", "printf 'input=%s\\n' \"$LAUNCHER_INPUT\""]
-        [plugins.core.views.direct.query]
+        [workflows.core.views.direct.query]
         type = "object"
         input_order = ["text"]
         text = { type = "string", default = "" }
@@ -1405,11 +1633,11 @@ fn embedded_does_not_render_its_private_query_as_a_host_input_row() {
         r#"
         default_view = "core:embedded"
 
-        [plugins.core.views.embedded.engine]
+        [workflows.core.views.embedded.engine]
         type = "embedded"
-        [plugins.core.views.embedded.engine.config]
+        [workflows.core.views.embedded.engine.config]
         command = ["sh", "-c", "printf 'fixed-embedded'; trap 'exit 0' INT TERM; while :; do sleep 1; done"]
-        [plugins.core.views.embedded.query]
+        [workflows.core.views.embedded.query]
         type = "object"
         secret = { type = "string" }
         "#,
@@ -1446,15 +1674,15 @@ fn explicit_embedded_view_runs_without_picker_intent() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.direct]
-        [plugins.core.views.direct.engine]
+        [workflows.core.views.direct]
+        [workflows.core.views.direct.engine]
         type = "embedded"
-        [plugins.core.views.direct.engine.config]
+        [workflows.core.views.direct.engine.config]
         command = ["sh", "-lc", "printf 'direct-embedded\\n'; exit 0"]
 "#,
     )
@@ -1574,15 +1802,15 @@ fn embedded_view_removes_stale_launcher_environment() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.direct]
-        [plugins.core.views.direct.engine]
+        [workflows.core.views.direct]
+        [workflows.core.views.direct.engine]
         type = "embedded"
-        [plugins.core.views.direct.engine.config]
+        [workflows.core.views.direct.engine.config]
         command = ["sh", "-lc", "printf 'managed=%s|%s|%s|%s|%s\\n' \"${LAUNCHER_COMMAND-unset}\" \"${LAUNCHER_ITEM-unset}\" \"${LAUNCHER_QUERY-unset}\" \"${LAUNCHER_VIEW-unset}\" \"${LAUNCHER_PLUGIN_DIR-unset}\""]
 "#,
     )
@@ -1619,25 +1847,25 @@ fn waits_for_items_before_running_enter_command() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/picker.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write launcher integration config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/picker.sh",
@@ -1674,29 +1902,29 @@ fn route_query_and_activate_share_one_input_batch() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [plugins.apps.views.main]
+        [workflows.core.views.default.engine.config]
+        [workflows.apps.views.main]
         alias = "app"
-        [plugins.apps.views.main.engine]
+        [workflows.apps.views.main.engine]
         type = "picker"
-        [plugins.apps.views.main.engine.config]
+        [workflows.apps.views.main.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.apps.views.main.commands.run]
+        [workflows.apps.views.main.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
-        [plugins.apps.views.main.commands.run.payload]
+        [workflows.apps.views.main.commands.run.payload]
         handler = { source = "script", file = "scripts/route.sh" }
         args = ["{{ view.raw_input }}", "{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write route batch integration config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "apps",
         "scripts/route.sh",
@@ -1733,25 +1961,25 @@ fn view_commands_accept_unreserved_control_bindings() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "ctrl+r"
         label = "Run"
         type = "run"
 
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/ctrl.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write control command config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/ctrl.sh",
@@ -1788,18 +2016,18 @@ fn edit_input_command_updates_the_picker_owned_editor() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value"}]
 
-        [plugins.core.views.default.commands.rewrite]
+        [workflows.core.views.default.commands.rewrite]
         key = "ctrl+r"
         label = "Rewrite"
         requires = "input"
         type = "edit-input"
 
-        [plugins.core.views.default.commands.rewrite.payload]
+        [workflows.core.views.default.commands.rewrite.payload]
         value = "rewritten"
         cursor = 3
         "#,
@@ -1840,44 +2068,44 @@ fn view_command_overrides_printable_picker_binding() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [
             { display = "First", value = "first" },
             { display = "Second", value = "second" },
         ]
-        [plugins.core.views.default.keymap]
+        [workflows.core.views.default.keymap]
         "space" = "select_next"
-        [plugins.core.views.default.commands.space]
+        [workflows.core.views.default.commands.space]
         key = "space"
         label = "HiddenSpace"
         type = "run"
 
-        [plugins.core.views.default.commands.space.payload]
+        [workflows.core.views.default.commands.space.payload]
         handler = { source = "script", file = "scripts/hidden-space.sh" }
         exit = true
 
-        [plugins.core.views.default.commands.accept]
+        [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
         type = "run"
 
-        [plugins.core.views.default.commands.accept.payload]
+        [workflows.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/space-selection.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write printable keymap config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/hidden-space.sh",
         "printf 'hidden-space-command\\n'\n",
     );
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/space-selection.sh",
@@ -1911,10 +2139,10 @@ fn queued_keys_observe_dynamic_picker_bindings() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "First", value = "first"}]
         "#,
     )
@@ -1939,29 +2167,29 @@ fn unavailable_toggle_preview_consumes_an_unbound_key() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "First", value = "first"}]
-        [plugins.core.views.default.keymap]
+        [workflows.core.views.default.keymap]
         space = "toggle_preview"
 
-        [plugins.core.views.default.commands.inspect]
+        [workflows.core.views.default.commands.inspect]
         key = "enter"
         label = "Inspect"
         scope = "view"
         requires = "input"
         type = "run"
 
-        [plugins.core.views.default.commands.inspect.payload]
+        [workflows.core.views.default.commands.inspect.payload]
         handler = { source = "script", file = "scripts/inspect.sh" }
         args = ["{{ page.input }}"]
         exit = true
         "#,
     )
     .expect("could not write unavailable preview config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/inspect.sh",
@@ -1993,29 +2221,29 @@ fn uppercase_printable_keymap_binding_matches_input() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [
             { display = "First", value = "first" },
             { display = "Second", value = "second" },
         ]
-        [plugins.core.views.default.keymap]
+        [workflows.core.views.default.keymap]
         a = "select_next"
-        [plugins.core.views.default.commands.accept]
+        [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
         type = "run"
 
-        [plugins.core.views.default.commands.accept.payload]
+        [workflows.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/uppercase-selection.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .expect("could not write uppercase keymap config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/uppercase-selection.sh",
@@ -2046,27 +2274,27 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = []
-        [plugins.core.views.default.keymap]
+        [workflows.core.views.default.keymap]
         a = "select_next"
-        [plugins.core.views.default.commands.accept]
+        [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
         requires = "input"
         type = "run"
 
-        [plugins.core.views.default.commands.accept.payload]
+        [workflows.core.views.default.commands.accept.payload]
         handler = { source = "script", file = "scripts/uppercase-input.sh" }
         args = ["{{ page.input }}"]
         exit = true
         "#,
     )
     .expect("could not write uppercase input config");
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/uppercase-input.sh",
@@ -2096,23 +2324,23 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "tab"
         label = "Run"
         type = "run"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/tab.sh" }
         exit = true
         "#,
     )
     .expect("could not write Tab command config");
-    write_plugin_script(&root, "core", "scripts/tab.sh", "printf 'tab-command'\n");
+    write_workflow_script(&root, "core", "scripts/tab.sh", "printf 'tab-command'\n");
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -2133,9 +2361,9 @@ fn unknown_input_closes_route_completion_before_escape() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value"}]
         "#,
     )
@@ -2154,11 +2382,11 @@ fn unknown_input_closes_route_completion_before_escape() {
 fn replacing_items_request_cancels_the_previous_script() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let plugin_root = root.join("workflows/core");
-    let script_root = plugin_root.join("scripts");
+    let workflow_root = root.join("workflows/core");
+    let script_root = workflow_root.join("scripts");
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
-        plugin_root.join("workflow.toml"),
+        workflow_root.join("workflow.toml"),
         "[workflow]\napi = 1\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
     )
     .expect("could not write cancellation workflow manifest");
@@ -2185,11 +2413,11 @@ fi
         default_view = "core:default"
         log_file = "runtime.jsonl"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [plugins.core.views.default.engine.config.items]
+        [workflows.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config.items]
         source = "script"
         file = "scripts/items.sh"
         args = ["{{ view.query }}"]
@@ -2330,10 +2558,10 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         default_view = "core:default"
         log_file = "runtime.jsonl"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = "{{ page.query }}"
 "#,
     )
@@ -2378,30 +2606,30 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
-        [plugins.core.views.default.commands.page]
+        [workflows.core.views.default.commands.page]
         key = "ctrl+r"
         label = "Page"
         type = "run"
-        [plugins.core.views.default.commands.page.payload]
+        [workflows.core.views.default.commands.page.payload]
         handler = { source = "script", file = "scripts/page.sh" }
         exit = true
 
-        [plugins.apps.views.default]
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = [{display = "Row", value = "row"}]
-        [plugins.apps.views.default.commands.open]
+        [workflows.apps.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "run"
-        [plugins.apps.views.default.commands.open.payload]
+        [workflows.apps.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/owner.sh" }
         exit = true
 
@@ -2410,13 +2638,13 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "core",
         "scripts/page.sh",
         "printf 'page-command\\n'\n",
     );
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "apps",
         "scripts/owner.sh",
@@ -2447,34 +2675,34 @@ fn pending_feed_owner_command_overrides_picker_binding() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
-        [plugins.core.views.default.keymap]
+        [workflows.core.views.default.keymap]
         space = "select_next"
 
-        [plugins.apps.views.default]
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = [{display = "Row", value = "row"}]
-        [plugins.apps.views.default.commands.open]
+        [workflows.apps.views.default.commands.open]
         key = "space"
         label = "Open"
         scope = "selection"
         requires = "input"
         type = "run"
-        [plugins.apps.views.default.commands.open.payload]
+        [workflows.apps.views.default.commands.open.payload]
         handler = { source = "script", file = "scripts/owner.sh" }
         args = ["{{ selection.value }}"]
         exit = true
         "#,
     )
     .unwrap();
-    write_plugin_script(
+    write_workflow_script(
         &root,
         "apps",
         "scripts/owner.sh",
@@ -2505,18 +2733,18 @@ fn feed_owners_apply_independent_query_defaults() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
-        [plugins.apps.views.default]
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = "{{ view.query.items }}"
-        [plugins.apps.views.default.query]
+        [workflows.apps.views.default.query]
         type = "object"
         items = { type = "array<object>", default = [{display = "VALUE:source-default"}] }
 
@@ -2547,17 +2775,17 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
 
-        [plugins.apps.views.default]
+        [workflows.apps.views.default]
         alias = "app"
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = [{display = "Needle", value = "needle"}]
         "#,
     )
@@ -2596,25 +2824,25 @@ fn picker_back_clears_routed_query_before_returning_to_default() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
-        [[plugins.core.views.default.engine.config.feeds]]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "sys:default"
-        [plugins.apps.views.default]
+        [workflows.apps.views.default]
         alias = "app"
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.sys.views.default]
+        [workflows.sys.views.default]
         alias = "sys"
-        [plugins.sys.views.default.engine]
+        [workflows.sys.views.default.engine]
         type = "picker"
-        [plugins.sys.views.default.engine.config]
+        [workflows.sys.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
@@ -2677,25 +2905,25 @@ fn empty_picker_input_returns_to_parent_before_a_new_root_route() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [[plugins.core.views.default.engine.config.feeds]]
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "apps:default"
-        [[plugins.core.views.default.engine.config.feeds]]
+        [[workflows.core.views.default.engine.config.feeds]]
         view = "sys:default"
-        [plugins.apps.views.default]
+        [workflows.apps.views.default]
         alias = "app"
-        [plugins.apps.views.default.engine]
+        [workflows.apps.views.default.engine]
         type = "picker"
-        [plugins.apps.views.default.engine.config]
+        [workflows.apps.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.sys.views.default]
+        [workflows.sys.views.default]
         alias = "sys"
-        [plugins.sys.views.default.engine]
+        [workflows.sys.views.default.engine]
         type = "picker"
-        [plugins.sys.views.default.engine.config]
+        [workflows.sys.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
 "#,
     )
@@ -2771,25 +2999,25 @@ fn navigation_without_query_uses_the_target_view_default() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.default.commands.open]
+        [workflows.core.views.default.commands.open]
         key = "enter"
         label = "Open"
         type = "navigate"
 
-        [plugins.core.views.default.commands.open.payload]
+        [workflows.core.views.default.commands.open.payload]
         target = "core:capture"
 
-        [plugins.core.views.capture]
-        [plugins.core.views.capture.engine]
+        [workflows.core.views.capture]
+        [workflows.core.views.capture.engine]
         type = "capture"
-        [plugins.core.views.capture.engine.config]
+        [workflows.core.views.capture.engine.config]
         output = "{{ view.query.text }}"
-        [plugins.core.views.capture.query]
+        [workflows.core.views.capture.query]
         type = "object"
         input_order = ["text"]
         text = { type = "string", default = "target-default" }
@@ -2839,29 +3067,29 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "navigate"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         target = "core:capture"
         query = "capture-marker:{{ selection.value }}"
 
-        [plugins.core.views.capture]
+        [workflows.core.views.capture]
         alias = "cap"
-        [plugins.core.views.capture.engine]
+        [workflows.core.views.capture.engine]
         type = "capture"
-        [plugins.core.views.capture.engine.config]
+        [workflows.core.views.capture.engine.config]
         output = "{{ page.input }}\u001b[31m\n\u4e16\u754c\u001b[0m"
         title = "Capture"
 
-        [plugins.core.views.capture.keymap]
+        [workflows.core.views.capture.keymap]
         enter = false
         "ctrl+y" = "copy"
 "#,
@@ -2932,9 +3160,9 @@ fn failed_capture_cannot_copy_its_diagnostic_text() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "capture"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         output = "{{ selection.missing }}"
         "#,
     )
@@ -2987,14 +3215,14 @@ fn capture_keeps_session_commands_available() {
         [commands.bindings.details.payload]
         target = "core:details"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "capture"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         output = "xxxxxxxxxxxxxx"
 
-        [plugins.core.views.details.engine]
+        [workflows.core.views.details.engine]
         type = "capture"
-        [plugins.core.views.details.engine.config]
+        [workflows.core.views.details.engine.config]
         output = "footer-capture"
         "#,
     )
@@ -3038,12 +3266,12 @@ fn root_capture_defaults_resolve_against_the_consuming_view() {
         [defaults.capture.bindings]
         back = ["{{ view.query.back_key }}"]
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "capture"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         output = "root-default-owner"
 
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         input_order = []
         back_key = { type = "string", default = "ctrl+b" }
@@ -3070,25 +3298,25 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "navigate"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         target = "core:embedded"
         query = '''printf 'embedded-marker:%s\n' '{{ selection.value }}'; exit 0'''
 
-        [plugins.core.views.embedded]
+        [workflows.core.views.embedded]
         alias = "emb"
-        [plugins.core.views.embedded.engine]
+        [workflows.core.views.embedded.engine]
         type = "embedded"
-        [plugins.core.views.embedded.engine.config]
+        [workflows.core.views.embedded.engine.config]
         command = ["sh", "-lc", "{{ page.input }}"]
         title = "Embedded"
 "#,
@@ -3138,14 +3366,14 @@ fn failed_view_creation_returns_to_the_current_view() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [plugins.core.views.broken]
-        [plugins.core.views.broken.engine]
+        [workflows.core.views.default.engine.config]
+        [workflows.core.views.broken]
+        [workflows.core.views.broken.engine]
         type = "embedded"
-        [plugins.core.views.broken.engine.config]
+        [workflows.core.views.broken.engine.config]
         command = "{{ selection.missing }}"
 "#,
     )
@@ -3190,14 +3418,14 @@ fn qualified_view_path_navigates_to_any_engine() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
-        [plugins.core.views.embedded]
-        [plugins.core.views.embedded.engine]
+        [workflows.core.views.default.engine.config]
+        [workflows.core.views.embedded]
+        [workflows.core.views.embedded.engine]
         type = "embedded"
-        [plugins.core.views.embedded.engine.config]
+        [workflows.core.views.embedded.engine.config]
         command = ["sh", "-lc", "{{ page.input }}"]
         title = "Embedded"
 "#,

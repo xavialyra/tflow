@@ -104,7 +104,6 @@ impl Default for ChromeLayout {
 
 #[cfg(test)]
 impl ChromeLayout {
-
     fn region_rows(rows: usize, padding: Insets) -> usize {
         rows.saturating_add(padding.vertical())
     }

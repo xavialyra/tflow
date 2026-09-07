@@ -14,11 +14,11 @@ use super::{
     RenderModel, RendererFactoryContext, RuntimeFactoryContext, ViewContextPublication,
     evaluate_field, evaluate_optional_string, require_field, validate_fields,
 };
-use crate::command::ResolvedInputAction;
-use crate::config::{
+use crate::execution::ensure_script_success;
+use crate::workflow::command::ResolvedInputAction;
+use crate::workflow::config::{
     Defaults, ResolvedScriptSource, ScriptSourceSpec, View, toml_to_json,
 };
-use crate::execution::ensure_script_success;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -116,19 +116,16 @@ pub(super) fn create_view(
     let evaluated: Result<_, anyhow::Error> = (|| {
         let title = evaluate_optional_string(&context.config, "title")?
             .unwrap_or_else(|| default_title.clone());
-        let output = prepare_output(&context.config, context.config.plugin_root.as_deref())?;
+        let output = prepare_output(&context.config, context.config.workflow_root.as_deref())?;
         Ok((title, output))
     })();
     let (title, output, status, success, pending_script) = match evaluated {
-        Ok((title, PreparedCaptureOutput::Text(output))) => (
-            title.clone(),
-            output.clone(),
-            String::new(),
-            true,
-            None,
-        ),
+        Ok((title, PreparedCaptureOutput::Text(output))) => {
+            (title.clone(), output.clone(), String::new(), true, None)
+        }
         Ok((title, PreparedCaptureOutput::Script { root, source, args })) => {
-            let workflow_id = crate::config::package_id(&context.identity.view_ref).to_string();
+            let workflow_id =
+                crate::workflow::config::package_id(&context.identity.view_ref).to_string();
             let view_ref = context.identity.view_ref.clone();
             (
                 title,
@@ -172,26 +169,28 @@ pub(super) fn create_renderer(
 
 pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
-) -> Result<Vec<crate::command::InputActionBinding>> {
+) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
     let keymap =
         CaptureKeymap::from_values(context.bindings.defaults, context.bindings.view_keymap)?;
     Ok(keymap
         .bindings()
-        .map(|(key, action)| crate::command::InputActionBinding {
-            key,
-            action: ResolvedInputAction::Engine(ActionId::new(match action {
-                CaptureAction::Copy => "capture.copy",
-                CaptureAction::Back => "capture.back",
-            })),
-            label: Some(action.label().to_string()),
-            enabled: true,
-        })
+        .map(
+            |(key, action)| crate::workflow::command::InputActionBinding {
+                key,
+                action: ResolvedInputAction::Engine(ActionId::new(match action {
+                    CaptureAction::Copy => "capture.copy",
+                    CaptureAction::Back => "capture.back",
+                })),
+                label: Some(action.label().to_string()),
+                enabled: true,
+            },
+        )
         .collect())
 }
 
 fn prepare_output(
     config: &EvaluatedEngineConfig,
-    plugin_root: Option<&Path>,
+    workflow_root: Option<&Path>,
 ) -> Result<PreparedCaptureOutput> {
     let output =
         evaluate_field(config, "output")?.context("capture engine requires an output field")?;
@@ -201,33 +200,50 @@ fn prepare_output(
 
     let source = ResolvedScriptSource::parse(&output)
         .context("capture output must evaluate to a string or script source")?;
-    let root = plugin_root.map(Path::to_path_buf);
+    let root = workflow_root.map(Path::to_path_buf);
     let args = source.script_args("capture script args")?;
     Ok(PreparedCaptureOutput::Script { root, source, args })
+}
+
+struct CaptureScriptOutcome {
+    result: Result<String>,
+    managed_child_reaped: bool,
 }
 
 fn run_capture_script(
     plan: &PendingCaptureScript,
     cancellation: &crate::lifecycle::CancellationObserver,
-) -> Result<String> {
-    let output = crate::execution::run_resolved_script(
+) -> CaptureScriptOutcome {
+    let output = crate::execution::run_resolved_script_with_outcome(
         &plan.workflow_id,
         &format!("[views.{}.output]", plan.view_ref),
         plan.root.as_deref(),
         &plan.source,
         &plan.args,
         cancellation,
-    )?;
-    ensure_script_success(&output)?;
-    if output.stdout.is_empty() {
-        bail!("script produced no JSON output");
+    );
+    let managed_child_reaped = output.managed_child_reaped();
+    let result = output.into_result().and_then(|output| {
+        ensure_script_success(&output)?;
+        if output.stdout.is_empty() {
+            bail!("script produced no JSON output");
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).with_context(|| {
+                format!(
+                    "script {} did not produce valid JSON",
+                    plan.source.target_display()
+                )
+            })?;
+        value
+            .as_str()
+            .map(str::to_string)
+            .context("capture script source must produce a JSON string")
+    });
+    CaptureScriptOutcome {
+        result,
+        managed_child_reaped,
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("script {} did not produce valid JSON", plan.source.target_display()))?;
-    value
-        .as_str()
-        .map(str::to_string)
-        .context("capture script source must produce a JSON string")
 }
 
 #[derive(Clone)]
@@ -282,11 +298,9 @@ impl CaptureView {
     ) -> (EngineNotice, ViewContextPublication) {
         let title = self.session.title();
         let (session, status, success) = match completion {
-            CaptureCompletion::Completed(output) => (
-                CaptureSession::new(title, &output),
-                String::new(),
-                true,
-            ),
+            CaptureCompletion::Completed(output) => {
+                (CaptureSession::new(title, &output), String::new(), true)
+            }
             CaptureCompletion::Failed(error) => (
                 CaptureSession::new(title, &error),
                 "failed".to_string(),
@@ -341,7 +355,6 @@ impl EngineRuntime for CaptureView {
         Ok(EngineEmission::decision(decision))
     }
 
-
     fn tick(&mut self, _tick: crate::engine::EngineTick) -> Result<EngineEmission> {
         if self.pending_script.is_some()
             || self.script_task.is_some()
@@ -375,22 +388,27 @@ impl EngineRuntime for CaptureView {
         &mut self,
         starter: &crate::task::MountTaskStarter,
         runtime_snapshot: &serde_json::Value,
-    ) {
+    ) -> bool {
         if self.script_task.is_some() || self.script_completion.is_some() {
-            return;
+            return false;
         }
         let Some(plan) = self.pending_script.clone() else {
-            return;
+            return false;
         };
         self.script_completion = None;
-        self.script_task = Some(starter.spawn_latest_with_snapshot(
+        self.script_task = Some(starter.spawn_latest_with_snapshot_tagged(
             "capture-script",
             runtime_snapshot.clone(),
+            crate::task::TaskTags::new("capture", "script"),
             move |context| {
-                run_capture_script(&plan, &context.cancellation.observer())
-                    .map_err(|error| error.to_string())
+                let outcome = run_capture_script(&plan, &context.cancellation.observer());
+                if outcome.managed_child_reaped {
+                    context.mark_process_reaped();
+                }
+                outcome.result.map_err(|error| error.to_string())
             },
         ));
+        true
     }
 
     fn poll_work(&mut self) -> Result<Option<EngineEmission>> {
@@ -457,7 +475,10 @@ mod tests {
 
         let cancellation = crate::lifecycle::CancellationToken::new();
         let context = RuntimeFactoryContext {
-            identity: crate::engine::ViewIdentity::new("core:capture", crate::config::ENGINE_CAPTURE),
+            identity: crate::engine::ViewIdentity::new(
+                "core:capture",
+                crate::workflow::config::ENGINE_CAPTURE,
+            ),
             config: EvaluatedEngineConfig {
                 fields: [(
                     "output".to_string(),
@@ -468,10 +489,10 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                plugin_root: Some(root.clone()),
+                workflow_root: Some(root.clone()),
                 ..EvaluatedEngineConfig::default()
             },
-            parameters: crate::parameter::ParameterSnapshot::from_parts(
+            parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
                 serde_json::Value::Null,
                 String::new(),
                 crate::input::InputSourceIdentity {
@@ -515,6 +536,15 @@ mod tests {
         let model = runtime.render_model();
         let model = model.downcast_ref::<CaptureRenderModel>().unwrap();
         assert_eq!(model.lines.as_ref(), &["captured"]);
+        assert!(
+            tasks
+                .metrics_snapshot()
+                .recent_terminal
+                .last()
+                .unwrap()
+                .process_reaped_at
+                .is_some()
+        );
         tasks.shutdown_and_wait();
         fs::remove_dir_all(root).unwrap();
     }

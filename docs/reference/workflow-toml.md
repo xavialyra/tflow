@@ -25,7 +25,7 @@ api = 1
 name = "Applications"
 ```
 
-- **`api`** (`integer`, required): The manifest API version. Currently `1`.
+- **`api`** (`integer`, optional; defaults to `1`): The manifest API version. Currently `1`.
 - **`name`** (`string`, required): Human-readable display name for the workflow.
 
 ## Views (`[views.<name>]`)
@@ -71,16 +71,19 @@ items = [
 ```
 
 #### 2. `capture`
-Displays text or captures text input, with clipboard copy support.
+Displays captured text output.
 
 ```toml
 [views.log.engine]
 type = "capture"
 
 [views.log.engine.config]
-content = { source = "script", file = "scripts/get_log.sh" }
-clipboard = true
+title = "Log"
+output = { source = "script", file = "scripts/get_log.sh" }
 ```
+
+- **`output`** (required): Text to display, supplied as a string/template or a script source.
+- **`title`** (optional): A string or template displayed as the capture view title.
 
 #### 3. `embedded`
 Owns a child process and renders its PTY output directly.

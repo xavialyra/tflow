@@ -171,9 +171,7 @@ pub enum ItemDisplayInput {
     },
 
     /// Level 2: Full multi-line structure
-    MultiLine {
-        rows: Vec<RowInput>,
-    },
+    MultiLine { rows: Vec<RowInput> },
 }
 
 impl ItemDisplayInput {
@@ -312,7 +310,8 @@ impl From<ItemDisplayInput> for NormalizedItemDisplay {
 
 fn normalize_row(constraints: Vec<ConstraintInput>, cells: Vec<CellInput>) -> NormalizedRow {
     let cell_count = cells.len();
-    let mut resolved_constraints: Vec<Constraint> = constraints.into_iter().map(Into::into).collect();
+    let mut resolved_constraints: Vec<Constraint> =
+        constraints.into_iter().map(Into::into).collect();
 
     if resolved_constraints.is_empty() && cell_count > 0 {
         // By default, if no constraints are given:
@@ -386,7 +385,10 @@ mod tests {
 
         assert_eq!(normalized.rows.len(), 1);
         let row = &normalized.rows[0];
-        assert_eq!(row.constraints, vec![Constraint::Fill(1), Constraint::Length(10)]);
+        assert_eq!(
+            row.constraints,
+            vec![Constraint::Fill(1), Constraint::Length(10)]
+        );
         assert_eq!(row.cells.len(), 2);
         assert_eq!(row.cells[0].align, Alignment::Left);
         assert_eq!(row.cells[0].spans[0].text, "Open Settings");
@@ -432,7 +434,10 @@ mod tests {
         assert_eq!(row.cells[1].spans[0].text, "app");
         assert_eq!(row.cells[1].spans[0].slot, SlotToken::Badge);
         assert_eq!(row.cells[1].align, Alignment::Right);
-        assert_eq!(row.constraints, vec![Constraint::Fill(1), Constraint::Length(4)]);
+        assert_eq!(
+            row.constraints,
+            vec![Constraint::Fill(1), Constraint::Length(4)]
+        );
     }
 
     #[test]
@@ -455,7 +460,10 @@ mod tests {
         assert_eq!(row0.cells[1].spans[0].text, "app");
         assert_eq!(row0.cells[1].align, Alignment::Right);
         assert_eq!(row0.cells[1].spans[0].slot, SlotToken::Badge);
-        assert_eq!(row0.constraints, vec![Constraint::Fill(1), Constraint::Length(4)]);
+        assert_eq!(
+            row0.constraints,
+            vec![Constraint::Fill(1), Constraint::Length(4)]
+        );
 
         // Row 1 is untouched
         let row1 = &display.rows[1];

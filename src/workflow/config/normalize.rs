@@ -4,22 +4,26 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn remove_disabled_workflows(value: &mut toml::Value, disabled: &BTreeSet<String>) {
-    if let Some(workflows) = value.get_mut("workflows").and_then(toml::Value::as_table_mut) {
+    if let Some(workflows) = value
+        .get_mut("workflows")
+        .and_then(toml::Value::as_table_mut)
+    {
         for workflow_id in disabled {
             workflows.remove(workflow_id);
-        }
-    }
-    if let Some(plugins) = value.get_mut("plugins").and_then(toml::Value::as_table_mut) {
-        for plugin_id in disabled {
-            plugins.remove(plugin_id);
         }
     }
 }
 
 pub(super) fn normalize_keymap_tables(value: &mut toml::Value) -> anyhow::Result<()> {
-    if let Some(workflows) = value.get_mut("workflows").and_then(toml::Value::as_table_mut) {
+    if let Some(workflows) = value
+        .get_mut("workflows")
+        .and_then(toml::Value::as_table_mut)
+    {
         for (workflow_id, workflow) in workflows {
-            let Some(views) = workflow.get_mut("views").and_then(toml::Value::as_table_mut) else {
+            let Some(views) = workflow
+                .get_mut("views")
+                .and_then(toml::Value::as_table_mut)
+            else {
                 continue;
             };
             for (view_name, view) in views {
@@ -31,23 +35,6 @@ pub(super) fn normalize_keymap_tables(value: &mut toml::Value) -> anyhow::Result
                     continue;
                 };
                 normalize_keymap_table(keymap, &format!("view {workflow_id}:{view_name}"))?;
-            }
-        }
-    }
-    if let Some(plugins) = value.get_mut("plugins").and_then(toml::Value::as_table_mut) {
-        for (plugin_id, plugin) in plugins {
-            let Some(views) = plugin.get_mut("views").and_then(toml::Value::as_table_mut) else {
-                continue;
-            };
-            for (view_name, view) in views {
-                let Some(keymap) = view
-                    .as_table_mut()
-                    .and_then(|view| view.get_mut("keymap"))
-                    .and_then(toml::Value::as_table_mut)
-                else {
-                    continue;
-                };
-                normalize_keymap_table(keymap, &format!("view {plugin_id}:{view_name}"))?;
             }
         }
     }
@@ -158,34 +145,32 @@ pub(super) fn inject_builtin_commands_value(config: &mut Value) {
 }
 
 pub(super) fn normalize_engine_configs(config: &mut Value) {
-    for container_key in ["workflows", "plugins"] {
-        let Some(workflows) = config.get_mut(container_key).and_then(Value::as_object_mut) else {
+    let Some(workflows) = config.get_mut("workflows").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for workflow in workflows.values_mut() {
+        let Some(views) = workflow.get_mut("views").and_then(Value::as_object_mut) else {
             continue;
         };
-        for workflow in workflows.values_mut() {
-            let Some(views) = workflow.get_mut("views").and_then(Value::as_object_mut) else {
+        for view in views.values_mut() {
+            let Some(view) = view.as_object_mut() else {
                 continue;
             };
-            for view in views.values_mut() {
-                let Some(view) = view.as_object_mut() else {
-                    continue;
-                };
-                let Some(engine) = view.get("engine").cloned() else {
-                    continue;
-                };
-                let Some(engine) = engine.as_object() else {
-                    continue;
-                };
-                let Some(engine_type) = engine.get("type").cloned() else {
-                    continue;
-                };
-                let Some(config) = engine.get("config").and_then(Value::as_object) else {
-                    continue;
-                };
-                view.insert("type".to_string(), engine_type);
-                for (key, value) in config {
-                    view.insert(key.clone(), value.clone());
-                }
+            let Some(engine) = view.get("engine").cloned() else {
+                continue;
+            };
+            let Some(engine) = engine.as_object() else {
+                continue;
+            };
+            let Some(engine_type) = engine.get("type").cloned() else {
+                continue;
+            };
+            let Some(config) = engine.get("config").and_then(Value::as_object) else {
+                continue;
+            };
+            view.insert("type".to_string(), engine_type);
+            for (key, value) in config {
+                view.insert(key.clone(), value.clone());
             }
         }
     }

@@ -1,21 +1,15 @@
 //! Engine-neutral input, View, and navigation contracts.
 //!
-//! This module is the migration boundary for the Input And Navigation Model.
-//! The existing Engine runtime can continue to be hosted by Session while new
 
-use crate::config::{ViewPresentation, ViewPresentationMode};
+use crate::input::{InputEvent, Key};
+use crate::workflow::config::{ViewPresentation, ViewPresentationMode};
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
-#[cfg(test)]
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-pub(crate) use crate::input::{InputEvent, Key};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct ViewInstanceId(pub(crate) u64);
+use crate::protocol::contracts::{TaskEvent, TaskId, ViewInstanceId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ViewLocation {
@@ -40,7 +34,7 @@ impl ViewLocation {
 pub(crate) struct ViewPublication {
     pub(crate) current: Value,
     pub(crate) ready: bool,
-    pub(crate) dynamic_commands: Vec<crate::command::CommandRef>,
+    pub(crate) dynamic_commands: Vec<crate::workflow::command::CommandRef>,
 }
 
 impl ViewPublication {
@@ -53,7 +47,10 @@ impl ViewPublication {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn with_dynamic_commands(mut self, dynamic_commands: Vec<crate::command::CommandRef>) -> Self {
+    pub(crate) fn with_dynamic_commands(
+        mut self,
+        dynamic_commands: Vec<crate::workflow::command::CommandRef>,
+    ) -> Self {
         self.dynamic_commands = dynamic_commands;
         self
     }
@@ -104,22 +101,39 @@ pub(crate) enum LifecycleEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct TaskId(pub(crate) u64);
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TaskOutcome {
-    Completed(Value),
-    Failed(String),
-    Cancelled,
+/// View-owned authority for accepting host-delivered task completions.
+///
+/// This deliberately only records correlation tuples. It does not allocate
+/// task identifiers or interact with task scheduling or cancellation.
+#[derive(Debug)]
+pub(crate) struct ViewTaskRegistry {
+    owner: ViewInstanceId,
+    generations: BTreeMap<TaskId, u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TaskEvent {
-    pub(crate) instance: ViewInstanceId,
-    pub(crate) task: TaskId,
-    pub(crate) generation: u64,
-    pub(crate) outcome: TaskOutcome,
+impl ViewTaskRegistry {
+    pub(crate) fn new(owner: ViewInstanceId) -> Self {
+        Self {
+            owner,
+            generations: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn register(&mut self, task: TaskId, generation: u64) {
+        self.generations.insert(task, generation);
+    }
+
+    pub(crate) fn accepts(&self, event: &TaskEvent) -> bool {
+        event.instance == self.owner && self.generations.get(&event.task) == Some(&event.generation)
+    }
+
+    pub(crate) fn invalidate(&mut self, task: TaskId) {
+        self.generations.remove(&task);
+    }
+
+    pub(crate) fn invalidate_all(&mut self) {
+        self.generations.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -140,8 +154,8 @@ pub(crate) enum ViewEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommandRequest {
-    pub(crate) invocation: crate::command::CommandInvocation,
-    pub(crate) owner: Option<crate::command::CommandOwnerContext>,
+    pub(crate) invocation: crate::workflow::command::CommandInvocation,
+    pub(crate) owner: Option<crate::workflow::command::CommandOwnerContext>,
     pub(crate) current_fields: &'static [&'static str],
 }
 
@@ -256,14 +270,10 @@ impl RenderContext {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EffectRequest {
     CopyToClipboard(String),
-    RunPrepared {
-        argv: Vec<String>,
-        environment: Vec<(String, String)>,
-        current_dir: Option<PathBuf>,
-    },
+    RunPrepared(crate::execution::PreparedProcess),
 }
 
 #[derive(Debug, Clone)]
@@ -272,7 +282,7 @@ pub(crate) struct ViewResult {
     /// Metadata needed by the application finish adapter for configured
     /// return handlers. It is intentionally carried with the protocol result
     /// instead of stored in Router/session state.
-    pub(crate) adapter: Option<crate::command::ReturnAdapter>,
+    pub(crate) adapter: Option<crate::workflow::command::ReturnAdapter>,
 }
 
 impl PartialEq for ViewResult {
@@ -339,7 +349,7 @@ impl ParsedQuery {
         }
     }
 
-    fn validate_shape(&self) -> Result<()> {
+    pub(crate) fn validate_shape(&self) -> Result<()> {
         if self.target.is_empty() || self.schema.is_empty() {
             bail!("parsed query target and schema must be non-empty");
         }
@@ -570,84 +580,6 @@ pub(crate) trait RouteCatalog {
         anyhow::ensure!(
             schema.id == query.schema,
             "query schema does not match target"
-        );
-        Ok(())
-    }
-}
-
-/// Read-only adapter over the compiled configuration route index and query registry.
-pub(crate) struct ConfigRouteCatalog {
-    routes: crate::router::Router,
-    config: crate::config::Config,
-}
-
-impl ConfigRouteCatalog {
-    pub(crate) fn new(config: &crate::config::Config) -> Self {
-        Self {
-            routes: crate::router::Router::new(config),
-            config: config.clone(),
-        }
-    }
-}
-
-impl RouteCatalog for ConfigRouteCatalog {
-    fn resolve(&self, selector: &str) -> Option<RouteTarget> {
-        self.routes.resolve_selector(selector).map(|reference| {
-            let display = self.routes.display(&reference);
-            RouteTarget {
-                reference,
-                label: Some(display.label().to_string()),
-            }
-        })
-    }
-
-    fn complete(&self, prefix: &str) -> Vec<RouteCandidate> {
-        self.routes
-            .complete_views(prefix, "")
-            .into_iter()
-            .map(|candidate| RouteCandidate {
-                target: RouteTarget {
-                    reference: candidate.view_ref.clone(),
-                    label: Some(
-                        candidate
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| candidate.view_ref.clone()),
-                    ),
-                },
-                label: candidate
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| candidate.view_ref.clone()),
-            })
-            .collect()
-    }
-
-    fn query_schema(&self, target: &str) -> Option<QuerySchema> {
-        self.config.view(target).map(|_| QuerySchema {
-            id: "query".to_string(),
-        })
-    }
-
-    fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
-        query.validate_shape()?;
-        let schema = self
-            .query_schema(&query.target)
-            .with_context(|| format!("unknown query schema for {:?}", query.target))?;
-        anyhow::ensure!(
-            schema.id == query.schema,
-            "query schema does not match target"
-        );
-        let mut state = self.config.instantiate_parameters(&query.target)?;
-        self.config
-            .update_sanitized_initial_parameter_values(&mut state, &query.values)?;
-        self.config
-            .parameter_binding(&query.target)?
-            .validate_instance(&state)?;
-        let values = self.config.parameter_values(&state)?;
-        anyhow::ensure!(
-            values == query.values,
-            "parsed query values do not match target schema"
         );
         Ok(())
     }
@@ -976,10 +908,8 @@ impl Router {
                     LifecycleEvent::Activated,
                 )
                 .err();
-                let _ =
-                    deliver_lifecycle(&mut *view, &context, instance, LifecycleEvent::Closing);
-                let _ =
-                    deliver_lifecycle(&mut *view, &context, instance, LifecycleEvent::Closed);
+                let _ = deliver_lifecycle(&mut *view, &context, instance, LifecycleEvent::Closing);
+                let _ = deliver_lifecycle(&mut *view, &context, instance, LifecycleEvent::Closed);
                 self.notify_transition_rejected(source_id, instance, &error);
                 if let Some(restore_error) = restore_error {
                     self.record_error(
@@ -1631,6 +1561,7 @@ impl RouteCatalog for MapRouteCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::contracts::TaskOutcome;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1742,6 +1673,51 @@ mod tests {
 
     fn request(target: &str) -> NavigationRequest {
         NavigationRequest::new(target, ParsedQuery::new(target, "query", Value::Null))
+    }
+
+    fn task_event(instance: ViewInstanceId, task: TaskId, generation: u64) -> TaskEvent {
+        TaskEvent {
+            instance,
+            task,
+            generation,
+            outcome: TaskOutcome::Completed(Value::Null),
+        }
+    }
+
+    #[test]
+    fn view_task_registry_accepts_only_the_registered_tuple() {
+        let owner = ViewInstanceId(7);
+        let mut registry = ViewTaskRegistry::new(owner);
+        registry.register(TaskId(3), 11);
+
+        assert!(registry.accepts(&task_event(owner, TaskId(3), 11)));
+        assert!(!registry.accepts(&task_event(owner, TaskId(4), 11)));
+        assert!(!registry.accepts(&task_event(ViewInstanceId(8), TaskId(3), 11)));
+    }
+
+    #[test]
+    fn view_task_registry_replaces_stale_generations() {
+        let owner = ViewInstanceId(7);
+        let mut registry = ViewTaskRegistry::new(owner);
+        registry.register(TaskId(3), 11);
+        registry.register(TaskId(3), 12);
+
+        assert!(!registry.accepts(&task_event(owner, TaskId(3), 11)));
+        assert!(registry.accepts(&task_event(owner, TaskId(3), 12)));
+    }
+
+    #[test]
+    fn view_task_registry_invalidates_one_or_all_tasks() {
+        let owner = ViewInstanceId(7);
+        let mut registry = ViewTaskRegistry::new(owner);
+        registry.register(TaskId(3), 11);
+        registry.register(TaskId(4), 12);
+        registry.invalidate(TaskId(3));
+
+        assert!(!registry.accepts(&task_event(owner, TaskId(3), 11)));
+        assert!(registry.accepts(&task_event(owner, TaskId(4), 12)));
+        registry.invalidate_all();
+        assert!(!registry.accepts(&task_event(owner, TaskId(4), 12)));
     }
 
     #[derive(Clone, Copy)]
@@ -2843,10 +2819,8 @@ mod tests {
         routes.insert("child_popup", "core:child_popup");
         let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
 
-        let root_request = NavigationRequest::new(
-            "root",
-            ParsedQuery::new("core:root", "query", Value::Null),
-        );
+        let root_request =
+            NavigationRequest::new("root", ParsedQuery::new("core:root", "query", Value::Null));
         router.push(root_request).expect("mount succeeds");
         assert!(!router.take_popup_closed());
 

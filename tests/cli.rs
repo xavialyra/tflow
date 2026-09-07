@@ -9,6 +9,75 @@ fn launcher_command() -> Command {
 }
 
 #[test]
+fn check_rejects_legacy_root_plugins_configuration() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    fs::write(
+        &config,
+        r#"
+        default_view = "legacy:main"
+
+        [plugins.legacy.views.main.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate legacy root plugins configuration");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("root configuration cannot define plugins or workflows"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("sibling workflows/ directory"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_rejects_legacy_plugin_directory_manifest() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let manifest = root.join("workflows/legacy/workflow.toml");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    fs::write(&config, "default_view = \"legacy:main\"\n").unwrap();
+    fs::write(
+        &manifest,
+        r#"
+        [plugin]
+        name = "Legacy"
+
+        [views.main.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate legacy plugin directory manifest");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("uses legacy [plugin]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("must declare [workflow]"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn check_rejects_builtin_session_command_action_overrides() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -23,9 +92,9 @@ fn check_rejects_builtin_session_command_action_overrides() {
         [commands.bindings.commands.payload]
         target = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         "#,
     )
     .unwrap();
@@ -71,10 +140,10 @@ fn check_rejects_unknown_defaults_fields() {
                 r#"
                 default_view = "core:default"
 
-                [plugins.core.views.default]
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 {source}
                 "#
             ),
@@ -108,7 +177,7 @@ fn check_rejects_values_that_reference_unavailable_evaluation_stages() {
         (
             "core:default",
             r#"
-            [plugins.core.views.default.query]
+            [workflows.core.views.default.query]
             type = "object"
             input_order = ["value"]
             value = { type = "string", default = "{{ page.input }}" }
@@ -125,11 +194,11 @@ fn check_rejects_values_that_reference_unavailable_evaluation_stages() {
         (
             "core:default",
             r#"
-            [plugins.core.views.default.commands.run]
+            [workflows.core.views.default.commands.run]
             key = "enter"
             label = "Run"
             type = "run"
-            [plugins.core.views.default.commands.run.payload]
+            [workflows.core.views.default.commands.run.payload]
             handler = { source = "script", file = "scripts/run.sh" }
             args = ["{{ result }}"]
             "#,
@@ -143,9 +212,9 @@ fn check_rejects_values_that_reference_unavailable_evaluation_stages() {
             &format!(
                 r#"
                 default_view = "{default_view}"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 items = []
                 {source}
                 "#
@@ -179,9 +248,9 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
         exit = ["enter"]
         back = ["{{ view.input }}"]
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         "#,
     )
     .unwrap();
@@ -215,9 +284,9 @@ fn check_rejects_static_capture_conflicts_with_dynamic_defaults() {
         [defaults.capture.bindings]
         back = ["enter", "{{ view.input }}"]
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "capture"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         output = "captured"
         "#,
     )
@@ -266,12 +335,12 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "capture"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         output = "{{ view.query.message }}"
-        [plugins.core.views.default.query]
+        [workflows.core.views.default.query]
         type = "object"
         message = { type = "string", default = "" }
         "#,
@@ -319,9 +388,9 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 items = []
                 {field}
                 "#
@@ -358,9 +427,9 @@ fn check_rejects_unsupported_dynamic_syntax_and_namespaces() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "capture"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 output = {expression:?}
                 "#
             ),
@@ -389,16 +458,16 @@ fn check_validates_static_items_sources_without_running_them() {
         &config,
         r#"
         default_view = "core:default"
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config.items]
+        [workflows.core.views.default.engine.config.items]
         source = "script"
         file = "scripts/items.sh"
         args = ["{{ view.query }}"]
 
-        [plugins.core.views.capture.engine]
+        [workflows.core.views.capture.engine]
         type = "capture"
-        [plugins.core.views.capture.engine.config.output]
+        [workflows.core.views.capture.engine.config.output]
         source = "script"
         file = "scripts/output.sh"
         args = ["{{ view.query }}"]
@@ -446,15 +515,15 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
         r#"
         default_view = "core:default"
 
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
 
-        [plugins.core.views.default.commands.run]
+        [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
 
-        [plugins.core.views.default.commands.run.payload]
+        [workflows.core.views.default.commands.run.payload]
         handler = { source = "script", file = "scripts/run.sh" }
         "#,
     )
@@ -468,6 +537,40 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
         .arg(&config)
         .output()
         .expect("could not validate file-backed handler");
+    assert!(output.status.success(), "stderr: {:?}", output.stderr);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_treats_inline_run_script_bodies_as_opaque() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default.engine]
+        type = "picker"
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+
+        [workflows.core.views.default.commands.run.payload]
+        script = """
+        printf '%s\\n' '{{ user_template }}'
+        """
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate inline run script");
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -493,15 +596,15 @@ fn check_rejects_invalid_run_handler_sources() {
                 r#"
                 default_view = "core:default"
 
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
 
-                [plugins.core.views.default.commands.run]
+                [workflows.core.views.default.commands.run]
                 key = "enter"
                 label = "Run"
                 type = "run"
 
-                [plugins.core.views.default.commands.run.payload]
+                [workflows.core.views.default.commands.run.payload]
                 handler = {handler}
                 "#
             ),
@@ -547,15 +650,15 @@ fn check_rejects_invalid_run_command_args() {
                 r#"
                 default_view = "core:default"
 
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
 
-                [plugins.core.views.default.commands.run]
+                [workflows.core.views.default.commands.run]
                 key = "enter"
                 label = "Run"
                 type = "run"
 
-                [plugins.core.views.default.commands.run.payload]
+                [workflows.core.views.default.commands.run.payload]
                 handler = {{ source = "script", file = "scripts/run.sh" }}
                 args = {args}
                 "#
@@ -586,15 +689,15 @@ fn check_validates_static_return_handler_targets() {
         &config,
         r#"
         default_view = "core:default"
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = []
-        [plugins.core.views.default.commands.done]
+        [workflows.core.views.default.commands.done]
         key = "enter"
         label = "Done"
         type = "return"
-        [plugins.core.views.default.commands.done.payload]
+        [workflows.core.views.default.commands.done.payload]
         handler = "scripts/missing.sh"
         "#,
     )
@@ -627,9 +730,9 @@ fn check_validates_items_shape_before_runtime() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 {source}
                 "#
             ),
@@ -661,9 +764,9 @@ fn check_validates_items_shape_before_runtime() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config]
+                [workflows.core.views.default.engine.config]
                 {source}
                 "#
             ),
@@ -698,9 +801,9 @@ fn check_accepts_dynamic_script_source_fields() {
         &config,
         r#"
         default_view = "core:default"
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default.engine]
         type = "picker"
-        [plugins.core.views.default.engine.config.items]
+        [workflows.core.views.default.engine.config.items]
         source = "{{ page.query.source }}"
         file = "{{ page.query.file }}"
         max_output_bytes = "{{ page.query.limit }}"
@@ -748,9 +851,9 @@ fn check_rejects_invalid_items_sources() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [plugins.core.views.default.engine]
+                [workflows.core.views.default.engine]
                 type = "picker"
-                [plugins.core.views.default.engine.config.items]
+                [workflows.core.views.default.engine.config.items]
                 {source}
                 "#
             ),
@@ -788,8 +891,8 @@ fn check_loads_a_named_theme_from_the_config_directory() {
         r#"
         theme = "work"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
         "#,
     )
@@ -823,8 +926,8 @@ fn check_rejects_an_inline_theme_value() {
         accent = { foreground = "cyan" }
         highlight = { foreground = "yellow", background = "blue", bold = true }
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
         "##,
     )
@@ -854,8 +957,8 @@ fn cli_theme_replaces_the_root_configuration() {
         r#"
         theme = "missing-root-theme"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
         "#,
     )
@@ -882,8 +985,8 @@ fn theme_errors_precede_dynamic_config_compilation_errors() {
         theme = "work"
         default_view = "{{ page.input }}"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
         "#,
     )
@@ -918,8 +1021,8 @@ fn missing_named_theme_reports_the_theme_path() {
         r#"
         theme = "work"
 
-        [plugins.core.views.default]
-        [plugins.core.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
         type = "picker"
         "#,
     )

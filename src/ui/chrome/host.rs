@@ -10,9 +10,9 @@
 //! It does not know whether the active View is Picker, Embedded,
 //! Capture, or another implementation.
 
-use crate::config::{ViewPresentation, ViewPresentationMode};
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use crate::view::{RenderContext, RenderResult, ViewInstance};
+use crate::workflow::config::{ViewPresentation, ViewPresentationMode};
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -23,8 +23,8 @@ use unicode_width::UnicodeWidthStr;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn block_title_bottom_alignment() {
@@ -39,8 +39,12 @@ mod tests {
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let top: String = (0..20).map(|x| buffer.cell((x, 0)).unwrap().symbol()).collect();
-        let bottom: String = (0..20).map(|x| buffer.cell((x, 4)).unwrap().symbol()).collect();
+        let top: String = (0..20)
+            .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+            .collect();
+        let bottom: String = (0..20)
+            .map(|x| buffer.cell((x, 4)).unwrap().symbol())
+            .collect();
         assert!(top.contains("title"));
         assert!(bottom.contains("left"));
         assert!(bottom.contains("right"));
@@ -55,8 +59,12 @@ mod tests {
             })
             .unwrap();
         let buffer2 = terminal2.backend().buffer();
-        let top2: String = (0..10).map(|x| buffer2.cell((x, 0)).unwrap().symbol()).collect();
-        let bottom2: String = (0..10).map(|x| buffer2.cell((x, 3)).unwrap().symbol()).collect();
+        let top2: String = (0..10)
+            .map(|x| buffer2.cell((x, 0)).unwrap().symbol())
+            .collect();
+        let bottom2: String = (0..10)
+            .map(|x| buffer2.cell((x, 3)).unwrap().symbol())
+            .collect();
         assert!(top2.contains("child"));
         assert!(bottom2.contains("local"));
     }
@@ -105,7 +113,8 @@ impl ContentHost {
         let height = presentation.height.unwrap_or(16).min(area.height);
         Rect::new(
             area.x.saturating_add(area.width.saturating_sub(width) / 2),
-            area.y.saturating_add(area.height.saturating_sub(height) / 2),
+            area.y
+                .saturating_add(area.height.saturating_sub(height) / 2),
             width,
             height,
         )
@@ -120,10 +129,14 @@ impl ContentHost {
         )
     }
 
-    pub(crate) fn visible_base_index(&self, stack: &[ViewInstance], active_index: usize) -> Option<usize> {
-        (0..=active_index).rev().find(|&index| {
-            stack[index].context.presentation.mode != ViewPresentationMode::Popup
-        })
+    pub(crate) fn visible_base_index(
+        &self,
+        stack: &[ViewInstance],
+        active_index: usize,
+    ) -> Option<usize> {
+        (0..=active_index)
+            .rev()
+            .find(|&index| stack[index].context.presentation.mode != ViewPresentationMode::Popup)
     }
 
     pub(crate) fn active_content_area(&self, stack: &[ViewInstance], terminal: Rect) -> Rect {
@@ -137,9 +150,7 @@ impl ContentHost {
             .map(|entry| entry.view.preferred_top_inset())
             .unwrap_or(0);
         let mut area = self.content_area(terminal, top_padding);
-        let first_popup = base_index
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
+        let first_popup = base_index.map(|index| index.saturating_add(1)).unwrap_or(0);
         for item in stack.iter().take(active_index + 1).skip(first_popup) {
             area = self.popup_inner(self.popup_rect(area, &item.context.presentation));
         }
@@ -178,7 +189,12 @@ impl ContentHost {
             0
         };
         let mut active_popup_rect = None;
-        for (index, item) in stack.iter().enumerate().take(active_index + 1).skip(first_popup) {
+        for (index, item) in stack
+            .iter()
+            .enumerate()
+            .take(active_index + 1)
+            .skip(first_popup)
+        {
             let presentation = &item.context.presentation;
             let popup = self.popup_rect(render_area, presentation);
             frame.render_widget(Clear, popup);
@@ -220,7 +236,10 @@ impl ContentHost {
             let title_budget = (popup.width as usize).saturating_sub(4);
             let clipped = super::clip(title, title_budget);
             if !clipped.is_empty() {
-                block = block.title(Line::styled(format!(" {clipped} "), theme.chrome.footer_title));
+                block = block.title(Line::styled(
+                    format!(" {clipped} "),
+                    theme.chrome.footer_title,
+                ));
             }
         }
 
@@ -230,7 +249,8 @@ impl ContentHost {
                 let budget = bottom_width.saturating_sub(2);
                 let clipped = super::clip(error, budget);
                 if !clipped.is_empty() {
-                    let span = ratatui::text::Span::styled(format!(" {clipped} "), theme.chrome.error);
+                    let span =
+                        ratatui::text::Span::styled(format!(" {clipped} "), theme.chrome.error);
                     block = block.title_bottom(Line::from(span));
                 }
             } else {
@@ -282,7 +302,8 @@ impl ContentHost {
                             theme.chrome.footer_status,
                         )
                     } else {
-                        let clipped = super::clip_footer(cmd_content.as_ref().unwrap(), bottom_width);
+                        let clipped =
+                            super::clip_footer(cmd_content.as_ref().unwrap(), bottom_width);
                         super::spans_from_footer_content(
                             &clipped,
                             theme.chrome.footer,
@@ -300,7 +321,8 @@ impl ContentHost {
                             format!(" {clipped} "),
                             theme.chrome.footer_status,
                         );
-                        block = block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
+                        block =
+                            block.title_bottom(Line::from(status_span).alignment(Alignment::Left));
                     }
                 }
             }

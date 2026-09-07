@@ -1,10 +1,10 @@
 use super::SessionOutcome;
-use crate::command::ViewOutput;
-use crate::config::{
-    Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
-};
-use crate::expression::EvaluationStage;
 use crate::lifecycle::CancellationToken;
+use crate::workflow::command::ViewOutput;
+use crate::workflow::config::{
+    CompiledConfig, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
+};
+use crate::workflow::expression::EvaluationStage;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
@@ -75,15 +75,20 @@ pub(crate) struct InvocationResult {
 }
 
 pub(crate) fn finish(
-    config: &Config,
-    root_view: &str,
+    config: &CompiledConfig,
+    invocation: &crate::workflow::InvocationContext,
     outcome: SessionOutcome,
     cancellation: &CancellationToken,
 ) -> Result<InvocationResult> {
     let SessionOutcome::Completed(returned) = outcome else {
         let exit_code = config
-            .view(root_view)
-            .with_context(|| format!("invocation root view {:?} is not configured", root_view))?
+            .view(invocation.root_view())
+            .with_context(|| {
+                format!(
+                    "invocation root view {:?} is not configured",
+                    invocation.root_view()
+                )
+            })?
             .cancel_exit_code
             .unwrap_or(0)
             .into();
@@ -121,11 +126,11 @@ pub(crate) fn finish(
         owner.view_ref == adapter.command.view,
         "return command owner is not available in its adapter context"
     );
-    let returned_value = crate::command::return_value(&returned);
+    let returned_value = crate::workflow::command::return_value(&returned);
     let owner_scope = OwnerViewScope::new(&owner.view_ref, &owner.parameters)
         .with_binding_raw(Some(&owner.binding_raw));
     let snapshot = EvaluationSnapshot::new(
-        InvocationScope::new(&config.input_value),
+        InvocationScope::new(invocation.input_value()),
         SessionScope::new(&adapter.context.runtime),
         Some(owner_scope),
         Some(cancellation),
@@ -138,12 +143,14 @@ pub(crate) fn finish(
     let handler_target = handler_value
         .as_str()
         .context("return handler must evaluate to a string")?;
-    let plugin_root = config.plugin_root(&adapter.command.view).with_context(|| {
-        format!(
-            "return handler for command {:?} has no plugin root",
-            adapter.command.id
-        )
-    })?;
+    let workflow_root = config
+        .workflow_root(&adapter.command.view)
+        .with_context(|| {
+            format!(
+                "return handler for command {:?} has no workflow root",
+                adapter.command.id
+            )
+        })?;
     let arguments = config.evaluate_argv(
         payload.args.as_ref(),
         &snapshot,
@@ -151,7 +158,7 @@ pub(crate) fn finish(
         "return args",
     )?;
     let output = crate::execution::run_script(
-        plugin_root,
+        workflow_root,
         handler_target,
         &arguments,
         Some(RESULT_STDOUT_LIMIT),

@@ -1,5 +1,5 @@
-use crate::config::View;
 use crate::lifecycle::CancellationObserver;
+use crate::workflow::config::View;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ impl ViewIdentity {
 pub(crate) struct EvaluatedEngineConfig {
     pub(crate) fields: BTreeMap<String, Value>,
     pub(crate) field_errors: BTreeMap<String, String>,
-    pub(crate) plugin_root: Option<PathBuf>,
+    pub(crate) workflow_root: Option<PathBuf>,
 }
 
 impl EvaluatedEngineConfig {
@@ -65,7 +65,7 @@ impl EvaluatedBindingConfig {
 pub(crate) struct RuntimeFactoryContext {
     pub(crate) identity: ViewIdentity,
     pub(crate) config: EvaluatedEngineConfig,
-    pub(crate) parameters: crate::parameter::ParameterSnapshot,
+    pub(crate) parameters: crate::workflow::parameter::ParameterSnapshot,
     pub(crate) cancellation: CancellationObserver,
 }
 

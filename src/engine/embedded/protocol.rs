@@ -11,15 +11,17 @@ use crate::engine::{
     RawInputReceiver, RendererFactoryContext, RuntimeFactoryContext, ViewContext as EngineContext,
     ViewIdentity,
 };
+use crate::input::InputEvent;
 use crate::input::{EditorSnapshot, InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationObserver;
-use crate::parameter::ParameterSnapshot;
-use crate::theme::ResolvedTheme;
+use crate::protocol::contracts::ViewInstanceId;
+use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, EffectRequest, InputEvent, LifecycleEvent, RelativeCursor, RenderContext,
-    RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewInstanceId,
-    ViewPublication, ViewResult,
+    Binding, BindingSet, EffectRequest, LifecycleEvent, RelativeCursor, RenderContext,
+    RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication,
+    ViewResult,
 };
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
@@ -46,7 +48,7 @@ impl EmbeddedProtocolConfig {
     ) -> Self {
         Self {
             commands,
-            identity: ViewIdentity::new(view_ref, crate::config::ENGINE_EMBEDDED),
+            identity: ViewIdentity::new(view_ref, crate::workflow::config::ENGINE_EMBEDDED),
             engine,
             bindings,
             cancellation,
@@ -103,8 +105,14 @@ fn create_protocol_view_state(
         bindings: config.bindings,
     })?;
     let renderer = create_renderer(RendererFactoryContext)?;
-    let engine_context =
-        engine_context(instance, &identity, &parameters, &config.runtime_snapshot, 0, None);
+    let engine_context = engine_context(
+        instance,
+        &identity,
+        &parameters,
+        &config.runtime_snapshot,
+        0,
+        None,
+    );
     let input_raw = parameters.raw_input().to_string();
     Ok(EmbeddedProtocolView {
         runtime,
@@ -134,7 +142,7 @@ fn create_protocol_view_state(
 struct EmbeddedProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
-    bindings: Vec<crate::command::InputActionBinding>,
+    bindings: Vec<crate::workflow::command::InputActionBinding>,
     commands: crate::protocol::ViewCommandBindings,
     theme: ResolvedTheme,
     input_raw: String,
@@ -347,8 +355,7 @@ impl RawInputReceiver for EmbeddedProtocolView {
 impl View for EmbeddedProtocolView {
     fn bindings(&self, _: &ViewContext) -> BindingSet {
         let commands = self.commands.bindings.iter().filter(|binding| {
-            binding.invocation.view_reference().is_some()
-                && binding.invocation.command.passthrough
+            binding.invocation.view_reference().is_some() && binding.invocation.command.passthrough
         });
         BindingSet::new(
             commands
@@ -522,14 +529,14 @@ impl View for EmbeddedProtocolView {
 }
 
 impl EmbeddedProtocolView {
-    fn keymap_action(&self, key: crate::view::Key) -> Option<EmbeddedAction> {
+    fn keymap_action(&self, key: crate::input::Key) -> Option<EmbeddedAction> {
         self.bindings
             .iter()
             .find(|binding| {
                 binding.enabled && binding.key.binding_identity() == key.binding_identity()
             })
             .and_then(|binding| match &binding.action {
-                crate::command::ResolvedInputAction::Engine(action)
+                crate::workflow::command::ResolvedInputAction::Engine(action)
                     if action.as_str() == "embedded.cancel" =>
                 {
                     Some(EmbeddedAction::Cancel)
@@ -590,7 +597,7 @@ mod tests {
             },
             EvaluatedBindingConfig::default(),
             crate::protocol::ViewCommandBindings::new(
-                &crate::config::load_test_fixture().unwrap(),
+                &crate::workflow::config::load_test_fixture().unwrap(),
                 "embedded",
                 crate::lifecycle::CancellationToken::new().observer(),
                 &[],
@@ -629,17 +636,17 @@ mod tests {
 
     #[test]
     fn embedded_outputs_keep_the_command_output_envelope() {
-        let output = crate::engine::ViewOutput::Value {
+        let output = crate::workflow::command::ViewOutput::Value {
             value: serde_json::json!({"ok": true}),
         };
         let value = serde_json::to_value(&output).unwrap();
         assert_eq!(
-            serde_json::from_value::<crate::engine::ViewOutput>(value).unwrap(),
+            serde_json::from_value::<crate::workflow::command::ViewOutput>(value).unwrap(),
             output
         );
 
-        let output = crate::engine::ViewOutput::Selected {
-            item: Some(crate::command::ViewOutputItem {
+        let output = crate::workflow::command::ViewOutput::Selected {
+            item: Some(crate::workflow::command::ViewOutputItem {
                 text: "display".to_string(),
                 value: Some("value".to_string()),
                 metadata: serde_json::json!({"kind": "test"}),
@@ -649,7 +656,7 @@ mod tests {
         };
         let value = serde_json::to_value(&output).unwrap();
         assert_eq!(
-            serde_json::from_value::<crate::engine::ViewOutput>(value).unwrap(),
+            serde_json::from_value::<crate::workflow::command::ViewOutput>(value).unwrap(),
             output
         );
     }
@@ -745,7 +752,7 @@ mod tests {
         let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", script]));
         view.event(
             ViewEvent::Input(InputEvent::Key {
-                key: crate::view::Key::Char('x'),
+                key: crate::input::Key::Char('x'),
                 raw: vec![0x1b, b'[', b'1', b'~'],
             }),
             &mut context,
@@ -801,7 +808,7 @@ mod tests {
         let decision = view
             .event(
                 ViewEvent::Input(InputEvent::Key {
-                    key: crate::view::Key::Escape,
+                    key: crate::input::Key::Escape,
                     raw: vec![0x1b],
                 }),
                 &mut context,
@@ -871,7 +878,7 @@ mod tests {
     #[test]
     fn first_start_and_resize_use_host_content_dimensions() {
         let mut request = request();
-        request.presentation.mode = crate::config::ViewPresentationMode::Popup;
+        request.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
         request.presentation.width = Some(12);
         request.presentation.height = Some(6);
         let mut view = create_protocol_view_state(

@@ -6,7 +6,7 @@ use self::image_decode::ImageDecodeHandle;
 pub(super) use self::image_protocol::ImageProtocolCache;
 use self::image_protocol::{DesiredImageProtocol, ImageProtocolKey};
 use super::Item;
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use anyhow::{Context, Result, bail};
 use image::DynamicImage;
 use ratatui::Frame;
@@ -379,7 +379,7 @@ impl PickerPreview {
             .collect();
     }
 
-    pub(super) fn update(&mut self, item: Option<&Item>, plugin_root: Option<&std::path::Path>) {
+    pub(super) fn update(&mut self, item: Option<&Item>, workflow_root: Option<&std::path::Path>) {
         self.collect();
         let selection = item.and_then(|item| serde_json::to_string(&item_value(item)).ok());
         if selection == self.selection {
@@ -413,7 +413,7 @@ impl PickerPreview {
                     let Some(path) = value.as_str() else {
                         continue;
                     };
-                    let path = self::image_path::resolve(plugin_root, path);
+                    let path = self::image_path::resolve(workflow_root, path);
                     self.blocks[index] = PreviewBlockState::Image {
                         image: None,
                         error: None,
@@ -693,7 +693,7 @@ fn block_size(block: &PreviewBlockConfig) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::{ImageProtocolCache, PickerPreview, PreviewBlockState, block_areas, parse};
-    use crate::theme::Theme;
+    use crate::ui::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;

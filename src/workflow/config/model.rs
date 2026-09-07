@@ -1,5 +1,5 @@
 use super::{ViewRef, validate_templates};
-use crate::expression::{Template, is_dynamic_string};
+use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -17,10 +17,8 @@ fn default_workflow_api() -> u32 {
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowMetadata {
     pub name: String,
-    pub styles: BTreeMap<String, crate::theme::RawStyleBinding>,
+    pub styles: BTreeMap<String, crate::ui::theme::RawStyleBinding>,
 }
-
-pub type PluginMetadata = WorkflowMetadata;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -824,7 +822,7 @@ pub(super) struct RawConfig {
     pub(super) commands: CommandConfig,
     #[serde(default)]
     pub(super) theme: Option<String>,
-    #[serde(default, alias = "plugins")]
+    #[serde(default)]
     pub(super) workflows: BTreeMap<String, Workflow>,
     #[serde(default)]
     pub(super) defaults: Defaults,
@@ -837,7 +835,7 @@ pub(super) struct Workflow {
     #[serde(default)]
     pub(super) views: BTreeMap<String, View>,
     #[serde(default)]
-    pub(super) styles: BTreeMap<String, crate::theme::RawStyleBinding>,
+    pub(super) styles: BTreeMap<String, crate::ui::theme::RawStyleBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -912,7 +910,7 @@ script = "printf hello"
     }
 
     #[test]
-    fn view_query_deserializes_and_serializes_with_the_compatibility_key() {
+    fn view_query_deserializes_and_serializes_with_the_canonical_key() {
         let view: View = toml::from_str(
             r#"
             [engine]
@@ -921,7 +919,7 @@ script = "printf hello"
             type = "string"
             "#,
         )
-        .expect("query must deserialize as the compatibility configuration key");
+        .expect("query must deserialize as the canonical configuration key");
 
         let serialized = serde_json::to_value(view).expect("View must serialize");
         assert!(serialized.get("query").is_some());

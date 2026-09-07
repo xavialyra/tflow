@@ -10,15 +10,15 @@ use self::session::{EmbeddedSession, EmbeddedStartPlan};
 pub(crate) use self::terminal::{EmbeddedTerminal, EmbeddedTerminalSnapshot};
 
 use super::{
-    ActionId, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput,
-    EngineDecision, EngineEmission, EngineNotice, EngineRuntime,
-    EngineValidationContext, ExternalTickResult, InputBindingFactoryContext, RawInputReceiver,
-    RenderModel, RendererFactoryContext, RuntimeFactoryContext, evaluate_field,
-    evaluate_optional_string, require_field, validate_fields,
+    ActionId, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput, EngineDecision,
+    EngineEmission, EngineNotice, EngineRuntime, EngineValidationContext, ExternalTickResult,
+    InputBindingFactoryContext, RawInputReceiver, RenderModel, RendererFactoryContext,
+    RuntimeFactoryContext, evaluate_field, evaluate_optional_string, require_field,
+    validate_fields,
 };
 use crate::execution::PreparedProcess;
-use crate::expression::{Template, is_dynamic_string};
 use crate::input::keymap::KeymapAction;
+use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use serde::Deserialize;
@@ -121,7 +121,7 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
 }
 
-fn reject_picker_sources(name: &str, view: &crate::config::View) -> Result<()> {
+fn reject_picker_sources(name: &str, view: &crate::workflow::config::View) -> Result<()> {
     if view.selected_items().is_some() || !view.selected_feeds().is_empty() {
         anyhow::bail!(
             "view {:?} using engine {:?} cannot provide picker items",
@@ -158,7 +158,10 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     if let Some(escape_cancels) = view.engine_field("escape-cancels")
         && !contains_dynamic(escape_cancels)
     {
-        parse_escape_cancels_value(name, Some(crate::config::toml_to_json(escape_cancels)?))?;
+        parse_escape_cancels_value(
+            name,
+            Some(crate::workflow::config::toml_to_json(escape_cancels)?),
+        )?;
     }
     let command = view
         .engine_field("command")
@@ -207,7 +210,7 @@ pub(super) fn create_view(
     if command.is_empty() {
         anyhow::bail!("embedded command must not be empty");
     }
-    let command = if let Some(root) = context.config.plugin_root.as_ref() {
+    let command = if let Some(root) = context.config.workflow_root.as_ref() {
         command
             .into_iter()
             .map(|arg| {
@@ -227,7 +230,7 @@ pub(super) fn create_view(
         "LAUNCHER_INPUT".to_string(),
         context.parameters.raw_input().to_string(),
     )];
-    if let Some(root) = context.config.plugin_root.as_ref() {
+    if let Some(root) = context.config.workflow_root.as_ref() {
         environment.push((
             "WORKFLOW_DIR".to_string(),
             root.to_string_lossy().into_owned(),
@@ -260,15 +263,17 @@ pub(super) fn create_renderer(
 
 pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
-) -> Result<Vec<crate::command::InputActionBinding>> {
+) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
     let escape_cancels = parse_escape_cancels_value(
         &context.identity.view_ref,
         context.bindings.engine_field("escape-cancels").cloned(),
     )?;
     Ok(if escape_cancels {
-        vec![crate::command::InputActionBinding {
+        vec![crate::workflow::command::InputActionBinding {
             key: crate::input::Key::Escape,
-            action: crate::command::ResolvedInputAction::Engine(ActionId::new("embedded.cancel")),
+            action: crate::workflow::command::ResolvedInputAction::Engine(ActionId::new(
+                "embedded.cancel",
+            )),
             label: Some(EmbeddedAction::Cancel.label().to_string()),
             enabled: true,
         }]
@@ -345,7 +350,6 @@ impl EngineRuntime for EmbeddedView {
         Ok(EngineEmission::decision(decision))
     }
 
-
     fn raw_receiver(&mut self) -> Option<&mut dyn RawInputReceiver> {
         Some(self)
     }
@@ -421,8 +425,8 @@ impl crate::engine::ViewRenderer for EmbeddedRenderer {
         Ok(())
     }
 
-    fn chrome(&self, _model: &RenderModel) -> crate::chrome::EngineChrome {
-        crate::chrome::EngineChrome::default()
+    fn chrome(&self, _model: &RenderModel) -> crate::ui::chrome::EngineChrome {
+        crate::ui::chrome::EngineChrome::default()
     }
 
     fn render(
@@ -478,7 +482,7 @@ fn parse_result_config(
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = crate::config::toml_to_json(value)?;
+    let value = crate::workflow::config::toml_to_json(value)?;
     parse_result_config_value(view_ref, Some(value))
 }
 

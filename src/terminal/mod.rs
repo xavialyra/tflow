@@ -14,9 +14,10 @@ use ratatui_image::protocol::{
     StatefulProtocol, StatefulProtocolType, halfblocks::Halfblocks, iterm2::Iterm2,
     kitty::StatefulKitty, sixel::Sixel,
 };
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -189,12 +190,15 @@ pub struct Terminal {
     output_fd: libc::c_int,
     _output: File,
     original: libc::termios,
+    launcher_process_group: Option<libc::pid_t>,
     renderer: RatatuiTerminal<CrosstermBackend<TerminalWriter>>,
     renderer_discard: Arc<AtomicBool>,
     image_picker: ImagePicker,
     cancellation: CancellationToken,
     active: bool,
     screen_active: bool,
+    #[cfg(test)]
+    fail_next_foreground_resume: bool,
 }
 
 impl Terminal {
@@ -212,6 +216,7 @@ impl Terminal {
         if output_fd != input_fd {
             set_fd_cloexec(output_fd)?;
         }
+        let launcher_process_group = launcher_foreground_process_group(input_fd);
         let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
         if unsafe { libc::tcgetattr(input_fd, &mut original) } != 0 {
             return Err(io::Error::last_os_error()).context("could not read terminal settings");
@@ -244,12 +249,15 @@ impl Terminal {
             output_fd: output.as_raw_fd(),
             _output: output,
             original,
+            launcher_process_group,
             renderer,
             renderer_discard,
             image_picker: picker_from_protocol(output_fd, image_protocol),
             cancellation,
             active: true,
             screen_active: false,
+            #[cfg(test)]
+            fail_next_foreground_resume: false,
         };
         terminal.resume_screen()?;
         rollback.disarm();
@@ -261,24 +269,80 @@ impl Terminal {
             return Ok(());
         }
 
+        let (screen_result, settings_result) = self.restore_terminal_state();
+        self.active = false;
+        self.prepare_renderer_for_drop();
+        screen_result.and(settings_result)
+    }
+
+    /// Yield the terminal to a foreground child while retaining the ability
+    /// to resume the launcher afterward.
+    pub(crate) fn suspend_for_foreground(&mut self) -> Result<()> {
+        if !self.active {
+            bail!("launcher terminal is not active");
+        }
+        let (screen_result, settings_result) = self.restore_terminal_state();
+        screen_result.and(settings_result)
+    }
+
+    /// Configure a foreground child to use the controlling terminal rather
+    /// than the launcher's possibly redirected standard streams.
+    pub(crate) fn configure_foreground_command(&self, command: &mut Command) -> io::Result<bool> {
+        if self.launcher_process_group.is_none() {
+            return Ok(false);
+        }
+        command.stdin(Stdio::from(open_controlling_terminal()?));
+        command.stdout(Stdio::from(open_controlling_terminal()?));
+        command.stderr(Stdio::from(open_controlling_terminal()?));
+        Ok(true)
+    }
+
+    pub(crate) fn foreground_terminal_fd(&self) -> Option<RawFd> {
+        self.launcher_process_group.map(|_| self.input_fd)
+    }
+
+    /// Restore foreground ownership to the launcher's process group.
+    pub(crate) fn reclaim_foreground_process(&self) -> io::Result<()> {
+        if let Some(process_group) = self.launcher_process_group {
+            set_terminal_foreground_process_group(self.input_fd, process_group)?;
+        }
+        Ok(())
+    }
+
+    /// Resume raw mode and the launcher screen after a foreground child.
+    pub(crate) fn resume_after_foreground(&mut self) -> Result<()> {
+        if !self.active {
+            bail!("launcher terminal is not active");
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_foreground_resume) {
+            bail!("injected launcher terminal resume failure");
+        }
+        let mut raw = self.original;
+        unsafe { libc::cfmakeraw(&mut raw) };
+        let settings_result =
+            if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &raw) } != 0 {
+                Err(io::Error::last_os_error()).context("could not resume terminal settings")
+            } else {
+                Ok(())
+            };
         let screen_result = write_fd(
             self.output_fd,
-            RESTORE_SCREEN,
+            b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l",
             None,
             Some(Instant::now() + RESTORE_OUTPUT_DEADLINE),
         )
-        .context("could not restore terminal screen");
-        self.screen_active = false;
+        .context("could not resume launcher screen");
+        if screen_result.is_ok() {
+            self.screen_active = true;
+        }
+        self.invalidate_renderer();
+        settings_result.and(screen_result)
+    }
 
-        let settings_result =
-            if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &self.original) } != 0 {
-                Err(io::Error::last_os_error()).context("could not restore terminal settings")
-            } else {
-                self.active = false;
-                Ok(())
-            };
-        self.prepare_renderer_for_drop();
-        screen_result.and(settings_result)
+    #[cfg(test)]
+    pub(crate) fn fail_next_foreground_resume(&mut self) {
+        self.fail_next_foreground_resume = true;
     }
 
     pub fn resume_screen(&mut self) -> Result<()> {
@@ -289,6 +353,24 @@ impl Terminal {
             .context("could not resume launcher screen")?;
         self.screen_active = true;
         Ok(())
+    }
+
+    fn restore_terminal_state(&mut self) -> (Result<()>, Result<()>) {
+        let screen_result = write_fd(
+            self.output_fd,
+            RESTORE_SCREEN,
+            None,
+            Some(Instant::now() + RESTORE_OUTPUT_DEADLINE),
+        )
+        .context("could not restore terminal screen");
+        self.screen_active = false;
+        let settings_result =
+            if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &self.original) } != 0 {
+                Err(io::Error::last_os_error()).context("could not restore terminal settings")
+            } else {
+                Ok(())
+            };
+        (screen_result, settings_result)
     }
 
     pub fn draw(&mut self, render: impl FnOnce(&mut Frame)) -> Result<()> {
@@ -307,8 +389,7 @@ impl Terminal {
         }
         self.write_output(b"\x1b[2J\x1b[H")
             .context("could not clear terminal screen")?;
-        self.renderer.swap_buffers();
-        self.renderer.swap_buffers();
+        self.invalidate_renderer();
         Ok(())
     }
 
@@ -387,6 +468,11 @@ impl Terminal {
         write_fd(self.output_fd, bytes, Some(&self.cancellation), None)
     }
 
+    fn invalidate_renderer(&mut self) {
+        self.renderer.swap_buffers();
+        self.renderer.swap_buffers();
+    }
+
     fn prepare_renderer_for_drop(&mut self) {
         self.renderer_discard.store(true, Ordering::Release);
         let _ = self.renderer.show_cursor();
@@ -423,6 +509,48 @@ fn duplicate_fd(fd: libc::c_int) -> Result<File> {
         return Err(io::Error::last_os_error()).context("could not duplicate terminal output");
     }
     Ok(unsafe { File::from_raw_fd(duplicate) })
+}
+
+fn open_controlling_terminal() -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open("/dev/tty")
+}
+
+fn launcher_foreground_process_group(fd: RawFd) -> Option<libc::pid_t> {
+    let process_group = unsafe { libc::getpgrp() };
+    let terminal_foreground_group = unsafe { libc::tcgetpgrp(fd) };
+    (process_group > 0 && terminal_foreground_group == process_group).then_some(process_group)
+}
+
+pub(crate) fn set_terminal_foreground_process_group(
+    fd: RawFd,
+    process_group: libc::pid_t,
+) -> io::Result<()> {
+    let mut signal = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    unsafe {
+        libc::sigemptyset(&mut signal);
+        libc::sigaddset(&mut signal, libc::SIGTTOU);
+    }
+    let mut previous = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    let blocked = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signal, &mut previous) };
+    if blocked != 0 {
+        return Err(io::Error::from_raw_os_error(blocked));
+    }
+
+    let handoff = loop {
+        if unsafe { libc::tcsetpgrp(fd, process_group) } == 0 {
+            break Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            break Err(error);
+        }
+    };
+    let restored =
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut()) };
+    if restored != 0 {
+        return Err(io::Error::from_raw_os_error(restored));
+    }
+    handoff
 }
 
 fn set_fd_cloexec(fd: RawFd) -> Result<()> {
@@ -822,7 +950,9 @@ mod tests {
         )
         .unwrap();
 
-        let picker = terminal.image_picker().expect("image picker should be available");
+        let picker = terminal
+            .image_picker()
+            .expect("image picker should be available");
         assert_eq!(picker.protocol, ProtocolType::Halfblocks);
 
         drop(terminal);
@@ -859,7 +989,10 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                frame.render_widget(ratatui::widgets::Paragraph::new("initial text"), frame.area());
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new("initial text"),
+                    frame.area(),
+                );
             })
             .unwrap();
 
@@ -867,7 +1000,10 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                frame.render_widget(ratatui::widgets::Paragraph::new("after clear"), frame.area());
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new("after clear"),
+                    frame.area(),
+                );
             })
             .unwrap();
 

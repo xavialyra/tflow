@@ -1,6 +1,6 @@
 use super::{EngineDefinition, EvaluatedBindingConfig, EvaluatedEngineConfig};
-use crate::config::{Config, ConfigSource, EvaluationSnapshot};
-use crate::expression::EvaluationStage;
+use crate::workflow::config::{CompiledConfig, ConfigSource, EvaluationSnapshot};
+use crate::workflow::expression::EvaluationStage;
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -32,7 +32,7 @@ struct EvaluatedFields {
 }
 
 fn fields_for_factory(
-    config: &Config,
+    config: &CompiledConfig,
     view_ref: &str,
     snapshot: &EvaluationSnapshot<'_>,
     names: &[&str],
@@ -69,7 +69,7 @@ fn fields_for_factory(
 }
 
 pub(crate) fn engine_config(
-    config: &Config,
+    config: &CompiledConfig,
     view_ref: &str,
     definition: &EngineDefinition,
     snapshot: &EvaluationSnapshot<'_>,
@@ -84,12 +84,14 @@ pub(crate) fn engine_config(
     Ok(EvaluatedEngineConfig {
         fields: fields.values,
         field_errors: fields.errors,
-        plugin_root: config.plugin_root(view_ref).map(|path| path.to_path_buf()),
+        workflow_root: config
+            .workflow_root(view_ref)
+            .map(|path| path.to_path_buf()),
     })
 }
 
 pub(crate) fn binding_config(
-    config: &Config,
+    config: &CompiledConfig,
     view_ref: &str,
     definition: &EngineDefinition,
     snapshot: &EvaluationSnapshot<'_>,

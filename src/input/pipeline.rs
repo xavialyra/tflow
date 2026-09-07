@@ -57,6 +57,13 @@ impl InputPipeline {
         self.pending.is_empty()
     }
 
+    /// Discard launcher input already decoded or buffered before a foreground
+    /// command takes over the terminal.
+    pub(crate) fn discard_pending(&mut self) {
+        self.pending.clear();
+        self.decoder.take_pending_raw();
+    }
+
     pub(crate) fn preserve_decoder_pending(&mut self) {
         let pending = self.decoder.take_pending_raw();
         if !pending.is_empty() {
@@ -89,5 +96,19 @@ mod tests {
         pipeline.feed_normal(&[0xc3]);
         pipeline.preserve_decoder_pending();
         assert_eq!(pipeline.pop_input(), Some(InputEvent::Bytes(vec![0xc3])));
+    }
+
+    #[test]
+    fn discarding_after_a_foreground_trigger_removes_decoded_and_partial_input() {
+        let mut pipeline = InputPipeline::default();
+        pipeline.feed_normal(b"\rqueued");
+        assert!(matches!(pipeline.pop_input(), Some(InputEvent::Key { .. })));
+        pipeline.feed_normal(&[0xc3]);
+
+        pipeline.discard_pending();
+
+        assert!(pipeline.pending_is_empty());
+        pipeline.preserve_decoder_pending();
+        assert!(pipeline.pending_is_empty());
     }
 }

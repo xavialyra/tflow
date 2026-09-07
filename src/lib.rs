@@ -11,10 +11,12 @@ mod ui;
 mod view;
 mod workflow;
 
-// Keep the established crate paths while the implementation lives in the
-// architectural domains above.
-pub(crate) use ui::{chrome, theme};
-pub(crate) use workflow::{command, config, expression, navigation as router, parameter, runtime};
+#[cfg(test)]
+#[test]
+#[ignore = "collects reproducible scheduler evidence and writes target/stage5 artifacts"]
+fn stage_5_scheduler_evidence() {
+    task::run_stage_5_scheduler_evidence();
+}
 
 pub fn run() -> anyhow::Result<i32> {
     app::run()

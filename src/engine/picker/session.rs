@@ -4,17 +4,16 @@ use super::items::{
     ItemsTaskHandle,
 };
 use super::preview::{PickerPreview, PickerPreviewConfig};
-use crate::command::{CommandOwnerContext, ViewOutput, ViewOutputItem};
 #[cfg(test)]
 use crate::engine::ActionInvocation;
 use crate::engine::{
-    BackgroundOutcome, EngineActionInput, EngineCommandBinding,
-    EngineCommandProjection, EngineDecision, EngineEmission, EngineNotice, EngineRuntime,
-    EngineRuntimeSnapshot, EngineTick, QualifiedCommandId, RenderModel, ViewContext,
-    ViewContextPublication,
+    BackgroundOutcome, EngineActionInput, EngineCommandBinding, EngineCommandProjection,
+    EngineDecision, EngineEmission, EngineNotice, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
+    QualifiedCommandId, RenderModel, ViewContext, ViewContextPublication,
 };
-use crate::parameter::ParameterSnapshot;
 use crate::task::TaskCompletion;
+use crate::workflow::command::{CommandOwnerContext, ViewOutput, ViewOutputItem};
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -361,13 +360,13 @@ impl PickerView {
                     .cloned()
             })
             .flatten();
-        let plugin_root = item
+        let workflow_root = item
             .as_ref()
-            .and_then(|item| self.services.plugin_root(&item.source_view))
+            .and_then(|item| self.services.workflow_root(&item.source_view))
             .map(std::path::Path::to_path_buf);
         if let Some(preview) = &mut self.preview {
             preview.set_visible(visible);
-            preview.update(item.as_ref(), plugin_root.as_deref());
+            preview.update(item.as_ref(), workflow_root.as_deref());
         }
     }
 
@@ -1090,7 +1089,8 @@ impl PickerView {
                 self.select_without_host(1);
                 if self.results_current_snapshot(&self.frame.query) {
                     let input = context.map_or_else(|| self.requested_input(), |c| c.input_raw());
-                    let snapshot = context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
+                    let snapshot =
+                        context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
                     Ok(EngineDecision::RuntimeUpdate(
                         self.runtime_update(snapshot, input)?,
                     ))
@@ -1102,7 +1102,8 @@ impl PickerView {
                 self.select_without_host(-1);
                 if self.results_current_snapshot(&self.frame.query) {
                     let input = context.map_or_else(|| self.requested_input(), |c| c.input_raw());
-                    let snapshot = context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
+                    let snapshot =
+                        context.map_or_else(|| &*self.runtime_snapshot, |c| c.runtime_snapshot());
                     Ok(EngineDecision::RuntimeUpdate(
                         self.runtime_update(snapshot, input)?,
                     ))
@@ -1343,9 +1344,9 @@ impl EngineRuntime for PickerView {
         &mut self,
         starter: &crate::task::MountTaskStarter,
         runtime_snapshot: &Value,
-    ) {
+    ) -> bool {
         let prepared = std::mem::take(&mut self.items_task_state);
-        if let ItemsTaskState::Prepared(request) = prepared {
+        let started = if let ItemsTaskState::Prepared(request) = prepared {
             self.items_completion = None;
             let identity = request.identity.clone();
             let task = self
@@ -1353,10 +1354,13 @@ impl EngineRuntime for PickerView {
                 .start_items(starter, request, runtime_snapshot.clone());
             self.items_task_state = ItemsTaskState::running(identity);
             self.items_task = Some(task);
+            true
         } else {
             self.items_task_state = prepared;
-        }
+            false
+        };
         self.sync_preview();
+        started
     }
 
     fn deactivate(&mut self) {
@@ -1411,8 +1415,8 @@ mod tests {
     use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
     use std::sync::Arc;
 
-    fn test_picker(mount_id: u64) -> (Arc<crate::config::Config>, PickerView) {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
+    fn test_picker(mount_id: u64) -> (Arc<crate::workflow::config::CompiledConfig>, PickerView) {
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
             MountTaskStarter::from_lease(
@@ -1422,11 +1426,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let picker = PickerView::new("core:default", services, PickerOptions::default());
         (config, picker)
     }
 
@@ -1445,7 +1445,10 @@ mod tests {
 
     fn test_context(input: &str, parameters: ParameterSnapshot) -> ViewContext {
         ViewContext::for_test(
-            crate::engine::ViewIdentity::new("core:default", crate::config::ENGINE_PICKER),
+            crate::engine::ViewIdentity::new(
+                "core:default",
+                crate::workflow::config::ENGINE_PICKER,
+            ),
             EditorBuffer::new(input).snapshot(),
             parameters,
             false,
@@ -1465,15 +1468,19 @@ mod tests {
     }
 
     fn test_feed_instance(
-        config: &crate::config::Config,
+        config: &crate::workflow::config::CompiledConfig,
         page_view: &str,
         owner_view: &str,
         parameters: ParameterSnapshot,
         binding_raw: &str,
     ) -> FeedInstance {
         let projection = Arc::new(
-            crate::config::PickerItemsProjection::from_config(config, page_view)
-                .expect("test feed projection must compile"),
+            crate::workflow::config::PickerItemsProjection::from_config(
+                config,
+                &Value::Null,
+                page_view,
+            )
+            .expect("test feed projection must compile"),
         );
         let definitions = FeedDefinition::collection(projection, page_view)
             .expect("test feed definitions must compile");
@@ -1507,7 +1514,8 @@ mod tests {
         picker.parameter_snapshot = Some(parameters);
         picker.frame.selection.replace(vec![Item {
             text: "Application".to_string(),
-            display: crate::engine::picker::ItemDisplayInput::Plain("Application".to_string()).into(),
+            display: crate::engine::picker::ItemDisplayInput::Plain("Application".to_string())
+                .into(),
             value: Some("application".to_string()),
             metadata: Value::Null,
             source_view: "apps:main".to_string(),
@@ -1539,7 +1547,6 @@ mod tests {
         assert_eq!(current["value"], "application");
         assert!(current["metadata"].is_null());
     }
-
 
     #[test]
     fn background_items_completion_publishes_mount_current_without_runtime_update() {
@@ -1597,7 +1604,6 @@ mod tests {
         tasks.shutdown_and_wait();
     }
 
-
     #[test]
     fn stale_polled_completion_applies_idle_retry_state() {
         let (_config, mut picker) = test_picker(119);
@@ -1641,6 +1647,75 @@ mod tests {
     }
 
     #[test]
+    fn failed_or_cancelled_polled_tasks_reset_the_handle_and_prepare_retry_work() {
+        for cancelled in [false, true] {
+            let (_config, mut picker) = test_picker(if cancelled { 121 } else { 120 });
+            let source = crate::input::InputSourceIdentity {
+                frame: crate::input::ViewMountId(if cancelled { 121 } else { 120 }),
+                generation: 0,
+            };
+            let parameters = test_parameters("retry", source, 1);
+            picker.parameter_snapshot = Some(parameters.clone());
+            picker
+                .request_items("core:default", "retry", "retry", parameters.clone())
+                .unwrap();
+            let identity = picker.requested_identity().unwrap().clone();
+            picker.items_task_state = ItemsTaskState::running(identity);
+            let tasks = TaskRuntime::new();
+            picker.items_task = Some(if cancelled {
+                tasks.spawn(|context| {
+                    while !context.cancellation.is_cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err("cancelled".to_string())
+                })
+            } else {
+                tasks.spawn(|_| Err("items failed".to_string()))
+            });
+            if cancelled {
+                tasks.cancel_all();
+            }
+
+            let mut emission = None;
+            for _ in 0..200 {
+                if let Some(next) = picker.poll_work().unwrap() {
+                    emission = Some(next);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(emission.is_some(), "task completion should be consumed");
+            assert_eq!(picker.items_task_state, ItemsTaskState::Idle);
+            assert!(picker.items_task.is_none());
+            assert!(picker.items_completion.is_none());
+            assert!(picker.frame.input_refresh.is_retry_requested());
+
+            picker.started = true;
+            let emission = picker
+                .tick(EngineTick {
+                    context: test_context("retry", parameters),
+                    content_size: (80, 24),
+                })
+                .unwrap();
+            assert!(matches!(
+                emission.decision_ref(),
+                EngineDecision::RuntimeUpdate(_)
+            ));
+            assert!(matches!(
+                picker.items_task_state,
+                ItemsTaskState::Prepared(_)
+            ));
+            let starter = crate::task::MountTaskStarter::from_lease(
+                &tasks,
+                crate::task::MountTaskLease::new(source.frame),
+            );
+            assert!(picker.start_prepared_work(&starter, &Value::Null));
+            assert!(picker.items_task.is_some());
+            tasks.shutdown_and_wait();
+        }
+    }
+
+    #[test]
     fn item_commands_are_disabled_when_results_have_no_selected_item() {
         let (_config, mut picker) = test_picker(116);
         picker.services.page_commands.insert(
@@ -1670,14 +1745,14 @@ mod tests {
                     key: crate::input::Key::Enter,
                     label: "Requires item".to_string(),
                     requires_items: true,
-                    visibility: crate::config::CommandBindingVisibility::Always,
+                    visibility: crate::workflow::config::CommandBindingVisibility::Always,
                 },
                 super::super::PickerSelectionCommand {
                     id: "selection_scope".to_string(),
                     key: crate::input::Key::Tab,
                     label: "Selection scope".to_string(),
                     requires_items: false,
-                    visibility: crate::config::CommandBindingVisibility::Always,
+                    visibility: crate::workflow::config::CommandBindingVisibility::Always,
                 },
             ],
         );
@@ -1819,7 +1894,7 @@ mod tests {
 
     #[test]
     fn state_identity_advances_generation_when_view_and_raw_input_match() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
             MountTaskStarter::from_lease(
@@ -1829,11 +1904,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
         let mut first = config.instantiate_parameters("core:default").unwrap();
         let mut second = config.instantiate_parameters("core:default").unwrap();
         config
@@ -1867,7 +1938,7 @@ mod tests {
 
     #[test]
     fn activate_stays_inactive_until_foreground_tick() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
             MountTaskStarter::from_lease(
@@ -1877,11 +1948,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
         let state = config.instantiate_parameters("core:default").unwrap();
         let parameters = config
             .parameter_snapshot(
@@ -1893,7 +1960,10 @@ mod tests {
             )
             .unwrap();
         let context = ViewContext::for_test(
-            crate::engine::ViewIdentity::new("core:default", crate::config::ENGINE_PICKER),
+            crate::engine::ViewIdentity::new(
+                "core:default",
+                crate::workflow::config::ENGINE_PICKER,
+            ),
             EditorBuffer::new("").snapshot(),
             parameters,
             state.input_rejected(),
@@ -1919,7 +1989,7 @@ mod tests {
 
     #[test]
     fn input_round_trip_waits_for_ready_and_requests_the_latest_snapshot() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let runtime = serde_json::json!({
             "view": {"current": {"ref": "core:default"}},
             "session": {"input": {"raw": "A", "params": "A"}}
@@ -1933,11 +2003,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
         let mut state = config.instantiate_parameters("core:default").unwrap();
         config
             .parameter_binding(state.view_ref())
@@ -1963,7 +2029,10 @@ mod tests {
         let context =
             |parameters: &ParameterSnapshot, input: &EditorBuffer, input_rejected: bool| {
                 ViewContext::for_test(
-                    crate::engine::ViewIdentity::new("core:default", crate::config::ENGINE_PICKER),
+                    crate::engine::ViewIdentity::new(
+                        "core:default",
+                        crate::workflow::config::ENGINE_PICKER,
+                    ),
                     input.snapshot(),
                     parameters.clone(),
                     input_rejected,
@@ -2026,8 +2095,8 @@ mod tests {
 
     #[test]
     fn rejected_input_cannot_accept_stale_selection() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
-                let services = crate::engine::picker::PickerRuntimeServices::new(
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
             MountTaskStarter::from_lease(
                 &TaskRuntime::new(),
@@ -2036,11 +2105,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
         picker.frame.selection.replace(vec![Item {
             text: "stale".to_string(),
             display: crate::engine::picker::ItemDisplayInput::Plain("stale".to_string()).into(),
@@ -2069,7 +2134,7 @@ mod tests {
                 context: ViewContext::for_test(
                     crate::engine::ViewIdentity::new(
                         state.view_ref(),
-                        crate::config::ENGINE_PICKER,
+                        crate::workflow::config::ENGINE_PICKER,
                     ),
                     input.snapshot(),
                     parameters,
@@ -2177,7 +2242,7 @@ mod tests {
         assert_eq!(
             returned_output(&decision),
             Some(&ViewOutput::Selected {
-                item: Some(crate::command::ViewOutputItem {
+                item: Some(crate::workflow::command::ViewOutputItem {
                     text: "fresh".to_string(),
                     value: Some("fresh".to_string()),
                     metadata: Value::Null,
@@ -2237,7 +2302,7 @@ mod tests {
         assert_eq!(
             returned_output(&decision),
             Some(&ViewOutput::Selected {
-                item: Some(crate::command::ViewOutputItem {
+                item: Some(crate::workflow::command::ViewOutputItem {
                     text: "second".to_string(),
                     value: Some("second".to_string()),
                     metadata: Value::Null,
@@ -2294,7 +2359,7 @@ mod tests {
         assert_eq!(
             returned_output(&new_decision),
             Some(&ViewOutput::Selected {
-                item: Some(crate::command::ViewOutputItem {
+                item: Some(crate::workflow::command::ViewOutputItem {
                     text: "fresh".to_string(),
                     value: Some("fresh".to_string()),
                     metadata: Value::Null,
@@ -2359,7 +2424,7 @@ mod tests {
 
     #[test]
     fn stale_results_have_no_effect_on_the_current_request() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let source = crate::input::InputSourceIdentity {
             frame: crate::input::ViewMountId(107),
             generation: 4,
@@ -2370,11 +2435,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new(
-            "core:default",
-            services,
-            PickerOptions::default(),
-        );
+        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
         let parameters = ParameterSnapshot::from_parts(
             serde_json::json!({"query": "current"}),
             "current".to_string(),
@@ -2426,7 +2487,10 @@ mod tests {
         assert_eq!(picker_request_state(&picker), expected);
 
         let context = ViewContext::for_test(
-            crate::engine::ViewIdentity::new("core:default", crate::config::ENGINE_PICKER),
+            crate::engine::ViewIdentity::new(
+                "core:default",
+                crate::workflow::config::ENGINE_PICKER,
+            ),
             EditorBuffer::new("new").snapshot(),
             parameters,
             false,
@@ -2490,8 +2554,8 @@ mod tests {
 
     #[test]
     fn preview_decode_starts_only_during_prepared_work_start() {
-        let config = Arc::new(crate::config::load_test_fixture().unwrap());
-                let services = crate::engine::picker::PickerRuntimeServices::new(
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
             MountTaskStarter::from_lease(
                 &TaskRuntime::new(),

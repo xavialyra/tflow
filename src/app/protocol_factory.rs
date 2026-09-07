@@ -1,14 +1,17 @@
-use super::{
+use crate::engine::{
     EngineRegistry, PickerProtocolConfig, create_capture_protocol_view,
-    create_embedded_protocol_view, create_picker_protocol_view,
+    create_embedded_protocol_view, create_picker_protocol_view, picker_mount_data,
 };
-use crate::config::{Config, EvaluationSnapshot, InvocationScope, OwnerViewScope, SessionScope};
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
-use crate::parameter::ParameterSnapshot;
 use crate::protocol::ViewCommandBindings;
-use crate::theme::ResolvedTheme;
-use crate::view::{NavigationRequest, View, ViewFactory, ViewInstanceId, ViewServices};
+use crate::protocol::contracts::ViewInstanceId;
+use crate::ui::theme::ResolvedTheme;
+use crate::view::{NavigationRequest, View, ViewFactory, ViewServices};
+use crate::workflow::config::{
+    CompiledConfig, EvaluationSnapshot, InvocationScope, OwnerViewScope, SessionScope,
+};
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -17,7 +20,8 @@ use std::collections::BTreeMap;
 /// immutable configuration and creates a fresh protocol View for each Router
 /// instance; no legacy AppSession state is consulted.
 pub(crate) struct ProtocolViewFactory {
-    config: Config,
+    config: std::sync::Arc<CompiledConfig>,
+    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
     theme: ResolvedTheme,
     cancellation: CancellationToken,
     engines: EngineRegistry,
@@ -25,13 +29,15 @@ pub(crate) struct ProtocolViewFactory {
 
 impl ProtocolViewFactory {
     pub(crate) fn new(
-        config: &Config,
+        config: std::sync::Arc<CompiledConfig>,
+        invocation: std::sync::Arc<crate::workflow::InvocationContext>,
         theme: ResolvedTheme,
         cancellation: CancellationToken,
         engines: EngineRegistry,
     ) -> Self {
         Self {
-            config: config.clone(),
+            config,
+            invocation,
             theme,
             cancellation,
             engines,
@@ -65,7 +71,7 @@ impl ProtocolViewFactory {
     fn runtime_snapshot(&self, target: &str, parameters: &ParameterSnapshot) -> Result<Value> {
         let raw = parameters.raw_input();
         let commands =
-            crate::command::collect_available_commands(&self.config, target, None, true)?
+            crate::workflow::command::collect_available_commands(&self.config, target, None, true)?
                 .into_values()
                 .collect::<Vec<_>>();
         Ok(serde_json::json!({
@@ -105,7 +111,7 @@ impl ProtocolViewFactory {
         let parameters = self.parameters(request, instance)?;
         let runtime = self.runtime_snapshot(target, &parameters)?;
         let evaluation = EvaluationSnapshot::new(
-            InvocationScope::new(&self.config.input_value),
+            InvocationScope::new(self.invocation.input_value()),
             SessionScope::new(&runtime),
             Some(OwnerViewScope::new(target, &parameters)),
             Some(&self.cancellation),
@@ -122,8 +128,9 @@ impl ProtocolViewFactory {
         target: &str,
         instance: ViewInstanceId,
     ) -> Result<crate::engine::PickerViewServices> {
-        super::picker::mount_data(
+        picker_mount_data(
             &self.config,
+            self.invocation.input_value(),
             target,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(instance.0)),
         )
@@ -141,7 +148,7 @@ impl ViewFactory for ProtocolViewFactory {
         let engine_type = self.config.engine(target)?.to_string();
         let (engine, bindings, runtime_snapshot) = self.evaluated(target, instance, request)?;
         match engine_type.as_str() {
-            crate::config::ENGINE_PICKER => {
+            crate::workflow::config::ENGINE_PICKER => {
                 let parameter_binding = self.config.parameter_binding(target)?;
                 let query_prefix = (self.config.default_view.as_deref() != Some(target.as_str()))
                     .then(|| {
@@ -171,7 +178,7 @@ impl ViewFactory for ProtocolViewFactory {
                     )?,
                     identity: crate::engine::ViewIdentity::new(
                         target,
-                        crate::config::ENGINE_PICKER,
+                        crate::workflow::config::ENGINE_PICKER,
                     ),
                     engine,
                     bindings,
@@ -189,7 +196,7 @@ impl ViewFactory for ProtocolViewFactory {
                 };
                 create_picker_protocol_view(config, request, instance, services.routes)
             }
-            crate::config::ENGINE_CAPTURE => create_capture_protocol_view(
+            crate::workflow::config::ENGINE_CAPTURE => create_capture_protocol_view(
                 crate::engine::CaptureProtocolConfig::new(
                     target,
                     engine,
@@ -213,7 +220,7 @@ impl ViewFactory for ProtocolViewFactory {
                 request,
                 instance,
             ),
-            crate::config::ENGINE_EMBEDDED => create_embedded_protocol_view(
+            crate::workflow::config::ENGINE_EMBEDDED => create_embedded_protocol_view(
                 crate::engine::EmbeddedProtocolConfig::new(
                     target,
                     engine,

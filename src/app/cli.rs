@@ -1,13 +1,13 @@
 use super::SessionOutcome;
 use super::{App, InputArtifact, InvocationResult, LoadedApp, finish};
-#[cfg(test)]
-use crate::config::EngineConfigValidator;
-use crate::config::{Config, ImageProtocol as ConfigImageProtocol};
 use crate::diagnostics::RuntimeLog;
 use crate::engine::EngineRegistry;
 use crate::lifecycle::SignalGuard;
 use crate::terminal::{ImageProtocol as TerminalImageProtocol, Terminal};
-use crate::theme::{self, ThemeLoadOptions};
+use crate::ui::theme::{self, ThemeLoadOptions};
+#[cfg(test)]
+use crate::workflow::config::EngineConfigValidator;
+use crate::workflow::config::{CompiledConfig, ImageProtocol as ConfigImageProtocol};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::env;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     author,
     version,
-    about = "A generic TUI workflow host for View-based CLI plugins"
+    about = "A generic TUI workflow host for View-based CLI workflows"
 )]
 struct Args {
     /// Path to a TOML configuration file.
@@ -104,7 +104,7 @@ fn effective_cli_args() -> Vec<String> {
     args
 }
 
-impl Config {
+impl CompiledConfig {
     #[cfg(test)]
     pub(crate) fn load(user_path: &Path) -> Result<Self> {
         let engines = EngineRegistry::new();
@@ -117,8 +117,11 @@ impl Config {
         let mut theme = theme::load(user_path, loaded.theme_selector(), options)?;
         let config = loaded.compile()?;
         config.validate_with_engines(&engines)?;
-        theme.register_all_plugin_defaults(config.plugins())?;
-        Ok(LoadedApp { config, theme })
+        theme.register_all_workflow_defaults(config.workflows())?;
+        Ok(LoadedApp {
+            config: std::sync::Arc::new(config),
+            theme,
+        })
     }
 
     #[cfg(test)]
@@ -133,7 +136,7 @@ impl Config {
             &ThemeLoadOptions::default(),
         )?;
         let config = loaded.compile()?;
-        theme.register_all_plugin_defaults(config.plugins())?;
+        theme.register_all_workflow_defaults(config.workflows())?;
         config.validate_with_engines(engines)?;
         Ok(config)
     }
@@ -145,8 +148,8 @@ pub(crate) fn run() -> Result<i32> {
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
     let selector = args.theme.map(theme::cli_named_theme);
     let theme_options = ThemeLoadOptions { selector };
-    let loaded = Config::load_app(&config_path, &theme_options)?;
-    let mut config = loaded.config;
+    let loaded = CompiledConfig::load_app(&config_path, &theme_options)?;
+    let config = loaded.config;
     let image_protocol = match config.image_protocol {
         ConfigImageProtocol::Halfblocks => TerminalImageProtocol::Halfblocks,
         ConfigImageProtocol::Kitty => TerminalImageProtocol::Kitty,
@@ -206,9 +209,14 @@ pub(crate) fn run() -> Result<i32> {
             .clone()
             .context("no default_view configured; specify a View on the command line")?,
     };
-    let parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
+    let mut parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
+    config.sanitize_initial_parameter_values(&mut parameters)?;
     let input = InputArtifact::capture()?;
-    config.set_invocation(input.value(), parameters);
+    let invocation = std::sync::Arc::new(crate::workflow::InvocationContext::new(
+        root_view.clone(),
+        input.value(),
+        parameters,
+    )?);
 
     let runtime_log = RuntimeLog::open(config.log_file.as_deref());
     let signal_guard =
@@ -235,7 +243,8 @@ pub(crate) fn run() -> Result<i32> {
     };
     let app_result = if explicit_view {
         App::with_view(
-            &config,
+            std::sync::Arc::clone(&config),
+            std::sync::Arc::clone(&invocation),
             &theme,
             runtime_log,
             engines,
@@ -243,7 +252,14 @@ pub(crate) fn run() -> Result<i32> {
             &cancellation,
         )
     } else {
-        App::with_runtime_log_and_engines(&config, &theme, runtime_log, engines, &cancellation)
+        App::with_runtime_log_and_engines(
+            std::sync::Arc::clone(&config),
+            std::sync::Arc::clone(&invocation),
+            &theme,
+            runtime_log,
+            engines,
+            &cancellation,
+        )
     };
     let mut app = match app_result {
         Ok(app) => app,
@@ -272,7 +288,7 @@ pub(crate) fn run() -> Result<i32> {
     {
         return Err(error);
     }
-    let mut result = match finish(&config, &root_view, outcome, &cancellation) {
+    let mut result = match finish(&config, &invocation, outcome, &cancellation) {
         Ok(result) => result,
         Err(_error) if signal_guard.received().is_some() => InvocationResult {
             stdout: Vec::new(),

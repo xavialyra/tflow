@@ -1,8 +1,7 @@
 //! Protocol-native adapter for the Capture engine.
 //!
 //! Capture remains implemented by `CaptureView` and `CaptureRenderer`; this
-//! module only translates their engine runtime contract to the common View
-//! protocol. It is intentionally opt-in and is not used by legacy
+//! module translates their engine runtime contract to the common View protocol.
 
 use super::{CaptureKeymap, create_input_bindings, create_renderer, create_view};
 use crate::engine::{
@@ -11,16 +10,19 @@ use crate::engine::{
     EvaluatedBindingConfig, EvaluatedEngineConfig, RendererFactoryContext, RuntimeFactoryContext,
     ViewContext as EngineContext, ViewIdentity,
 };
-use crate::input::{EditorBuffer, InputSourceIdentity, ViewMountId};
+use crate::input::{EditorBuffer, InputEvent, InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationObserver;
-use crate::parameter::ParameterSnapshot;
+#[cfg(test)]
+use crate::protocol::contracts::{TaskEvent, TaskOutcome};
+use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
-use crate::theme::ResolvedTheme;
+use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, EffectRequest, InputEvent, LifecycleEvent, NavigationRequest,
-    RelativeCursor, RenderContext, RenderResult, TaskId, TaskOutcome, View, ViewCommandSnapshot,
-    ViewContext, ViewDecision, ViewEvent, ViewInstanceId, ViewPublication, ViewResult,
+    Binding, BindingSet, EffectRequest, LifecycleEvent, NavigationRequest, RelativeCursor,
+    RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent,
+    ViewPublication, ViewResult, ViewTaskRegistry,
 };
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
@@ -52,7 +54,7 @@ impl CaptureProtocolConfig {
     ) -> Self {
         Self {
             commands,
-            identity: ViewIdentity::new(view_ref, crate::config::ENGINE_CAPTURE),
+            identity: ViewIdentity::new(view_ref, crate::workflow::config::ENGINE_CAPTURE),
             engine,
             bindings,
             cancellation,
@@ -148,6 +150,7 @@ fn create_protocol_view_state(
         theme: config.theme,
         engine_context,
         instance,
+        task_registry: ViewTaskRegistry::new(instance),
         has_async_work,
         task_generation: 0,
         active_task: None,
@@ -164,7 +167,7 @@ struct CaptureProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     keymap: CaptureKeymap,
-    bindings: Vec<crate::command::InputActionBinding>,
+    bindings: Vec<crate::workflow::command::InputActionBinding>,
     commands: crate::protocol::ViewCommandBindings,
     starter: MountTaskStarter,
     runtime_snapshot: Value,
@@ -175,6 +178,7 @@ struct CaptureProtocolView {
     theme: ResolvedTheme,
     engine_context: EngineContext,
     instance: ViewInstanceId,
+    task_registry: ViewTaskRegistry,
     has_async_work: bool,
     task_generation: u64,
     active_task: Option<AdapterTaskCorrelation>,
@@ -194,7 +198,7 @@ struct AdapterTaskCorrelation {
 }
 
 fn apply_runtime_update(snapshot: &mut Value, path: &str, value: Value) -> Result<()> {
-    *snapshot = crate::runtime::apply_pointer(snapshot, path, value)?;
+    *snapshot = crate::workflow::runtime::apply_pointer(snapshot, path, value)?;
     Ok(())
 }
 
@@ -247,17 +251,26 @@ impl CaptureProtocolView {
         Ok(())
     }
 
-    fn begin_adapter_task(&mut self) {
+    fn start_prepared_work(&mut self) {
+        let task = TaskId(1);
         if !self.has_async_work {
-            self.active_task = None;
             return;
         }
-        self.task_generation = self.task_generation.wrapping_add(1).max(1);
+        let generation = self.task_generation.wrapping_add(1).max(1);
+        let starter = self.starter.for_task(task, generation);
+        if !self
+            .runtime
+            .start_prepared_work(&starter, &self.runtime_snapshot)
+        {
+            return;
+        }
+        self.task_generation = generation;
         self.active_task = Some(AdapterTaskCorrelation {
             instance: self.instance,
-            task: TaskId(1),
-            generation: self.task_generation,
+            task,
+            generation,
         });
+        self.task_registry.register(task, generation);
     }
 
     fn task_matches_context(&self, context: &ViewContext) -> bool {
@@ -268,6 +281,7 @@ impl CaptureProtocolView {
     fn cancel_stale_adapter_task(&mut self) {
         self.runtime.deactivate();
         self.active_task = None;
+        self.task_registry.invalidate_all();
     }
 
     fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
@@ -431,10 +445,7 @@ impl CaptureProtocolView {
             self.apply_notice(&notice);
         }
         if let Some(publication) = publication {
-            self.publication = Some(ViewPublication::new(
-                publication.current,
-                publication.ready,
-            ));
+            self.publication = Some(ViewPublication::new(publication.current, publication.ready));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
         Ok(ViewDecision::Invalidate)
@@ -509,13 +520,7 @@ impl View for CaptureProtocolView {
                 self.active = true;
                 let emission = self.runtime.activate(self.engine_context.clone())?;
                 let decision = self.decision(context, emission)?;
-                self.begin_adapter_task();
-                let starter = self.active_task.map_or_else(
-                    || self.starter.clone(),
-                    |task| self.starter.for_task(task.task, task.generation),
-                );
-                self.runtime
-                    .start_prepared_work(&starter, &self.runtime_snapshot);
+                self.start_prepared_work();
                 Ok(decision)
             }
             ViewEvent::Lifecycle(LifecycleEvent::Covered) => {
@@ -525,6 +530,7 @@ impl View for CaptureProtocolView {
             ViewEvent::Lifecycle(LifecycleEvent::Closing) => {
                 self.active = false;
                 self.active_task = None;
+                self.task_registry.invalidate_all();
                 self.pending_command = None;
                 self.runtime.deactivate();
                 self.starter.cancel_all();
@@ -586,6 +592,9 @@ impl View for CaptureProtocolView {
             }
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
             ViewEvent::Task(task) => {
+                if !self.task_registry.accepts(&task) {
+                    return Ok(ViewDecision::Stay);
+                }
                 let Some(correlation) = self.active_task else {
                     return Ok(ViewDecision::Stay);
                 };
@@ -595,22 +604,15 @@ impl View for CaptureProtocolView {
                 {
                     return Ok(ViewDecision::Stay);
                 }
-                match task.outcome {
-                    TaskOutcome::Completed(_) if self.active => self.poll_active(context),
-                    TaskOutcome::Completed(_) => self.poll_covered(context),
-                    TaskOutcome::Failed(message) => {
-                        self.active_task = None;
-                        self.pending_command = None;
-                        self.status = None;
-                        self.error = Some(message);
-                        Ok(ViewDecision::Invalidate)
-                    }
-                    TaskOutcome::Cancelled => {
-                        self.active_task = None;
-                        self.pending_command = None;
-                        Ok(ViewDecision::Stay)
-                    }
+                let decision = if self.active {
+                    self.poll_active(context)?
+                } else {
+                    self.poll_covered(context)?
+                };
+                if self.active_task.is_none() {
+                    self.task_registry.invalidate(task.task);
                 }
+                Ok(decision)
             }
             ViewEvent::Tick if self.active => {
                 #[cfg(test)]
@@ -666,6 +668,7 @@ impl View for CaptureProtocolView {
 
 impl Drop for CaptureProtocolView {
     fn drop(&mut self) {
+        self.task_registry.invalidate_all();
         if !self.closed {
             self.runtime.deactivate();
             self.starter.cancel_all();
@@ -679,12 +682,18 @@ mod tests {
     use crate::engine::{EvaluatedBindingConfig, EvaluatedEngineConfig};
     use crate::view::{ParsedQuery, ViewContext};
     use ratatui::{Terminal, backend::TestBackend};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     fn request() -> NavigationRequest {
         NavigationRequest::new("capture", ParsedQuery::new("capture", "query", Value::Null))
     }
 
     fn config(output: Value) -> CaptureProtocolConfig {
+        config_with_tasks(output, TaskRuntime::new())
+    }
+
+    fn config_with_tasks(output: Value, tasks: TaskRuntime) -> CaptureProtocolConfig {
         CaptureProtocolConfig::new(
             "capture",
             EvaluatedEngineConfig {
@@ -693,7 +702,7 @@ mod tests {
             },
             EvaluatedBindingConfig::default(),
             crate::protocol::ViewCommandBindings::new(
-                &crate::config::load_test_fixture().unwrap(),
+                &crate::workflow::config::load_test_fixture().unwrap(),
                 "capture",
                 crate::lifecycle::CancellationToken::new().observer(),
                 &[],
@@ -702,7 +711,7 @@ mod tests {
             crate::lifecycle::CancellationToken::new().observer(),
             Value::Null,
             ResolvedTheme::terminal(),
-            TaskRuntime::new(),
+            tasks,
         )
     }
 
@@ -721,7 +730,7 @@ mod tests {
             },
             7,
         );
-        let identity = ViewIdentity::new("capture", crate::config::ENGINE_CAPTURE);
+        let identity = ViewIdentity::new("capture", crate::workflow::config::ENGINE_CAPTURE);
         let publication = serde_json::json!({"value": "captured"});
         let context = engine_context(
             ViewInstanceId(9),
@@ -762,9 +771,14 @@ mod tests {
 
     #[test]
     fn mismatched_task_generation_or_revision_cannot_consume_capture_completion() {
+        let tasks = TaskRuntime::new();
         let output = serde_json::json!({"source": "script", "file": "capture.sh"});
-        let mut view =
-            create_protocol_view_state(config(output), &request(), ViewInstanceId(1)).unwrap();
+        let mut view = create_protocol_view_state(
+            config_with_tasks(output, tasks.clone()),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
         let mut context = context();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
             .unwrap();
@@ -776,27 +790,125 @@ mod tests {
         let correlation = view.active_task.expect("async capture must be correlated");
         let before = view.command_snapshot();
         view.event(
-            ViewEvent::Task(crate::view::TaskEvent {
+            ViewEvent::Task(TaskEvent {
                 instance: correlation.instance,
                 task: correlation.task,
                 generation: correlation.generation + 1,
-                outcome: crate::view::TaskOutcome::Completed(Value::Null),
+                outcome: TaskOutcome::Completed(Value::Null),
             }),
             &context,
         )
         .unwrap();
         assert_eq!(view.command_snapshot(), before);
         view.event(
-            ViewEvent::Task(crate::view::TaskEvent {
+            ViewEvent::Task(TaskEvent {
                 instance: correlation.instance,
                 task: TaskId(correlation.task.0 + 1),
                 generation: correlation.generation,
-                outcome: crate::view::TaskOutcome::Completed(Value::Null),
+                outcome: TaskOutcome::Completed(Value::Null),
             }),
             &context,
         )
         .unwrap();
         assert_eq!(view.command_snapshot(), before);
+        view.event(
+            ViewEvent::Task(TaskEvent {
+                instance: ViewInstanceId(correlation.instance.0 + 1),
+                task: correlation.task,
+                generation: correlation.generation,
+                outcome: TaskOutcome::Completed(Value::Null),
+            }),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(view.command_snapshot(), before);
+
+        let event = wait_for_task_event(&tasks);
+        assert_eq!(
+            (event.instance, event.task, event.generation),
+            (
+                correlation.instance,
+                correlation.task,
+                correlation.generation
+            )
+        );
+        assert!(matches!(
+            view.event(ViewEvent::Task(event), &context).unwrap(),
+            ViewDecision::Invalidate
+        ));
+        assert!(view.error.is_some());
+        assert!(view.active_task.is_none());
+        assert!(matches!(
+            view.event(
+                ViewEvent::Task(TaskEvent {
+                    instance: correlation.instance,
+                    task: correlation.task,
+                    generation: correlation.generation,
+                    outcome: TaskOutcome::Failed("duplicate".to_string()),
+                }),
+                &context,
+            )
+            .unwrap(),
+            ViewDecision::Stay
+        ));
+    }
+
+    #[test]
+    fn cancelled_capture_task_is_consumed_and_a_later_activation_can_start_work() {
+        let root = std::env::temp_dir().join(format!(
+            "tui-launcher-capture-cancel-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("capture.sh");
+        fs::write(&script, "#!/bin/sh\nwhile :; do sleep 0.01; done\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let tasks = TaskRuntime::new();
+        let output = serde_json::json!({"source": "script", "file": "capture.sh"});
+        let mut capture_config = config_with_tasks(output.clone(), tasks.clone());
+        capture_config.engine.workflow_root = Some(root.clone());
+        let mut view =
+            create_protocol_view_state(capture_config, &request(), ViewInstanceId(1)).unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        tasks.cancel_all();
+        let event = wait_for_task_event(&tasks);
+        assert!(matches!(event.outcome, TaskOutcome::Cancelled));
+        view.event(ViewEvent::Task(event), &context).unwrap();
+        assert!(view.active_task.is_none());
+        assert!(view.error.is_some());
+
+        let mut next_config = config_with_tasks(output, tasks.clone());
+        next_config.engine.workflow_root = Some(root.clone());
+        let mut next =
+            create_protocol_view_state(next_config, &request(), ViewInstanceId(2)).unwrap();
+        let next_context = ViewContext::new(ViewInstanceId(2), "capture");
+        next.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &next_context)
+            .unwrap();
+        next.event(
+            ViewEvent::Lifecycle(LifecycleEvent::Activated),
+            &next_context,
+        )
+        .unwrap();
+        assert!(next.active_task.is_some());
+        next.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &next_context)
+            .unwrap();
+        tasks.shutdown_and_wait();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn wait_for_task_event(tasks: &TaskRuntime) -> TaskEvent {
+        for _ in 0..200 {
+            if let Some(event) = tasks.drain_events().into_iter().next() {
+                return event;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("timed out waiting for task event");
     }
 
     #[test]
@@ -822,12 +934,12 @@ mod tests {
             ViewDecision::Stay
         ));
         assert!(
-            matches!(view.event(ViewEvent::Input(InputEvent::Key { key: crate::view::Key::Enter, raw: b"\r".to_vec() }), &mut context).unwrap(), ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured")
+            matches!(view.event(ViewEvent::Input(InputEvent::Key { key: crate::input::Key::Enter, raw: b"\r".to_vec() }), &mut context).unwrap(), ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured")
         );
         assert!(matches!(
             view.event(
                 ViewEvent::Input(InputEvent::Key {
-                    key: crate::view::Key::Escape,
+                    key: crate::input::Key::Escape,
                     raw: vec![0x1b]
                 }),
                 &mut context
@@ -877,10 +989,7 @@ mod tests {
                 );
             })
             .unwrap();
-        assert_eq!(
-            rendered.unwrap().metadata.title.as_deref(),
-            None
-        );
+        assert_eq!(rendered.unwrap().metadata.title.as_deref(), None);
         let text = terminal
             .backend()
             .buffer()
@@ -904,7 +1013,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let output = serde_json::json!({"source":"script", "file":"fail.sh"});
         let mut cfg = config(output);
-        cfg.engine.plugin_root = Some(root.clone());
+        cfg.engine.workflow_root = Some(root.clone());
         let mut view = create_protocol_view(cfg, &request(), ViewInstanceId(1)).unwrap();
         let mut context = context();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)

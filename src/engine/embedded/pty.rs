@@ -1,7 +1,8 @@
 use crate::engine::EmbeddedTerminal;
-use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat, ViewOutput};
+use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat};
 use crate::execution::{MANAGED_ENVIRONMENT, PreparedProcess, ProcessGroupGuard};
 use crate::lifecycle::{CancellationObserver, CancellationStatus};
+use crate::workflow::command::ViewOutput;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -814,7 +815,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("tui-launcher-pty-path-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
-        let working_dir = root.join("plugin");
+        let working_dir = root.join("workflow");
         let bin_dir = working_dir.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
         let executable = bin_dir.join("probe");

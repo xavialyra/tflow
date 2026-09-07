@@ -1,6 +1,6 @@
 use super::items::{ItemsRequest, ItemsResponse, PickerItemsLoader};
 use crate::input::ViewMountId;
-use crate::task::{MountTaskLease, MountTaskStarter, TaskHandle};
+use crate::task::{MountTaskLease, MountTaskStarter, TaskHandle, TaskTags};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -30,20 +30,26 @@ impl PickerItemsScheduler {
         let ItemsRequest { view, identity } = request;
         let lane = self.replacement_lane(identity.source);
         let loader = Arc::clone(loader);
-        starter.spawn_latest_with_snapshot(lane, runtime_snapshot, move |context| {
-            let request = ItemsRequest {
-                view: view.clone(),
-                identity: identity.clone(),
-            };
-            let result = loader
-                .load(&request, &context.runtime, &context.cancellation)
-                .map_err(|error| error.to_string());
-            Ok(ItemsResponse {
-                view,
-                identity,
-                result,
-            })
-        })
+        starter.spawn_latest_with_snapshot_tagged(
+            lane,
+            runtime_snapshot,
+            TaskTags::new("picker", "items"),
+            move |context| {
+                let request = ItemsRequest {
+                    view: view.clone(),
+                    identity: identity.clone(),
+                };
+                let outcome = loader.load(&request, &context.runtime, &context.cancellation);
+                if outcome.managed_child_reaped {
+                    context.mark_process_reaped();
+                }
+                Ok(ItemsResponse {
+                    view,
+                    identity,
+                    result: outcome.result.map_err(|error| error.to_string()),
+                })
+            },
+        )
     }
 
     fn replacement_lane(&self, target: crate::input::InputSourceIdentity) -> String {
@@ -57,8 +63,8 @@ impl PickerItemsScheduler {
 mod tests {
     use super::*;
     use crate::input::InputSourceIdentity;
-    use crate::parameter::ParameterSnapshot;
     use crate::task::{TaskCompletion, TaskRuntime};
+    use crate::workflow::parameter::ParameterSnapshot;
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,8 +94,26 @@ mod tests {
             _request: &ItemsRequest,
             _runtime: &serde_json::Value,
             _cancellation: &crate::lifecycle::CancellationToken,
-        ) -> anyhow::Result<super::super::items::ItemsResult> {
-            Ok(super::super::items::ItemsResult::default())
+        ) -> super::super::items::ItemsLoadOutcome {
+            super::super::items::ItemsLoadOutcome::without_managed_child(Ok(
+                super::super::items::ItemsResult::default(),
+            ))
+        }
+    }
+
+    struct ReapedFailedLoader;
+
+    impl PickerItemsLoader for ReapedFailedLoader {
+        fn load(
+            &self,
+            _request: &ItemsRequest,
+            _runtime: &serde_json::Value,
+            _cancellation: &crate::lifecycle::CancellationToken,
+        ) -> super::super::items::ItemsLoadOutcome {
+            super::super::items::ItemsLoadOutcome {
+                result: Err(anyhow::anyhow!("script exited with status 7")),
+                managed_child_reaped: true,
+            }
         }
     }
 
@@ -103,13 +127,15 @@ mod tests {
             _request: &ItemsRequest,
             _runtime: &serde_json::Value,
             cancellation: &crate::lifecycle::CancellationToken,
-        ) -> anyhow::Result<super::super::items::ItemsResult> {
+        ) -> super::super::items::ItemsLoadOutcome {
             if !self.started.swap(true, Ordering::Release) {
                 while !cancellation.is_cancelled() {
                     thread::yield_now();
                 }
             }
-            Ok(super::super::items::ItemsResult::default())
+            super::super::items::ItemsLoadOutcome::without_managed_child(Ok(
+                super::super::items::ItemsResult::default(),
+            ))
         }
     }
 
@@ -157,6 +183,39 @@ mod tests {
             TaskCompletion::Failed(error) => panic!("scheduler task failed: {error}"),
             TaskCompletion::Cancelled => panic!("scheduler task was cancelled"),
         }
+        tasks.shutdown_and_wait();
+    }
+
+    #[test]
+    fn picker_marks_a_reaped_failed_script_load() {
+        let tasks = TaskRuntime::new();
+        let mount_id = ViewMountId(53);
+        let scheduler = PickerItemsScheduler::new(MountTaskLease::new(mount_id), "apps:main");
+        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount_id));
+        let loader: Arc<dyn PickerItemsLoader> = Arc::new(ReapedFailedLoader);
+        let mut handle = scheduler.submit_items(
+            &starter,
+            &loader,
+            request_for(mount_id, 1),
+            serde_json::Value::Null,
+        );
+
+        match receive(&mut handle) {
+            TaskCompletion::Completed(response) => {
+                assert!(response.result.unwrap_err().contains("status 7"));
+            }
+            TaskCompletion::Failed(error) => panic!("picker task failed: {error}"),
+            TaskCompletion::Cancelled => panic!("picker task was cancelled"),
+        }
+        assert!(
+            tasks
+                .metrics_snapshot()
+                .recent_terminal
+                .last()
+                .unwrap()
+                .process_reaped_at
+                .is_some()
+        );
         tasks.shutdown_and_wait();
     }
 

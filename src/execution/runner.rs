@@ -13,14 +13,64 @@ use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// The result of bounded execution together with the only reliable process
+/// lifecycle fact exposed to task metrics.
+pub(crate) struct BoundedCommandOutcome {
+    result: Result<std::process::Output>,
+    managed_child_reaped: bool,
+}
+
+impl BoundedCommandOutcome {
+    pub(crate) fn into_result(self) -> Result<std::process::Output> {
+        self.result
+    }
+
+    pub(crate) fn managed_child_reaped(&self) -> bool {
+        self.managed_child_reaped
+    }
+
+    pub(crate) fn without_managed_child(result: Result<std::process::Output>) -> Self {
+        Self::from_result_and_reap(result, false)
+    }
+
+    pub(crate) fn from_result_and_reap(
+        result: Result<std::process::Output>,
+        managed_child_reaped: bool,
+    ) -> Self {
+        Self {
+            result,
+            managed_child_reaped,
+        }
+    }
+}
+
 pub(crate) fn run_bounded_command_with_stdin(
-    mut process: Command,
+    process: Command,
     stdin: Option<&[u8]>,
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
     cancellation: &dyn CancellationStatus,
 ) -> Result<std::process::Output> {
+    run_bounded_command_with_stdin_outcome(
+        process,
+        stdin,
+        timeout,
+        stdout_limit,
+        stderr_limit,
+        cancellation,
+    )
+    .into_result()
+}
+
+pub(crate) fn run_bounded_command_with_stdin_outcome(
+    mut process: Command,
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    cancellation: &dyn CancellationStatus,
+) -> BoundedCommandOutcome {
     clear_managed_environment(&mut process);
     process
         .stdin(if stdin.is_some() {
@@ -30,8 +80,39 @@ pub(crate) fn run_bounded_command_with_stdin(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut process_group =
-        ProcessGroupGuard::spawn(process).context("could not spawn bounded command")?;
+    let mut process_group = match ProcessGroupGuard::spawn(process, None) {
+        Ok(process_group) => process_group,
+        Err(error) => {
+            return BoundedCommandOutcome::without_managed_child(Err(
+                anyhow!(error).context("could not spawn bounded command")
+            ));
+        }
+    };
+    let result = run_started_bounded_command(
+        &mut process_group,
+        stdin,
+        timeout,
+        stdout_limit,
+        stderr_limit,
+        cancellation,
+    );
+    if !process_group.reaped() {
+        process_group.force_kill();
+    }
+    BoundedCommandOutcome {
+        result,
+        managed_child_reaped: process_group.reaped(),
+    }
+}
+
+fn run_started_bounded_command(
+    process_group: &mut ProcessGroupGuard,
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    cancellation: &dyn CancellationStatus,
+) -> Result<std::process::Output> {
     let mut stdout_reader = process_group
         .child_mut()
         .stdout
@@ -261,6 +342,46 @@ mod tests {
     }
 
     #[test]
+    fn bounded_outcome_marks_only_started_and_reaped_children() {
+        let mut successful = Command::new("sh");
+        successful.args(["-c", "exit 0"]);
+        let successful = run_bounded_command_with_stdin_outcome(
+            successful,
+            None,
+            Duration::from_secs(1),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        );
+        assert!(successful.managed_child_reaped());
+        assert!(successful.into_result().unwrap().status.success());
+
+        let mut failed = Command::new("sh");
+        failed.args(["-c", "exit 7"]);
+        let failed = run_bounded_command_with_stdin_outcome(
+            failed,
+            None,
+            Duration::from_secs(1),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        );
+        assert!(failed.managed_child_reaped());
+        assert!(!failed.into_result().unwrap().status.success());
+
+        let missing = run_bounded_command_with_stdin_outcome(
+            Command::new("/definitely/not/a-launcher-command"),
+            None,
+            Duration::from_secs(1),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        );
+        assert!(!missing.managed_child_reaped());
+        assert!(missing.into_result().is_err());
+    }
+
+    #[test]
     fn command_timeout_terminates_the_process_group() {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 1"]);
@@ -305,7 +426,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut command = Command::new("sh");
             command.args(["-c", "sleep 10"]);
-            run_bounded_command_with_stdin(
+            run_bounded_command_with_stdin_outcome(
                 command,
                 None,
                 Duration::from_secs(10),
@@ -316,9 +437,12 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(50));
         token.cancel();
-        let error = handle
+        let outcome = handle
             .join()
-            .expect("bounded command thread should not panic")
+            .expect("bounded command thread should not panic");
+        assert!(outcome.managed_child_reaped());
+        let error = outcome
+            .into_result()
             .expect_err("the command should be cancelled");
         assert!(error.to_string().contains("cancelled"));
         assert!(started.elapsed() < Duration::from_secs(2));

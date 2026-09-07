@@ -10,7 +10,7 @@ mod tasks;
 
 #[allow(unused_imports)]
 pub(crate) use self::display::{ItemDisplayInput, NormalizedItemDisplay, SlotToken};
-use self::items::{FeedDefinition, ItemsRequest, ItemsResult, PickerItemsLoader};
+use self::items::{FeedDefinition, ItemsRequest, PickerItemsLoader};
 use self::keymap::PickerKeymap;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
@@ -20,13 +20,13 @@ use self::tasks::PickerItemsScheduler;
 use super::{
     EngineValidationContext, InputBindingFactoryContext, RendererFactoryContext, validate_fields,
 };
-use crate::config::{
-    CommandBindingVisibility, CommandScope, Config, Defaults, ENGINE_PICKER, ScriptSourceSpec,
-    View, normalize_key, toml_to_json,
-};
-use crate::expression::{Template, is_dynamic_string};
 use crate::input::Key;
 use crate::task::{MountTaskLease, MountTaskStarter};
+use crate::workflow::config::{
+    CommandBindingVisibility, CommandScope, CompiledConfig, Defaults, ENGINE_PICKER,
+    ScriptSourceSpec, View, normalize_key, toml_to_json,
+};
+use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,7 +67,7 @@ pub(crate) struct PickerViewServices {
     selection_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
     non_selection_commands: BTreeSet<(String, String)>,
     feed_owners: BTreeMap<String, Vec<String>>,
-    plugin_roots: BTreeMap<String, PathBuf>,
+    workflow_roots: BTreeMap<String, PathBuf>,
     task_services: Option<Arc<PickerTaskServices>>,
 }
 
@@ -88,7 +88,7 @@ impl PickerViewServices {
 fn picker_command(
     view_ref: &str,
     command_id: &str,
-    command: &crate::config::Command,
+    command: &crate::workflow::config::Command,
 ) -> Result<Option<PickerSelectionCommand>> {
     let Some(raw_key) = &command.key else {
         return Ok(None);
@@ -101,13 +101,13 @@ fn picker_command(
         id: command_id.to_string(),
         key,
         label: command.label.clone(),
-        requires_items: command.requires == crate::config::CommandRequirement::Items,
+        requires_items: command.requires == crate::workflow::config::CommandRequirement::Items,
         visibility: CommandBindingVisibility::Always,
     }))
 }
 
 fn collect_page_item_commands(
-    config: &Config,
+    config: &CompiledConfig,
     view_ref: &str,
 ) -> Result<Vec<PickerSelectionCommand>> {
     let Some(view) = config.view(view_ref) else {
@@ -120,7 +120,7 @@ fn collect_page_item_commands(
 }
 
 impl PickerViewServices {
-    pub(crate) fn from_config(config: &Config, root_view_ref: &str) -> Result<Self> {
+    pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
         let feed_views = config.feed_views(root_view_ref)?;
         let owners = feed_views
@@ -132,7 +132,7 @@ impl PickerViewServices {
             .insert(root_view_ref.to_string(), owners.clone());
         services.page_commands.insert(
             (root_view_ref.to_string(), None),
-            crate::command::collect_page_owner_commands(config, root_view_ref, None)?,
+            crate::workflow::command::collect_page_owner_commands(config, root_view_ref, None)?,
         );
         services.page_item_commands.insert(
             root_view_ref.to_string(),
@@ -141,7 +141,11 @@ impl PickerViewServices {
         for owner in owners {
             services.page_commands.insert(
                 (root_view_ref.to_string(), Some(owner.clone())),
-                crate::command::collect_page_owner_commands(config, root_view_ref, Some(&owner))?,
+                crate::workflow::command::collect_page_owner_commands(
+                    config,
+                    root_view_ref,
+                    Some(&owner),
+                )?,
             );
         }
 
@@ -153,12 +157,12 @@ impl PickerViewServices {
             let view = config
                 .view(&view_ref)
                 .with_context(|| format!("view {:?} is not configured", view_ref))?;
-            if let Some(root) = config.plugin_root(&view_ref) {
+            if let Some(root) = config.workflow_root(&view_ref) {
                 let package = view_ref
                     .split_once(':')
                     .map_or(view_ref.as_str(), |(package, _)| package);
                 services
-                    .plugin_roots
+                    .workflow_roots
                     .insert(package.to_string(), root.to_path_buf());
             }
             let mut page_item_commands = Vec::new();
@@ -228,11 +232,11 @@ impl PickerViewServices {
         self.feed_owners.get(page).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub(crate) fn plugin_root(&self, view_ref: &str) -> Option<&Path> {
+    pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
         let package = view_ref
             .split_once(':')
             .map_or(view_ref, |(package, _)| package);
-        self.plugin_roots.get(package).map(PathBuf::as_path)
+        self.workflow_roots.get(package).map(PathBuf::as_path)
     }
 }
 
@@ -253,8 +257,8 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
         request: &ItemsRequest,
         runtime: &Value,
         cancellation: &crate::lifecycle::CancellationToken,
-    ) -> Result<ItemsResult> {
-        items::load_items_for_definitions(
+    ) -> items::ItemsLoadOutcome {
+        items::load_items_for_definitions_with_outcome(
             &self.definitions,
             &request.view,
             &request.identity.page_parameters,
@@ -265,13 +269,14 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
     }
 }
 
-pub(super) fn mount_data(
-    config: &Config,
+pub(crate) fn mount_data(
+    config: &CompiledConfig,
+    input: &Value,
     view_ref: &str,
     lease: MountTaskLease,
 ) -> Result<PickerViewServices> {
-    let projection = Arc::new(crate::config::PickerItemsProjection::from_config(
-        config, view_ref,
+    let projection = Arc::new(crate::workflow::config::PickerItemsProjection::from_config(
+        config, input, view_ref,
     )?);
     let plan = PickerMountPlan {
         definitions: FeedDefinition::collection(Arc::clone(&projection), view_ref)?,
@@ -290,10 +295,18 @@ pub(crate) struct PickerRuntimeServices {
 
 impl PickerRuntimeServices {
     #[cfg(test)]
-    pub(crate) fn new(config: Arc<Config>, starter: MountTaskStarter, view_ref: &str) -> Self {
+    pub(crate) fn new(
+        config: Arc<CompiledConfig>,
+        starter: MountTaskStarter,
+        view_ref: &str,
+    ) -> Self {
         let projection = Arc::new(
-            crate::config::PickerItemsProjection::from_config(&config, view_ref)
-                .unwrap_or_else(|_| panic!("test config projection must compile")),
+            crate::workflow::config::PickerItemsProjection::from_config(
+                &config,
+                &Value::Null,
+                view_ref,
+            )
+            .unwrap_or_else(|_| panic!("test config projection must compile")),
         );
         let definitions = FeedDefinition::collection(Arc::clone(&projection), view_ref)
             .unwrap_or_else(|_| panic!("test feed definitions must compile"));
@@ -375,7 +388,7 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     Ok(())
 }
 
-pub(super) fn validate_relations(config: &Config) -> Result<()> {
+pub(super) fn validate_relations(config: &CompiledConfig) -> Result<()> {
     for (view_ref, view) in config.iter_views() {
         if config.engine(view_ref)? != ENGINE_PICKER {
             continue;
@@ -446,7 +459,7 @@ pub(super) fn create_renderer(
 
 pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
-) -> Result<Vec<crate::command::InputActionBinding>> {
+) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
     let bindings = context.bindings;
     let has_preview = self::preview::parse(
         bindings.engine_field("layout").cloned(),
@@ -459,61 +472,61 @@ pub(crate) fn create_input_bindings(
         .map(|(key, action)| {
             let (action, enabled) = match action {
                 self::keymap::PickerAction::Exit => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.exit",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.exit"),
+                    ),
                     true,
                 ),
                 self::keymap::PickerAction::Back => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.back",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.back"),
+                    ),
                     true,
                 ),
                 self::keymap::PickerAction::ClearInput => (
-                    crate::command::ResolvedInputAction::Edit(
-                        crate::command::EditorAction::ClearInput,
+                    crate::workflow::command::ResolvedInputAction::Edit(
+                        crate::workflow::command::EditorAction::ClearInput,
                     ),
                     true,
                 ),
                 self::keymap::PickerAction::DeleteBackward => (
-                    crate::command::ResolvedInputAction::Edit(
-                        crate::command::EditorAction::DeleteBackward,
+                    crate::workflow::command::ResolvedInputAction::Edit(
+                        crate::workflow::command::EditorAction::DeleteBackward,
                     ),
                     true,
                 ),
                 self::keymap::PickerAction::DeleteWord => (
-                    crate::command::ResolvedInputAction::Edit(
-                        crate::command::EditorAction::DeleteWord,
+                    crate::workflow::command::ResolvedInputAction::Edit(
+                        crate::workflow::command::EditorAction::DeleteWord,
                     ),
                     true,
                 ),
                 self::keymap::PickerAction::SelectPrevious => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.select_previous",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.select_previous"),
+                    ),
                     true,
                 ),
                 self::keymap::PickerAction::SelectNext => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.select_next",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.select_next"),
+                    ),
                     true,
                 ),
                 self::keymap::PickerAction::Activate => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.accept",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.accept"),
+                    ),
                     true,
                 ),
                 self::keymap::PickerAction::TogglePreview => (
-                    crate::command::ResolvedInputAction::Engine(crate::engine::ActionId::new(
-                        "picker.toggle_preview",
-                    )),
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.toggle_preview"),
+                    ),
                     has_preview,
                 ),
             };
-            crate::command::InputActionBinding {
+            crate::workflow::command::InputActionBinding {
                 key,
                 action,
                 label: None,
@@ -549,7 +562,6 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
         _ => bail!("items must be an array, complete dynamic path, or script source object"),
     }
 }
-
 
 fn validate_picker_bool(value: Option<&toml::Value>, name: &str) -> Result<()> {
     let Some(value) = value else {

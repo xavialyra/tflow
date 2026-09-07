@@ -3,11 +3,9 @@ mod capture;
 mod embedded;
 mod evaluate;
 mod picker;
-mod protocol_factory;
 mod registry;
 mod runtime;
 
-pub(crate) use crate::command::ViewOutput;
 pub(crate) use api::{
     EmbeddedResultConfig, EmbeddedResultFormat, EngineValidationContext, EvaluatedBindingConfig,
     EvaluatedEngineConfig, InputBindingFactoryContext, RendererFactoryContext,
@@ -25,17 +23,14 @@ pub(crate) use evaluate::{
 };
 pub(crate) use picker::{
     PickerProtocolConfig, PickerViewServices, SlotToken,
-    create_protocol_view as create_picker_protocol_view,
+    create_protocol_view as create_picker_protocol_view, mount_data as picker_mount_data,
 };
-pub(crate) use protocol_factory::ProtocolViewFactory;
 pub(crate) use registry::{EngineRegistry, require_field, validate_fields};
 pub(crate) use runtime::{
-    ActionId, ActionInvocation, ActionSpec, BackgroundOutcome, EffectRequest,
-    EngineActionInput, EngineCommandBinding,
-    EngineCommandProjection, EngineDecision, EngineDefinition, EngineEmission,
-    EngineNavigationRequest, EngineNotice, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
-    ExternalTickAction, ExternalTickResult, FactoryFieldPlan,
-    QualifiedCommandId, RawInputReceiver, RenderContext, RenderModel, RuntimeUpdate,
-    ViewContext, ViewContextIdentity, ViewContextParts, ViewContextPublication,
-    ViewRenderer,
+    ActionId, ActionInvocation, ActionSpec, BackgroundOutcome, EffectRequest, EngineActionInput,
+    EngineCommandBinding, EngineCommandProjection, EngineDecision, EngineDefinition,
+    EngineEmission, EngineNavigationRequest, EngineNotice, EngineRuntime, EngineRuntimeSnapshot,
+    EngineTick, ExternalTickAction, ExternalTickResult, FactoryFieldPlan, QualifiedCommandId,
+    RawInputReceiver, RenderContext, RenderModel, RuntimeUpdate, ViewContext, ViewContextIdentity,
+    ViewContextParts, ViewContextPublication, ViewRenderer,
 };

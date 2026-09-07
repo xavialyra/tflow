@@ -1,15 +1,15 @@
-use crate::command::{
+use crate::execution::PreparedProcess;
+use crate::lifecycle::CancellationToken;
+use crate::workflow::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     CommandOwnerContext, CommandRef, NavigationMode, NavigationRequest, ReturnAdapter, ViewOutput,
     ViewOutputItem, ViewReturn,
 };
-use crate::config::{
-    Command, CommandAction, Config, EvaluationSnapshot, InvocationScope, NavigatePayload,
+use crate::workflow::config::{
+    Command, CommandAction, CompiledConfig, EvaluationSnapshot, InvocationScope, NavigatePayload,
     OwnerViewScope, ResolvedScriptSource, ReturnScope, RunPayload, SessionScope, normalize_key,
 };
-use crate::execution::PreparedProcess;
-use crate::expression::EvaluationStage;
-use crate::lifecycle::CancellationToken;
+use crate::workflow::expression::EvaluationStage;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -33,13 +33,15 @@ pub(crate) enum PreparedAction {
 }
 
 pub(crate) fn prepare_command_action(
-    config: &Config,
+    config: &CompiledConfig,
+    invocation: &crate::workflow::InvocationContext,
     execution: CommandExecution,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let action = execution.invocation.command.action.clone();
     prepare_action(
         config,
+        invocation,
         &action,
         execution.invocation,
         execution.context,
@@ -50,7 +52,8 @@ pub(crate) fn prepare_command_action(
 }
 
 pub(crate) fn prepare_continuation(
-    config: &Config,
+    config: &CompiledConfig,
+    invocation: &crate::workflow::InvocationContext,
     action: &CommandAction,
     origin: CommandOrigin,
     context: CommandContext,
@@ -67,6 +70,7 @@ pub(crate) fn prepare_continuation(
     .with_context(|| format!("continuation origin {:?} is not configured", origin.id()))?;
     prepare_action(
         config,
+        invocation,
         action,
         CommandInvocation::from_origin(origin, command),
         context,
@@ -77,9 +81,10 @@ pub(crate) fn prepare_continuation(
 }
 
 fn prepare_action(
-    config: &Config,
+    config: &CompiledConfig,
+    invocation: &crate::workflow::InvocationContext,
     action: &CommandAction,
-    invocation: CommandInvocation,
+    command_invocation: CommandInvocation,
     context: CommandContext,
     returned: Option<&Value>,
     root_adapter: bool,
@@ -89,7 +94,7 @@ fn prepare_action(
     let owner_scope = OwnerViewScope::new(&owner.view_ref, &owner.parameters)
         .with_binding_raw(Some(&owner.binding_raw));
     let snapshot = EvaluationSnapshot::new(
-        InvocationScope::new(&config.input_value),
+        InvocationScope::new(invocation.input_value()),
         SessionScope::new(&context.runtime),
         Some(owner_scope),
         Some(cancellation),
@@ -108,7 +113,7 @@ fn prepare_action(
             let prepared = prepare_run_command(
                 config,
                 &payload,
-                &invocation,
+                &command_invocation,
                 &context,
                 owner,
                 &snapshot,
@@ -162,7 +167,7 @@ fn prepare_action(
             }
             Ok(PreparedAction::Call(CallRequest {
                 request,
-                origin: invocation.origin(),
+                origin: command_invocation.origin(),
                 context,
                 then: payload.then.clone(),
             }))
@@ -179,7 +184,7 @@ fn prepare_action(
             };
             let adapter = if root_adapter {
                 Some(ReturnAdapter {
-                    command: invocation
+                    command: command_invocation
                         .view_reference()
                         .context("return action cannot originate from a session command")?
                         .clone(),
@@ -189,7 +194,7 @@ fn prepare_action(
                 None
             };
             Ok(PreparedAction::Return(ViewReturn {
-                source_view: invocation.source_view().to_string(),
+                source_view: command_invocation.source_view().to_string(),
                 output,
                 adapter,
             }))
@@ -272,7 +277,7 @@ fn current_output(context: &CommandContext) -> Option<ViewOutput> {
 }
 
 fn evaluate_target(
-    config: &Config,
+    config: &CompiledConfig,
     payload: &NavigatePayload,
     snapshot: &EvaluationSnapshot<'_>,
     stage: EvaluationStage,
@@ -291,7 +296,7 @@ fn evaluate_target(
 }
 
 fn evaluate_value(
-    config: &Config,
+    config: &CompiledConfig,
     snapshot: &EvaluationSnapshot<'_>,
     stage: EvaluationStage,
     value: &toml::Value,
@@ -300,7 +305,7 @@ fn evaluate_value(
 }
 
 fn prepare_run_command(
-    config: &Config,
+    config: &CompiledConfig,
     payload: &RunPayload,
     invocation: &CommandInvocation,
     _context: &CommandContext,
@@ -333,11 +338,11 @@ fn prepare_run_command(
             &arguments,
         )?
     } else if let Some(handler_raw) = &payload.handler {
-        let handler_value = config.evaluate_value(snapshot, stage, handler_raw)?;
+        let handler_value = evaluate_run_handler(config, snapshot, stage, handler_raw)?;
         let handler_source = ResolvedScriptSource::parse(&handler_value)
             .context("command handler must resolve to a script source")?;
         match handler_source.command_target()? {
-            crate::config::ResolvedScriptTarget::Inline(script_body) => {
+            crate::workflow::config::ResolvedScriptTarget::Inline(script_body) => {
                 crate::execution::prepare_inline_script_command(
                     workflow_id,
                     &source_label,
@@ -345,7 +350,7 @@ fn prepare_run_command(
                     &arguments,
                 )?
             }
-            crate::config::ResolvedScriptTarget::File(file) => {
+            crate::workflow::config::ResolvedScriptTarget::File(file) => {
                 let (script_path, script_content) = if std::path::Path::new(file).is_absolute() {
                     let path = std::path::PathBuf::from(file);
                     let content = std::fs::read_to_string(&path)
@@ -385,8 +390,31 @@ fn prepare_run_command(
     })
 }
 
+fn evaluate_run_handler(
+    config: &CompiledConfig,
+    snapshot: &EvaluationSnapshot<'_>,
+    stage: EvaluationStage,
+    handler: &toml::Value,
+) -> Result<Value> {
+    let mut handler = handler.clone();
+    let script_body = handler
+        .as_table_mut()
+        .and_then(|handler| handler.remove("script"));
+    let mut evaluated = config.evaluate_value(snapshot, stage, &handler)?;
+    if let Some(script_body) = script_body {
+        evaluated
+            .as_object_mut()
+            .context("command handler must evaluate to a script source object")?
+            .insert(
+                "script".to_string(),
+                crate::workflow::config::toml_to_json(&script_body)?,
+            );
+    }
+    Ok(evaluated)
+}
+
 pub(crate) fn collect_available_commands(
-    config: &Config,
+    config: &CompiledConfig,
     page_view: &str,
     owner_view: Option<&str>,
     include_globals: bool,
@@ -425,7 +453,7 @@ pub(crate) fn collect_available_commands(
 }
 
 pub(crate) fn collect_page_owner_commands(
-    config: &Config,
+    config: &CompiledConfig,
     page_view: &str,
     owner_view: Option<&str>,
 ) -> Result<BTreeMap<String, Value>> {
@@ -433,7 +461,7 @@ pub(crate) fn collect_page_owner_commands(
 }
 
 pub(crate) fn resolve_visible_command(
-    config: &Config,
+    config: &CompiledConfig,
     context: &CommandContext,
     reference: &CommandRef,
 ) -> Result<CommandInvocation> {
@@ -518,18 +546,30 @@ pub(crate) fn return_value(returned: &ViewReturn) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CommandScope;
+    use crate::workflow::config::CommandScope;
 
-    fn test_parameters(config: &Config) -> crate::parameter::ParameterSnapshot {
+    fn test_parameters(config: &CompiledConfig) -> crate::workflow::parameter::ParameterSnapshot {
         let state = config.instantiate_parameters("core:default").unwrap();
         config
             .parameter_snapshot(&state, Default::default())
             .unwrap()
     }
 
+    fn test_invocation(
+        config: &CompiledConfig,
+        input: Value,
+    ) -> crate::workflow::InvocationContext {
+        crate::workflow::InvocationContext::new(
+            "core:default".to_string(),
+            input,
+            config.instantiate_parameters("core:default").unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn default_output_reads_picker_and_capture_current_shapes() {
-        let config = crate::config::load_test_fixture().unwrap();
+        let config = crate::workflow::config::load_test_fixture().unwrap();
         let parameters = test_parameters(&config);
         let mut context = CommandContext {
             page: CommandOwnerContext {
@@ -575,10 +615,13 @@ mod tests {
 
     #[test]
     fn run_command_does_not_export_runtime_log_environment() {
-        let mut config = crate::config::load_test_fixture().unwrap();
-        config.input_value = serde_json::json!({
-            "stdin": {"path": "/tmp/tui-launcher-captured-stdin"}
-        });
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        let invocation_context = test_invocation(
+            &config,
+            serde_json::json!({
+                "stdin": {"path": "/tmp/tui-launcher-captured-stdin"}
+            }),
+        );
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
@@ -603,12 +646,12 @@ mod tests {
                 key: Some("enter".to_string()),
                 label: "Run".to_string(),
                 scope: CommandScope::View,
-                requires: crate::config::CommandRequirement::Input,
+                requires: crate::workflow::config::CommandRequirement::Input,
                 passthrough: false,
-                action: CommandAction::new_run(crate::config::RunPayload {
+                action: CommandAction::new_run(crate::workflow::config::RunPayload {
                     script: None,
                     handler: Some(
-                        crate::config::ScriptSourceSpec::script_file("scripts/items.sh")
+                        crate::workflow::config::ScriptSourceSpec::script_file("scripts/items.sh")
                             .as_toml_value(),
                     ),
                     args: None,
@@ -619,6 +662,7 @@ mod tests {
         );
         let prepared = prepare_command_action(
             &config,
+            &invocation_context,
             CommandExecution {
                 invocation,
                 context,
@@ -638,8 +682,81 @@ mod tests {
     }
 
     #[test]
+    fn inline_run_scripts_preserve_literal_template_braces() {
+        let mut config = crate::workflow::config::load_test_fixture().unwrap();
+        let script = "printf '%s\\n' '{{ user_template }}'\n";
+        let action = CommandAction::new_run(crate::workflow::config::RunPayload {
+            script: Some(script.to_string()),
+            ..Default::default()
+        });
+        config
+            .test_views_mut()
+            .get_mut("core:default")
+            .unwrap()
+            .commands
+            .insert(
+                "literal-script".to_string(),
+                Command {
+                    key: None,
+                    label: "literal-script".to_string(),
+                    scope: CommandScope::View,
+                    requires: crate::workflow::config::CommandRequirement::Input,
+                    passthrough: false,
+                    action: action.clone(),
+                },
+            );
+        config.test_config_value_mut()["literal-script"] = serde_json::json!({
+            "type": "run",
+            "payload": {"script": script},
+        });
+        config.test_rebuild_compiled().unwrap();
+
+        let parameters = test_parameters(&config);
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: parameters.clone(),
+                binding_raw: String::new(),
+            },
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters,
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
+            runtime: Value::Null,
+        };
+        let prepared = prepare_command_action(
+            &config,
+            &test_invocation(&config, Value::Null),
+            CommandExecution {
+                invocation: CommandInvocation::view(
+                    CommandRef {
+                        view: "core:default".to_string(),
+                        id: "literal-script".to_string(),
+                    },
+                    config.view("core:default").unwrap().commands["literal-script"].clone(),
+                ),
+                context,
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let PreparedAction::Execute { prepared, .. } = prepared else {
+            panic!("inline run action was not prepared for execution");
+        };
+        let output = std::process::Command::new(&prepared.argv[0])
+            .args(&prepared.argv[1..])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"{{ user_template }}\n");
+    }
+
+    #[test]
     fn edit_input_rejects_a_cursor_between_utf8_code_units() {
-        let config = crate::config::load_test_fixture().unwrap();
+        let config = crate::workflow::config::load_test_fixture().unwrap();
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
@@ -656,7 +773,7 @@ mod tests {
             runtime: serde_json::json!({}),
         };
         let action = CommandAction::EditInput {
-            payload: crate::config::EditInputPayload {
+            payload: crate::workflow::config::EditInputPayload {
                 value: toml::Value::String("\u{e9}".to_string()),
                 cursor: Some(toml::Value::Integer(1)),
             },
@@ -664,6 +781,7 @@ mod tests {
         assert!(
             prepare_continuation(
                 &config,
+                &test_invocation(&config, Value::Null),
                 &action,
                 CommandOrigin::View(CommandRef {
                     view: "core:default".to_string(),
@@ -678,8 +796,75 @@ mod tests {
     }
 
     #[test]
+    fn continuation_retains_invocation_input() {
+        let mut config = crate::workflow::config::load_test_fixture().unwrap();
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: test_parameters(&config),
+                binding_raw: String::new(),
+            },
+            current: Value::Null,
+            current_fields: &[],
+            runtime: Value::Null,
+        };
+        let action = CommandAction::EditInput {
+            payload: crate::workflow::config::EditInputPayload {
+                value: toml::Value::String("{{ input.stdin.path }}".to_string()),
+                cursor: None,
+            },
+        };
+        config
+            .test_views_mut()
+            .get_mut("core:default")
+            .unwrap()
+            .commands
+            .insert(
+                "continued".to_string(),
+                Command {
+                    key: None,
+                    label: "continued".to_string(),
+                    scope: CommandScope::View,
+                    requires: crate::workflow::config::CommandRequirement::Input,
+                    passthrough: false,
+                    action: action.clone(),
+                },
+            );
+        *config.test_config_value_mut() = serde_json::json!({"template": "{{ input.stdin.path }}"});
+        config.test_rebuild_compiled().unwrap();
+        let invocation = test_invocation(
+            &config,
+            serde_json::json!({"stdin": {"path": "/tmp/continued-input"}}),
+        );
+
+        let prepared = prepare_continuation(
+            &config,
+            &invocation,
+            &action,
+            CommandOrigin::View(CommandRef {
+                view: "core:default".to_string(),
+                id: "continued".to_string(),
+            }),
+            context,
+            &Value::Null,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            prepared,
+            PreparedAction::EditInput { value, cursor }
+                if value == "/tmp/continued-input" && cursor == value.len()
+        ));
+    }
+
+    #[test]
     fn view_command_ids_cannot_be_misclassified_as_session_origins() {
-        let mut config = crate::config::load_test_fixture().unwrap();
+        let mut config = crate::workflow::config::load_test_fixture().unwrap();
         config
             .test_views_mut()
             .get_mut("core:default")
@@ -691,9 +876,11 @@ mod tests {
                     key: Some("ctrl+l".to_string()),
                     label: "Local".to_string(),
                     scope: CommandScope::View,
-                    requires: crate::config::CommandRequirement::Input,
+                    requires: crate::workflow::config::CommandRequirement::Input,
                     passthrough: false,
-                    action: CommandAction::new_return(crate::config::ReturnPayload::default()),
+                    action: CommandAction::new_return(
+                        crate::workflow::config::ReturnPayload::default(),
+                    ),
                 },
             );
         let context = CommandContext {
@@ -712,7 +899,7 @@ mod tests {
             runtime: serde_json::json!({}),
         };
         let action = CommandAction::EditInput {
-            payload: crate::config::EditInputPayload {
+            payload: crate::workflow::config::EditInputPayload {
                 value: toml::Value::String("restored".to_string()),
                 cursor: None,
             },
@@ -720,6 +907,7 @@ mod tests {
 
         let prepared = prepare_continuation(
             &config,
+            &test_invocation(&config, Value::Null),
             &action,
             CommandOrigin::View(CommandRef {
                 view: "core:default".to_string(),
@@ -739,7 +927,7 @@ mod tests {
 
     #[test]
     fn opaque_command_refs_are_strict_and_revalidated_against_the_restored_context() {
-        let config = crate::config::load_test_fixture().unwrap();
+        let config = crate::workflow::config::load_test_fixture().unwrap();
         let context = CommandContext {
             page: CommandOwnerContext {
                 view_ref: "core:default".to_string(),
