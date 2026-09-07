@@ -362,9 +362,9 @@ fn prepare_run_command(
                     );
                 };
                 let shebang = crate::execution::parse_shebang(&script_content);
-                crate::execution::verify_interpreter(&shebang.interpreter)?;
+                let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
                 let mut argv = Vec::new();
-                argv.push(shebang.interpreter);
+                argv.push(interpreter.to_string_lossy().into_owned());
                 argv.extend(shebang.args);
                 argv.push(script_path.to_string_lossy().into_owned());
                 argv.extend(arguments);
@@ -372,7 +372,10 @@ fn prepare_run_command(
             }
         }
     } else {
-        bail!("command {:?} has neither script nor handler", invocation.id());
+        bail!(
+            "command {:?} has neither script nor handler",
+            invocation.id()
+        );
     };
 
     Ok(PreparedProcess {
@@ -381,7 +384,6 @@ fn prepare_run_command(
         current_dir: None,
     })
 }
-
 
 pub(crate) fn collect_available_commands(
     config: &Config,
@@ -478,7 +480,8 @@ pub(crate) fn resolve_visible_command(
     }
     bail!(
         "command {:?} is not configured for view {:?}",
-        reference.id, reference.view
+        reference.id,
+        reference.view
     );
 }
 
@@ -492,8 +495,9 @@ pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
 
 pub(crate) fn runtime_command_value(owner: &str, id: &str, command: &Command) -> Result<Value> {
     let key = match &command.key {
-        Some(raw) => normalize_key(raw)
-            .with_context(|| format!("invalid command key for {owner}/{id}"))?,
+        Some(raw) => {
+            normalize_key(raw).with_context(|| format!("invalid command key for {owner}/{id}"))?
+        }
         None => String::new(),
     };
     Ok(json!({
@@ -625,7 +629,12 @@ mod tests {
         let PreparedAction::Execute { prepared, .. } = prepared else {
             panic!("run action was not prepared for execution");
         };
-        assert!(!prepared.environment.iter().any(|(key, _)| key.contains("LOG")));
+        assert!(
+            !prepared
+                .environment
+                .iter()
+                .any(|(key, _)| key.contains("LOG"))
+        );
     }
 
     #[test]

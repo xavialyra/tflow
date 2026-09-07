@@ -42,8 +42,9 @@ This documentation is organized into four core categories following the **Diáta
 ### 4. [Explanation](explanation/index.md)
 *Understanding-oriented deep dives into architectural designs and philosophy.*
 - [Architecture Overview](explanation/architecture-overview.md) — Domain separation across configuration, session, engine, and rendering.
+- [Architecture Convergence](explanation/architecture-convergence.md) - Implementable migration plan for runtime ownership, execution lifecycle, task correlation, and measured scheduling decisions.
 - [Input & Navigation Model](explanation/input-and-navigation-model.md) — Route resolution, key binding precedence, and lossless input transport.
-- [Runtime Guarantees](explanation/runtime-guarantees.md) — Security sandboxing, execution resource budgets, and cleanup invariants.
+- [Runtime Guarantees](explanation/runtime-guarantees.md) — Workflow trust boundary, execution resource budgets, and cleanup invariants.
 
 ---
 

@@ -90,68 +90,28 @@ pub(super) fn validate_run_handler(
                 .with_context(|| format!("{} has an invalid command handler source", owner))?;
             spec
         }
-        toml::Value::String(source) if is_dynamic_string(source) => {
-            let template = Template::parse(source)
-                .with_context(|| format!("{} has an invalid command handler source", owner))?;
-            anyhow::ensure!(
-                template.is_complete_path(),
-                "{} command handler must be a script source table or complete dynamic path",
-                owner
-            );
-            return Ok(());
-        }
-        toml::Value::String(source) if source.starts_with("#!") || source.contains('\n') => {
-            return Ok(());
-        }
-        toml::Value::String(file) => {
-            return validate_script_file_target(file, script_root, owner);
-        }
-        _ => {
+        toml::Value::String(_) => {
             bail!(
-                "{} command handler must be a script source table, inline script, or complete dynamic path",
+                "{} command handler must be an explicit script source object; use {{ source = \"script\", file = \"...\" }} or {{ source = \"inline\", script = \"...\" }}",
                 owner
             )
         }
-    };
-    if let Some(script) = spec.script_value() {
-        if script.trim().is_empty() {
-            bail!("{} has an empty command handler script", owner);
+        _ => {
+            bail!("{} command handler must be a script source table", owner)
         }
-        return Ok(());
-    }
-    let Some(file) = spec.file_value() else {
-        bail!(
-            "{} command handler file must be a string or dynamic path",
-            owner
-        );
     };
-    if file.trim().is_empty() {
-        bail!("{} has an empty command handler file", owner);
+    if let Some(script) = spec.script_value()
+        && script.trim().is_empty()
+    {
+        bail!("{} has an empty command handler script", owner);
     }
-    if is_dynamic_string(file) {
-        return Ok(());
+    if let Some(file) = spec.file_value()
+        && file.trim().is_empty()
+    {
+        bail!("{} has an empty command handler file", owner);
     }
     spec.validate_target(script_root)
         .with_context(|| format!("{} has an invalid command handler file", owner))
-}
-
-fn validate_script_file_target(file: &str, script_root: Option<&Path>, owner: &str) -> Result<()> {
-    if is_dynamic_string(file) {
-        return Ok(());
-    }
-    let path = Path::new(file);
-    if let Some(root) = script_root {
-        crate::execution::validate_script_target(root, file)
-            .with_context(|| format!("{} has an invalid command handler file", owner))
-    } else if path.is_relative() {
-        bail!(
-            "single-file workflow {} cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
-            owner,
-            file
-        );
-    } else {
-        Ok(())
-    }
 }
 
 pub(super) fn validate_argv_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {

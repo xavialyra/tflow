@@ -5,15 +5,17 @@ tags:
   - security
   - guarantees
   - limits
-  - sandbox
-description: "Explanation of security boundaries, resource budgets, execution sandboxing, and terminal state invariants."
+  - trust-boundary
+description: "Explanation of the workflow trust boundary, resource budgets, process cleanup, and terminal state invariants."
 ---
 
 # Runtime Guarantees and Safety Limits
 
-`tui-launcher` enforces strict execution limits and sandboxing policies to guarantee terminal integrity, system responsiveness, and bounded resource consumption.
+`tui-launcher` applies execution limits and process-cleanup policies to protect terminal integrity, responsiveness, and bounded resource consumption. These controls do not sandbox workflow code.
 
-## 1. Filesystem & Workflow Isolation
+## 1. Filesystem Boundaries and Trusted Workflows
+
+Workflow scripts execute with the current user's permissions and must be treated as trusted code. Directory confinement, special-file rejection, resource limits, and process groups reduce accidental exposure and resource abuse; they do not provide operating-system isolation from a malicious workflow.
 
 Workflows operate under strict directory and execution boundaries:
 - **Directory Workflow Confinement**: In directory workflows (`$XDG_CONFIG_HOME/tui-launcher/workflows/<workflow-id>/workflow.toml`), companion script references (`source = "script", file = "..."`) are resolved and validated strictly within the workflow root.

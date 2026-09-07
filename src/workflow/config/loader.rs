@@ -67,7 +67,8 @@ impl Config {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("workflows");
-        let workflow_roots = load_workflow_packages(&mut merged, &workflow_directory, &disabled_workflows)?;
+        let workflow_roots =
+            load_workflow_packages(&mut merged, &workflow_directory, &disabled_workflows)?;
         merge_values(&mut merged, user_config);
         remove_disabled_workflows(&mut merged, &disabled_workflows);
 
@@ -107,7 +108,10 @@ pub(super) fn disabled_workflows(user_config: Option<&toml::Value>) -> Result<BT
         return Ok(disabled);
     };
 
-    if let Some(value) = table.get("disabled_workflows").or_else(|| table.get("disabled_plugins")) {
+    if let Some(value) = table
+        .get("disabled_workflows")
+        .or_else(|| table.get("disabled_plugins"))
+    {
         let entries = value
             .as_array()
             .with_context(|| "disabled_workflows must be an array of workflow IDs")?;
@@ -179,7 +183,9 @@ pub(super) fn load_workflow_packages(
                 let id = path
                     .file_name()
                     .and_then(|s| s.to_str())
-                    .with_context(|| format!("workflow directory {:?} has no valid name", path.display()))?
+                    .with_context(|| {
+                        format!("workflow directory {:?} has no valid name", path.display())
+                    })?
                     .to_string();
                 validate_workflow_id(&id)?;
                 if let Some(prev) = sources_by_id.insert(id.clone(), manifest.clone()) {
@@ -210,7 +216,7 @@ pub(super) fn load_workflow_packages(
         if disabled.contains(&id) {
             continue;
         }
-        let (wf_id, package) = read_workflow_package(&manifest, &id, root_dir.as_deref())?;
+        let (wf_id, package) = read_workflow_package(&manifest, &id)?;
 
         // Validate view alias conflicts
         if let Some(workflows) = package.get("workflows").and_then(toml::Value::as_table) {
@@ -219,10 +225,9 @@ pub(super) fn load_workflow_packages(
                     for (view_name, view) in views {
                         let view_ref = format!("{wf_id}:{view_name}");
                         if let Some(alias) = view.get("alias").and_then(toml::Value::as_str) {
-                            if let Some((prev_view, prev_src)) = view_aliases.insert(
-                                alias.to_string(),
-                                (view_ref.clone(), manifest.clone()),
-                            ) {
+                            if let Some((prev_view, prev_src)) = view_aliases
+                                .insert(alias.to_string(), (view_ref.clone(), manifest.clone()))
+                            {
                                 bail!(
                                     "conflicting view alias {:?} defined for {:?} in {:?} conflicts with {:?} in {:?}",
                                     alias,
@@ -249,7 +254,6 @@ pub(super) fn load_workflow_packages(
 pub(super) fn read_workflow_package(
     manifest: &Path,
     workflow_id: &str,
-    root_dir: Option<&Path>,
 ) -> Result<(String, toml::Value)> {
     validate_workflow_id(workflow_id)?;
 
@@ -265,10 +269,12 @@ pub(super) fn read_workflow_package(
         );
     }
 
-    let header_value = value
-        .get("workflow")
-        .cloned()
-        .with_context(|| format!("workflow manifest {} is missing [workflow]", manifest.display()))?;
+    let header_value = value.get("workflow").cloned().with_context(|| {
+        format!(
+            "workflow manifest {} is missing [workflow]",
+            manifest.display()
+        )
+    })?;
     let header: WorkflowHeader = header_value
         .try_into()
         .with_context(|| format!("invalid [workflow] in {}", manifest.display()))?;
@@ -289,10 +295,6 @@ pub(super) fn read_workflow_package(
         .with_context(|| format!("workflow {:?} is missing [views.*]", workflow_id))?;
     normalize_view_keymaps(&mut views, workflow_id)?;
 
-    if root_dir.is_none() {
-        validate_no_relative_scripts(&views, workflow_id, manifest)?;
-    }
-
     let mut workflow_table = toml::map::Map::new();
     workflow_table.insert("name".to_string(), toml::Value::String(header.name));
     workflow_table.insert("views".to_string(), views);
@@ -304,82 +306,6 @@ pub(super) fn read_workflow_package(
     let mut package_table = toml::map::Map::new();
     package_table.insert("workflows".to_string(), toml::Value::Table(workflows_table));
     Ok((workflow_id.to_string(), toml::Value::Table(package_table)))
-}
-
-fn validate_no_relative_scripts(
-    views: &toml::Value,
-    workflow_id: &str,
-    manifest: &Path,
-) -> Result<()> {
-    let Some(views_table) = views.as_table() else {
-        return Ok(());
-    };
-    for (_view_name, view_val) in views_table {
-        let Some(view_tbl) = view_val.as_table() else {
-            continue;
-        };
-        // Check engine.config.items
-        if let Some(engine) = view_tbl.get("engine").and_then(toml::Value::as_table) {
-            if let Some(config) = engine.get("config").and_then(toml::Value::as_table) {
-                if let Some(items) = config.get("items").and_then(toml::Value::as_table) {
-                    if let Some(file) = items.get("file").and_then(toml::Value::as_str) {
-                        if Path::new(file).is_relative() {
-                            bail!(
-                                "single-file workflow {:?} ({}) cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
-                                workflow_id,
-                                manifest.display(),
-                                file
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        // Check commands
-        if let Some(commands) = view_tbl.get("commands").and_then(toml::Value::as_table) {
-            for (_cmd_name, cmd_val) in commands {
-                let Some(cmd_tbl) = cmd_val.as_table() else {
-                    continue;
-                };
-                if let Some(script) = cmd_tbl.get("script").and_then(toml::Value::as_str) {
-                    if !script.contains('\n') && !script.starts_with("#!") && Path::new(script).is_relative() {
-                        bail!(
-                            "single-file workflow {:?} ({}) cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
-                            workflow_id,
-                            manifest.display(),
-                            script
-                        );
-                    }
-                }
-                if let Some(payload) = cmd_tbl.get("payload").and_then(toml::Value::as_table) {
-                    if let Some(handler) = payload.get("handler") {
-                        if let Some(file) = handler.as_str() {
-                            if !file.contains('\n') && !file.starts_with("#!") && Path::new(file).is_relative() {
-                                bail!(
-                                    "single-file workflow {:?} ({}) cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
-                                    workflow_id,
-                                    manifest.display(),
-                                    file
-                                );
-                            }
-                        } else if let Some(handler_tbl) = handler.as_table() {
-                            if let Some(file) = handler_tbl.get("file").and_then(toml::Value::as_str) {
-                                if Path::new(file).is_relative() {
-                                    bail!(
-                                        "single-file workflow {:?} ({}) cannot reference relative script file {:?}; workflows must be self-contained using inline scripts or system binaries",
-                                        workflow_id,
-                                        manifest.display(),
-                                        file
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn merge_values(base: &mut toml::Value, overlay: toml::Value) {

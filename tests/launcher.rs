@@ -753,7 +753,10 @@ fn typing_space_without_route_completion_does_not_error_and_preserves_query() {
         String::from_utf8_lossy(&output)
     );
     let out = String::from_utf8_lossy(&output);
-    assert!(!out.contains("unknown route selector"), "reported error: {out}");
+    assert!(
+        !out.contains("unknown route selector"),
+        "reported error: {out}"
+    );
     assert!(out.contains("opened:chrome:query=google "), "output: {out}");
     fs::remove_dir_all(root).expect("could not remove test root");
 }
@@ -980,7 +983,7 @@ fn complete_dynamic_command_handler_source_resolves_as_a_script_object() {
         label = "Run"
         type = "run"
         [plugins.core.views.default.commands.run.payload]
-        handler = "{{ view.query.handler }}"
+        handler = { source = "{{ view.query.handler.source }}", file = "{{ view.query.handler.file }}" }
         args = ["{{ selection.value }}"]
         exit = true
 
@@ -3299,9 +3302,18 @@ fn command_selector_displays_keybindings_for_commands() {
     process.master.flush().unwrap();
     let output = wait_for_text(&process.master, "Run");
     let screen = String::from_utf8_lossy(&output);
-    assert!(screen.contains("Run"), "screen should contain command label 'Run': {screen}");
-    assert!(screen.contains("enter"), "screen should contain command keybinding 'enter': {screen}");
-    assert!(screen.contains("Info"), "screen should contain command label 'Info': {screen}");
+    assert!(
+        screen.contains("Run"),
+        "screen should contain command label 'Run': {screen}"
+    );
+    assert!(
+        screen.contains("enter"),
+        "screen should contain command keybinding 'enter': {screen}"
+    );
+    assert!(
+        screen.contains("Info"),
+        "screen should contain command label 'Info': {screen}"
+    );
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();

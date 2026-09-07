@@ -1,0 +1,58 @@
+[workflow]
+api = 1
+name = "echo"
+
+[views.main]
+alias = "echo"
+
+[views.main.query]
+type = "object"
+message = { type = "string", default = "Hello from single-file workflow!" }
+
+[views.main.engine]
+type = "capture"
+
+[views.main.engine.config]
+title = "Echo Service"
+output = "{{ view.query.message }}"
+
+[views.main.commands.copy]
+key = "enter"
+label = "Copy & Exit"
+type = "return"
+
+[views.main.commands.inline_multiline]
+key = "ctrl+r"
+label = "Run Multi-line Script"
+type = "run"
+[views.main.commands.inline_multiline.payload]
+args = ["{{ view.query.message }}"]
+exit = true
+script = """
+#!/usr/bin/env -S sh -eu
+msg="$1"
+printf 'ECHO_MULTILINE:%s\n' "$msg"
+"""
+
+[views.main.commands.inline_single]
+key = "ctrl+s"
+label = "Run Single-line Script"
+type = "run"
+[views.main.commands.inline_single.payload]
+args = ["{{ view.query.message }}"]
+exit = true
+script = 'printf "ECHO_SINGLE:%s\n" "$1"'
+
+[views.main.commands.inline_python]
+key = "ctrl+y"
+label = "Run Python Script"
+type = "run"
+[views.main.commands.inline_python.payload]
+args = ["{{ view.query.message }}"]
+exit = true
+script = """
+#!/usr/bin/env python3
+import sys
+msg = sys.argv[1] if len(sys.argv) > 1 else ""
+print(f"ECHO_PYTHON:{msg}")
+"""

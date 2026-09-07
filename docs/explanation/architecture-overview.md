@@ -17,6 +17,8 @@ A module may expose a small crate-level facade, but code must live in the narrow
 
 ## Core Domain Layout
 
+The layout below describes architectural roles, not an exact inventory of the current filesystem. In the reviewed implementation, routing and session orchestration still live largely in `src/view.rs` and `src/protocol.rs`. The [Architecture Convergence implementation plan](architecture-convergence.md) records the reviewed baseline, target ownership, incremental stages, and contract gates.
+
 ```text
 src/
   lib.rs
@@ -49,7 +51,7 @@ src/
 
 ## Architectural Dependency Rules
 
-To prevent coupling and architectural drift, the codebase strictly enforces 14 fundamental dependency rules:
+The following 14 dependency rules define the intended architecture. They are design constraints, not a claim that every current module or test already enforces them. The [convergence design](architecture-convergence.md) records known gaps and refines the target protocol ownership:
 
 1. **`workflow/config/model`** contains purely data and `serde` definitions. It must not depend on `session`, `ratatui`, or terminal I/O.
 2. **`workflow/config/loader`** owns filesystem access and workflow package discovery. Runtime session code must never load files directly.

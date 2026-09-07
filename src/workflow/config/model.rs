@@ -22,7 +22,6 @@ pub struct WorkflowMetadata {
 
 pub type PluginMetadata = WorkflowMetadata;
 
-
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ImageProtocol {
@@ -135,8 +134,23 @@ impl ScriptSourceSpec {
 
     pub(crate) fn validate(&self) -> Result<()> {
         validate_script_source_name(&self.source)?;
-        if self.file.is_none() && self.script.is_none() {
-            bail!("script source requires either file or script");
+        let has_file = self.file.is_some();
+        let has_script = self.script.is_some();
+        if has_file == has_script {
+            bail!("script source must define exactly one of file or script");
+        }
+        if let Some(source) = self.source.as_str()
+            && !is_dynamic_string(source)
+        {
+            match (source, has_file, has_script) {
+                ("inline", false, true) => {}
+                ("script", true, false) => {}
+                ("inline", true, false) => {
+                    bail!("inline script source requires script and forbids file")
+                }
+                ("script", false, true) => bail!("script source requires file and forbids script"),
+                _ => unreachable!("script source name was validated"),
+            }
         }
         if let Some(file) = &self.file {
             validate_script_source_file(file)?;
@@ -177,7 +191,7 @@ impl ScriptSourceSpec {
     }
 
     pub(crate) fn validate_target(&self, root: Option<&Path>) -> Result<()> {
-        if self.script.is_some() {
+        if self.file.is_none() {
             return Ok(());
         }
         let Some(file_val) = &self.file else {
@@ -234,48 +248,44 @@ fn default_script_source_str() -> String {
 
 impl ResolvedScriptSource {
     pub(crate) fn is_candidate(value: &Value) -> bool {
-        if let Some(s) = value.as_str() {
-            return s.starts_with("#!") || s.contains('\n');
-        }
-        value
-            .as_object()
-            .is_some_and(|fields| {
-                fields.contains_key("source")
-                    || fields.contains_key("file")
-                    || fields.contains_key("script")
-            })
+        value.as_object().is_some_and(|fields| {
+            fields.contains_key("source")
+                || fields.contains_key("file")
+                || fields.contains_key("script")
+        })
     }
 
     pub(crate) fn parse(value: &Value) -> Result<Self> {
-        if let Some(s) = value.as_str() {
-            let target = if s.starts_with("#!") || s.contains('\n') {
-                ResolvedScriptTarget::Inline(s.to_string())
-            } else {
-                ResolvedScriptTarget::File(s.to_string())
-            };
-            return Ok(Self {
-                target,
-                args: None,
-                max_output_bytes: None,
-            });
-        }
-        let source: ResolvedScriptSourceConfig = serde_json::from_value(value.clone())
-            .context("script source must resolve to an object with source and file/script fields")?;
+        let source: ResolvedScriptSourceConfig = serde_json::from_value(value.clone()).context(
+            "script source must resolve to an object with source and file/script fields",
+        )?;
         if source.source != "script" && source.source != "inline" {
             bail!("unsupported script source {:?}", source.source);
         }
-        let target = if let Some(script) = source.script {
-            if script.is_empty() {
-                bail!("script source body must be non-empty");
+        let target = match (source.source.as_str(), source.file, source.script) {
+            ("inline", None, Some(script)) => {
+                if script.is_empty() {
+                    bail!("script source body must be non-empty");
+                }
+                ResolvedScriptTarget::Inline(script)
             }
-            ResolvedScriptTarget::Inline(script)
-        } else if let Some(file) = source.file {
-            if file.is_empty() {
-                bail!("script source file must be non-empty");
+            ("script", Some(file), None) => {
+                if file.is_empty() {
+                    bail!("script source file must be non-empty");
+                }
+                ResolvedScriptTarget::File(file)
             }
-            ResolvedScriptTarget::File(file)
-        } else {
-            bail!("script source requires either 'file' or 'script'");
+            ("inline", Some(_), _) => {
+                bail!("inline script source requires script and forbids file")
+            }
+            ("script", _, Some(_)) => {
+                bail!("script source requires file and forbids script")
+            }
+            (_, Some(_), Some(_)) | (_, None, None) => {
+                bail!("script source must define exactly one of file or script")
+            }
+            (_, Some(file), None) => ResolvedScriptTarget::File(file),
+            (_, None, Some(script)) => ResolvedScriptTarget::Inline(script),
         };
         crate::execution::validate_max_output_bytes(source.max_output_bytes)?;
         Ok(Self {
@@ -315,7 +325,6 @@ impl ResolvedScriptSource {
         }
     }
 }
-
 
 fn validate_script_source_name(value: &toml::Value) -> Result<()> {
     let source = value
@@ -621,7 +630,6 @@ pub struct RunPayload {
     pub exit: bool,
 }
 
-
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NavigatePayload {
@@ -841,7 +849,67 @@ pub(super) struct WorkflowHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandAction, CommandBinding, View, ViewPresentationMode};
+    use super::{
+        CommandAction, CommandBinding, ResolvedScriptSource, ResolvedScriptTarget,
+        ScriptSourceSpec, View, ViewPresentationMode,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn script_source_requires_explicit_matching_target_field() {
+        for (source, expected_target) in [
+            (
+                r#"source = "inline"
+script = "foo.sh"
+"#,
+                ResolvedScriptTarget::Inline("foo.sh".to_string()),
+            ),
+            (
+                r#"source = "script"
+file = "scripts/run.sh"
+"#,
+                ResolvedScriptTarget::File("scripts/run.sh".to_string()),
+            ),
+        ] {
+            let value: toml::Value = toml::from_str(source).unwrap();
+            let spec = ScriptSourceSpec::parse(&value).unwrap();
+            let resolved = ResolvedScriptSource::parse(&json!({
+                "source": value["source"].as_str().unwrap(),
+                "script": value.get("script").and_then(toml::Value::as_str),
+                "file": value.get("file").and_then(toml::Value::as_str),
+            }))
+            .unwrap();
+            assert_eq!(resolved.target, expected_target);
+            assert_eq!(
+                spec.script_value().is_some(),
+                matches!(expected_target, ResolvedScriptTarget::Inline(_))
+            );
+        }
+    }
+
+    #[test]
+    fn script_source_rejects_ambiguous_or_mismatched_fields() {
+        for source in [
+            r#"source = "inline"
+file = "scripts/run.sh"
+"#,
+            r#"source = "script"
+script = "printf hello"
+"#,
+            r#"source = "inline"
+file = "scripts/run.sh"
+script = "printf hello"
+"#,
+            r#"source = "script"
+"#,
+        ] {
+            let value: toml::Value = toml::from_str(source).unwrap();
+            assert!(
+                ScriptSourceSpec::parse(&value).is_err(),
+                "accepted {source}"
+            );
+        }
+    }
 
     #[test]
     fn view_query_deserializes_and_serializes_with_the_compatibility_key() {

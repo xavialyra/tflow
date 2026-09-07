@@ -1,0 +1,43 @@
+[workflow]
+api = 1
+name = "recipe"
+
+[views.recipe]
+alias = "recipe"
+
+[views.recipe.engine]
+type = "picker"
+
+[views.recipe.engine.config]
+items = [
+    { display = "Recipe: Show Working Directory", value = "pwd" },
+    { display = "Recipe: Say Hello", value = "hello" },
+]
+
+[views.recipe.commands.execute]
+key = "enter"
+label = "Execute Recipe"
+type = "return"
+
+[views.recipe.commands.execute.payload]
+value = "Recipe executed: {{ selection.value }}"
+
+[views.recipe.commands.run_inline]
+key = "ctrl+r"
+label = "Run Inline Script"
+type = "run"
+[views.recipe.commands.run_inline.payload]
+args = ["{{ selection.value }}"]
+exit = true
+script = """
+#!/usr/bin/env -S sh -eu
+action="$1"
+case "$action" in
+    pwd)
+        printf 'RECIPE_PWD:%s\n' "$PWD"
+        ;;
+    hello)
+        printf 'RECIPE_HELLO:%s\n' "world"
+        ;;
+esac
+"""

@@ -479,6 +479,7 @@ fn check_rejects_invalid_run_handler_sources() {
             r#"{ source = "script", file = "scripts/run.sh", max_output_bytes = 1024 }"#,
             "cannot define max_output_bytes",
         ),
+        (r#""scripts/run.sh""#, "explicit script source object"),
         (
             r#"{ source = "script", file = "../run.sh" }"#,
             "invalid command handler file",
@@ -943,4 +944,56 @@ fn missing_named_theme_reports_the_theme_path() {
         output.stderr
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    std::fs::create_dir_all(root.join("workflows")).unwrap();
+    std::fs::write(&config, "default_view = \"demo:main\"\n").unwrap();
+    std::fs::write(
+        root.join("workflows/demo.toml"),
+        r#"
+        [workflow]
+        api = 1
+        name = "demo"
+        [views.main.engine]
+        type = "picker"
+        [views.main.commands.run]
+        type = "run"
+        [views.main.commands.run.payload]
+        script = "foo.sh"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {:?}", output.stderr);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn single_file_workflow_fixture_inspect_and_query_mapping() {
+    let inspect = launcher_command()
+        .args(["--config"])
+        .arg(fixture_config())
+        .args(["inspect", "echo"])
+        .output()
+        .expect("could not inspect echo workflow");
+
+    assert!(
+        inspect.status.success(),
+        "stderr: {:?}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(json["view"], "echo:main");
+    assert_eq!(json["alias"], "echo");
+    assert_eq!(json["engine"], "capture");
+    assert!(json["query"]["message"].is_object());
 }

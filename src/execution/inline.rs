@@ -91,7 +91,13 @@ pub(crate) fn scripts_cache_dir() -> PathBuf {
 fn sanitize_identifier(id: &str) -> String {
     let sanitized: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.is_empty() {
         "script".to_string()
@@ -105,7 +111,8 @@ pub(crate) fn format_attributed_script(
     source_label: &str,
     script_body: &str,
 ) -> String {
-    let attribution = format!("# [tui-launcher] source: workflows/{workflow_id}.toml -> [{source_label}]");
+    let attribution =
+        format!("# [tui-launcher] source: workflows/{workflow_id}.toml -> [{source_label}]");
     let mut lines = script_body.lines();
     if let Some(first_line) = lines.next() {
         if first_line.starts_with("#!") {
@@ -151,7 +158,10 @@ pub(crate) fn materialize_inline_script(
     }
 
     let attributed = format_attributed_script(workflow_id, source_label, script_body);
-    let tmp_path = dir.join(format!("{filename}.{}.tmp", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!("{filename}.{}.{seq}.tmp", std::process::id()));
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -180,10 +190,10 @@ pub(crate) fn prepare_inline_script_command(
     args: &[String],
 ) -> Result<Vec<String>> {
     let shebang = parse_shebang(script_body);
-    verify_interpreter(&shebang.interpreter)?;
+    let interpreter_path = verify_interpreter(&shebang.interpreter)?;
     let script_path = materialize_inline_script(workflow_id, source_label, script_body)?;
     let mut argv = Vec::new();
-    argv.push(shebang.interpreter);
+    argv.push(interpreter_path.to_string_lossy().into_owned());
     argv.extend(shebang.args);
     argv.push(script_path.to_string_lossy().into_owned());
     argv.extend(args.iter().cloned());
@@ -199,10 +209,7 @@ mod tests {
         let script = "#!/usr/bin/env -S bash -euo pipefail\necho hello\n";
         let shebang = parse_shebang(script);
         assert_eq!(shebang.interpreter, "/usr/bin/env");
-        assert_eq!(
-            shebang.args,
-            vec!["-S", "bash", "-euo", "pipefail"]
-        );
+        assert_eq!(shebang.args, vec!["-S", "bash", "-euo", "pipefail"]);
     }
 
     #[test]

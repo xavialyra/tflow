@@ -71,7 +71,10 @@ fn effective_cli_args() -> Vec<String> {
         && !stem.starts_with("launcher-")
         && stem != "cargo"
     {
-        if args.iter().any(|a| a == "--check" || a == "-C" || a == "--inspect") {
+        if args
+            .iter()
+            .any(|a| a == "--check" || a == "-C" || a == "--inspect")
+        {
             return args;
         }
         let mut global_prefix = Vec::new();
@@ -80,13 +83,11 @@ fn effective_cli_args() -> Vec<String> {
         let exe = iter.next().unwrap();
 
         while let Some(arg) = iter.next() {
-            if arg == "--config" || arg == "-c" || arg == "--theme" || arg == "-t" || arg == "--inspect" {
+            if arg == "--config" || arg == "-c" || arg == "--theme" || arg == "-t" {
                 global_prefix.push(arg);
                 if let Some(val) = iter.next() {
                     global_prefix.push(val);
                 }
-            } else if arg == "--check" || arg == "-C" {
-                global_prefix.push(arg);
             } else {
                 remainder.push(arg);
                 remainder.extend(iter);
@@ -196,7 +197,6 @@ pub(crate) fn run() -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(0);
     }
-
 
     let explicit_view = args.view.is_some();
     let root_view = match args.view {

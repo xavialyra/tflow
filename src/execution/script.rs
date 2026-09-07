@@ -49,7 +49,10 @@ pub(crate) fn run_script(
     #[cfg(not(target_os = "linux"))]
     let _file = file;
     let mut process = ProcessCommand::new("/bin/sh");
-    process.arg(script_path).args(args).env("WORKFLOW_DIR", root);
+    process
+        .arg(script_path)
+        .args(args)
+        .env("WORKFLOW_DIR", root);
     run_bounded_command_with_stdin(
         process,
         None,
@@ -99,25 +102,50 @@ pub(crate) fn run_resolved_script(
                 bail!("script source requires a non-empty file");
             }
             let target_path = Path::new(target);
-            let (display_path, script_path, _file) = if target_path.is_absolute() {
-                (target.clone(), target.clone(), None)
+            let (display_path, script_path, _file, shebang, interpreter) = if target_path
+                .is_absolute()
+            {
+                let content = fs::read_to_string(target_path)
+                    .with_context(|| format!("could not read script {}", target_path.display()))?;
+                let shebang = crate::execution::parse_shebang(&content);
+                let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
+                (target.clone(), target.clone(), None, shebang, interpreter)
             } else {
                 let root = root.with_context(|| {
-                    format!("single-file workflow cannot reference relative script file {:?}", target)
+                    format!(
+                        "single-file workflow cannot reference relative script file {:?}",
+                        target
+                    )
                 })?;
+                let content = read_script(root, target)?;
+                let shebang = crate::execution::parse_shebang(&content);
+                let interpreter = crate::execution::verify_interpreter(&shebang.interpreter)?;
                 let (path, file) = open_confined_script(root, target)?;
                 #[cfg(target_os = "linux")]
                 {
                     clear_close_on_exec(file.as_raw_fd())?;
                     let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
-                    (path.display().to_string(), fd_path, Some(file))
+                    (
+                        path.display().to_string(),
+                        fd_path,
+                        Some(file),
+                        shebang,
+                        interpreter,
+                    )
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    (path.display().to_string(), path.to_string_lossy().into_owned(), Some(file))
+                    (
+                        path.display().to_string(),
+                        path.to_string_lossy().into_owned(),
+                        Some(file),
+                        shebang,
+                        interpreter,
+                    )
                 }
             };
-            let mut process = ProcessCommand::new("/bin/sh");
+            let mut process = ProcessCommand::new(interpreter);
+            process.args(&shebang.args);
             process.arg(script_path).args(args);
             if let Some(root) = root {
                 process.env("WORKFLOW_DIR", root);

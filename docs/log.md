@@ -2,6 +2,13 @@
 
 This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
+## 2026-09-07
+
+- Added `docs/explanation/architecture-convergence.md` as an implementation plan based on commit `ff50f2c` plus the reviewed working tree.
+- Recorded current partial protocol foundations and six incremental work areas: foreground execution lifecycle, task correlation, configuration ownership, protocol placement, measured scheduling, and documentation alignment.
+- Specified navigation commit sequencing, task correlation ownership, the foreground terminal-handoff state machine, configuration roles, telemetry, service objectives, migration gates, and production-path contract coverage.
+- Updated the root and explanation indexes, clarified the architecture overview's implementation-plan link, and corrected runtime safety wording to describe trusted workflow code rather than sandboxing.
+
 ## 2026-09-06
 
 - Initialized Architecture Decision Records (ADRs) under `docs/adr/`:
