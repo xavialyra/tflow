@@ -528,6 +528,7 @@ mod tests {
 
         fn command_snapshot(&self) -> ViewCommandSnapshot {
             ViewCommandSnapshot {
+                engine_type: "test".to_string(),
                 parameters: Value::Null,
                 raw_input: String::new(),
                 runtime: self.runtime.clone(),
@@ -886,6 +887,7 @@ mod tests {
         let context = ViewContext::new(ViewInstanceId(40), "dmenu:main");
         let parameters = config.instantiate_parameters("dmenu:main").unwrap();
         let snapshot = ViewCommandSnapshot {
+            engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
             parameters: config.parameter_values(&parameters).unwrap(),
             raw_input: "typed".to_string(),
             runtime: Value::Null,
@@ -929,6 +931,7 @@ mod tests {
         let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
         let parameters = config.instantiate_parameters("dmenu:main").unwrap();
         let snapshot = ViewCommandSnapshot {
+            engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
             parameters: config.parameter_values(&parameters).unwrap(),
             raw_input: String::new(),
             runtime: serde_json::json!({"revision": 2}),
@@ -980,9 +983,7 @@ mod tests {
         };
         assert_eq!(boundary.caller, caller.instance);
 
-        let selected_command = crate::workflow::command::ViewOutput::Value {
-            value: serde_json::json!({"view": "dmenu:main", "id": "accept"}),
-        };
+        let selected_command = serde_json::json!({"view": "dmenu:main", "id": "accept"});
         let continued = boundary
             .handler
             .resume(
@@ -990,21 +991,14 @@ mod tests {
                 &caller,
                 &snapshot,
                 &ViewResult {
-                    value: serde_json::to_value(selected_command).unwrap(),
+                    value: selected_command,
                 },
             )
             .unwrap();
         let ViewDecision::Return(result) = continued else {
             panic!("selected command must continue into its configured return");
         };
-        let output: crate::workflow::command::ViewOutput =
-            serde_json::from_value(result.value).unwrap();
-        assert_eq!(
-            output,
-            crate::workflow::command::ViewOutput::Value {
-                value: serde_json::json!("first"),
-            }
-        );
+        assert_eq!(result.value, serde_json::json!("first"));
         std::fs::remove_file(stdin_path).unwrap();
     }
 
@@ -1230,6 +1224,7 @@ mod tests {
             }
             fn command_snapshot(&self) -> ViewCommandSnapshot {
                 ViewCommandSnapshot {
+                    engine_type: "test".to_string(),
                     parameters: Value::Null,
                     raw_input: String::new(),
                     runtime: Value::Null,

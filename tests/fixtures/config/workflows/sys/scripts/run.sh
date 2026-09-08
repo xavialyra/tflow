@@ -1,6 +1,6 @@
 #!/bin/sh
 request=$(cat)
-item=$(printf '%s' "$request" | jq -r '.parameters // ""')
+item=$(printf '%s' "$request" | jq -r '.context.parameters // ""')
 case "$item" in
   "Show date") output=$(date 2>&1) ;;
   "Show system information")

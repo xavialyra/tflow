@@ -6,7 +6,10 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+context = request.get("context", {})
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+item = state.get("item") if isinstance(state, dict) else None
 if not isinstance(item, dict) or not isinstance(item.get("text"), str):
     raise SystemExit("system command requires a selected item")
 json.dump({

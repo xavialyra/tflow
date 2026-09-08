@@ -62,31 +62,11 @@ impl PickerView {
         } = projection;
         let frame = self.current();
         let results_current = self.results_current(&input);
-        let selected_owner = results_current
-            .then(|| self.selected_item_owner())
-            .flatten();
-        let owner = selected_owner.or(Some(self.current_view_ref()));
         let page_view = self.current_view_ref();
         let commands = self
             .services
-            .page_commands(page_view, selected_owner)?
+            .page_commands(page_view)?
             .into_values()
-            .filter(|value| {
-                let Some(view_ref) = value
-                    .pointer("/ref/view")
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    return false;
-                };
-                let Some(command_id) = value.pointer("/ref/id").and_then(serde_json::Value::as_str)
-                else {
-                    return false;
-                };
-                if results_current && selected_owner.is_some() {
-                    return true;
-                }
-                !self.services.command_requires_items(view_ref, command_id)
-            })
             .collect::<Vec<_>>();
         let items = if results_current {
             frame
@@ -127,13 +107,6 @@ impl PickerView {
         );
         current.insert("items".to_string(), serde_json::json!(items));
         current.insert("command".to_string(), serde_json::json!(commands));
-        current.insert(
-            "command_owner".to_string(),
-            match owner {
-                Some(owner) => serde_json::Value::String(owner.to_string()),
-                None => serde_json::Value::Null,
-            },
-        );
         Ok(RuntimeUpdate {
             path: "/view/current".to_string(),
             value: serde_json::Value::Object(current),
@@ -146,15 +119,12 @@ fn runtime_item_value(item: &Item) -> serde_json::Value {
         "text": item.text,
         "value": item.value,
         "metadata": item.metadata,
-        "owner_view": item.source_view,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::picker::items::FeedId;
-
     #[test]
     fn public_item_provenance_excludes_internal_feed_state() {
         let value = runtime_item_value(&Item {
@@ -163,9 +133,8 @@ mod tests {
             value: Some("terminal".to_string()),
             metadata: serde_json::json!({"kind": "app"}),
             source_view: "apps:default".to_string(),
-            feed_id: FeedId("apps:default".to_string()),
         });
-        assert_eq!(value["owner_view"], "apps:default");
+        assert!(value.get("owner_view").is_none());
         assert!(value.get("feed_id").is_none());
         assert!(value.get("state").is_none());
         assert!(value.get("binding_raw").is_none());

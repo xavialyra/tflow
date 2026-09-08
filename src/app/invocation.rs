@@ -1,6 +1,5 @@
 use super::SessionOutcome;
 use crate::lifecycle::CancellationToken;
-use crate::workflow::command::ViewOutput;
 use crate::workflow::config::CompiledConfig;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -94,8 +93,7 @@ pub(crate) fn finish(
             exit_code,
         });
     };
-    let returned = *returned;
-    Ok(default_result(returned.output))
+    Ok(default_result(returned))
 }
 
 impl Drop for InputArtifact {
@@ -106,18 +104,10 @@ impl Drop for InputArtifact {
     }
 }
 
-fn default_result(output: ViewOutput) -> InvocationResult {
-    let mut stdout = match output {
-        ViewOutput::Selected { item, input } => item
-            .and_then(|item| item.value)
-            .unwrap_or(input)
-            .into_bytes(),
-        ViewOutput::Value {
-            value: Value::String(value),
-        } => value.into_bytes(),
-        ViewOutput::Value { value } => {
-            serde_json::to_vec(&value).expect("serde_json::Value serialization cannot fail")
-        }
+fn default_result(value: Value) -> InvocationResult {
+    let mut stdout = match value {
+        Value::String(value) => value.into_bytes(),
+        value => serde_json::to_vec(&value).expect("serde_json::Value serialization cannot fail"),
     };
     stdout.push(b'\n');
     InvocationResult {
@@ -166,4 +156,20 @@ fn open_private_file(path: &Path) -> io::Result<File> {
         .create_new(true)
         .mode(0o600)
         .open(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_result;
+    use serde_json::json;
+
+    #[test]
+    fn root_result_serializes_strings_as_text_and_other_values_as_json() {
+        assert_eq!(default_result(json!("text")).stdout, b"text\n");
+        assert_eq!(
+            default_result(json!({"value": 7})).stdout,
+            b"{\"value\":7}\n"
+        );
+        assert_eq!(default_result(json!(null)).stdout, b"null\n");
+    }
 }

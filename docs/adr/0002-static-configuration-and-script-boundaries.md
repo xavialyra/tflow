@@ -125,7 +125,7 @@ Initially, `run.mode` accepts only `foreground`. Embedded remains a View Engine 
 
 Command protocol scripts produce operations rather than interactive terminal output. A generated run operation enters the existing foreground execution path after protocol validation; foreground programs retain their own terminal and stdio behavior.
 
-### 4. Command requests have explicit ownership
+### 4. Producer requests use one explicit context
 
 A command script receives one request on stdin:
 
@@ -133,43 +133,40 @@ A command script receives one request on stdin:
 {
   "version": 1,
   "entrypoint": "command",
-  "view": "apps:main",
-  "mounted_view": "core:main",
-  "command": {
-    "view": "apps:main",
-    "id": "open",
-    "type": "navigate"
-  },
-  "parameters": {"mode": "normal"},
-  "invocation": {
-    "stdin": {"path": null, "length": 0, "is_tty": true}
-  },
-  "engine_output": {
-    "kind": "picker",
-    "input": "Example app",
-    "selected_item": {
-      "text": "Example app",
-      "value": "org.example.App",
-      "metadata": {},
-      "source_view": "apps:main"
+  "command": {"id": "open", "type": "navigate"},
+  "context": {
+    "parameters": {"mode": "normal"},
+    "input": {
+      "stdin": {"path": null, "length": 0, "is_tty": true}
+    },
+    "engine": {
+      "type": "picker",
+      "state": {
+        "input": "Example app",
+        "item": {
+          "text": "Example app",
+          "value": "org.example.App",
+          "metadata": {}
+        },
+        "text": "Example app",
+        "value": "org.example.App",
+        "metadata": {},
+        "selected_index": 0
+      }
     }
   }
 }
 ```
 
-Ownership rules are fixed:
+The context rules are fixed:
 
-- `view` and `command.view` identify the command's owning View.
-- `parameters` are that owner's bound parameters. For a feed-owner command, use its corresponding feed instance, not the aggregate page's parameters.
-- `mounted_view` identifies the View carrying the operation.
-- `engine_output` is the carrying Engine's output captured at actual dispatch, after any readiness wait.
-- `invocation` contains the explicitly published launch facts.
+- `command.id` and `command.type` identify the host-selected command and its declared operation type.
+- `context.parameters` contains the command owner's bound parameters. When a Picker is mounted independently, its own parameters are used; feed parameters remain internal to aggregate scheduling.
+- `context.input` contains the explicitly published launch input descriptor.
+- `context.engine` identifies the carrying Engine and exposes its public state projection. For Picker, selection is the normalized `state.item`; no selected item is represented as `null`.
+- Feed identity, workflow roots, task generations, cancellation handles, mounted View identity, and other scheduling/provenance data are not sent automatically.
 
-The host assigns item `source_view` from provider provenance. A provider cannot forge command ownership by supplying its own source identity.
-
-Provider `display` remains the presentation input and may support rich display structures. Public selected-item `text` is normalized plain text. Optional selection is represented explicitly, with no selected item represented as `null`.
-
-Do not publish an internal runtime tree or ambient `selection`, `page`, `current`, or `result` expression namespaces. JSON fields are protocol data, not expression roots.
+Provider `display` remains the presentation input and may support rich display structures. Public selected-item text is normalized plain text. JSON fields are protocol data, not expression roots, and no internal runtime tree is published as ambient `selection`, `page`, `current`, or `result` namespaces.
 
 ### 5. Responses and navigation parameter transport
 
@@ -226,16 +223,27 @@ Request:
 {
   "version": 1,
   "entrypoint": "picker-items",
-  "view": "dmenu:main",
-  "parameters": {"initial": "sec"},
-  "invocation": {
-    "stdin": {
-      "path": "/tmp/tui-launcher-input-123",
-      "length": 13,
-      "is_tty": false
+  "context": {
+    "parameters": {"initial": "sec"},
+    "input": {
+      "stdin": {
+        "path": "/tmp/tui-launcher-input-123",
+        "length": 13,
+        "is_tty": false
+      }
+    },
+    "engine": {
+      "type": "picker",
+      "state": {
+        "input": "sec",
+        "item": null,
+        "text": null,
+        "value": null,
+        "metadata": null,
+        "selected_index": 0
+      }
     }
-  },
-  "request": {"input": "sec"}
+  }
 }
 ```
 
@@ -250,9 +258,7 @@ Response:
 }
 ```
 
-For a feed, `view` and `parameters` describe the provider owner. `request.input` is the input captured for that items request. Parameter binding happens before protocol execution; providers do not infer ownership from global session data.
-
-The response replaces the complete items collection for that provider/request after validation. Providers cannot return operations, incremental patches, or other View configuration. Aggregate feed composition and item provenance remain host-owned. Item producer stdout uses the normal script timeout and stderr budget, with a 64 MiB stdout bound for large candidate sets.
+`context.parameters` contains the independent provider parameters, `context.input` contains the explicit launch input, and `context.engine.state.input` is the current Picker request input. Feed identity, workflow root, generation, cancellation, and other scheduling state remain inside Picker. The response replaces the complete items collection after validation. Providers cannot return operations, incremental patches, or other View configuration. Aggregate composition and item provenance remain host-owned. Item producer stdout uses the normal script timeout and stderr budget, with a 64 MiB stdout bound for large candidate sets.
 
 ### 7. Capture output producers run after mount
 
@@ -287,10 +293,12 @@ Request and response:
 {
   "version": 1,
   "entrypoint": "capture-output",
-  "view": "sys:output",
-  "parameters": {"action": "date"},
-  "invocation": {
-    "stdin": {"path": null, "length": 0, "is_tty": true}
+  "context": {
+    "parameters": {"action": "date"},
+    "input": {
+      "stdin": {"path": null, "length": 0, "is_tty": true}
+    },
+    "engine": {"type": "capture", "state": null}
   }
 }
 ```
@@ -312,7 +320,7 @@ Validate target route and query
   -> Capture publishes content
 ```
 
-On provider failure, Capture remains mounted and displays an error. The provider can produce only output content. It cannot change the route, query schema, Engine type, keymap, or Router stack. A provider failure after mount is distinct from a navigation preparation failure.
+On provider failure, Capture remains mounted and displays an error. The provider can produce only output content. It cannot change the route, query schema, Engine type, keymap, or Router stack. A provider failure after mount is distinct from a navigation preparation failure. Capture uses the same unified `context` as other producers; its `context.input` is the explicit launch input descriptor.
 
 ### 8. Explicit return processors
 
@@ -343,26 +351,28 @@ Example request:
 {
   "version": 1,
   "entrypoint": "return",
-  "view": "sys:main",
-  "parameters": {},
-  "invocation": {
-    "stdin": {"path": null, "length": 0, "is_tty": true}
-  },
-  "caller": {"view": "sys:main", "command": "choose"},
-  "result": {
-    "kind": "selected",
-    "input": "Show date",
-    "item": {
-      "text": "Show date",
-      "value": "date",
-      "metadata": {},
-      "source_view": "selectors:actions"
+  "context": {
+    "parameters": {},
+    "input": {
+      "stdin": {"path": null, "length": 0, "is_tty": true}
+    },
+    "engine": {
+      "type": "picker",
+      "state": {
+        "input": "",
+        "item": {"text": "Show date", "value": "date", "metadata": {}},
+        "text": "Show date",
+        "value": "date",
+        "metadata": {},
+        "selected_index": 0
+      }
     }
-  }
+  },
+  "result": {"text": "Show date", "value": "date", "metadata": {}}
 }
 ```
 
-There is no duplicate top-level selected `value`: the selected value belongs to `result.item.value`. Generic value returns, including explicit JSON `null`, are successful results and must be distinguishable from cancellation in the final result schema.
+Return processors receive raw JSON in `result`. A selected value may be part of an item object, but a processor can also receive any other JSON value, including an explicit `null`. Missing return values are invalid, and close/cancel decisions produce no result.
 
 The processor returns the same versioned `operation` envelope used by commands. `result` is an explicit JSON request field, not a namespace resolved by the host.
 
@@ -390,7 +400,7 @@ If the return transition fails, do not start the processor. If the processor fai
 
 ### 9. Shared protocol and execution rules
 
-All requests use `version: 1`, an `entrypoint`, and stable top-level locations for `view`, `parameters`, and `invocation`. Additional fields depend on the entry point. `invocation` is never nested under `request`; its published schema and empty/absent-data behavior must be consistent across entry points.
+All requests use `version: 1`, an `entrypoint`, and a unified `context` containing `parameters`, `input`, and `engine`. Command requests add `command`; return-processor requests add raw `result`. Feed identity, mounted View, task generation, cancellation, and other scheduling data are internal.
 
 - stdin carries one versioned JSON request.
 - stdout carries exactly one complete versioned JSON response, allowing surrounding whitespace but no diagnostics, additional JSON documents, or streaming records.
@@ -402,7 +412,7 @@ All requests use `version: 1`, an `entrypoint`, and stable top-level locations f
 - Protocol producers run as managed work. Foreground business programs and Embedded PTY programs keep their distinct terminal policies.
 - Script code is trusted code running with the user's permissions. The host cannot roll back side effects performed inside a protocol script.
 
-Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View.
+Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View. Picker feeds retain independent parameters, workflow roots, generations, cancellation, and stale-result identity internally; only aggregate View commands are projected into an aggregate Picker.
 
 ### 10. Preserve host ownership
 

@@ -34,30 +34,17 @@ impl ViewLocation {
 pub(crate) struct ViewPublication {
     pub(crate) current: Value,
     pub(crate) ready: bool,
-    pub(crate) dynamic_commands: Vec<crate::workflow::command::CommandRef>,
 }
 
 impl ViewPublication {
     pub(crate) fn new(current: Value, ready: bool) -> Self {
-        Self {
-            current,
-            ready,
-            dynamic_commands: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn with_dynamic_commands(
-        mut self,
-        dynamic_commands: Vec<crate::workflow::command::CommandRef>,
-    ) -> Self {
-        self.dynamic_commands = dynamic_commands;
-        self
+        Self { current, ready }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewCommandSnapshot {
+    pub(crate) engine_type: String,
     pub(crate) parameters: Value,
     pub(crate) raw_input: String,
     pub(crate) runtime: Value,
@@ -512,6 +499,7 @@ pub(crate) trait View {
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
+            engine_type: "test".to_string(),
             parameters: Value::Null,
             raw_input: String::new(),
             runtime: Value::Null,
@@ -1405,7 +1393,7 @@ impl Router {
             None
         } else {
             match (&call_boundary, self.pending_result.as_ref()) {
-                (Some(boundary), Some(result)) if !result.value.is_null() => {
+                (Some(boundary), Some(result)) => {
                     let caller = self
                         .stack
                         .iter()
@@ -1600,6 +1588,7 @@ mod tests {
         }
         fn command_snapshot(&self) -> ViewCommandSnapshot {
             ViewCommandSnapshot {
+                engine_type: "test".to_string(),
                 parameters: Value::Null,
                 raw_input: String::new(),
                 runtime: self.runtime.clone(),
@@ -2213,7 +2202,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_call_cancel_restores_parent_consumes_null_and_accepts_next_input() {
+    fn nested_call_null_result_is_delivered_and_parent_accepts_next_input() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut routes = MapRouteCatalog::default();
         routes.insert("root", "root");
@@ -2239,7 +2228,10 @@ mod tests {
         assert_eq!(router.active().map(|entry| entry.id), Some(root));
         assert!(router.active().unwrap().is_active());
         assert!(router.take_result().is_none());
-        assert!(calls.borrow().is_empty());
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[("child".to_string(), root, Value::Null)]
+        );
 
         router
             .dispatch(ViewEvent::Input(InputEvent::Key {

@@ -227,13 +227,10 @@ def invocation_path(descriptor):
 
 
 def item_mode(context):
-    query = context.get("query", {})
-    if not isinstance(query, dict):
+    options = context.get("options", {})
+    query = context.get("query", "")
+    if not isinstance(options, dict) or not isinstance(query, str):
         raise DmenuError("invalid dmenu items context")
-    options = query
-    query = query.get("initial", "")
-    if not isinstance(query, str):
-        raise DmenuError("invalid dmenu query")
     query = sanitize(query)
     delimiter = parse_delimiter(options)
     with_nth = parse_format(string_option(options, "with-nth"))
@@ -300,27 +297,32 @@ def main():
         if len(sys.argv) == 1:
             request = json.load(sys.stdin)
             entrypoint = request.get("entrypoint")
+            producer_context = request.get("context", {})
+            engine = producer_context.get("engine", {})
+            state = engine.get("state", {}) if isinstance(engine, dict) else {}
             if entrypoint == "picker-items":
                 context = {
-                    "input": request.get("invocation"),
-                    "query": request.get("parameters", {}),
+                    "input": producer_context.get("input"),
+                    "options": producer_context.get("parameters", {}),
+                    "query": state.get("input", "") if isinstance(state, dict) else "",
                 }
                 items = item_mode(context)
                 json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
                 sys.stdout.write("\n")
                 return 0
             if entrypoint == "command":
-                engine_output = request.get("engine_output", {})
-                if not isinstance(engine_output, dict):
-                    raise DmenuError("dmenu command engine output must be an object")
-                invocation = request.get("invocation", {})
+                if not isinstance(producer_context, dict):
+                    raise DmenuError("dmenu command context must be an object")
+                if not isinstance(state, dict):
+                    raise DmenuError("dmenu command engine state must be an object")
+                invocation = producer_context.get("input", {})
                 if not isinstance(invocation, dict):
-                    raise DmenuError("dmenu command invocation must be an object")
+                    raise DmenuError("dmenu command input must be an object")
                 context = {
-                    "options": request.get("parameters", {}),
+                    "options": producer_context.get("parameters", {}),
                     "stdin": invocation.get("stdin"),
-                    "selected": engine_output.get("selected_item"),
-                    "typed": engine_output.get("input", ""),
+                    "selected": state.get("item"),
+                    "typed": state.get("input", ""),
                 }
                 output = result_mode(context)
                 if output.endswith(b"\n"):
@@ -339,9 +341,11 @@ def main():
         if sys.argv[1] == "items":
             if len(sys.argv) != 4:
                 raise DmenuError("items mode requires input and query arguments")
+            options = json.loads(sys.argv[3])
             context = {
                 "input": json.loads(sys.argv[2]),
-                "query": json.loads(sys.argv[3]),
+                "options": options,
+                "query": options.get("initial", "") if isinstance(options, dict) else "",
             }
             items = item_mode(context)
             json.dump(items, sys.stdout, separators=(",", ":"))

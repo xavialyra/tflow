@@ -10,12 +10,11 @@ pub(super) enum PickerAction {
     DeleteBackward,
     ClearInput,
     DeleteWord,
-    Activate,
     TogglePreview,
 }
 
 impl PickerAction {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::Exit,
         Self::Back,
         Self::SelectPrevious,
@@ -23,7 +22,6 @@ impl PickerAction {
         Self::DeleteBackward,
         Self::ClearInput,
         Self::DeleteWord,
-        Self::Activate,
         Self::TogglePreview,
     ];
 }
@@ -40,7 +38,6 @@ impl KeymapAction for PickerAction {
             Self::DeleteBackward => "delete_backward",
             Self::ClearInput => "clear_input",
             Self::DeleteWord => "delete_word",
-            Self::Activate => "activate",
             Self::TogglePreview => "toggle_preview",
         }
     }
@@ -59,7 +56,6 @@ impl KeymapAction for PickerAction {
             (Key::Backspace, Self::DeleteBackward),
             (Key::Ctrl('u'), Self::ClearInput),
             (Key::Ctrl('w'), Self::DeleteWord),
-            (Key::Enter, Self::Activate),
         ]
     }
 }
@@ -143,21 +139,33 @@ mod tests {
     #[test]
     fn conflicting_bindings_are_rejected() {
         let error = PickerKeymap::from_value(Some(json!({
-            "exit": ["ctrl+j"]
+            "exit": ["down"]
         })))
-        .expect_err("default activate binding should conflict");
+        .expect_err("default select-next binding should conflict");
         assert!(error.to_string().contains("both"));
     }
 
     #[test]
-    fn ctrl_aliases_use_the_terminal_key_identity() {
+    fn enter_is_not_an_implicit_picker_action() {
         let keymap = PickerKeymap::from_value(Some(json!({
-            "activate": [],
             "exit": ["ctrl+j"]
         })))
         .unwrap();
         assert_eq!(keymap.action(Key::Enter), Some(PickerAction::Exit));
         assert_eq!(keymap.action(Key::Ctrl('j')), None);
+    }
+
+    #[test]
+    fn removed_activate_action_is_rejected() {
+        let error = PickerKeymap::from_value(Some(json!({
+            "activate": ["enter"]
+        })))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported picker binding action")
+        );
     }
 
     #[test]

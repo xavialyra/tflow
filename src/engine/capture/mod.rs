@@ -19,6 +19,7 @@ use crate::workflow::config::{
     Defaults, ProducerKind, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
@@ -134,7 +135,7 @@ struct PendingCaptureScript {
     root: Option<PathBuf>,
     source: ResolvedScriptSource,
     parameters: serde_json::Value,
-    invocation: serde_json::Value,
+    launch_input: serde_json::Value,
 }
 
 enum PreparedCaptureOutput {
@@ -162,7 +163,7 @@ pub(super) fn create_view(
                     root,
                     source,
                     parameters: context.parameters.values().clone(),
-                    invocation: context.config.invocation.clone(),
+                    launch_input: context.config.launch_input.clone(),
                 }),
             )
         }
@@ -252,8 +253,12 @@ fn run_capture_script(
     plan: &PendingCaptureScript,
     cancellation: &crate::lifecycle::CancellationObserver,
 ) -> CaptureScriptOutcome {
-    let request =
-        crate::protocol::capture_request(&plan.view_ref, &plan.parameters, &plan.invocation);
+    let request = crate::protocol::capture_request(
+        &plan.parameters,
+        &plan.launch_input,
+        crate::workflow::config::ENGINE_CAPTURE,
+        &Value::Null,
+    );
     let response = crate::protocol::run_script_capture_response(
         &plan.view_ref,
         &format!("[views.{}.output]", plan.view_ref),
@@ -407,9 +412,8 @@ impl EngineRuntime for CaptureView {
             return false;
         };
         self.script_completion = None;
-        self.script_task = Some(starter.spawn_latest_with_snapshot_tagged(
+        self.script_task = Some(starter.spawn_latest_tagged(
             "capture-script",
-            serde_json::Value::Null,
             crate::task::TaskTags::new("capture", "script"),
             move |context| {
                 let outcome = run_capture_script(&plan, &context.cancellation.observer());

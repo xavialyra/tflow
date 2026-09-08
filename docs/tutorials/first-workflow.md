@@ -18,7 +18,7 @@ In this tutorial, you will create a workflow called `notes` with a Picker list a
 
 - How to choose a single-file or directory workflow package.
 - How to keep View and item configuration literal.
-- How to read `engine_output.selected_item` from a command producer request.
+- How to read `context.engine.state.item` from a command producer request.
 - How to return a typed foreground operation from a script.
 
 ## Option A: Single-file Workflow
@@ -56,7 +56,8 @@ import os
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
 path = item.get("value") if isinstance(item, dict) else None
 if not isinstance(path, str):
     raise SystemExit("select a note first")
@@ -99,7 +100,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-needle = request.get("request", {}).get("input", "").lower()
+state = request["context"]["engine"]["state"]
+needle = state.get("input", "").lower() if isinstance(state, dict) else ""
 notes = [
     ("Project Ideas", "ideas.txt"),
     ("Meeting Notes", "meeting.txt"),
@@ -123,7 +125,8 @@ import os
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
 path = item.get("value") if isinstance(item, dict) else None
 if not isinstance(path, str):
     raise SystemExit("select a note first")

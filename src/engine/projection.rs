@@ -25,14 +25,14 @@ pub(crate) fn project_engine_config(
     config: &CompiledConfig,
     view_ref: &str,
     definition: &EngineDefinition,
-    invocation: Value,
+    launch_input: Value,
 ) -> Result<ProjectedEngineConfig> {
     Ok(ProjectedEngineConfig {
         fields: fields_for_view(config, view_ref, definition.factory_fields.runtime)?,
         workflow_root: config
             .workflow_root(view_ref)
             .map(std::path::Path::to_path_buf),
-        invocation,
+        launch_input,
     })
 }
 

@@ -2,7 +2,6 @@ use crate::engine::EmbeddedTerminal;
 use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat};
 use crate::execution::{PreparedProcess, ProcessGroupGuard};
 use crate::lifecycle::{CancellationObserver, CancellationStatus};
-use crate::workflow::command::ViewOutput;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -29,7 +28,7 @@ pub enum EmbeddedOutcome {
     Exited(i32),
     Signaled(i32),
     Failed(String),
-    Returned(ViewOutput),
+    Returned(Value),
 }
 
 #[derive(Clone)]
@@ -400,12 +399,12 @@ impl Drop for EmbeddedRuntime {
     }
 }
 
-fn parse_result(bytes: &[u8], config: EmbeddedResultConfig) -> Result<ViewOutput> {
+fn parse_result(bytes: &[u8], config: EmbeddedResultConfig) -> Result<Value> {
     if bytes.is_empty() {
         if config.required {
             bail!("embedded process produced no result on stdout");
         }
-        return Ok(ViewOutput::Value { value: Value::Null });
+        return Ok(Value::Null);
     }
     let value = match config.format {
         EmbeddedResultFormat::Text => {
@@ -424,7 +423,7 @@ fn parse_result(bytes: &[u8], config: EmbeddedResultConfig) -> Result<ViewOutput
             serde_json::from_slice(bytes).context("embedded result is not valid JSON")?
         }
     };
-    Ok(ViewOutput::Value { value })
+    Ok(value)
 }
 
 fn drain_result(fd: RawFd, bytes: &mut Vec<u8>, limit: usize) -> Result<bool> {
@@ -722,7 +721,7 @@ fn decode_status(status: libc::c_int) -> EmbeddedOutcome {
 mod tests {
     use super::{
         EmbeddedOutcome, EmbeddedPoll, EmbeddedResultConfig, EmbeddedResultFormat, EmbeddedRuntime,
-        PreparedProcess, TerminalResponder, parse_result,
+        PreparedProcess, TerminalResponder, Value, parse_result,
     };
     use crate::lifecycle::CancellationToken;
     use std::thread;
@@ -777,7 +776,7 @@ mod tests {
                     let EmbeddedOutcome::Returned(output) = result.outcome else {
                         panic!("PTY EOF changed the embedded process outcome")
                     };
-                    assert_eq!(serde_json::to_value(output).unwrap()["value"], "result");
+                    assert_eq!(output, Value::String("result".to_string()));
                     break;
                 }
             }
@@ -878,10 +877,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            serde_json::to_value(text).unwrap()["value"],
-            serde_json::json!("hello")
-        );
+        assert_eq!(text, Value::String("hello".to_string()));
         let json = parse_result(
             br#"{"name":"Ada"}"#,
             EmbeddedResultConfig {
@@ -891,6 +887,6 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(serde_json::to_value(json).unwrap()["value"]["name"], "Ada");
+        assert_eq!(json["name"], "Ada");
     }
 }

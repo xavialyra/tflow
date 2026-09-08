@@ -1,6 +1,6 @@
 #!/bin/sh
 request=$(cat)
-query=$(printf '%s' "$request" | jq -c '.parameters // {}')
+query=$(printf '%s' "$request" | jq -c '.context.parameters // {}')
 
 # Fast path for empty text in query
 if [ -z "$query" ] || [ "$query" = "{}" ] || ! printf '%s' "$query" | grep -q '"text"[[:space:]]*:[[:space:]]*"[^"]'; then

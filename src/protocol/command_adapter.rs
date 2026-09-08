@@ -3,7 +3,7 @@ use crate::view::{
     CallBoundary, CallReturnHandler, ViewCommandSnapshot, ViewContext, ViewDecision, ViewLocation,
     ViewResult,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 /// Immutable command bindings projected into protocol-native Views.
 /// Runtime preparation remains owned by `ProtocolCommandService`.
@@ -260,6 +260,7 @@ impl CommandService for ProtocolCommandService {
                     .as_ref()
                     .map(|publication| publication.current.clone())
                     .unwrap_or(serde_json::Value::Null),
+                engine_type: snapshot.engine_type.clone(),
             },
         };
         let prepared = crate::workflow::command::prepare_command_action(
@@ -344,14 +345,9 @@ impl CallReturnHandler for ProtocolCallReturnHandler {
             );
         }
         if self.invoke_selected {
-            let output: crate::workflow::command::ViewOutput =
-                serde_json::from_value(result.value.clone())
-                    .context("command selector returned an invalid command output")?;
-            let crate::workflow::command::ViewOutput::Value { value } = output else {
-                bail!("command selector must return a command reference value");
-            };
             let reference: crate::workflow::command::CommandRef =
-                serde_json::from_value(value).context("command selector must return {view, id}")?;
+                serde_json::from_value(result.value.clone())
+                    .context("command selector must return {view, id}")?;
             let invocation = crate::workflow::command::resolve_visible_command(
                 &self.config,
                 &context,
@@ -412,9 +408,7 @@ pub(crate) fn map_prepared_action(
                 continuation: crate::view::Continuation::Call(boundary),
             }))
         }
-        PreparedAction::Return(returned) => Ok(ViewDecision::Return(ViewResult {
-            value: serde_json::to_value(returned.output)?,
-        })),
+        PreparedAction::Return(value) => Ok(ViewDecision::Return(ViewResult { value })),
         PreparedAction::EditInput { value, cursor } => Ok(ViewDecision::Command(
             crate::view::CommandResult::EditInput { value, cursor },
         )),

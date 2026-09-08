@@ -202,7 +202,7 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
         r#"
         default_view = "core:default"
         [defaults.picker.bindings]
-        exit = ["enter"]
+        exit = ["up"]
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -219,8 +219,7 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("picker key \"enter\" is assigned to both"),
+        String::from_utf8_lossy(&output.stderr).contains("picker key \"up\" is assigned to both"),
         "stderr: {:?}",
         output.stderr
     );

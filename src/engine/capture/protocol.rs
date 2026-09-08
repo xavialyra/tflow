@@ -20,10 +20,10 @@ use crate::ui::theme::ResolvedTheme;
 use crate::view::{
     Binding, BindingSet, EffectRequest, LifecycleEvent, NavigationRequest, RelativeCursor,
     RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent,
-    ViewPublication, ViewResult, ViewTaskRegistry,
+    ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::ParameterSnapshot;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
 
@@ -375,13 +375,6 @@ impl CaptureProtocolView {
                 self.pending_command = None;
                 Ok(ViewDecision::Exit)
             }
-            EngineDecision::Return(output) => {
-                self.pending_command = None;
-                Ok(ViewDecision::Return(ViewResult {
-                    value: serde_json::to_value(output)
-                        .context("could not serialize capture result")?,
-                }))
-            }
             EngineDecision::Batch(decisions) => {
                 let mut mapped = Vec::with_capacity(decisions.len());
                 for decision in decisions {
@@ -499,6 +492,7 @@ impl View for CaptureProtocolView {
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
+            engine_type: self.engine_context.view_identity().engine_type.clone(),
             parameters: self.parameters.values().clone(),
             raw_input: self.input_raw.clone(),
             runtime: self.runtime_snapshot.clone(),

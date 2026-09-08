@@ -32,10 +32,10 @@ Runtime-dependent behavior belongs in an explicit producer. The host sends one J
 
 | Entry point | Request data | Response |
 | :--- | :--- | :--- |
-| Command | Owning View, bound parameters, invocation facts, and current Engine output | One operation matching the command's declared `type` |
-| Picker items | Provider View, bound parameters, invocation facts, and current input | Complete `items` array |
-| Capture output | View, bound parameters, and invocation facts | `output` string |
-| Return processor | Caller, bound parameters, invocation facts, and returned result | One operation matching the processor's declared `type` |
+| Command | `command` plus `context.parameters`, `context.input`, and `context.engine` | One operation matching the command's declared `type` |
+| Picker items | `context.parameters`, `context.input`, and `context.engine` | Complete `items` array |
+| Capture output | `context.parameters`, `context.input`, and `context.engine` | `output` string |
+| Return processor | `context.parameters`, `context.input`, `context.engine`, and raw `result` | One operation matching the processor's declared `type` |
 
 Use a command producer when a selected item must determine navigation or a process invocation. Use an items producer when a list is computed at request time. Use a return processor when a successful call result must trigger another operation after the caller is restored.
 
@@ -52,7 +52,7 @@ producer = "script"
 file = "scripts/open.sh"
 ```
 
-The script reads JSON from stdin. Selection data is in the documented `engine_output` request field; it is not interpolated into the handler or argv configuration.
+The script reads JSON from stdin. Selection data is in the documented `context.engine.state` projection; it is not interpolated into the handler or argv configuration.
 
 ## Rejected Forms
 

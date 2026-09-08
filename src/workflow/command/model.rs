@@ -189,6 +189,7 @@ pub(crate) struct CommandContext {
     pub(crate) page: CommandOwnerContext,
     pub(crate) owner: CommandOwnerContext,
     pub(crate) current: Value,
+    pub(crate) engine_type: String,
 }
 
 #[derive(Clone)]
@@ -203,29 +204,4 @@ pub(crate) struct CallRequest {
     pub(crate) context: CommandContext,
     pub(crate) return_processor: Option<crate::workflow::config::ReturnProcessor>,
     pub(crate) invoke_selected: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ViewReturn {
-    pub(crate) output: ViewOutput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub(crate) enum ViewOutput {
-    Selected {
-        item: Option<ViewOutputItem>,
-        input: String,
-    },
-    Value {
-        value: Value,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ViewOutputItem {
-    pub(crate) text: String,
-    pub(crate) value: Option<String>,
-    pub(crate) metadata: Value,
-    pub(crate) source_view: String,
 }

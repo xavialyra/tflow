@@ -81,9 +81,12 @@ def main():
     request = json.load(sys.stdin)
     if request.get("entrypoint") != "picker-items":
         raise ValueError("expected a picker-items producer request")
-    query = request.get("request", {}).get("input", "")
+    context = request.get("context", {})
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    query = state.get("input", "") if isinstance(state, dict) else ""
     if not isinstance(query, str):
-        raise ValueError("picker-items request input must be a string")
+        raise ValueError("picker-items engine state input must be a string")
     cache_file = get_cache_file()
     lines = load_cache(cache_file)
 

@@ -88,7 +88,6 @@ impl FeedDefinition {
 pub(crate) struct FeedInstance {
     pub(crate) definition: Arc<FeedDefinition>,
     pub(crate) parameters: ParameterSnapshot,
-    pub(crate) binding_raw: String,
 }
 
 impl FeedInstance {
@@ -116,7 +115,6 @@ impl FeedInstance {
         Ok(Self {
             definition,
             parameters,
-            binding_raw: binding_raw.to_string(),
         })
     }
 }
@@ -160,9 +158,8 @@ pub(crate) struct Item {
     pub(crate) display: super::display::NormalizedItemDisplay,
     pub(crate) value: Option<String>,
     pub(crate) metadata: Value,
-    /// Stable provenance only; the response-level context owns state and raw binding.
+    /// Stable provenance used internally for feed routing and preview lookup.
     pub(crate) source_view: String,
-    pub(crate) feed_id: FeedId,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -261,13 +258,23 @@ impl FeedRequestIdentity {
 pub(super) struct ItemsRequest {
     pub(super) view: String,
     pub(super) identity: FeedRequestIdentity,
+    pub(super) engine_state: Value,
 }
 
 impl ItemsRequest {
     pub(super) fn new(view: String, identity: FeedRequestIdentity) -> Result<Self> {
         anyhow::ensure!(!view.is_empty(), "picker feed request view is empty");
         identity.validate()?;
-        Ok(Self { view, identity })
+        Ok(Self {
+            view,
+            identity,
+            engine_state: Value::Null,
+        })
+    }
+
+    pub(super) fn with_engine_state(mut self, engine_state: Value) -> Self {
+        self.engine_state = engine_state;
+        self
     }
 
     pub(super) fn validate(&self) -> Result<()> {
@@ -341,7 +348,7 @@ fn load_single_feed(
     page_view: &str,
     page_parameters: &ParameterSnapshot,
     binding_raw: &str,
-    request_input: &str,
+    engine_state: &Value,
     cancellation: &CancellationToken,
 ) -> Option<FeedLoadOutput> {
     if cancellation.is_cancelled() || !definition.has_items() {
@@ -370,7 +377,7 @@ fn load_single_feed(
     let context = Some((feed_id.clone(), instance.clone()));
     let (value, managed_child_reaped) = match instance.definition.items_value() {
         Some(value) if is_producer_value(&value) => {
-            let outcome = run_items_provider(&instance, &value, request_input, cancellation);
+            let outcome = run_items_provider(&instance, &value, engine_state, cancellation);
             (outcome.result.map(Some), outcome.managed_child_reaped)
         }
         Some(value) => (Ok(Some(value)), false),
@@ -400,7 +407,7 @@ pub(crate) fn load_items_for_definitions(
         page_view,
         page_parameters,
         binding_raw,
-        binding_raw,
+        &Value::Null,
         cancellation,
     )
     .result
@@ -411,7 +418,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
     page_view: &str,
     page_parameters: &ParameterSnapshot,
     binding_raw: &str,
-    request_input: &str,
+    engine_state: &Value,
     cancellation: &CancellationToken,
 ) -> ItemsLoadOutcome {
     let mut result = ItemsResult::default();
@@ -424,7 +431,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
                     page_view,
                     page_parameters,
                     binding_raw,
-                    request_input,
+                    engine_state,
                     cancellation,
                 )
             })
@@ -440,7 +447,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
                             page_view,
                             page_parameters,
                             binding_raw,
-                            request_input,
+                            engine_state,
                             cancellation,
                         )
                     })
@@ -551,7 +558,7 @@ fn append_items_value(
 fn append_items_array(
     result: &mut ItemsResult,
     source_ref: &str,
-    feed_id: &FeedId,
+    _feed_id: &FeedId,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -600,7 +607,6 @@ fn append_items_array(
             value: parsed.value,
             metadata: parsed.metadata,
             source_view: source_ref.to_string(),
-            feed_id: feed_id.clone(),
         });
     }
     result.items.extend(parsed_items);
@@ -644,7 +650,7 @@ fn is_producer_value(value: &Value) -> bool {
 fn run_items_provider(
     instance: &FeedInstance,
     value: &Value,
-    request_input: &str,
+    engine_state: &Value,
     cancellation: &CancellationToken,
 ) -> ItemsScriptOutcome {
     let provider: Result<ItemsProducer> = serde_json::from_value(value.clone())
@@ -706,10 +712,10 @@ fn run_items_provider(
                 }
             };
             let request = crate::protocol::items_request(
-                &instance.definition.owner_view,
                 instance.parameters.values(),
                 instance.definition.input_value(),
-                &Value::String(request_input.to_string()),
+                "picker",
+                engine_state,
             );
             let outcome = crate::protocol::run_script_items_response(
                 &instance.definition.owner_view,

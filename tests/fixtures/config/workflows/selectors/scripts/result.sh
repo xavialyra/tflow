@@ -6,7 +6,10 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+context = request.get("context", {})
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+item = state.get("item") if isinstance(state, dict) else None
 command = item.get("metadata", {}).get("command") if isinstance(item, dict) else None
 if not isinstance(command, dict) or not isinstance(command.get("view"), str) or not isinstance(command.get("id"), str):
     raise SystemExit("command selector result has no command reference")

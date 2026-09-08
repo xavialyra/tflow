@@ -654,7 +654,6 @@ fn item_value(item: &Item) -> Value {
         "text": item.text,
         "value": item.value,
         "metadata": item.metadata,
-        "owner_view": item.source_view,
     })
 }
 
@@ -692,7 +691,9 @@ fn block_size(block: &PreviewBlockConfig) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageProtocolCache, PickerPreview, PreviewBlockState, block_areas, parse};
+    use super::{
+        ImageProtocolCache, Item, PickerPreview, PreviewBlockState, block_areas, item_value, parse,
+    };
     use crate::ui::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
     use ratatui::backend::TestBackend;
@@ -711,6 +712,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn preview_item_projection_excludes_internal_provenance() {
+        let item = Item {
+            text: "Terminal".to_string(),
+            display: super::super::display::ItemDisplayInput::Plain("Terminal".to_string()).into(),
+            value: Some("terminal".to_string()),
+            metadata: json!({"summary": "details"}),
+            source_view: "apps:main".to_string(),
+        };
+        let value = item_value(&item);
+        assert_eq!(value["text"], "Terminal");
+        assert_eq!(value["metadata"]["summary"], "details");
+        assert!(value.get("owner_view").is_none());
+        assert!(value.get("source_view").is_none());
     }
 
     #[test]

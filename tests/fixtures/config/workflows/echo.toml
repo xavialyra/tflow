@@ -23,7 +23,7 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+parameters = request.get("context", {}).get("parameters", {})
 message = parameters.get("message", "") if isinstance(parameters, dict) else ""
 if not isinstance(message, str):
     raise SystemExit("echo message must be a string")
@@ -38,6 +38,7 @@ type = "return"
 producer = "declared"
 
 [views.main.commands.copy.handler]
+value = ""
 
 [views.main.commands.inline_multiline]
 key = "ctrl+r"
@@ -51,7 +52,7 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+parameters = request.get("context", {}).get("parameters", {})
 message = parameters.get("message", "") if isinstance(parameters, dict) else ""
 json.dump({
     "version": 1,
@@ -77,7 +78,7 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+parameters = request.get("context", {}).get("parameters", {})
 message = parameters.get("message", "") if isinstance(parameters, dict) else ""
 json.dump({
     "version": 1,
@@ -103,7 +104,7 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+parameters = request.get("context", {}).get("parameters", {})
 message = parameters.get("message", "") if isinstance(parameters, dict) else ""
 json.dump({
     "version": 1,

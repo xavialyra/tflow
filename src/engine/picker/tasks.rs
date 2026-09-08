@@ -26,29 +26,29 @@ impl PickerItemsScheduler {
         debug_assert_eq!(self.mount_id, starter.mount_id());
         debug_assert_eq!(self.mount_id, request.identity.mount_id);
         debug_assert!(request.validate().is_ok());
-        let ItemsRequest { view, identity } = request;
+        let ItemsRequest {
+            view,
+            identity,
+            engine_state,
+        } = request;
         let lane = self.replacement_lane(identity.source);
         let loader = Arc::clone(loader);
-        starter.spawn_latest_with_snapshot_tagged(
-            lane,
-            serde_json::Value::Null,
-            TaskTags::new("picker", "items"),
-            move |context| {
-                let request = ItemsRequest {
-                    view: view.clone(),
-                    identity: identity.clone(),
-                };
-                let outcome = loader.load(&request, &context.cancellation);
-                if outcome.managed_child_reaped {
-                    context.mark_process_reaped();
-                }
-                Ok(ItemsResponse {
-                    view,
-                    identity,
-                    result: outcome.result.map_err(|error| error.to_string()),
-                })
-            },
-        )
+        starter.spawn_latest_tagged(lane, TaskTags::new("picker", "items"), move |context| {
+            let request = ItemsRequest {
+                view: view.clone(),
+                identity: identity.clone(),
+                engine_state: engine_state.clone(),
+            };
+            let outcome = loader.load(&request, &context.cancellation);
+            if outcome.managed_child_reaped {
+                context.mark_process_reaped();
+            }
+            Ok(ItemsResponse {
+                view,
+                identity,
+                result: outcome.result.map_err(|error| error.to_string()),
+            })
+        })
     }
 
     fn replacement_lane(&self, target: crate::input::InputSourceIdentity) -> String {

@@ -6,9 +6,12 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
-commands = parameters.get("commands", [])
-query = request.get("request", {}).get("input", "")
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+commands = parameters.get("commands", []) if isinstance(parameters, dict) else []
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+query = state.get("input", "") if isinstance(state, dict) else ""
 if not isinstance(commands, list) or not isinstance(query, str):
     raise SystemExit("invalid command selector request")
 tokens = query.casefold().split()

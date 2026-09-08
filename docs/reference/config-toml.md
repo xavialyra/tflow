@@ -26,7 +26,6 @@ exit = ["ctrl+c", "ctrl+d"]
 back = ["escape"]
 select_previous = ["up"]
 select_next = ["down"]
-activate = ["enter"]
 
 # Session-wide commands
 [commands.bindings.commands]
@@ -54,7 +53,8 @@ Available configurable actions for the `picker` engine:
 - `back`: Clear input or return to the parent view.
 - `select_previous`: Move selection up.
 - `select_next`: Move selection down.
-- `activate`: Trigger primary selection action.
+
+Picker Enter behavior is configured by the View's explicit command bindings. The Picker engine has no implicit primary-selection action.
 
 ## Session Command Bindings (`[commands.bindings]`)
 

@@ -385,7 +385,7 @@ impl MountTaskStarter {
     }
 
     #[cfg(test)]
-    pub(crate) fn spawn_latest_with_snapshot<T, F>(
+    pub(crate) fn spawn_latest_with_test_snapshot<T, F>(
         &self,
         lane: impl AsRef<str>,
         runtime_snapshot: Value,
@@ -395,10 +395,11 @@ impl MountTaskStarter {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_latest_with_snapshot_tagged(lane, runtime_snapshot, TaskTags::DEFAULT, task)
+        self.spawn_latest_with_test_snapshot_tagged(lane, runtime_snapshot, TaskTags::DEFAULT, task)
     }
 
-    pub(crate) fn spawn_latest_with_snapshot_tagged<T, F>(
+    #[cfg(test)]
+    pub(crate) fn spawn_latest_with_test_snapshot_tagged<T, F>(
         &self,
         lane: impl AsRef<str>,
         runtime_snapshot: Value,
@@ -409,9 +410,29 @@ impl MountTaskStarter {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.runtime.spawn_latest_with_snapshot_and_correlation(
+        self.runtime
+            .spawn_latest_with_test_snapshot_and_correlation(
+                format!("{}:{}", self.lane_prefix, lane.as_ref()),
+                runtime_snapshot,
+                tags,
+                self.correlation
+                    .map(|(task, generation)| (ViewInstanceId(self.mount_id.0), task, generation)),
+                task,
+            )
+    }
+
+    pub(crate) fn spawn_latest_tagged<T, F>(
+        &self,
+        lane: impl AsRef<str>,
+        tags: TaskTags,
+        task: F,
+    ) -> TaskHandle<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
+    {
+        self.runtime.spawn_latest_with_correlation(
             format!("{}:{}", self.lane_prefix, lane.as_ref()),
-            runtime_snapshot,
             tags,
             self.correlation
                 .map(|(task, generation)| (ViewInstanceId(self.mount_id.0), task, generation)),
@@ -544,9 +565,9 @@ impl TaskRuntime {
         self.spawn_with(task, Some(lane.into()))
     }
 
-    /// Submit replacing work with an already committed runtime snapshot.
+    /// Test-only hook for exercising explicit task-context snapshots.
     #[cfg(test)]
-    pub(crate) fn spawn_latest_with_snapshot<T, F>(
+    pub(crate) fn spawn_latest_with_test_snapshot<T, F>(
         &self,
         lane: impl Into<String>,
         runtime_snapshot: Value,
@@ -556,7 +577,7 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_latest_with_snapshot_and_correlation(
+        self.spawn_latest_with_test_snapshot_and_correlation(
             lane,
             runtime_snapshot,
             TaskTags::DEFAULT,
@@ -565,7 +586,22 @@ impl TaskRuntime {
         )
     }
 
-    fn spawn_latest_with_snapshot_and_correlation<T, F>(
+    fn spawn_latest_with_correlation<T, F>(
+        &self,
+        lane: impl Into<String>,
+        tags: TaskTags,
+        correlation: Option<(ViewInstanceId, TaskId, u64)>,
+        task: F,
+    ) -> TaskHandle<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
+    {
+        self.spawn_with_snapshot(task, Some(lane.into()), tags, Value::Null, correlation)
+    }
+
+    #[cfg(test)]
+    fn spawn_latest_with_test_snapshot_and_correlation<T, F>(
         &self,
         lane: impl Into<String>,
         runtime_snapshot: Value,
@@ -1141,7 +1177,7 @@ mod tests {
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(73)))
             .for_task(TaskId(4), 9);
         let mut handle =
-            starter.spawn_latest_with_snapshot("items", json!({}), |_context| Ok("done"));
+            starter.spawn_latest_with_test_snapshot("items", json!({}), |_context| Ok("done"));
         assert!(matches!(
             receive(&mut handle),
             TaskCompletion::Completed("done")
@@ -1169,7 +1205,7 @@ mod tests {
     fn uses_the_runtime_snapshot_supplied_at_submission() {
         let snapshot = json!({"marker": "before"});
         let tasks = TaskRuntime::new();
-        let mut handle = tasks.spawn_latest_with_snapshot("snapshot", snapshot, |context| {
+        let mut handle = tasks.spawn_latest_with_test_snapshot("snapshot", snapshot, |context| {
             Ok(context.runtime["marker"].clone())
         });
 
@@ -1186,7 +1222,7 @@ mod tests {
         let tasks = TaskRuntime::new();
         let explicit = json!({"marker": "prepared"});
 
-        let mut handle = tasks.spawn_latest_with_snapshot("latest", explicit, |context| {
+        let mut handle = tasks.spawn_latest_with_test_snapshot("latest", explicit, |context| {
             Ok(context.runtime["marker"].clone())
         });
 
@@ -1289,13 +1325,14 @@ mod tests {
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(81)));
         let started = Arc::new(AtomicBool::new(false));
         let started_task = Arc::clone(&started);
-        let mut first = starter.spawn_latest_with_snapshot("refresh", json!({}), move |context| {
-            started_task.store(true, Ordering::Release);
-            while !context.cancellation.is_cancelled() {
-                thread::yield_now();
-            }
-            Ok(1)
-        });
+        let mut first =
+            starter.spawn_latest_with_test_snapshot("refresh", json!({}), move |context| {
+                started_task.store(true, Ordering::Release);
+                while !context.cancellation.is_cancelled() {
+                    thread::yield_now();
+                }
+                Ok(1)
+            });
 
         for _ in 0..200 {
             if started.load(Ordering::Acquire) {
@@ -1305,7 +1342,7 @@ mod tests {
         }
         assert!(started.load(Ordering::Acquire));
         let mut replacement =
-            starter.spawn_latest_with_snapshot("refresh", json!({}), |_context| Ok(2));
+            starter.spawn_latest_with_test_snapshot("refresh", json!({}), |_context| Ok(2));
 
         assert!(matches!(receive(&mut first), TaskCompletion::Cancelled));
         assert!(matches!(
@@ -1327,7 +1364,7 @@ mod tests {
         let started_task = Arc::clone(&started);
         let release_task = Arc::clone(&release);
         let mut first =
-            first_starter.spawn_latest_with_snapshot("refresh", json!({}), move |context| {
+            first_starter.spawn_latest_with_test_snapshot("refresh", json!({}), move |context| {
                 started_task.store(true, Ordering::Release);
                 while !release_task.load(Ordering::Acquire) && !context.cancellation.is_cancelled()
                 {
@@ -1344,7 +1381,7 @@ mod tests {
         }
         assert!(started.load(Ordering::Acquire));
         let mut second =
-            second_starter.spawn_latest_with_snapshot("refresh", json!({}), |_context| Ok(2));
+            second_starter.spawn_latest_with_test_snapshot("refresh", json!({}), |_context| Ok(2));
         thread::sleep(Duration::from_millis(5));
         assert!(matches!(
             first.try_recv(),
@@ -1550,16 +1587,20 @@ mod tests {
         let second = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(2)));
         let started = Arc::new(AtomicBool::new(false));
         let started_task = Arc::clone(&started);
-        let mut first_handle =
-            first.spawn_latest_with_snapshot("work", serde_json::Value::Null, move |context| {
+        let mut first_handle = first.spawn_latest_with_test_snapshot(
+            "work",
+            serde_json::Value::Null,
+            move |context| {
                 started_task.store(true, Ordering::Release);
                 while !context.cancellation.is_cancelled() {
                     thread::yield_now();
                 }
                 Ok(1)
-            });
+            },
+        );
         let mut second_handle =
-            second.spawn_latest_with_snapshot("work", serde_json::Value::Null, |_context| Ok(2));
+            second
+                .spawn_latest_with_test_snapshot("work", serde_json::Value::Null, |_context| Ok(2));
         while !started.load(Ordering::Acquire) {
             thread::yield_now();
         }
@@ -1601,7 +1642,7 @@ mod tests {
         let release = Arc::new(AtomicBool::new(false));
         let started_task = Arc::clone(&started);
         let release_task = Arc::clone(&release);
-        let mut handle = starter.spawn_latest_with_snapshot_tagged(
+        let mut handle = starter.spawn_latest_with_test_snapshot_tagged(
             "items",
             serde_json::Value::Null,
             super::TaskTags::new("picker", "items"),
@@ -1770,7 +1811,7 @@ mod tests {
         tasks.install_publication_gate(Arc::clone(&gate));
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(19)))
             .for_task(TaskId(9), 5);
-        let mut handle = starter.spawn_latest_with_snapshot_tagged(
+        let mut handle = starter.spawn_latest_with_test_snapshot_tagged(
             "items",
             serde_json::Value::Null,
             super::TaskTags::new("picker", "items"),
@@ -1816,7 +1857,7 @@ mod tests {
         }
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(18)))
             .for_task(TaskId(8), 4);
-        let mut handle = starter.spawn_latest_with_snapshot_tagged(
+        let mut handle = starter.spawn_latest_with_test_snapshot_tagged(
             "items",
             serde_json::Value::Null,
             super::TaskTags::new("picker", "items"),

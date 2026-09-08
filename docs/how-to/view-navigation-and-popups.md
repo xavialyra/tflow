@@ -40,7 +40,7 @@ The target must be a configured View or alias. Popup width and height are termin
 
 ### 2. Produce Dynamic Navigation from a Selected Item
 
-When the target or query depends on the current selection, use a script producer. The script receives `engine_output.selected_item` in its command request and returns a typed operation:
+When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation:
 
 ```toml
 [views.main.commands.open]
@@ -59,7 +59,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
 value = item.get("value") if isinstance(item, dict) else None
 if not isinstance(value, str):
     raise SystemExit("a selected item with a string value is required")
@@ -93,7 +94,7 @@ producer = "declared"
 value = "confirmed"
 ```
 
-An omitted `value` returns the current Engine output. An explicit `value = null` is a successful null result, not a close/cancel decision. Use `type = "return"` with `producer = "declared"` or `producer = "script"`; the response type from a script must match the command type.
+A return handler must contain an explicit `value`; omitting it is invalid. A script response may contain `"value": null`, which is a successful null result, not a close/cancel decision. Use `type = "return"` with `producer = "declared"` or `producer = "script"`; the response type from a script must match the command type.
 
 To close without a result, bind the Engine's `back`/close action or a command that produces the host close behavior. A close does not run a return processor.
 
@@ -110,15 +111,14 @@ producer = "script"
 file = "scripts/process-action.py"
 ```
 
-The processor runs only after the child has closed and the recorded caller has been activated. Its request contains `entrypoint = "return"`, the caller's owner parameters captured at call time, the caller command reference, and a typed `result` object. Its response is the same version-1 operation envelope as a command.
+The processor runs only after the child has closed and the recorded caller has been activated. Its request contains `entrypoint = "return"`, the caller's owner parameters captured at call time, the unified `context` object, and the raw JSON `result`. Its response is the same version-1 operation envelope as a command.
 
 A processor may inspect a selected result like this:
 
 ```python
 request = json.load(sys.stdin)
 result = request["result"]
-item = result.get("item", {}) if result.get("kind") == "selected" else {}
-value = item.get("value")
+value = result.get("value") if isinstance(result, dict) else None
 if not isinstance(value, str):
     raise SystemExit("expected a selected item")
 json.dump({

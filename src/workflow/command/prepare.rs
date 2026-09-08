@@ -2,7 +2,7 @@ use crate::execution::PreparedProcess;
 use crate::lifecycle::CancellationToken;
 use crate::workflow::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin, CommandRef,
-    NavigationMode, NavigationRequest, ViewOutput, ViewOutputItem, ViewReturn,
+    NavigationMode, NavigationRequest,
 };
 use crate::workflow::config::{
     Command, CommandAction, CompiledConfig, ProducerKind, normalize_key,
@@ -17,7 +17,7 @@ pub(crate) enum PreparedAction {
         mode: NavigationMode,
     },
     Call(CallRequest),
-    Return(ViewReturn),
+    Return(Value),
     EditInput {
         value: String,
         cursor: usize,
@@ -97,20 +97,13 @@ fn prepare_producer_action(
                 .view_reference()
                 .and_then(|_| config.workflow_root(command_invocation.source_view()));
             let source = crate::workflow::config::parse_producer_script_handler(handler, root)?;
-            let command = command_invocation
-                .view_reference()
-                .cloned()
-                .unwrap_or_else(|| CommandRef {
-                    view: "session".to_string(),
-                    id: command_invocation.id().to_string(),
-                });
             let request = crate::protocol::command_request(
                 &context.owner,
-                &context.page,
-                &command,
+                command_invocation.id(),
                 action.operation_type(),
                 invocation.input_value(),
                 &context.current,
+                &context.engine_type,
             );
             crate::protocol::run_script_response(
                 command_invocation.source_view(),
@@ -145,7 +138,7 @@ pub(crate) fn prepare_return_processor(
     processor: &crate::workflow::config::ReturnProcessor,
     origin: CommandOrigin,
     context: CommandContext,
-    caller: &crate::view::ViewContext,
+    _caller: &crate::view::ViewContext,
     result: &crate::view::ViewResult,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
@@ -175,20 +168,13 @@ pub(crate) fn prepare_return_processor(
                 .and_then(|_| config.workflow_root(command_invocation.source_view()));
             let source =
                 crate::workflow::config::parse_producer_script_handler(&processor.handler, root)?;
-            let command = command_invocation
-                .view_reference()
-                .cloned()
-                .unwrap_or_else(|| CommandRef {
-                    view: "session".to_string(),
-                    id: command_invocation.id().to_string(),
-                });
             let request = crate::protocol::return_request(
-                &caller.location,
-                &command,
                 context.owner.parameters.values(),
                 invocation.input_value(),
                 result,
-            )?;
+                &context.engine_type,
+                &context.current,
+            );
             crate::protocol::run_script_response(
                 command_invocation.source_view(),
                 &source_label,
@@ -273,21 +259,7 @@ fn prepare_protocol_operation(
                 invoke_selected: false,
             }))
         }
-        crate::protocol::ProtocolOperation::Return {
-            value,
-            value_present,
-        } => {
-            let output = if value_present {
-                ViewOutput::Value {
-                    value: value.unwrap_or(Value::Null),
-                }
-            } else {
-                current_output(&context).context(
-                    "return producer has no current ViewContext output; return a value explicitly",
-                )?
-            };
-            Ok(PreparedAction::Return(ViewReturn { output }))
-        }
+        crate::protocol::ProtocolOperation::Return { value } => Ok(PreparedAction::Return(value)),
         crate::protocol::ProtocolOperation::Run { argv, exit, .. } => {
             let prepared = prepared_direct_process(config, command_invocation.source_view(), argv)?;
             Ok(PreparedAction::Execute { prepared, exit })
@@ -330,47 +302,6 @@ fn prepared_direct_process(
         argv,
         environment,
         current_dir: None,
-    })
-}
-
-fn current_output(context: &CommandContext) -> Option<ViewOutput> {
-    let current = &context.current;
-    if let Some(values) = current.as_object()
-        && let Some(item_value) = values.get("item")
-    {
-        let item = (!item_value.is_null())
-            .then(|| {
-                let item = item_value.as_object()?;
-                Some(ViewOutputItem {
-                    text: item.get("text")?.as_str()?.to_string(),
-                    value: item
-                        .get("value")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    metadata: item.get("metadata").cloned().unwrap_or(Value::Null),
-                    source_view: item.get("owner_view").and_then(Value::as_str)?.to_string(),
-                })
-            })
-            .flatten();
-        if item.is_some() || !context.page.binding_raw.is_empty() {
-            return Some(ViewOutput::Selected {
-                item,
-                input: values
-                    .get("input")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&context.page.binding_raw)
-                    .to_string(),
-            });
-        }
-        return None;
-    }
-    if let Some(value) = current.as_object().and_then(|values| values.get("value")) {
-        return Some(ViewOutput::Value {
-            value: value.clone(),
-        });
-    }
-    (!current.is_null()).then(|| ViewOutput::Value {
-        value: current.clone(),
     })
 }
 
@@ -527,65 +458,6 @@ pub(crate) fn runtime_command_value(owner: &str, id: &str, command: &Command) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn context(current: Value, raw_input: &str) -> CommandContext {
-        let owner = crate::workflow::command::CommandOwnerContext {
-            view_ref: "core:default".to_string(),
-            parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
-                Value::Null,
-                String::new(),
-                crate::input::InputSourceIdentity::default(),
-                0,
-            ),
-            binding_raw: raw_input.to_string(),
-        };
-        CommandContext {
-            page: owner.clone(),
-            owner,
-            current,
-        }
-    }
-
-    #[test]
-    fn current_output_converts_picker_publication() {
-        let output = current_output(&context(
-            serde_json::json!({
-                "item": {
-                    "text": "Item",
-                    "value": "value",
-                    "metadata": {"kind": "test"},
-                    "owner_view": "core:items"
-                },
-                "input": "typed"
-            }),
-            "fallback",
-        ))
-        .unwrap();
-        assert_eq!(
-            output,
-            ViewOutput::Selected {
-                item: Some(ViewOutputItem {
-                    text: "Item".to_string(),
-                    value: Some("value".to_string()),
-                    metadata: serde_json::json!({"kind": "test"}),
-                    source_view: "core:items".to_string(),
-                }),
-                input: "typed".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn current_output_uses_binding_input_for_an_empty_selection() {
-        let output = current_output(&context(serde_json::json!({"item": null}), "typed")).unwrap();
-        assert_eq!(
-            output,
-            ViewOutput::Selected {
-                item: None,
-                input: "typed".to_string(),
-            }
-        );
-    }
 
     #[test]
     fn command_binding_order_keeps_enter_first() {

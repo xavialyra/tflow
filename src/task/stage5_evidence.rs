@@ -53,7 +53,7 @@ pub(super) fn run() {
             let slow_ready = ready.clone();
             let mut slow = starter
                 .for_task(TaskId(base), generation)
-                .spawn_latest_with_snapshot_tagged(
+                .spawn_latest_with_test_snapshot_tagged(
                     "picker-items",
                     json!({"run": run_index, "iteration": iteration, "role": "slow-picker"}),
                     TaskTags::new("picker", "items"),
@@ -94,7 +94,7 @@ pub(super) fn run() {
 
             let mut capture = starter
                 .for_task(TaskId(base + 1), generation)
-                .spawn_latest_with_snapshot_tagged(
+                .spawn_latest_with_test_snapshot_tagged(
                     "capture-script",
                     json!({"run": run_index, "iteration": iteration, "role": "capture"}),
                     TaskTags::new("capture", "script"),
@@ -290,7 +290,7 @@ fn replacement(
 ) -> super::TaskHandle<()> {
     starter
         .for_task(TaskId(task), generation)
-        .spawn_latest_with_snapshot_tagged(
+        .spawn_latest_with_test_snapshot_tagged(
             "picker-items",
             json!({"run": run, "iteration": iteration, "role": role}),
             TaskTags::new("picker", "items"),

@@ -78,7 +78,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
 value = item.get("value") if isinstance(item, dict) else None
 if not isinstance(value, str):
     raise SystemExit("select an item first")
@@ -95,7 +96,7 @@ sys.stdout.write("\n")
 '''
 ```
 
-The handler reads the selected item from request JSON and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
+The handler reads the selected item from `context.engine.state` and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
 
 ## 4. Set the Default View
 

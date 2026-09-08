@@ -48,7 +48,8 @@ import subprocess
 import sys
 
 request = json.load(sys.stdin)
-needle = request.get("request", {}).get("input", "")
+context = request["context"]
+needle = context["engine"]["state"].get("input", "")
 branches = subprocess.check_output(
     ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
     text=True,
@@ -68,13 +69,13 @@ Make it executable:
 chmod +x ~/.config/tui-launcher/workflows/branches/scripts/get_branches.py
 ```
 
-The request includes `entrypoint = "picker-items"`, the owning View, its bound parameters, invocation facts, and `request.input`. The response must contain the complete `items` array:
+The request includes `entrypoint = "picker-items"` and a unified `context` object. Use `context.parameters` for bound feed parameters, `context.input` for the explicit launch input descriptor, and `context.engine.state.input` for the current Picker query. The response must contain the complete `items` array:
 
 ```json
 {"version":1,"items":[{"display":"main","value":"main","metadata":{}}]}
 ```
 
-The host normalizes display values, owns feed composition and selection state, and assigns `source_view` to selected items. A producer cannot return navigation or other View configuration. Item stdout is limited to 64 MiB so large feeds remain usable.
+The host normalizes display values and owns feed composition, selection state, and feed provenance. Feed identity and scheduling data are not sent automatically. A producer cannot return navigation or other View configuration. Item stdout is limited to 64 MiB so large feeds remain usable.
 
 ### 3. Use a Declared List for Small Fixed Feeds
 

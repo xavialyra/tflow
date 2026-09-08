@@ -426,7 +426,6 @@ mod tests {
             value: Some("open_file".to_string()),
             metadata: serde_json::Value::Null,
             source_view: "test".to_string(),
-            feed_id: crate::engine::picker::items::FeedId("test".to_string()),
         };
 
         let state = PickerRenderState {

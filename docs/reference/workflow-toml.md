@@ -90,14 +90,14 @@ items = [
 The Picker items script receives a `picker-items` request on stdin and writes one response object to stdout:
 
 ```json
-{"version":1,"entrypoint":"picker-items","view":"apps:main","parameters":{},"invocation":{"stdin":{"path":null,"length":0,"is_tty":true}},"request":{"input":""}}
+{"version":1,"entrypoint":"picker-items","context":{"parameters":{},"input":{"stdin":{"path":null,"length":0,"is_tty":true}},"engine":{"type":"picker","state":{"input":"","item":null,"text":null,"value":null,"metadata":null,"selected_index":0}}}}
 ```
 
 ```json
 {"version":1,"items":[{"display":"Show date","value":"date","metadata":{}}]}
 ```
 
-The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and `source_view` provenance. Picker item stdout is bounded at 64 MiB to support large candidate sets.
+The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and feed provenance. Feed identity and scheduling data are not sent automatically. Picker item stdout is bounded at 64 MiB to support large candidate sets.
 
 Preview configuration is static. Preview blocks use JSON Pointer sources into the selected item's metadata; image paths are resolved from that metadata and text blocks render the referenced string. Preview configuration cannot execute scripts or change the View definition.
 
@@ -126,7 +126,7 @@ file = "scripts/output.sh"
 The script runs after the Capture View has mounted. It receives a `capture-output` request and writes one response:
 
 ```json
-{"version":1,"entrypoint":"capture-output","view":"sys:output","parameters":{"action":"date"},"invocation":{"stdin":{"path":null,"length":0,"is_tty":true}}}
+{"version":1,"entrypoint":"capture-output","context":{"parameters":{"action":"date"},"input":{"stdin":{"path":null,"length":0,"is_tty":true}},"engine":{"type":"capture","state":null}}}
 ```
 
 ```json
@@ -184,7 +184,7 @@ The following fields are supported in declared handlers:
 
 - `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, and optional `replace` boolean.
 - `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
-- `return`: optional `value`. An omitted value returns the current Engine output; an explicit `value = null` is a successful null result.
+- `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
 - `run`: `mode = "foreground"`, non-empty `argv`, and optional `exit` boolean.
 - `edit-input`: `value` string and optional non-negative `cursor` byte offset at a UTF-8 boundary.
 - `invoke`: `command` object containing the opaque command reference `{ view = "...", id = "..." }`.
@@ -218,7 +218,7 @@ producer = "script"
 file = "scripts/open.sh"
 ```
 
-The request contains the command owner, mounted View, bound owner parameters, invocation facts, and the current Engine output. For a Picker selection, the host supplies a normalized `engine_output.selected_item` and assigns its `source_view`.
+The request contains a `command` object and unified `context` fields: `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
 
 A script response must have this shape:
 
@@ -264,24 +264,16 @@ The processor script receives a `return` request. Its `result` is protocol data,
 {
   "version": 1,
   "entrypoint": "return",
-  "view": "main:caller",
-  "parameters": {},
-  "invocation": {"stdin":{"path":null,"length":0,"is_tty":true}},
-  "caller": {"view":"main","command":"choose"},
-  "result": {
-    "kind": "selected",
-    "input": "Show date",
-    "item": {
-      "text": "Show date",
-      "value": "date",
-      "metadata": {},
-      "source_view": "selectors:actions"
-    }
-  }
+  "context": {
+    "parameters": {},
+    "input": {"stdin":{"path":null,"length":0,"is_tty":true}},
+    "engine": {"type":"picker","state":{"input":"","item":{"text":"Show date","value":"date","metadata":{}},"text":"Show date","value":"date","metadata":{},"selected_index":0}}
+  },
+  "result": {"text":"Show date","value":"date","metadata":{}}
 }
 ```
 
-The processor returns the same versioned operation envelope used by commands. A successful child return with explicit JSON `null` is still a result and is passed to a post-commit processor. A close/cancel decision has no result and does not run the processor.
+The processor returns the same versioned operation envelope used by commands. Return values are raw JSON, including strings, objects, arrays, numbers, booleans, and explicit JSON `null`. A missing return `value` is invalid. A close/cancel decision has no result and does not run the processor.
 
 ## Script Handlers
 
@@ -304,7 +296,7 @@ json.dump({
     "operation": {
         "type": "run",
         "mode": "foreground",
-        "argv": ["printf", "parameters:%s\\n", json.dumps(request.get("parameters", {}))],
+        "argv": ["printf", "parameters:%s\\n", json.dumps(request["context"].get("parameters", {}))],
         "exit": True,
     },
 }, sys.stdout, separators=(",", ":"))
@@ -318,7 +310,7 @@ sys.stdout.write("\n")
 
 Producer stdout must contain exactly one complete JSON object. Surrounding whitespace is allowed, but diagnostics, a second JSON document, malformed JSON, unknown fields, unsupported `version`, a mismatched operation type, a nonzero exit status, or an invalid operation schema is failure. Diagnostics belong on stderr.
 
-Requests use JSON stdin. The stable top-level request fields are `version`, `entrypoint`, `view`, `parameters`, and `invocation`; entry points add only their documented fields. The host applies navigation target resolution, query binding, command visibility, Engine support, cancellation, timeouts, output bounds, and stale-result checks.
+Requests use JSON stdin. The stable request fields are `version`, `entrypoint`, and a unified `context` containing `parameters`, `input`, and `engine`. Command requests add `command`; return-processor requests add raw `result`. The host applies navigation target resolution, query binding, command visibility, Engine support, cancellation, timeouts, output bounds, and stale-result checks.
 
 The default script policy is a 10-second timeout, 1 MiB stdout, and 64 KiB stderr. Picker item producers use the 64 MiB stdout bound. Managed child processes are cancelled and reaped through the shared execution layer.
 

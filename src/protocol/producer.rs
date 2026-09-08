@@ -1,11 +1,10 @@
 use crate::execution::{ensure_script_success, run_resolved_script_with_stdin_outcome_with_limit};
 use crate::lifecycle::CancellationStatus;
-use crate::view::{ViewLocation, ViewResult};
-use crate::workflow::command::{CommandOwnerContext, CommandRef, ViewOutput};
+use crate::view::ViewResult;
+use crate::workflow::command::{CommandOwnerContext, CommandRef};
 use crate::workflow::config::{ResolvedScriptSource, ViewPresentation};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use serde::de::Deserializer;
 use serde_json::{Value, json};
 
 const PROTOCOL_VERSION: u64 = 1;
@@ -25,8 +24,7 @@ pub(crate) enum ProtocolOperation {
         presentation: ViewPresentation,
     },
     Return {
-        value: Option<Value>,
-        value_present: bool,
+        value: Value,
     },
     Run {
         mode: String,
@@ -82,8 +80,7 @@ enum RawOperation {
         presentation: ViewPresentation,
     },
     Return {
-        #[serde(default, deserialize_with = "deserialize_present_value")]
-        value: Option<Value>,
+        value: Value,
     },
     Run {
         mode: String,
@@ -99,15 +96,6 @@ enum RawOperation {
     Invoke {
         command: CommandRef,
     },
-}
-
-fn deserialize_present_value<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Some(Value::deserialize(deserializer)?))
 }
 
 pub(crate) fn parse_response(
@@ -150,10 +138,7 @@ pub(crate) fn parse_response(
             query,
             presentation,
         },
-        RawOperation::Return { value } => ProtocolOperation::Return {
-            value_present: value.is_some(),
-            value,
-        },
+        RawOperation::Return { value } => ProtocolOperation::Return { value },
         RawOperation::Run { mode, argv, exit } => ProtocolOperation::Run { mode, argv, exit },
         RawOperation::EditInput { value, cursor } => ProtocolOperation::EditInput { value, cursor },
         RawOperation::Invoke { command } => ProtocolOperation::Invoke { command },
@@ -441,108 +426,81 @@ fn run_script_output(
     }
 }
 
+fn producer_context(
+    parameters: &Value,
+    input: &Value,
+    engine_type: &str,
+    engine_state: &Value,
+) -> Value {
+    json!({
+        "parameters": parameters,
+        "input": input,
+        "engine": {
+            "type": engine_type,
+            "state": engine_state,
+        },
+    })
+}
+
 pub(crate) fn command_request(
     owner: &CommandOwnerContext,
-    page: &CommandOwnerContext,
-    command: &CommandRef,
+    command_id: &str,
     operation_type: &str,
-    invocation: &Value,
-    current: &Value,
+    input: &Value,
+    engine_state: &Value,
+    engine_type: &str,
 ) -> Value {
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "command",
-        "view": owner.view_ref,
-        "mounted_view": page.view_ref,
-        "command": {"view": command.view, "id": command.id, "type": operation_type},
-        "parameters": owner.parameters.values(),
-        "invocation": invocation,
-        "engine_output": engine_output(current, &page.binding_raw),
+        "command": {"id": command_id, "type": operation_type},
+        "context": producer_context(
+            owner.parameters.values(),
+            input,
+            engine_type,
+            engine_state,
+        ),
     })
 }
 
 pub(crate) fn items_request(
-    view: &str,
     parameters: &Value,
-    invocation: &Value,
     input: &Value,
+    engine_type: &str,
+    engine_state: &Value,
 ) -> Value {
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "picker-items",
-        "view": view,
-        "parameters": parameters,
-        "invocation": invocation,
-        "request": {"input": input},
+        "context": producer_context(parameters, input, engine_type, engine_state),
     })
 }
 
-pub(crate) fn capture_request(view: &str, parameters: &Value, invocation: &Value) -> Value {
+pub(crate) fn capture_request(
+    parameters: &Value,
+    input: &Value,
+    engine_type: &str,
+    engine_state: &Value,
+) -> Value {
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "capture-output",
-        "view": view,
-        "parameters": parameters,
-        "invocation": invocation,
+        "context": producer_context(parameters, input, engine_type, engine_state),
     })
 }
 
 pub(crate) fn return_request(
-    caller: &ViewLocation,
-    command: &CommandRef,
     parameters: &Value,
-    invocation: &Value,
+    input: &Value,
     result: &ViewResult,
-) -> Result<Value> {
-    Ok(json!({
+    engine_type: &str,
+    engine_state: &Value,
+) -> Value {
+    json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "return",
-        "view": caller.target,
-        "parameters": parameters,
-        "invocation": invocation,
-        "caller": {"view": command.view, "command": command.id},
-        "result": return_result(result)?,
-    }))
-}
-
-fn engine_output(current: &Value, input: &str) -> Value {
-    let Some(fields) = current.as_object() else {
-        return json!({"kind": "value", "value": current});
-    };
-    if let Some(item) = fields.get("item") {
-        let selected_item = if item.is_null() {
-            Value::Null
-        } else {
-            let mut selected = item.as_object().cloned().unwrap_or_default();
-            let source_view = selected
-                .get("owner_view")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_default();
-            selected.remove("owner_view");
-            selected.insert("source_view".to_string(), Value::String(source_view));
-            Value::Object(selected)
-        };
-        return json!({
-            "kind": "picker",
-            "input": fields.get("input").and_then(Value::as_str).unwrap_or(input),
-            "selected_item": selected_item,
-        });
-    }
-    if let Some(value) = fields.get("value") {
-        return json!({"kind": "capture", "output": value});
-    }
-    json!({"kind": "value", "value": current})
-}
-
-fn return_result(result: &ViewResult) -> Result<Value> {
-    let output: ViewOutput = serde_json::from_value(result.value.clone())
-        .context("called View returned an invalid command output")?;
-    Ok(match output {
-        ViewOutput::Selected { item, input } => {
-            json!({"kind": "selected", "input": input, "item": item})
-        }
-        ViewOutput::Value { value } => json!({"kind": "value", "value": value}),
+        "context": producer_context(parameters, input, engine_type, engine_state),
+        "result": result.value,
     })
 }
 
@@ -551,32 +509,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn return_response_distinguishes_missing_and_null_values() {
+    fn return_response_requires_a_value_but_accepts_null() {
         let missing = br#"{"version":1,"operation":{"type":"return"}}"#;
         let null = br#"{"version":1,"operation":{"type":"return","value":null}}"#;
-        let missing = parse_response(missing, "return", "test").unwrap();
+        assert!(parse_response(missing, "return", "test").is_err());
         let null = parse_response(null, "return", "test").unwrap();
         assert!(matches!(
-            missing,
-            ProtocolOperation::Return {
-                value_present: false,
-                ..
-            }
-        ));
-        assert!(matches!(
             null,
-            ProtocolOperation::Return {
-                value_present: true,
-                value: Some(Value::Null)
-            }
+            ProtocolOperation::Return { value: Value::Null }
         ));
+    }
+
+    #[test]
+    fn return_responses_preserve_arbitrary_json_values() {
+        for value in [
+            json!("text"),
+            json!({"key": [1, true]}),
+            json!(["item", null]),
+            json!(7),
+            json!(false),
+            Value::Null,
+        ] {
+            let response = json!({
+                "version": 1,
+                "operation": {"type": "return", "value": value.clone()},
+            });
+            let parsed =
+                parse_response(&serde_json::to_vec(&response).unwrap(), "return", "test").unwrap();
+            assert!(
+                matches!(parsed, ProtocolOperation::Return { value: parsed_value } if parsed_value == value)
+            );
+        }
+    }
+
+    #[test]
+    fn producer_requests_use_one_explicit_context_shape() {
+        let parameters = json!({"mode": "normal"});
+        let input = json!({
+            "stdin": {"path": null, "length": 0, "is_tty": true}
+        });
+        let engine_state = json!({"input": "needle"});
+        let expected_context = json!({
+            "parameters": parameters,
+            "input": input,
+            "engine": {"type": "picker", "state": engine_state},
+        });
+        let owner = CommandOwnerContext {
+            view_ref: "core:main".to_string(),
+            parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
+                parameters.clone(),
+                String::new(),
+                crate::input::InputSourceIdentity::default(),
+                0,
+            ),
+            binding_raw: String::new(),
+        };
+        let command = command_request(&owner, "open", "navigate", &input, &engine_state, "picker");
+        let items = items_request(&parameters, &input, "picker", &engine_state);
+        let capture = capture_request(&parameters, &input, "picker", &engine_state);
+        let returned = return_request(
+            &parameters,
+            &input,
+            &crate::view::ViewResult {
+                value: json!({"raw": true}),
+            },
+            "picker",
+            &engine_state,
+        );
+
+        for request in [command, items, capture, returned.clone()] {
+            assert_eq!(request["context"], expected_context);
+            assert!(request.get("view").is_none());
+            assert!(request.get("parameters").is_none());
+            assert!(request.get("invocation").is_none());
+            assert!(request.get("engine_output").is_none());
+        }
+        assert_eq!(returned["result"], json!({"raw": true}));
     }
 
     #[test]
     fn response_rejects_unknown_fields_and_trailing_documents() {
         let unknown = br#"{"version":1,"operation":{"type":"return","extra":true}}"#;
         assert!(parse_response(unknown, "return", "test").is_err());
-        let trailing = br#"{"version":1,"operation":{"type":"return"}}{}"#;
+        let trailing = br#"{"version":1,"operation":{"type":"return","value":null}}{}"#;
         assert!(parse_response(trailing, "return", "test").is_err());
     }
 

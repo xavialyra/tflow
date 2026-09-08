@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub(crate) enum SessionOutcome {
     Exited,
-    Completed(Box<crate::workflow::command::ViewReturn>),
+    Completed(Value),
 }
 
 pub struct App {
@@ -381,9 +381,7 @@ impl App {
     }
 
     fn result_outcome(&self, value: Value) -> SessionOutcome {
-        let output = serde_json::from_value(value.clone())
-            .unwrap_or(crate::workflow::command::ViewOutput::Value { value });
-        SessionOutcome::Completed(Box::new(crate::workflow::command::ViewReturn { output }))
+        SessionOutcome::Completed(value)
     }
 
     pub(crate) fn take_runtime_warning(&mut self) -> Option<String> {

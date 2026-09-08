@@ -52,7 +52,7 @@ The implementation objective is a traceable path from input or task completion t
 | Router | View stack, active location, `ViewInstanceId`, transition commit, lifecycle sequencing, and mounted-instance routing | Engine selection state, task-generation semantics, or process mechanics |
 | View | Interaction state, publications, local task registration, task-generation validation, event handling, and rendering | Direct navigation-stack mutation or another View's state |
 | Task runtime | Scheduling, lane replacement, cooperative cancellation, task handles, timestamps, and completion delivery | Engine behavior, current-View selection, or navigation decisions |
-| Execution | Process construction, environment clearing, process groups, I/O policy, timeout, cancellation, reaping, and execution result | Router transitions, task scheduling policy, or View state |
+| Execution | Process construction, inherited environment and explicit overrides, process groups, I/O policy, timeout, cancellation, reaping, and execution result | Router transitions, task scheduling policy, or View state |
 | Shared UI | Committed location and generic View metadata rendering | Query text, completion rows, selection, cursor position, or terminal surface state |
 
 `PreparedAction` and `ViewDecision` remain separate concepts. The former is a workflow-command result; the latter is a host-level decision. `protocol` is the only conversion boundary between them.

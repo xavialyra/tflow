@@ -2,7 +2,6 @@ use super::api::ViewIdentity;
 use crate::input::{EditorSnapshot, Key, ViewMountId};
 use crate::terminal::ImagePicker;
 use crate::ui::theme::ResolvedTheme;
-use crate::workflow::command::ViewOutput;
 use crate::workflow::config::CommandBindingVisibility;
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::Result;
@@ -225,10 +224,6 @@ impl ViewContext {
         self.parameters.raw_input()
     }
 
-    pub(crate) fn input_snapshot(&self) -> &EditorSnapshot {
-        &self.input
-    }
-
     pub(crate) fn input_raw(&self) -> &str {
         &self.input.raw
     }
@@ -332,7 +327,6 @@ impl EngineCommandProjection {
 pub(crate) enum EngineDecision {
     Continue,
     Invalidate,
-    Return(ViewOutput),
     Navigate(EngineNavigationRequest),
     Execute(EffectRequest),
     Report(EngineNotice),
@@ -454,7 +448,7 @@ impl BackgroundOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ExternalTickAction {
     Continue,
-    Return(ViewOutput),
+    Return(Value),
     Close,
     Fail(String),
 }
@@ -473,7 +467,7 @@ impl ExternalTickResult {
         }
     }
 
-    pub(crate) fn return_with(output: ViewOutput, notice: Option<EngineNotice>) -> Self {
+    pub(crate) fn return_with(output: Value, notice: Option<EngineNotice>) -> Self {
         Self {
             action: ExternalTickAction::Return(output),
             notice,

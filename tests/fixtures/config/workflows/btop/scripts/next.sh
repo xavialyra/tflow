@@ -3,7 +3,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+context = request.get("context", {})
+parameters = context.get("parameters", {})
 next_query = parameters.get("next") if isinstance(parameters, dict) else None
 if not isinstance(next_query, dict):
     raise SystemExit("btop next query must be an object")

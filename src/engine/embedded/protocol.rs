@@ -253,10 +253,6 @@ impl EmbeddedProtocolView {
             }
             EngineDecision::Close => Ok(ViewDecision::Close),
             EngineDecision::Exit => Ok(ViewDecision::Exit),
-            EngineDecision::Return(output) => Ok(ViewDecision::Return(ViewResult {
-                value: serde_json::to_value(output)
-                    .context("could not serialize embedded result")?,
-            })),
             EngineDecision::Batch(decisions) => {
                 let mut mapped = Vec::with_capacity(decisions.len());
                 for decision in decisions {
@@ -302,13 +298,10 @@ impl EmbeddedProtocolView {
         }
         match result.action {
             ExternalTickAction::Continue => Ok(ViewDecision::Invalidate),
-            ExternalTickAction::Return(output) => {
+            ExternalTickAction::Return(value) => {
                 self.terminal_finished = true;
                 self.external_ack_pending = true;
-                Ok(ViewDecision::Return(ViewResult {
-                    value: serde_json::to_value(output)
-                        .context("could not serialize embedded result")?,
-                }))
+                Ok(ViewDecision::Return(ViewResult { value }))
             }
             ExternalTickAction::Close => {
                 self.terminal_finished = true;
@@ -381,6 +374,7 @@ impl View for EmbeddedProtocolView {
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
+            engine_type: self.engine_context.view_identity().engine_type.clone(),
             parameters: self.parameters.values().clone(),
             raw_input: self.input_raw.clone(),
             runtime: self.runtime_snapshot.clone(),
@@ -628,29 +622,15 @@ mod tests {
     }
 
     #[test]
-    fn embedded_outputs_keep_the_command_output_envelope() {
-        let output = crate::workflow::command::ViewOutput::Value {
-            value: serde_json::json!({"ok": true}),
-        };
-        let value = serde_json::to_value(&output).unwrap();
+    fn embedded_results_are_direct_values() {
+        let value = serde_json::json!({"ok": true});
         assert_eq!(
-            serde_json::from_value::<crate::workflow::command::ViewOutput>(value).unwrap(),
-            output
+            serde_json::from_value::<Value>(value.clone()).unwrap(),
+            value
         );
-
-        let output = crate::workflow::command::ViewOutput::Selected {
-            item: Some(crate::workflow::command::ViewOutputItem {
-                text: "display".to_string(),
-                value: Some("value".to_string()),
-                metadata: serde_json::json!({"kind": "test"}),
-                source_view: "source:view".to_string(),
-            }),
-            input: "draft".to_string(),
-        };
-        let value = serde_json::to_value(&output).unwrap();
         assert_eq!(
-            serde_json::from_value::<crate::workflow::command::ViewOutput>(value).unwrap(),
-            output
+            serde_json::from_value::<Value>(Value::Null).unwrap(),
+            Value::Null
         );
     }
 

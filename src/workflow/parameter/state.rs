@@ -696,11 +696,6 @@ impl ParameterState {
     pub(crate) fn input_rejected(&self) -> bool {
         self.input_rejected
     }
-
-    #[cfg(test)]
-    pub(crate) fn set_input_rejected(&mut self, rejected: bool) {
-        self.input_rejected = rejected;
-    }
 }
 
 #[cfg(test)]

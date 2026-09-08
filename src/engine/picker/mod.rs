@@ -23,8 +23,8 @@ use super::{
 use crate::input::Key;
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
-    CommandBindingVisibility, CommandScope, CompiledConfig, Defaults, ENGINE_PICKER, ProducerKind,
-    View, normalize_key, parse_producer_script_handler, toml_to_json,
+    CommandBindingVisibility, CompiledConfig, Defaults, ENGINE_PICKER, ProducerKind, View,
+    normalize_key, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -59,11 +59,9 @@ impl PickerTaskServices {
 
 #[derive(Clone, Default)]
 pub(crate) struct PickerViewServices {
-    page_commands: BTreeMap<(String, Option<String>), BTreeMap<String, Value>>,
+    page_commands: BTreeMap<String, BTreeMap<String, Value>>,
     page_item_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
-    selection_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
     non_selection_commands: BTreeSet<(String, String)>,
-    feed_owners: BTreeMap<String, Vec<String>>,
     workflow_roots: BTreeMap<String, PathBuf>,
     task_services: Option<Arc<PickerTaskServices>>,
 }
@@ -119,30 +117,22 @@ impl PickerViewServices {
     pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
         let feed_views = config.feed_views(root_view_ref)?;
-        let owners = feed_views
-            .iter()
-            .map(|(owner, _)| owner.clone())
-            .collect::<Vec<_>>();
-        services
-            .feed_owners
-            .insert(root_view_ref.to_string(), owners.clone());
         services.page_commands.insert(
-            (root_view_ref.to_string(), None),
+            root_view_ref.to_string(),
             crate::workflow::command::collect_page_owner_commands(config, root_view_ref, None)?,
         );
         services.page_item_commands.insert(
             root_view_ref.to_string(),
             collect_page_item_commands(config, root_view_ref)?,
         );
-        for owner in owners {
-            services.page_commands.insert(
-                (root_view_ref.to_string(), Some(owner.clone())),
-                crate::workflow::command::collect_page_owner_commands(
-                    config,
-                    root_view_ref,
-                    Some(&owner),
-                )?,
-            );
+        if let Some(view) = config.view(root_view_ref) {
+            for (command_id, command) in &view.commands {
+                if command.scope != crate::workflow::config::CommandScope::Selection {
+                    services
+                        .non_selection_commands
+                        .insert((root_view_ref.to_string(), command_id.clone()));
+                }
+            }
         }
 
         let view_refs = feed_views
@@ -150,9 +140,6 @@ impl PickerViewServices {
             .map(|(view_ref, _)| view_ref)
             .collect::<BTreeSet<_>>();
         for view_ref in view_refs {
-            let view = config
-                .view(&view_ref)
-                .with_context(|| format!("view {:?} is not configured", view_ref))?;
             if let Some(root) = config.workflow_root(&view_ref) {
                 let package = view_ref
                     .split_once(':')
@@ -161,39 +148,14 @@ impl PickerViewServices {
                     .workflow_roots
                     .insert(package.to_string(), root.to_path_buf());
             }
-            let mut page_item_commands = Vec::new();
-            let mut selection_commands = Vec::new();
-            for (command_id, command) in &view.commands {
-                if let Some(selection_command) = picker_command(&view_ref, command_id, command)? {
-                    page_item_commands.push(selection_command.clone());
-                    if command.scope == CommandScope::Selection {
-                        selection_commands.push(selection_command);
-                    }
-                }
-                if command.scope != CommandScope::Selection {
-                    services
-                        .non_selection_commands
-                        .insert((view_ref.clone(), command_id.clone()));
-                }
-            }
-            services
-                .page_item_commands
-                .insert(view_ref.clone(), page_item_commands);
-            services
-                .selection_commands
-                .insert(view_ref.clone(), selection_commands);
         }
         Ok(services)
     }
 
-    pub(crate) fn page_commands(
-        &self,
-        page_view: &str,
-        owner_view: Option<&str>,
-    ) -> Result<BTreeMap<String, Value>> {
+    pub(crate) fn page_commands(&self, page_view: &str) -> Result<BTreeMap<String, Value>> {
         Ok(self
             .page_commands
-            .get(&(page_view.to_string(), owner_view.map(str::to_string)))
+            .get(page_view)
             .cloned()
             .unwrap_or_default())
     }
@@ -208,24 +170,6 @@ impl PickerViewServices {
     pub(crate) fn is_non_selection_command(&self, view_ref: &str, command_id: &str) -> bool {
         self.non_selection_commands
             .contains(&(view_ref.to_string(), command_id.to_string()))
-    }
-
-    pub(crate) fn command_requires_items(&self, view_ref: &str, command_id: &str) -> bool {
-        self.page_item_commands(view_ref)
-            .iter()
-            .find(|command| command.id == command_id)
-            .is_some_and(|command| command.requires_items)
-    }
-
-    pub(crate) fn selection_commands(&self, owner: &str) -> &[PickerSelectionCommand] {
-        self.selection_commands
-            .get(owner)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub(crate) fn feed_owners(&self, page: &str) -> &[String] {
-        self.feed_owners.get(page).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
@@ -258,7 +202,7 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
             &request.view,
             &request.identity.page_parameters,
             &request.identity.binding_raw,
-            &request.identity.input,
+            &request.engine_state,
             cancellation,
         )
     }
@@ -351,7 +295,6 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
         .with_actions([
             crate::engine::ActionSpec::unit("picker.select_next"),
             crate::engine::ActionSpec::unit("picker.select_previous"),
-            crate::engine::ActionSpec::unit("picker.accept"),
             crate::engine::ActionSpec::unit("picker.cancel"),
             crate::engine::ActionSpec::unit("picker.retry"),
             crate::engine::ActionSpec::unit("picker.toggle_preview"),
@@ -496,12 +439,6 @@ pub(crate) fn create_input_bindings(
                 self::keymap::PickerAction::SelectNext => (
                     crate::workflow::command::ResolvedInputAction::Engine(
                         crate::engine::ActionId::new("picker.select_next"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::Activate => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.accept"),
                     ),
                     true,
                 ),

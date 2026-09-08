@@ -23,8 +23,7 @@ use crate::ui::theme::ResolvedTheme;
 use crate::view::{
     Binding, BindingSet, EffectRequest, LifecycleEvent, NavigationRequest, ParsedQuery,
     RenderContext, RenderResult, RouteCandidate, RouteCatalog, TransitionRequest, View,
-    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewResult,
-    ViewTaskRegistry,
+    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
 use anyhow::{Context, Result, bail};
@@ -753,9 +752,6 @@ impl PickerProtocolView {
                 self.rebuild_context(context);
                 Ok(ViewDecision::Invalidate)
             }
-            EngineDecision::Return(output) => Ok(ViewDecision::Return(ViewResult {
-                value: serde_json::to_value(output).context("could not serialize picker result")?,
-            })),
             EngineDecision::Close => {
                 self.pending_command = None;
                 Ok(ViewDecision::Close)
@@ -959,7 +955,6 @@ impl PickerProtocolView {
             super::keymap::PickerAction::Back => "picker.back",
             super::keymap::PickerAction::SelectPrevious => "picker.select_previous",
             super::keymap::PickerAction::SelectNext => "picker.select_next",
-            super::keymap::PickerAction::Activate => "picker.accept",
             super::keymap::PickerAction::TogglePreview => "picker.toggle_preview",
             super::keymap::PickerAction::DeleteBackward => {
                 return Ok(Some(self.apply_key(context, Key::Backspace)?));
@@ -1067,6 +1062,7 @@ impl View for PickerProtocolView {
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
+            engine_type: self.engine_context.view_identity().engine_type.clone(),
             parameters: self.parameters.values().clone(),
             raw_input: self.editor.raw.clone(),
             runtime: self.runtime_snapshot.clone(),
@@ -1144,7 +1140,9 @@ impl View for PickerProtocolView {
             ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
                 // Completion is a local input mode. Its accept/cancel keys own
                 // the event before projected commands while the mode is open.
-                if key == Key::Tab && self.completion.is_some() && self.keymap.action(key).is_none()
+                if (key == Key::Tab || key == Key::Enter)
+                    && self.completion.is_some()
+                    && self.keymap.action(key).is_none()
                 {
                     return self.completion_accept(context);
                 }
@@ -1154,12 +1152,6 @@ impl View for PickerProtocolView {
                 {
                     self.completion = None;
                     return Ok(ViewDecision::Invalidate);
-                }
-                if key == Key::Enter
-                    && self.completion.is_some()
-                    && self.keymap.action(key) == Some(super::keymap::PickerAction::Activate)
-                {
-                    return self.completion_accept(context);
                 }
                 if let Some(decision) = self.dispatch_command_key(context, key, true)? {
                     return Ok(decision);
@@ -1173,7 +1165,7 @@ impl View for PickerProtocolView {
                 }
                 if key == Key::Enter
                     && self.completion.is_none()
-                    && self.keymap.action(key) == Some(super::keymap::PickerAction::Activate)
+                    && self.keymap.action(key).is_none()
                     && let Some(decision) = self.route_submission()?
                 {
                     return Ok(decision);
@@ -1718,6 +1710,18 @@ mod tests {
         panic!("timed out waiting for task event");
     }
 
+    struct ExitOnActionRuntime;
+
+    impl EngineRuntime for ExitOnActionRuntime {
+        fn action(&mut self, _input: EngineActionInput) -> Result<EngineEmission> {
+            Ok(EngineEmission::decision(EngineDecision::Exit))
+        }
+
+        fn render_model(&self) -> crate::engine::RenderModel {
+            crate::engine::RenderModel::new("picker", ())
+        }
+    }
+
     struct StaleAwareTaskRuntime {
         task: Option<crate::task::TaskHandle<()>>,
         input_rejected: Arc<AtomicBool>,
@@ -1737,7 +1741,8 @@ mod tests {
             if self.task.is_some() {
                 return false;
             }
-            self.task = Some(starter.spawn_latest_with_snapshot("items", Value::Null, |_| Ok(())));
+            self.task =
+                Some(starter.spawn_latest_with_test_snapshot("items", Value::Null, |_| Ok(())));
             true
         }
 
@@ -1864,6 +1869,50 @@ mod tests {
             diagnostic: None,
             content_size: (1, 1),
         }
+    }
+
+    #[test]
+    fn explicit_enter_action_precedes_route_submission() {
+        let tasks = TaskRuntime::new();
+        let binding = invalid_integer_binding();
+        let mut view =
+            view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
+        view.route_entry = true;
+        view.editor = EditorBuffer::from_raw("other 1", 7);
+        view.route_resolutions.insert(
+            "other".to_string(),
+            crate::view::RouteTarget {
+                reference: "other".to_string(),
+                label: None,
+            },
+        );
+        view.route_schemas.insert(
+            "other".to_string(),
+            crate::view::QuerySchema {
+                id: "query".to_string(),
+            },
+        );
+        view.parameter_bindings.insert("other".to_string(), binding);
+        view.keymap = PickerKeymap::from_values(
+            Some(serde_json::json!({
+                "exit": ["enter"]
+            })),
+            None,
+        )
+        .unwrap();
+
+        let context = ViewContext::new(ViewInstanceId(1), "core:default");
+        let decision = view
+            .event(
+                ViewEvent::Input(InputEvent::Key {
+                    key: Key::Enter,
+                    raw: b"\r".to_vec(),
+                }),
+                &context,
+            )
+            .unwrap();
+        assert!(matches!(decision, ViewDecision::Exit));
+        tasks.shutdown_and_wait();
     }
 
     #[test]

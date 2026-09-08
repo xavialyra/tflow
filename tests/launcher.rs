@@ -1114,11 +1114,10 @@ fn btop_fixture_single_view_routes_tab_and_escape_restore_the_empty_default() {
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible.contains("Enter Open")
-            && visible
-                .lines()
-                .nth(1)
-                .is_some_and(|line| line.trim().is_empty())
+        visible
+            .lines()
+            .nth(1)
+            .is_some_and(|line| line.trim().is_empty())
             && !visible.contains("btop /")
     });
     let output = String::from_utf8_lossy(&output);
@@ -1586,7 +1585,7 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-value = request["engine_output"]["input"]
+value = request["context"]["engine"]["state"]["input"]
 json.dump({
     "version": 1,
     "operation": {
@@ -1973,7 +1972,7 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
 }
 
 #[test]
-fn pending_feed_owner_command_overrides_picker_binding() {
+fn feed_owner_commands_are_not_projected_into_aggregate_picker() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2015,13 +2014,13 @@ fn pending_feed_owner_command_overrides_picker_binding() {
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    process.master.write_all(b" ").unwrap();
+    process.master.write_all(b" \x03").unwrap();
     process.master.flush().unwrap();
     let (status, output) = wait_for_launcher_exit(&mut process);
 
     assert_eq!(status, 0);
     assert!(
-        String::from_utf8_lossy(&output).contains("pending-owner-command:row"),
+        !String::from_utf8_lossy(&output).contains("pending-owner-command:row"),
         "output: {:?}",
         output
     );
@@ -2761,7 +2760,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-item = request.get("engine_output", {}).get("selected_item")
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
 value = item.get("value") if isinstance(item, dict) else None
 if request.get("entrypoint") != "command" or value != "value":
     raise SystemExit("unexpected command producer request")
@@ -2883,7 +2883,7 @@ import sys
 request = json.load(sys.stdin)
 if request.get("entrypoint") != "picker-items":
     raise SystemExit("unexpected items producer request")
-query = request.get("request", {}).get("input")
+query = request["context"]["engine"]["state"]["input"]
 if query != "needle":
     raise SystemExit("items request input was not the current picker input")
 json.dump({
@@ -2940,9 +2940,19 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-parameters = request.get("parameters", {})
+context = request.get("context", {})
+parameters = context.get("parameters", {}) if isinstance(context, dict) else {}
 message = parameters.get("message") if isinstance(parameters, dict) else None
-if request.get("entrypoint") != "capture-output" or not isinstance(message, str):
+input_descriptor = context.get("input") if isinstance(context, dict) else None
+engine = context.get("engine") if isinstance(context, dict) else None
+stdin_descriptor = input_descriptor.get("stdin") if isinstance(input_descriptor, dict) else None
+if (
+    request.get("entrypoint") != "capture-output"
+    or not isinstance(message, str)
+    or not isinstance(stdin_descriptor, dict)
+    or stdin_descriptor.get("is_tty") is not True
+    or engine != {"type": "capture", "state": None}
+):
     raise SystemExit("unexpected capture producer request")
 json.dump({"version": 1, "output": "capture:" + message}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
@@ -3029,7 +3039,7 @@ fn return_processor_runs_after_restoring_the_caller() {
         type = "return"
         producer = "declared"
         [workflows.core.views.child.commands.accept.handler]
-        value = "child-value"
+        value = { kind = "child", value = 7 }
 
         [workflows.core.views.processed.engine]
         type = "capture"
@@ -3050,11 +3060,11 @@ import sys
 
 request = json.load(sys.stdin)
 result = request.get("result")
+context = request.get("context", {})
 if (
     request.get("entrypoint") != "return"
-    or not isinstance(result, dict)
-    or result.get("kind") != "value"
-    or result.get("value") != "child-value"
+    or result != {"kind": "child", "value": 7}
+    or not isinstance(context.get("engine"), dict)
 ):
     raise SystemExit("unexpected return processor request")
 json.dump({

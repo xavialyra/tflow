@@ -36,7 +36,7 @@ impl ViewIdentity {
 pub(crate) struct ProjectedEngineConfig {
     pub(crate) fields: BTreeMap<String, Value>,
     pub(crate) workflow_root: Option<PathBuf>,
-    pub(crate) invocation: Value,
+    pub(crate) launch_input: Value,
 }
 
 impl ProjectedEngineConfig {
