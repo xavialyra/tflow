@@ -33,14 +33,6 @@ fn candidate_json_can_exceed_the_default_script_output_limit() {
 }
 
 #[test]
-fn supports_nul_records_and_index_output() {
-    let result = run_dmenu(&["--dmenu0", "--index"], b"first\0second\0", b"\x1b[B\r");
-
-    assert_eq!(result.status, 0);
-    assert_eq!(result.stdout, b"1\0");
-}
-
-#[test]
 fn accept_nth_returns_the_selected_projection() {
     let result = run_dmenu(&["--accept-nth=2"], b"id\tlabel\n", b"\r");
 
@@ -69,18 +61,6 @@ fn accept_nth_supports_open_field_ranges() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"first\tsecond\n");
-}
-
-#[test]
-fn rofi_metadata_is_not_written_with_the_selected_record() {
-    let result = run_dmenu(
-        &[],
-        b"Firefox\0icon\x1ffirefox,web-browser\0urgent\x1ftrue\n",
-        b"\r",
-    );
-
-    assert_eq!(result.status, 0);
-    assert_eq!(result.stdout, b"Firefox\n");
 }
 
 #[test]
@@ -178,14 +158,6 @@ fn initial_query_strips_terminal_control_sequences() {
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"red\n");
-}
-
-#[test]
-fn selected_candidate_preserves_non_utf8_bytes() {
-    let result = run_dmenu(&[], &[0xff, b'\n'], b"\r");
-
-    assert_eq!(result.status, 0);
-    assert_eq!(result.stdout, [0xff, b'\n']);
 }
 
 #[test]

@@ -1,14 +1,7 @@
 use crate::input::Key;
 #[cfg(test)]
-use crate::ui::theme::ThemeLoadOptions;
-#[cfg(test)]
-use crate::workflow::expression::EvaluationStage;
-use crate::workflow::expression::TemplateRegistry;
-#[cfg(test)]
-use crate::workflow::expression::{Budget, EvalContext, Namespace, evaluate_json_value};
-use crate::workflow::parameter::{
-    ParameterBinding, ParameterRegistry, ParameterSnapshot, ParameterState,
-};
+use crate::workflow::parameter::ParameterSnapshot;
+use crate::workflow::parameter::{ParameterBinding, ParameterRegistry, ParameterState};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{
@@ -18,26 +11,13 @@ use std::{
 };
 
 mod compile;
-mod evaluation;
 mod loader;
 mod model;
 mod normalize;
 mod validation;
 
-#[cfg(test)]
-use evaluation::public_page_context;
-pub(crate) use evaluation::{
-    ConfigSource, EvaluationData, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope,
-    SessionScope,
-};
-
-#[cfg(test)]
-use loader::{merge_values, read_workflow_package, resolve_config_path, validate_workflow_id};
-pub(crate) use model::validate_script_source_args;
 pub(crate) use model::*;
-#[cfg(test)]
-use normalize::normalize_keymap_tables;
-pub(crate) use validation::{EngineConfigValidator, validate_templates};
+pub(crate) use validation::EngineConfigValidator;
 
 pub type ViewRef = String;
 
@@ -58,8 +38,6 @@ pub(crate) struct CompiledConfig {
     workflows: BTreeMap<String, WorkflowMetadata>,
     defaults: Defaults,
     workflow_roots: BTreeMap<String, PathBuf>,
-    config_value: Value,
-    template_registry: TemplateRegistry,
     parameter_registry: Arc<ParameterRegistry>,
 }
 
@@ -72,7 +50,6 @@ pub(crate) struct PickerItemsView {
     pub(crate) feeds: Vec<ViewRef>,
     pub(crate) items: Option<toml::Value>,
     pub(crate) binding: ParameterBinding,
-    pub(crate) source_badge: bool,
 }
 
 #[derive(Clone)]
@@ -80,7 +57,6 @@ pub(crate) struct PickerItemsProjection {
     input: Value,
     views: BTreeMap<ViewRef, PickerItemsView>,
     workflow_roots: BTreeMap<String, PathBuf>,
-    templates: TemplateRegistry,
 }
 
 impl PickerItemsProjection {
@@ -104,23 +80,15 @@ impl PickerItemsProjection {
         }
 
         let mut views = BTreeMap::new();
-        let mut template_values = Vec::new();
         let mut workflow_roots = BTreeMap::new();
         for view_ref in selected {
             let view = config
                 .views
                 .get(&view_ref)
                 .with_context(|| format!("view {:?} is not configured", view_ref))?;
-            if let Some(items) = view.selected_items() {
-                template_values.push(toml_to_json(items)?);
-            }
             if let Some(root) = config.workflow_root(&view_ref) {
                 workflow_roots.insert(package_id(&view_ref).to_string(), root.to_path_buf());
             }
-            let source_badge = match view.engine_field("source_badge") {
-                Some(toml::Value::Boolean(b)) => *b,
-                _ => !view.selected_feeds().is_empty(),
-            };
             views.insert(
                 view_ref.clone(),
                 PickerItemsView {
@@ -132,7 +100,6 @@ impl PickerItemsProjection {
                         .collect(),
                     items: view.selected_items().cloned(),
                     binding: config.parameter_registry.parameter_binding(&view_ref)?,
-                    source_badge,
                 },
             );
         }
@@ -140,12 +107,7 @@ impl PickerItemsProjection {
             input: input.clone(),
             views,
             workflow_roots,
-            templates: TemplateRegistry::compile_json_tree(&Value::Array(template_values))?,
         })
-    }
-
-    pub(crate) fn source_badge(&self, view_ref: &str) -> bool {
-        self.views.get(view_ref).map_or(false, |v| v.source_badge)
     }
 
     pub(crate) fn feed_views(&self, view_ref: &str) -> Result<Vec<(String, &PickerItemsView)>> {
@@ -167,10 +129,6 @@ impl PickerItemsProjection {
                     })
             })
             .collect()
-    }
-
-    pub(crate) fn template_registry(&self) -> &TemplateRegistry {
-        &self.templates
     }
 
     pub(crate) fn input_value(&self) -> &Value {
@@ -224,27 +182,6 @@ impl CompiledConfig {
         ))
     }
 
-    /// Rehydrates mutable state only inside configuration-owned evaluation
-    /// adapters. Runtime-facing contexts continue to carry snapshots.
-    fn parameter_state_from_snapshot(
-        &self,
-        view_ref: &str,
-        snapshot: &ParameterSnapshot,
-    ) -> Result<ParameterState> {
-        self.parameter_binding(view_ref)?
-            .state_from_snapshot(snapshot, false)
-    }
-
-    pub(crate) fn with_parameter_state_from_snapshot<T>(
-        &self,
-        view_ref: &str,
-        snapshot: &ParameterSnapshot,
-        evaluate: impl FnOnce(&ParameterState) -> Result<T>,
-    ) -> Result<T> {
-        let state = self.parameter_state_from_snapshot(view_ref, snapshot)?;
-        evaluate(&state)
-    }
-
     pub(crate) fn session_command(&self, id: &str) -> Option<Command> {
         let binding = self.commands.bindings.get(id).cloned().or_else(|| {
             (id == "commands" && self.view("selectors:commands").is_some())
@@ -296,27 +233,6 @@ impl CompiledConfig {
     ) -> Result<bool> {
         self.parameter_binding(state.view_ref())?
             .update_initial_input(state, source)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_views_mut(&mut self) -> &mut BTreeMap<ViewRef, View> {
-        &mut self.views
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_config_value_mut(&mut self) -> &mut Value {
-        &mut self.config_value
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_rebuild_parameter_registry(&mut self) -> Result<()> {
-        self.parameter_registry = Arc::new(ParameterRegistry::compile(&self.config_value)?);
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_workflow_roots_mut(&mut self) -> &mut BTreeMap<String, PathBuf> {
-        &mut self.workflow_roots
     }
 
     pub fn view(&self, view_ref: &str) -> Option<&View> {
@@ -391,28 +307,12 @@ impl CompiledConfig {
             .collect()
     }
 
-    pub(crate) fn view_value(
-        &self,
-        view_ref: &str,
-        parameters: &ParameterSnapshot,
-        binding_raw: Option<&str>,
-    ) -> Result<Value> {
-        self.with_parameter_state_from_snapshot(view_ref, parameters, |state| {
-            // Feed default binding must expose the coordinating page's committed
-            // raw string (including ""). Rendering the owner state would replace
-            // empty input with schema defaults and break view.raw_input == R.
-            let input = match binding_raw {
-                Some(raw) => raw.to_string(),
-                None => self.render_parameter_input(state)?,
-            };
-            Ok(serde_json::json!({
-                "ref": view_ref,
-                "query": self.parameter_values(state)?,
-                "input": input,
-                "raw_input": input,
-                "state_revision": state.revision(),
-            }))
-        })
+    pub(crate) fn picker_default_bindings(&self) -> Option<&toml::Value> {
+        self.defaults.picker.bindings.as_ref()
+    }
+
+    pub(crate) fn capture_default_bindings(&self) -> Option<&toml::Value> {
+        self.defaults.capture.bindings.as_ref()
     }
 }
 
@@ -442,1373 +342,87 @@ pub(crate) fn toml_to_json(value: &toml::Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
-    use std::{env, fs};
+    use crate::engine::EngineRegistry;
 
     fn config(source: &str) -> CompiledConfig {
-        let value: toml::Value = toml::from_str(source).unwrap();
-        let raw: RawConfig = value.try_into().unwrap();
-        CompiledConfig::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new()))
-            .unwrap()
-    }
-
-    fn validate_config(config: &CompiledConfig) -> Result<()> {
-        let engines = crate::engine::EngineRegistry::new();
-        config.validate_with_engines(&engines)
+        let mut value: toml::Value = toml::from_str(source).unwrap();
+        if let toml::Value::Table(fields) = &mut value {
+            fields
+                .entry("workflows".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        }
+        let raw: RawConfig = value.clone().try_into().unwrap();
+        CompiledConfig::from_raw(raw, BTreeMap::new()).unwrap()
     }
 
     #[test]
-    fn image_protocol_is_loaded_from_the_root_config() {
-        let configured = config(
+    fn image_protocol_and_log_file_are_compiled() {
+        let compiled = config(
             r#"
             image_protocol = "kitty"
+            log_file = "logs/runtime.jsonl"
             "#,
         );
-        assert_eq!(configured.image_protocol, ImageProtocol::Kitty);
-
-        let default_config = config("");
-        assert_eq!(default_config.image_protocol, ImageProtocol::Halfblocks);
+        assert_eq!(compiled.image_protocol, ImageProtocol::Kitty);
+        assert_eq!(compiled.log_file, Some(PathBuf::from("logs/runtime.jsonl")));
     }
 
     #[test]
-    fn image_protocol_rejects_unknown_values() {
-        let value: toml::Value = toml::from_str("image_protocol = \"auto\"").unwrap();
+    fn unknown_root_fields_are_rejected() {
+        let value: toml::Value = toml::from_str("unsupported = true").unwrap();
         assert!(value.try_into::<RawConfig>().is_err());
     }
 
     #[test]
-    fn explicit_log_file_is_loaded() {
-        let config = config("log_file = \"logs/runtime.jsonl\"");
-        assert_eq!(config.log_file, Some(PathBuf::from("logs/runtime.jsonl")));
-        assert_eq!(
-            resolve_config_path(
-                Path::new("/tmp/config/config.toml"),
-                Path::new("logs/runtime.jsonl")
-            ),
-            PathBuf::from("/tmp/config/logs/runtime.jsonl")
-        );
-    }
-
-    #[test]
-    fn defaults_reject_unknown_fields() {
-        for source in [
-            r#"
-            [defaults.capture]
-            binding = { copy = ["enter"] }
-            "#,
-            r#"
-            [defaults.captuer.bindings]
-            copy = ["enter"]
-            "#,
-        ] {
-            let value: toml::Value = toml::from_str(source).unwrap();
-            assert!(
-                value.try_into::<RawConfig>().is_err(),
-                "unknown defaults fields must be rejected: {source}"
-            );
-        }
-    }
-
-    #[test]
-    fn legacy_root_plugins_are_rejected_before_keymap_normalization() {
-        let root = env::temp_dir().join(format!(
-            "tui-launcher-root-legacy-plugins-{}",
-            std::process::id()
-        ));
-        fs::remove_dir_all(&root).ok();
-        fs::create_dir_all(&root).unwrap();
-        let config_path = root.join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-            default_view = "core:default"
-
-            [plugins.ghost.views.main.keymap]
-            escape = "back"
-            esc = false
-            "#,
-        )
-        .unwrap();
-
-        let error = CompiledConfig::load(&config_path).expect_err("root plugins must be rejected");
-        assert!(error.to_string().contains("cannot define plugins"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn legacy_plugin_manifest_is_rejected() {
-        let root = env::temp_dir().join(format!(
-            "tui-launcher-legacy-plugin-manifest-{}",
-            std::process::id()
-        ));
-        fs::remove_dir_all(&root).ok();
-        fs::create_dir_all(&root).unwrap();
-        let manifest = root.join("workflow.toml");
-        fs::write(
-            &manifest,
-            r#"
-            [plugin]
-            name = "legacy"
-            "#,
-        )
-        .unwrap();
-
-        let error = read_workflow_package(&manifest, "legacy").unwrap_err();
-        assert!(error.to_string().contains("uses legacy [plugin]"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn disabled_directory_workflows_are_skipped_before_reading_keymaps() {
-        let root = env::temp_dir().join(format!(
-            "tui-launcher-disabled-directory-{}",
-            std::process::id()
-        ));
-        fs::remove_dir_all(&root).ok();
-        let workflow_root = root.join("workflows/ghost");
-        fs::create_dir_all(&workflow_root).unwrap();
-        fs::write(
-            workflow_root.join("workflow.toml"),
-            r#"
-            [workflow]
-            name = "Ghost"
-
-            [views.main]
-            [views.main.engine]
-            type = "picker"
-            [views.main.engine.config]
-            [views.main.keymap]
-            escape = "back"
-            esc = false
-            "#,
-        )
-        .unwrap();
-        let core_root = root.join("workflows/core");
-        fs::create_dir_all(&core_root).unwrap();
-        fs::write(
-            core_root.join("workflow.toml"),
-            r#"
-            [workflow]
-            name = "core"
-
-            [views.default.engine]
-            type = "picker"
-            [views.default.engine.config]
-            "#,
-        )
-        .unwrap();
-        let config_path = root.join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-            disabled_workflows = ["ghost"]
-            default_view = "core:default"
-            "#,
-        )
-        .unwrap();
-
-        let config = CompiledConfig::load(&config_path).unwrap();
-        assert!(!config.views.contains_key("ghost:main"));
-        assert!(config.views.contains_key("core:default"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn workflow_views_are_namespaced() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "apps:main"
-            [workflows.apps.views.main]
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        assert_eq!(config.default_view.as_deref(), Some("core:default"));
-        assert_eq!(
-            config.views["apps:main"].engine.engine_type,
-            ENGINE_PICKER.to_string()
-        );
-        assert_eq!(
-            config.views["core:default"].selected_feeds()[0].view,
-            "apps:main"
-        );
-    }
-
-    #[test]
-    fn workflow_styles_are_compiled_into_metadata() {
-        let config = config(
-            r#"
-            default_view = "git:branches"
-            [workflows.git.styles.branch]
-            foreground = "scheme:primary"
-            bold = true
-
-            [workflows.git.views.branches]
-            [workflows.git.views.branches.engine]
-            type = "picker"
-            [workflows.git.views.branches.engine.config]
-            items = []
-            "#,
-        );
-        let workflows = config.workflows();
-        let git_workflow = workflows.get("git").expect("git workflow must exist");
-        let branch_style = git_workflow
-            .styles
-            .get("branch")
-            .expect("branch style must exist");
-        assert_eq!(branch_style.foreground.as_deref(), Some("scheme:primary"));
-        assert_eq!(branch_style.bold, Some(true));
-    }
-
-    #[test]
-    fn view_type_selects_the_engine_directly() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-"#,
-        );
-        validate_config(&config).unwrap();
-        assert_eq!(config.engine("core:default").unwrap(), ENGINE_PICKER);
-        assert_eq!(
-            config.view("core:default").unwrap().engine.engine_type,
-            ENGINE_PICKER
-        );
-    }
-
-    #[test]
-    fn engine_rejects_unknown_view_fields() {
-        let config = config(
-            r#"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "capture"
-            [workflows.core.views.default.engine.config]
-            output = "ok"
-            titel = "typo"
-"#,
-        );
-        let error = validate_config(&config).expect_err("unknown engine fields should be rejected");
-        assert!(error.to_string().contains("unsupported field \"titel\""));
-    }
-
-    #[test]
-    fn capture_keymap_patches_override_the_effective_physical_keys() {
-        let valid = config(
-            r#"
-            [defaults.capture.bindings]
-            copy = ["ctrl+y"]
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "capture"
-            [workflows.core.views.default.engine.config]
-            output = "ok"
-            [workflows.core.views.default.keymap]
-            "ctrl+y" = false
-            "alt+c" = "copy"
-"#,
-        );
-        validate_config(&valid).unwrap();
-
-        let invalid = config(
-            r#"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "capture"
-            [workflows.core.views.default.engine.config]
-            output = "ok"
-            [workflows.core.views.default.keymap]
-            enter = false
-            "ctrl+j" = "copy"
-"#,
-        );
-        let error =
-            validate_config(&invalid).expect_err("one key cannot be both disabled and rebound");
-        assert!(format!("{error:#}").contains("both disabled and rebound"));
-    }
-
-    #[test]
-    fn engine_config_does_not_accept_view_keymaps() {
-        let config = config(
-            r#"
-            [workflows.core.views.default.engine]
-            type = "capture"
-            [workflows.core.views.default.engine.config]
-            output = "ok"
-            [workflows.core.views.default.engine.config.bindings]
-            copy = ["ctrl+y"]
-"#,
-        );
-        let error = validate_config(&config)
-            .expect_err("engine config bindings are not View keymap patches");
-        assert!(error.to_string().contains("unsupported field \"bindings\""));
-    }
-
-    #[test]
-    fn feeds_views_may_define_page_commands() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "apps:main"
-            [workflows.core.views.default.commands.open]
-            key = "enter"
-            label = "Open"
-            type = "run"
-
-            [workflows.core.views.default.commands.open.payload]
-            handler = { source = "script", file = "{{ view.query.script }}" }
-            [workflows.apps.views.main]
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        validate_config(&config).expect("feeds pages may define page-level commands");
-    }
-
-    #[test]
-    fn nested_feeds_are_rejected() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "core:hub"
-            [workflows.core.views.hub]
-            [workflows.core.views.hub.engine]
-            type = "picker"
-            [workflows.core.views.hub.engine.config]
-            [[workflows.core.views.hub.engine.config.feeds]]
-            view = "apps:main"
-            [workflows.apps.views.main]
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        let error = validate_config(&config).expect_err("nested feeds should be rejected");
-        assert!(error.to_string().contains("cannot use feeds view"));
-    }
-
-    #[test]
-    fn feed_unknown_fields_are_rejected() {
-        let value: Result<toml::Value, _> = toml::from_str(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "apps:main"
-            raw = "{{ view.input }}"
-            [workflows.apps.views.main]
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        let value = value.expect("toml should parse");
-        let error = value
-            .try_into::<RawConfig>()
-            .expect_err("unknown feed fields should be rejected");
-        assert!(
-            error.to_string().contains("unknown field") || error.to_string().contains("raw"),
-            "error={error}"
-        );
-    }
-
-    #[test]
-    fn feeds_views_cannot_define_items() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            items = []
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "apps:main"
-            [workflows.apps.views.main]
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-"#,
-        );
-        let error = validate_config(&config).expect_err("feeds+items should be rejected");
-        assert!(error.to_string().contains("cannot define items"));
-    }
-
-    #[test]
-    fn navigation_target_must_reference_a_configured_view() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.core.views.default.commands.open]
-            key = "enter"
-            label = "Open"
-            type = "navigate"
-            [workflows.core.views.default.commands.open.payload]
-            target = "missing:view"
-            query = "item"
-            "#,
-        );
-        let error = validate_config(&config)
-            .expect_err("navigation target must reference a configured view");
-        assert!(error.to_string().contains("references missing view"));
-    }
-
-    #[test]
-    fn static_command_targets_accept_view_aliases() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.core.views.default.commands.navigate]
-            key = "enter"
-            label = "Navigate"
-            type = "navigate"
-            [workflows.core.views.default.commands.navigate.payload]
-            target = "app"
-            [workflows.core.views.default.commands.call]
-            key = "ctrl+a"
-            label = "Call"
-            type = "call"
-            [workflows.core.views.default.commands.call.payload]
-            target = "app"
-            [workflows.apps.views.main]
-            alias = "app"
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            "#,
-        );
-
-        validate_config(&config).unwrap();
-    }
-
-    #[test]
-    fn continuation_return_rejects_root_only_adapter_fields() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.core.views.default.commands.open]
-            key = "enter"
-            label = "Open"
-            type = "call"
-            [workflows.core.views.default.commands.open.payload]
-            target = "forms:main"
-            [workflows.core.views.default.commands.open.payload.then]
-            type = "return"
-            [workflows.core.views.default.commands.open.payload.then.payload]
-            value = "{{ result.output.value }}"
-            handler = "scripts/result.sh"
-            args = ["{{ result }}"]
-            [workflows.forms.views.main]
-            [workflows.forms.views.main.engine]
-            type = "picker"
-            [workflows.forms.views.main.engine.config]
-            "#,
-        );
-
-        let error =
-            validate_config(&config).expect_err("continuation return adapters should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("continuation return cannot define handler or args")
-        );
-    }
-
-    #[test]
-    fn return_args_require_a_handler() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.core.views.default.commands.accept]
-            key = "enter"
-            label = "Accept"
-            type = "return"
-            [workflows.core.views.default.commands.accept.payload]
-            value = "accepted"
-            args = ["ignored"]
-            "#,
-        );
-
-        let error =
-            validate_config(&config).expect_err("return args without a handler should be rejected");
-        assert!(error.to_string().contains("return args require a handler"));
-    }
-
-    #[test]
-    fn duplicate_workflow_names_are_allowed() {
-        let config = config(
-            r#"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.package-a]
-            name = "template"
-            [workflows.package-a.views.default]
-            alias = "temp-a"
-            [workflows.package-a.views.default.engine]
-            type = "picker"
-            [workflows.package-a.views.default.engine.config]
-            [workflows.package-b]
-            name = "template"
-            [workflows.package-b.views.default]
-            alias = "temp-b"
-            [workflows.package-b.views.default.engine]
-            type = "picker"
-            [workflows.package-b.views.default.engine.config]
-"#,
-        );
-
-        validate_config(&config).unwrap();
-        assert_eq!(config.workflows["package-a"].name, "template");
-        assert_eq!(config.workflows["package-b"].name, "template");
-    }
-
-    #[test]
-    fn wildcard_feeds_expand_to_matching_picker_views() {
-        let config = config(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "*:main"
-            [[workflows.core.views.default.engine.config.feeds]]
-            view = "*:default"
-            [workflows.apps.views.main.engine]
-            type = "picker"
-            [workflows.apps.views.main.engine.config]
-            items = []
-            [workflows.apps.views.default.engine]
-            type = "picker"
-            [workflows.apps.views.default.engine.config]
-            items = []
-            [workflows.sys.views.main.engine]
-            type = "picker"
-            [workflows.sys.views.main.engine.config]
-            items = []
-            [workflows.shell.views.main.engine]
-            type = "embedded"
-            [workflows.shell.views.main.engine.config]
-            command = ["sh"]
-            title = "shell"
-"#,
-        );
-        let feeds = config
-            .feed_views("core:default")
-            .unwrap()
-            .into_iter()
-            .map(|(view_ref, _)| view_ref)
-            .collect::<Vec<_>>();
-        assert_eq!(feeds, ["apps:main", "sys:main", "apps:default"]);
-        validate_config(&config).unwrap();
-    }
-
-    #[test]
-    fn duplicate_view_aliases_are_rejected() {
-        let config = config(
-            r#"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.package-a.views.default]
-            alias = "temp"
-            [workflows.package-a.views.default.engine]
-            type = "picker"
-            [workflows.package-a.views.default.engine.config]
-            [workflows.package-b.views.default]
-            alias = "temp"
-            [workflows.package-b.views.default.engine]
-            type = "picker"
-            [workflows.package-b.views.default.engine.config]
-"#,
-        );
-
-        let error = validate_config(&config).expect_err("duplicate aliases should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("view alias \"temp\" is assigned to both")
-        );
-    }
-
-    #[test]
-    fn view_alias_cannot_contain_route_syntax_or_whitespace() {
-        for alias in ["", "bad:alias", "bad alias"] {
-            let config = config(&format!(
-                r#"
-                [workflows.core.views.default]
-                alias = {alias:?}
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
-"#
-            ));
-            assert!(
-                validate_config(&config).is_err(),
-                "alias {alias:?} should be invalid"
-            );
-        }
-    }
-
-    #[test]
-    fn command_keys_are_validated_and_normalized() {
-        assert_eq!(normalize_key("Alt+C").unwrap(), "alt+c");
-        assert_eq!(normalize_key("enter").unwrap(), "enter");
-        assert_eq!(normalize_key("Ctrl+R").unwrap(), "ctrl+r");
-        assert_eq!(normalize_key("Ctrl+J").unwrap(), "enter");
-        assert_eq!(normalize_key("c").unwrap(), "c");
-        assert_eq!(normalize_key("space").unwrap(), "space");
-    }
-
-    #[test]
-    fn workflow_api_defaults_to_one() {
-        let header: WorkflowHeader = toml::from_str(
-            r#"
-            name = "template"
-            "#,
-        )
-        .unwrap();
-        assert_eq!(header.api, 1);
-    }
-
-    #[test]
-    fn workflow_names_are_valid_view_namespace_components() {
-        assert!(validate_workflow_id("apps").is_ok());
-        assert!(validate_workflow_id("my-app").is_ok());
-        assert!(validate_workflow_id("bad:name").is_err());
-        assert!(validate_workflow_id("bad name").is_err());
-    }
-
-    #[test]
-    fn file_backed_workflow_scripts_are_loaded_and_rooted() {
-        let root =
-            env::temp_dir().join(format!("tui-launcher-workflow-test-{}", std::process::id()));
-        let workflow_root = root.join("workflows/filetest");
-        fs::remove_dir_all(&root).ok();
-        fs::create_dir_all(workflow_root.join("scripts")).unwrap();
-        fs::write(
-            workflow_root.join("workflow.toml"),
-            r#"
-            [workflow]
-            name = "file test"
-
-            [views.main]
-            alias = "file"
-            [views.main.engine]
-            type = "picker"
-            [views.main.engine.config.items]
-            source = "script"
-            file = "scripts/items.sh"
-            [views.main.commands.run]
-            key = "enter"
-            label = "Run"
-            type = "run"
-
-            [views.main.commands.run.payload]
-            handler = { source = "script", file = "scripts/run.sh" }
-            "#,
-        )
-        .unwrap();
-        fs::write(
-            workflow_root.join("scripts/items.sh"),
-            "printf '%s\\n' '[{\"label\":\"from file\"}]'\\n",
-        )
-        .unwrap();
-        fs::write(workflow_root.join("scripts/run.sh"), "printf 'run\\n'\\n").unwrap();
-        let core_root = root.join("workflows/core");
-        fs::create_dir_all(&core_root).unwrap();
-        fs::write(
-            core_root.join("workflow.toml"),
-            r#"
-            [workflow]
-            name = "core"
-
-            [views.default.engine]
-            type = "picker"
-            [views.default.engine.config]
-            [[views.default.engine.config.feeds]]
-            view = "filetest:main"
-            "#,
-        )
-        .unwrap();
-        let config_path = root.join("config.toml");
-        let default_source = r#"
-            default_view = "core:default"
-"#;
-        fs::write(&config_path, default_source).unwrap();
-
-        let config = CompiledConfig::load(&config_path).unwrap();
-        let items = config.views["filetest:main"]
-            .engine
-            .config
-            .items
-            .as_ref()
-            .and_then(toml::Value::as_table)
-            .expect("script items table");
-        assert_eq!(
-            items.get("source").and_then(toml::Value::as_str),
-            Some("script")
-        );
-        assert_eq!(
-            items.get("file").and_then(toml::Value::as_str),
-            Some("scripts/items.sh")
-        );
-        let action = &config.views["filetest:main"].commands["run"].action;
-        let payload = action
-            .run_payload()
-            .expect("file command did not deserialize as a run action");
-        assert_eq!(
-            payload.handler,
-            Some(
-                toml::from_str::<toml::Value>("source = \"script\"\nfile = \"scripts/run.sh\"\n")
-                    .unwrap()
-            )
-        );
-        assert_eq!(
-            config.workflow_root("filetest:main"),
-            Some(workflow_root.as_path())
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn loaded_config_contains_the_merged_json_tree() {
-        let root = env::temp_dir().join(format!("tui-launcher-config-json-{}", std::process::id()));
-        fs::remove_dir_all(&root).ok();
-        fs::create_dir_all(&root).unwrap();
-        let core_root = root.join("workflows/core");
-        fs::create_dir_all(&core_root).unwrap();
-        fs::write(
-            core_root.join("workflow.toml"),
-            r#"
-            [workflow]
-            name = "core"
-
-            [views.default.engine]
-            type = "picker"
-            [views.default.engine.config]
-            "#,
-        )
-        .unwrap();
-        let config_path = root.join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-            [aa.a]
-            bb = 1
-
-            [aa.b]
-            bb = 2
-            "#,
-        )
-        .unwrap();
-
-        let config = CompiledConfig::load(&config_path).unwrap();
-        assert_eq!(
-            config
-                .config_value
-                .pointer("/aa/a/bb")
-                .and_then(Value::as_i64),
-            Some(1)
-        );
-        assert_eq!(
-            config
-                .config_value
-                .pointer("/aa/b/bb")
-                .and_then(Value::as_i64),
-            Some(2)
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn dynamic_script_source_fields_resolve_with_one_evaluator() {
+    fn producer_handler_is_static_literal_data() {
         let source: toml::Value = toml::from_str(
             r#"
-            source = "{{ page.query.source }}"
-            file = "{{ page.query.file }}"
-            max_output_bytes = "{{ page.query.limit }}"
-            args = ["{{ page.query }}"]
+            [workflows.demo]
+            [workflows.demo.views.main.engine]
+            type = "picker"
+            [workflows.demo.views.main.engine.config]
+            items = { producer = "declared", handler = { items = [{ display = "{{ page.input }}" }] } }
             "#,
         )
         .unwrap();
-        ScriptSourceSpec::parse(&source).unwrap();
-        let source_json = toml_to_json(&source).unwrap();
-        let registry = TemplateRegistry::compile_json_tree(&source_json).unwrap();
-        let root = serde_json::json!({
-            "page": {
-                "query": {
-                    "source": "script",
-                    "file": "scripts/items.sh",
-                    "limit": 128,
-                }
-            }
-        });
-        let resolved_value = evaluate_json_value(
-            &source_json,
-            &EvalContext {
-                root: &root,
-                cancellation: None,
-                templates: Some(&registry),
-            },
-        )
-        .unwrap();
-        let resolved = ResolvedScriptSource::parse(&resolved_value).unwrap();
-        assert_eq!(resolved.file(), Some("scripts/items.sh"));
-        assert_eq!(resolved.max_output_bytes, Some(128));
+        let raw: RawConfig = source.clone().try_into().unwrap();
+        let compiled = CompiledConfig::from_raw(raw, BTreeMap::new()).unwrap();
+        let items = compiled
+            .view("demo:main")
+            .unwrap()
+            .selected_items()
+            .unwrap();
         assert_eq!(
-            resolved.args,
-            Some(serde_json::json!([
-                {
-                    "source": "script",
-                    "file": "scripts/items.sh",
-                    "limit": 128,
-                }
-            ]))
+            items["handler"]["items"][0]["display"],
+            toml::Value::String("{{ page.input }}".to_string())
         );
     }
 
     #[test]
-    fn root_source_resolves_against_the_consuming_view_owner() {
-        let mut config = load_test_fixture().unwrap();
-        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
-            "exit": ["{{ view.ref }}"]
-        });
-        config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_parameters("apps:main").unwrap();
-        let owner_parameters = config
-            .parameter_snapshot(&owner, Default::default())
+    fn fixture_validates_against_registered_engines() {
+        let compiled = load_test_fixture().unwrap();
+        compiled
+            .validate_with_engines(&EngineRegistry::new())
             .unwrap();
-        let runtime = serde_json::json!({
-            "view": {"current": {"ref": "core:default"}}
-        });
-        let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
-            None,
-        );
-        let value = config
-            .get(
-                ConfigSource::Root,
-                &snapshot,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(value["exit"][0], "apps:main");
-
-        let missing_owner = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            None,
-            None,
-        );
-        let error = config
-            .get(
-                ConfigSource::Root,
-                &missing_owner,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("namespace \"view\" is unavailable")
-        );
     }
 
     #[test]
-    fn scope_capabilities_distinguish_an_unavailable_result_from_null_selection() {
-        let mut config = load_test_fixture().unwrap();
-        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
-            "exit": ["{{ result }}"],
-            "back": ["{{ selection }}"],
-        });
-        config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_parameters("apps:main").unwrap();
-        let owner_parameters = config
-            .parameter_snapshot(&owner, Default::default())
-            .unwrap();
-        let runtime = serde_json::json!({
-            "view": {"current": {"ref": "core:default"}}
-        });
-        let missing_return_scope = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
-            None,
-        );
-        let error = config
-            .get(
-                ConfigSource::Root,
-                &missing_return_scope,
-                EvaluationStage::Return,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("namespace \"result\" is unavailable")
-        );
-
-        let returned = Value::Null;
-        let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &owner_parameters)),
-            None,
-        )
-        .with_return_scope(Some(ReturnScope::new(&returned)));
-        let value = config
-            .get(
-                ConfigSource::Root,
-                &snapshot,
-                EvaluationStage::Return,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap()
-            .unwrap();
-        assert!(value["exit"][0].is_null());
-        assert!(value["back"][0].is_null());
-    }
-
-    #[test]
-    fn current_context_is_runtime_only_and_uses_the_view_snapshot() {
-        let mut config = load_test_fixture().unwrap();
-        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
-            "exit": ["{{ current.item.value }}"]
-        });
-        config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_parameters("core:default").unwrap();
-        let parameters = config
-            .parameter_snapshot(&owner, Default::default())
-            .unwrap();
-        let runtime = serde_json::json!({
-            "view": {"current": {"item": {"value": "global"}}}
-        });
-        let current = serde_json::json!({
-            "item": {"value": "mounted"},
-            "source": "apps:main"
-        });
-        let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        )
-        .with_current(&current);
-        let value = config
-            .get(
-                ConfigSource::Root,
-                &snapshot,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(value["exit"][0], "mounted");
-
-        let without_current = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        );
-        let error = config
-            .get(
-                ConfigSource::Root,
-                &without_current,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("namespace \"current\" is unavailable")
-        );
-
-        let bootstrap = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        )
-        .with_current(&current);
-        let error = config
-            .get(
-                ConfigSource::Root,
-                &bootstrap,
-                EvaluationStage::Bootstrap,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("cannot reference dynamic namespace")
-        );
-    }
-
-    #[test]
-    fn current_field_allowlists_allow_picker_and_capture_value() {
-        let mut config = load_test_fixture().unwrap();
-        config.config_value["defaults"]["picker"]["bindings"] = serde_json::json!({
-            "value": ["{{ current.value }}"]
-        });
-        config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_parameters("core:default").unwrap();
-        let parameters = config
-            .parameter_snapshot(&owner, Default::default())
-            .unwrap();
-        let runtime = serde_json::json!({});
-        let current = serde_json::json!({
-            "item": {
-                "text": "Editor",
-                "value": "vim",
-                "metadata": {},
-                "owner_view": "apps:main"
-            },
-            "source": "apps:main",
-            "text": "Editor",
-            "value": "vim",
-            "metadata": {},
-            "selected_index": 0
-        });
-        let picker_snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        )
-        .with_current(&current)
-        .with_current_fields(&[
-            "item",
-            "source",
-            "text",
-            "value",
-            "metadata",
-            "selected_index",
-        ]);
-        let picker_value = config
-            .get(
-                ConfigSource::Root,
-                &picker_snapshot,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(picker_value["value"][0], "vim");
-
-        let capture_current = serde_json::json!({"value": "captured"});
-        let capture_snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        )
-        .with_current(&capture_current)
-        .with_current_fields(&["value"]);
-        let capture_value = config
-            .get(
-                ConfigSource::Root,
-                &capture_snapshot,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(capture_value["value"][0], "captured");
-    }
-
-    #[test]
-    fn current_field_allowlists_reject_undeclared_and_unknown_fields() {
-        let mut config = load_test_fixture().unwrap();
-        config.config_value["defaults"]["picker"]["bindings"] =
-            serde_json::json!({"value": ["{{ current.item.value }}"]});
-        config.rebuild_template_registry().unwrap();
-        let owner = config.instantiate_parameters("core:default").unwrap();
-        let parameters = config
-            .parameter_snapshot(&owner, Default::default())
-            .unwrap();
-        let current = serde_json::json!({
-            "item": {"value": "vim"},
-            "value": "vim"
-        });
-        let session_runtime = serde_json::json!({});
-        let snapshot = EvaluationSnapshot::new(
-            InvocationScope::new(&Value::Null),
-            SessionScope::new(&session_runtime),
-            Some(OwnerViewScope::new(owner.view_ref(), &parameters)),
-            None,
-        )
-        .with_current(&current)
-        .with_current_fields(&["value"]);
-        let error = config
-            .get(
-                ConfigSource::Root,
-                &snapshot,
-                EvaluationStage::Operation,
-                &["defaults", "picker", "bindings"],
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("current namespace field \"item\"")
-        );
-        assert!(error.to_string().contains("active Engine schema"));
-
-        let error =
-            crate::workflow::expression::Template::parse("{{ current.unknown }}").unwrap_err();
-        assert!(error.to_string().contains("unknown current field"));
-    }
-
-    #[test]
-    fn dynamic_context_projects_only_requested_page_fields() {
-        let source = serde_json::json!("{{ page.input }}");
-        let registry = TemplateRegistry::compile_json_tree(&source).unwrap();
-        let requirements = registry.requirements_for_value(&source).unwrap();
-        assert!(requirements.requires(Namespace::Page));
-        assert!(requirements.requires_field(Namespace::Page, "input"));
-        assert!(!requirements.requires_field(Namespace::Page, "items"));
-        assert!(!requirements.requires(Namespace::Session));
-
-        let runtime = serde_json::json!({
-            "view": {"current": {
-                "input": "query",
-                "items": (0..100_001).collect::<Vec<_>>()
-            }}
-        });
-        let mut budget = Budget::default();
-        let page = public_page_context(&runtime, &requirements, None, &mut budget).unwrap();
-        assert_eq!(page["input"], "query");
-        assert!(page.get("items").is_none());
-    }
-
-    #[test]
-    fn root_theme_is_not_exposed_in_the_workflow_config_tree() {
-        let root =
-            env::temp_dir().join(format!("tui-launcher-config-theme-{}", std::process::id()));
-        fs::remove_dir_all(&root).ok();
-        fs::create_dir_all(&root).unwrap();
-        let core_root = root.join("workflows/core");
-        fs::create_dir_all(&core_root).unwrap();
-        fs::write(
-            core_root.join("workflow.toml"),
+    fn built_in_commands_require_the_commands_selector_view() {
+        let compiled = config(
             r#"
-            [workflow]
-            name = "core"
-
-            [views.default.engine]
-            type = "picker"
-            "#,
-        )
-        .unwrap();
-        let config_path = root.join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-            theme = "work"
-            "#,
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("themes")).unwrap();
-        fs::write(
-            root.join("themes/work.toml"),
-            "[palette]\nbrand = \"green\"\n\n[scheme]\nprimary = \"palette:brand\"\n",
-        )
-        .unwrap();
-
-        let loaded = CompiledConfig::load_app(&config_path, &ThemeLoadOptions::default()).unwrap();
-        assert!(loaded.config.config_value.get("theme").is_none());
-        assert_eq!(loaded.theme.picker.marker.fg, Some(Color::Green));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn keymap_tombstones_override_recursive_workflow_values() {
-        let mut base: toml::Value = toml::from_str(
-            r#"
-            [workflows.base.views.main]
-            [workflows.base.views.main.engine]
-            type = "picker"
-            [workflows.base.views.main.engine.config]
-            [workflows.base.views.main.keymap]
-            escape = "back"
-"#,
-        )
-        .unwrap();
-        let mut overlay: toml::Value = toml::from_str(
-            r#"
-            [workflows.base.views.main.keymap]
-            esc = false
-"#,
-        )
-        .unwrap();
-        normalize_keymap_tables(&mut base).unwrap();
-        normalize_keymap_tables(&mut overlay).unwrap();
-        merge_values(&mut base, overlay);
-        let keymap = base
-            .get("workflows")
-            .and_then(|value| value.get("base"))
-            .and_then(|value| value.get("views"))
-            .and_then(|value| value.get("main"))
-            .and_then(|value| value.get("keymap"))
-            .and_then(toml::Value::as_table)
-            .expect("merged view keymap");
-        assert_eq!(keymap.len(), 1);
-        assert_eq!(keymap.get("escape"), Some(&toml::Value::Boolean(false)));
-
-        let raw: RawConfig = base.try_into().unwrap();
-        let config =
-            CompiledConfig::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new()))
-                .unwrap();
-        validate_config(&config).unwrap();
-        assert_eq!(
-            config.views["base:main"]
-                .keymap
-                .as_ref()
-                .and_then(toml::Value::as_table)
-                .and_then(|value| value.get("escape")),
-            Some(&toml::Value::Boolean(false))
-        );
-    }
-
-    #[test]
-    fn keymap_aliases_conflict_within_one_configuration_layer() {
-        let mut value: toml::Value = toml::from_str(
-            r#"
-            [workflows.core.views.default.keymap]
-            escape = "back"
-            esc = false
-"#,
-        )
-        .unwrap();
-        let error = normalize_keymap_tables(&mut value)
-            .expect_err("aliases in one keymap layer must conflict");
-        assert!(error.to_string().contains("normalize to the same key"));
-    }
-
-    #[test]
-    fn user_tables_extend_defaults() {
-        let mut base: toml::Value = toml::from_str(
-            r#"
-            default_view = "core:default"
-            [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
-            [workflows.base.views.main]
-            [workflows.base.views.main.engine]
-            type = "picker"
-            [workflows.base.views.main.engine.config]
-            items = "{{ page.items }}"
-"#,
-        )
-        .unwrap();
-        let overlay: toml::Value = toml::from_str(
-            r#"
-            [workflows.base.views.main.engine.config]
-            items = "{{ view.query }}"
-            "#,
-        )
-        .unwrap();
-        merge_values(&mut base, overlay);
-        let raw: RawConfig = base.try_into().unwrap();
-        let config =
-            CompiledConfig::from_raw(raw, BTreeMap::new(), Value::Object(serde_json::Map::new()))
-                .unwrap();
-        assert_eq!(
-            config.views["base:main"]
-                .engine
-                .config
-                .items
-                .as_ref()
-                .and_then(toml::Value::as_str),
-            Some("{{ view.query }}")
-        );
-    }
-
-    #[test]
-    fn unbound_commands_are_valid_and_do_not_collide() {
-        let loaded = config(
-            r#"
-            default_view = "base:main"
-            [workflows.base.views.main.engine]
-            type = "picker"
-            [workflows.base.views.main.commands.cmd_one]
-            label = "Command One"
-            type = "return"
-            [workflows.base.views.main.commands.cmd_one.payload]
-            value = "one"
-
-            [workflows.base.views.main.commands.cmd_two]
-            label = "Command Two"
-            type = "return"
-            [workflows.base.views.main.commands.cmd_two.payload]
-            value = "two"
+            [commands.bindings.commands]
+            key = "ctrl+k"
             "#,
         );
-        validate_config(&loaded).unwrap();
-        let cmd1 = &loaded.views["base:main"].commands["cmd_one"];
-        let cmd2 = &loaded.views["base:main"].commands["cmd_two"];
-        assert_eq!(cmd1.key, None);
-        assert_eq!(cmd2.key, None);
-        assert!(!cmd1.has_key());
-        assert!(!cmd2.has_key());
+        let error = compiled
+            .validate_with_engines(&EngineRegistry::new())
+            .expect_err("built-in commands need their selector view");
+        assert!(error.to_string().contains("selectors:commands"));
+    }
+
+    #[test]
+    fn key_normalization_accepts_named_bindings_and_rejects_empty_values() {
+        assert_eq!(normalize_key("ctrl+k").unwrap(), "ctrl+k");
+        assert!(normalize_key("").is_err());
     }
 }

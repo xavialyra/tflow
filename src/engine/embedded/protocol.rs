@@ -6,13 +6,12 @@
 use super::{EmbeddedAction, create_input_bindings, create_renderer, create_view};
 use crate::engine::{
     ActionId, EngineActionInput, EngineDecision, EngineEmission, EngineNavigationRequest,
-    EngineRuntime, EngineRuntimeSnapshot, EngineTick, EvaluatedBindingConfig,
-    EvaluatedEngineConfig, ExternalTickAction, ExternalTickResult, InputBindingFactoryContext,
-    RawInputReceiver, RendererFactoryContext, RuntimeFactoryContext, ViewContext as EngineContext,
-    ViewIdentity,
+    EngineRuntime, EngineRuntimeSnapshot, EngineTick, ExternalTickAction, ExternalTickResult,
+    InputBindingFactoryContext, ProjectedBindingConfig, ProjectedEngineConfig, RawInputReceiver,
+    RendererFactoryContext, RuntimeFactoryContext, ViewContext as EngineContext, ViewIdentity,
 };
 use crate::input::InputEvent;
-use crate::input::{EditorSnapshot, InputSourceIdentity, ViewMountId};
+use crate::input::{EditorSnapshot, ViewMountId};
 use crate::lifecycle::CancellationObserver;
 use crate::protocol::contracts::ViewInstanceId;
 use crate::ui::theme::ResolvedTheme;
@@ -29,21 +28,23 @@ use serde_json::Value;
 pub(crate) struct EmbeddedProtocolConfig {
     pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
-    pub(crate) engine: EvaluatedEngineConfig,
-    pub(crate) bindings: EvaluatedBindingConfig,
+    pub(crate) engine: ProjectedEngineConfig,
+    pub(crate) bindings: ProjectedBindingConfig,
     pub(crate) cancellation: CancellationObserver,
     pub(crate) runtime_snapshot: Value,
+    pub(crate) parameters: ParameterSnapshot,
     pub(crate) theme: ResolvedTheme,
 }
 
 impl EmbeddedProtocolConfig {
     pub(crate) fn new(
         view_ref: impl Into<String>,
-        engine: EvaluatedEngineConfig,
-        bindings: EvaluatedBindingConfig,
+        engine: ProjectedEngineConfig,
+        bindings: ProjectedBindingConfig,
         commands: crate::protocol::ViewCommandBindings,
         cancellation: CancellationObserver,
         runtime_snapshot: Value,
+        parameters: ParameterSnapshot,
         theme: ResolvedTheme,
     ) -> Self {
         Self {
@@ -53,6 +54,7 @@ impl EmbeddedProtocolConfig {
             bindings,
             cancellation,
             runtime_snapshot,
+            parameters,
             theme,
         }
     }
@@ -79,20 +81,7 @@ fn create_protocol_view_state(
         request.query.target,
         config.identity.view_ref
     );
-    let mount_id = ViewMountId(instance.0);
-    let parameters = ParameterSnapshot::from_parts(
-        request.query.values.clone(),
-        request
-            .input
-            .as_ref()
-            .map(|seed| seed.text.clone())
-            .unwrap_or_default(),
-        InputSourceIdentity {
-            frame: mount_id,
-            generation: 0,
-        },
-        0,
-    );
+    let parameters = config.parameters;
     let identity = config.identity.clone();
     let runtime = create_view(RuntimeFactoryContext {
         identity: identity.clone(),
@@ -267,7 +256,6 @@ impl EmbeddedProtocolView {
             EngineDecision::Return(output) => Ok(ViewDecision::Return(ViewResult {
                 value: serde_json::to_value(output)
                     .context("could not serialize embedded result")?,
-                adapter: None,
             })),
             EngineDecision::Batch(decisions) => {
                 let mut mapped = Vec::with_capacity(decisions.len());
@@ -320,7 +308,6 @@ impl EmbeddedProtocolView {
                 Ok(ViewDecision::Return(ViewResult {
                     value: serde_json::to_value(output)
                         .context("could not serialize embedded result")?,
-                    adapter: None,
                 }))
             }
             ExternalTickAction::Close => {
@@ -329,15 +316,15 @@ impl EmbeddedProtocolView {
                 Ok(ViewDecision::Close)
             }
             ExternalTickAction::Fail(error) => {
+                let error = format!("view {}: {error}", self.engine_context.view_ref());
                 self.terminal_finished = true;
                 self.error = Some(error.clone());
                 self.state_revision = self.state_revision.wrapping_add(1);
-                // Failure is already consumed by the host's error path. Ack it
-                // here so the adapter cannot remain frozen on a completion that
-                // will never produce a transition.
+                // The Router closes the failed View transactionally and reports
+                // this error after the caller has been restored.
                 self.runtime.commit_external_tick();
                 self.external_ack_pending = false;
-                Err(crate::view::operation_failure(error))
+                Ok(ViewDecision::CloseWithError(error))
             }
         }
     }
@@ -355,7 +342,7 @@ impl RawInputReceiver for EmbeddedProtocolView {
 impl View for EmbeddedProtocolView {
     fn bindings(&self, _: &ViewContext) -> BindingSet {
         let commands = self.commands.bindings.iter().filter(|binding| {
-            binding.invocation.view_reference().is_some() && binding.invocation.command.passthrough
+            binding.invocation.view_reference().is_none() || binding.invocation.command.passthrough
         });
         BindingSet::new(
             commands
@@ -384,7 +371,6 @@ impl View for EmbeddedProtocolView {
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
-            title: None,
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
@@ -459,8 +445,8 @@ impl View for EmbeddedProtocolView {
                         if is_active {
                             return Ok(self.commands.request(binding, None));
                         }
-                    } else if binding.invocation.view_reference().is_some()
-                        && binding.invocation.command.passthrough
+                    } else if binding.invocation.view_reference().is_none()
+                        || binding.invocation.command.passthrough
                     {
                         return Ok(self.commands.request(binding, None));
                     }
@@ -519,7 +505,6 @@ impl View for EmbeddedProtocolView {
         Ok(RenderResult {
             cursor,
             metadata: crate::view::ViewMetadata {
-                title: None,
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
                 bindings: Some(self.bindings(&ViewContext::new(self.instance, "embedded"))),
@@ -564,7 +549,7 @@ impl Drop for EmbeddedProtocolView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::EvaluatedBindingConfig;
+    use crate::engine::ProjectedBindingConfig;
     use crate::view::{NavigationRequest, ParsedQuery};
     use ratatui::{Terminal, backend::TestBackend};
     use std::fs;
@@ -581,7 +566,7 @@ mod tests {
     fn config(command: &[&str]) -> EmbeddedProtocolConfig {
         EmbeddedProtocolConfig::new(
             "embedded",
-            EvaluatedEngineConfig {
+            ProjectedEngineConfig {
                 fields: [(
                     "command".to_string(),
                     Value::Array(
@@ -593,18 +578,26 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                ..EvaluatedEngineConfig::default()
+                ..ProjectedEngineConfig::default()
             },
-            EvaluatedBindingConfig::default(),
+            ProjectedBindingConfig::default(),
             crate::protocol::ViewCommandBindings::new(
                 &crate::workflow::config::load_test_fixture().unwrap(),
                 "embedded",
                 crate::lifecycle::CancellationToken::new().observer(),
-                &[],
             )
             .unwrap(),
             crate::lifecycle::CancellationToken::new().observer(),
             serde_json::json!({"view": {"current": {}}}),
+            ParameterSnapshot::from_parts(
+                Value::Null,
+                String::new(),
+                crate::input::InputSourceIdentity {
+                    frame: ViewMountId(1),
+                    generation: 0,
+                },
+                0,
+            ),
             ResolvedTheme::terminal(),
         )
     }
@@ -822,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_external_completion_is_propagated_and_acknowledged() {
+    fn failed_external_completion_closes_recoverably_and_is_acknowledged() {
         let mut cfg = config(&["/bin/sh", "-c", "exit 0"]);
         cfg.engine.fields.insert(
             "result".to_string(),
@@ -832,17 +825,18 @@ mod tests {
         let mut failed = false;
         for _ in 0..100 {
             match view.event(ViewEvent::Tick, &mut context) {
+                Ok(ViewDecision::CloseWithError(error)) => {
+                    assert!(error.contains("produced no result"));
+                    failed = true;
+                    break;
+                }
                 Ok(decision) => {
                     assert!(matches!(
                         decision,
                         ViewDecision::Invalidate | ViewDecision::Stay
                     ));
                 }
-                Err(error) => {
-                    assert!(error.to_string().contains("produced no result"));
-                    failed = true;
-                    break;
-                }
+                Err(error) => panic!("embedded failure must close recoverably: {error}"),
             }
             std::thread::sleep(Duration::from_millis(1));
         }

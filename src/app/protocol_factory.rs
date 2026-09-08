@@ -8,9 +8,7 @@ use crate::protocol::ViewCommandBindings;
 use crate::protocol::contracts::ViewInstanceId;
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{NavigationRequest, View, ViewFactory, ViewServices};
-use crate::workflow::config::{
-    CompiledConfig, EvaluationSnapshot, InvocationScope, OwnerViewScope, SessionScope,
-};
+use crate::workflow::config::CompiledConfig;
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -18,7 +16,7 @@ use std::collections::BTreeMap;
 
 /// Factory used by the default protocol composition root. It owns only
 /// immutable configuration and creates a fresh protocol View for each Router
-/// instance; no legacy AppSession state is consulted.
+/// instance; no separate AppSession state is consulted.
 pub(crate) struct ProtocolViewFactory {
     config: std::sync::Arc<CompiledConfig>,
     invocation: std::sync::Arc<crate::workflow::InvocationContext>,
@@ -97,29 +95,30 @@ impl ProtocolViewFactory {
         }))
     }
 
-    fn evaluated(
+    fn prepared(
         &self,
         target: &str,
         instance: ViewInstanceId,
         request: &NavigationRequest,
     ) -> Result<(
-        crate::engine::EvaluatedEngineConfig,
-        crate::engine::EvaluatedBindingConfig,
+        crate::engine::ProjectedEngineConfig,
+        crate::engine::ProjectedBindingConfig,
         Value,
+        ParameterSnapshot,
     )> {
         let definition = self.engines.definition(&self.config, target)?;
         let parameters = self.parameters(request, instance)?;
         let runtime = self.runtime_snapshot(target, &parameters)?;
-        let evaluation = EvaluationSnapshot::new(
-            InvocationScope::new(self.invocation.input_value()),
-            SessionScope::new(&runtime),
-            Some(OwnerViewScope::new(target, &parameters)),
-            Some(&self.cancellation),
-        );
         Ok((
-            crate::engine::evaluate_engine_config(&self.config, target, &definition, &evaluation)?,
-            crate::engine::evaluate_binding_config(&self.config, target, &definition, &evaluation)?,
+            crate::engine::project_engine_config(
+                &self.config,
+                target,
+                &definition,
+                self.invocation.input_value().clone(),
+            )?,
+            crate::engine::project_binding_config(&self.config, target, &definition)?,
             runtime,
+            parameters,
         ))
     }
 
@@ -146,7 +145,8 @@ impl ViewFactory for ProtocolViewFactory {
     ) -> Result<Box<dyn View>> {
         let target = &request.target;
         let engine_type = self.config.engine(target)?.to_string();
-        let (engine, bindings, runtime_snapshot) = self.evaluated(target, instance, request)?;
+        let (engine, bindings, runtime_snapshot, parameters) =
+            self.prepared(target, instance, request)?;
         match engine_type.as_str() {
             crate::workflow::config::ENGINE_PICKER => {
                 let parameter_binding = self.config.parameter_binding(target)?;
@@ -172,9 +172,6 @@ impl ViewFactory for ProtocolViewFactory {
                         &self.config,
                         target,
                         self.cancellation.observer(),
-                        self.engines
-                            .definition(&self.config, target)?
-                            .current_fields,
                     )?,
                     identity: crate::engine::ViewIdentity::new(
                         target,
@@ -201,14 +198,7 @@ impl ViewFactory for ProtocolViewFactory {
                     target,
                     engine,
                     bindings,
-                    ViewCommandBindings::new(
-                        &self.config,
-                        target,
-                        self.cancellation.observer(),
-                        self.engines
-                            .definition(&self.config, target)?
-                            .current_fields,
-                    )?,
+                    ViewCommandBindings::new(&self.config, target, self.cancellation.observer())?,
                     self.cancellation.observer(),
                     runtime_snapshot,
                     self.theme.clone(),
@@ -225,16 +215,10 @@ impl ViewFactory for ProtocolViewFactory {
                     target,
                     engine,
                     bindings,
-                    ViewCommandBindings::new(
-                        &self.config,
-                        target,
-                        self.cancellation.observer(),
-                        self.engines
-                            .definition(&self.config, target)?
-                            .current_fields,
-                    )?,
+                    ViewCommandBindings::new(&self.config, target, self.cancellation.observer())?,
                     self.cancellation.observer(),
                     runtime_snapshot,
+                    parameters,
                     self.theme.clone(),
                 ),
                 request,

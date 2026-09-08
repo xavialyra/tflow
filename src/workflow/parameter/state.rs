@@ -4,7 +4,6 @@ use super::schema::{
 };
 use crate::input::InputSourceIdentity;
 use crate::terminal::sanitize_terminal_text;
-use crate::workflow::expression::{EvaluationStage, TemplateRegistry};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,14 +17,6 @@ pub(crate) struct ParameterRegistry {
 impl ParameterRegistry {
     #[cfg(test)]
     pub(crate) fn compile(config: &Value) -> Result<Self> {
-        let templates = TemplateRegistry::compile_json_tree(config)?;
-        Self::compile_with_templates(config, &templates)
-    }
-
-    pub(crate) fn compile_with_templates(
-        config: &Value,
-        templates: &TemplateRegistry,
-    ) -> Result<Self> {
         let workflows = config
             .get("workflows")
             .and_then(Value::as_object)
@@ -38,12 +29,6 @@ impl ParameterRegistry {
                 .with_context(|| format!("workflow {:?} views must be an object", workflow_id))?;
             for (view_name, view) in view_values {
                 let view_ref = format!("{workflow_id}:{view_name}");
-                if let Some(query) = view.get("query") {
-                    templates.requirements_for_value(query)?.validate_stage(
-                        EvaluationStage::Bootstrap,
-                        &format!("view {view_ref:?} query schema"),
-                    )?;
-                }
                 views.insert(
                     view_ref,
                     ViewParameterSchema {
@@ -55,16 +40,31 @@ impl ParameterRegistry {
         Ok(Self { views })
     }
 
+    pub(crate) fn compile_view_queries(
+        queries: impl IntoIterator<Item = (String, Option<toml::Table>)>,
+    ) -> Result<Self> {
+        let mut views = BTreeMap::new();
+        for (view_ref, query) in queries {
+            let schema = match query {
+                Some(query) => {
+                    let query = serde_json::to_value(query)
+                        .context("view query cannot be represented as JSON")?;
+                    compile_parameter_schema(&serde_json::json!({ "query": query }))?
+                }
+                None => compile_parameter_schema(&Value::Null)?,
+            };
+            views.insert(view_ref, ViewParameterSchema { schema });
+        }
+        Ok(Self { views })
+    }
+
     pub(crate) fn parameter_binding(self: &Arc<Self>, view_ref: &str) -> Result<ParameterBinding> {
         let schema = self
             .views
             .get(view_ref)
-            .map(|schema| schema.schema.clone())
-            .unwrap_or(ParameterSchema {
-                plain: true,
-                fields: BTreeMap::new(),
-                input_order: Vec::new(),
-            });
+            .with_context(|| format!("view {:?} has no query schema", view_ref))?
+            .schema
+            .clone();
         Ok(ParameterBinding {
             registry: Arc::clone(self),
             view_ref: view_ref.to_string(),
@@ -73,15 +73,10 @@ impl ParameterRegistry {
     }
 
     pub(crate) fn instantiate(&self, view_ref: &str) -> Result<ParameterState> {
-        let Some(schema) = self.views.get(view_ref) else {
-            return Ok(ParameterState {
-                view_ref: view_ref.to_string(),
-                values: BTreeMap::new(),
-                revision: 0,
-                raw_input: String::new(),
-                input_rejected: false,
-            });
-        };
+        let schema = self
+            .views
+            .get(view_ref)
+            .with_context(|| format!("view {:?} has no query schema", view_ref))?;
         let values = if schema.schema.plain {
             BTreeMap::new()
         } else {
@@ -179,14 +174,6 @@ impl ParameterRegistry {
     }
 
     pub(crate) fn render_input(&self, state: &ParameterState) -> Result<String> {
-        if self.implicit_plain(state) {
-            return Ok(state
-                .values
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string());
-        }
         let schema = &self.schema_for(&state.view_ref, state)?.schema;
         if schema.plain {
             return Ok(state
@@ -240,17 +227,6 @@ impl ParameterRegistry {
         source: &str,
         validate_required_fields: bool,
     ) -> Result<bool> {
-        if self.implicit_plain(state) {
-            let value = Value::String(source.to_string());
-            if state.values.get("query") == Some(&value) {
-                state.raw_input = source.to_string();
-                return Ok(false);
-            }
-            state.values.insert("query".to_string(), value);
-            state.raw_input = source.to_string();
-            state.revision = state.revision.wrapping_add(1);
-            return Ok(true);
-        }
         let schema = &self.schema_for(&state.view_ref, state)?.schema;
         if schema.plain {
             let value = Value::String(source.to_string());
@@ -330,11 +306,9 @@ impl ParameterRegistry {
         if source.is_empty() {
             return Ok(false);
         }
-        if !self.implicit_plain(state) {
-            let schema = &self.schema_for(&state.view_ref, state)?.schema;
-            if !schema.plain && schema.input_order.is_empty() {
-                bail!("non-empty feed binding cannot be parsed because query input_order is empty");
-            }
+        let schema = &self.schema_for(&state.view_ref, state)?.schema;
+        if !schema.plain && schema.input_order.is_empty() {
+            bail!("non-empty feed binding cannot be parsed because query input_order is empty");
         }
         self.update_input(state, source)
     }
@@ -343,14 +317,6 @@ impl ParameterRegistry {
     pub(crate) fn update_value(&self, state: &mut ParameterState, value: &Value) -> Result<bool> {
         if value.is_null() {
             return Ok(false);
-        }
-        if self.implicit_plain(state) {
-            return self.update_input(
-                state,
-                value
-                    .as_str()
-                    .context("string query expects a string value")?,
-            );
         }
         if value.is_string() {
             return self.update_input(state, value.as_str().expect("query is a string"));
@@ -396,14 +362,6 @@ impl ParameterRegistry {
         if value.is_null() {
             return Ok(false);
         }
-        if self.implicit_plain(state) {
-            return self.update_initial_input(
-                state,
-                value
-                    .as_str()
-                    .context("string query expects a string value")?,
-            );
-        }
         if value.is_string() {
             return self.update_initial_input(state, value.as_str().expect("query is a string"));
         }
@@ -441,13 +399,6 @@ impl ParameterRegistry {
     }
 
     pub(crate) fn parameter_values(&self, state: &ParameterState) -> Result<Value> {
-        if self.implicit_plain(state) {
-            return Ok(state
-                .values
-                .get("query")
-                .cloned()
-                .unwrap_or_else(|| Value::String(String::new())));
-        }
         let schema = &self.schema_for(&state.view_ref, state)?.schema;
         if schema.plain {
             return Ok(state
@@ -465,9 +416,6 @@ impl ParameterRegistry {
     }
 
     pub(crate) fn validate_instance(&self, state: &ParameterState) -> Result<()> {
-        if self.implicit_plain(state) {
-            return Ok(());
-        }
         let schema = &self.schema_for(&state.view_ref, state)?.schema;
         if schema.plain {
             return Ok(());
@@ -481,10 +429,6 @@ impl ParameterRegistry {
         Ok(())
     }
 
-    fn implicit_plain(&self, state: &ParameterState) -> bool {
-        !self.views.contains_key(&state.view_ref)
-    }
-
     fn schema_for<'a>(
         &'a self,
         view_ref: &str,
@@ -492,7 +436,7 @@ impl ParameterRegistry {
     ) -> Result<&'a ViewParameterSchema> {
         if state.view_ref != view_ref {
             bail!(
-                "query instance for {:?} cannot evaluate view {:?}",
+                "query instance for {:?} cannot be used for view {:?}",
                 state.view_ref,
                 view_ref
             );
@@ -677,16 +621,6 @@ impl ParameterBinding {
     }
 
     pub(crate) fn bind_cli(&self, arguments: &[String]) -> Result<ParameterState> {
-        if !self.registry.views.contains_key(&self.view_ref) {
-            let state = self.registry.instantiate(&self.view_ref)?;
-            if arguments.is_empty() {
-                return Ok(state);
-            }
-            bail!(
-                "view {:?} does not declare keyed query parameters",
-                self.view_ref
-            );
-        }
         self.registry.bind_cli(&self.view_ref, arguments)
     }
 
@@ -852,50 +786,26 @@ mod tests {
     }
 
     #[test]
-    fn unknown_view_binding_keeps_implicit_plain_cli_behavior() {
+    fn unknown_view_references_are_rejected_at_the_parameter_boundary() {
         let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
                 "workflows": {"core": {"views": {"default": {}}}}
             }))
             .unwrap(),
         );
-        let binding = registry.parameter_binding("missing:default").unwrap();
-
-        let state = binding.bind_cli(&[]).unwrap();
-        assert_eq!(state.view_ref(), "missing:default");
-        assert_eq!(state.raw_input(), "");
-
-        let error = binding
-            .bind_cli(&["--query=value".into()])
-            .expect_err("unknown views must remain implicit plain queries");
-        assert!(
-            error
-                .to_string()
-                .contains("does not declare keyed query parameters")
-        );
+        let error = registry
+            .parameter_binding("missing:default")
+            .expect_err("unknown views must not receive an implicit schema");
+        assert!(error.to_string().contains("missing:default"));
+        let error = registry
+            .instantiate("missing:default")
+            .expect_err("unknown views must not instantiate parameter state");
+        assert!(error.to_string().contains("missing:default"));
     }
 
     #[test]
-    fn sanitizing_plain_empty_values_is_a_noop_for_implicit_and_configured_queries() {
-        let implicit_registry = Arc::new(
-            ParameterRegistry::compile(&serde_json::json!({
-                "workflows": {"core": {"views": {"default": {}}}}
-            }))
-            .unwrap(),
-        );
-        let mut implicit = implicit_registry.instantiate("missing:default").unwrap();
-        assert!(
-            !implicit_registry
-                .parameter_binding("missing:default")
-                .unwrap()
-                .sanitize_typed_values(&mut implicit)
-                .unwrap()
-        );
-        assert_eq!(implicit.revision(), 0);
-        assert_eq!(implicit.raw_input(), "");
-        assert!(!implicit.values.contains_key("query"));
-
-        let configured_registry = Arc::new(
+    fn sanitizing_plain_empty_values_is_a_noop_for_configured_queries() {
+        let registry = Arc::new(
             ParameterRegistry::compile(&serde_json::json!({
                 "workflows": {"core": {"views": {"default": {
                     "query": {"type": "string"}
@@ -903,17 +813,17 @@ mod tests {
             }))
             .unwrap(),
         );
-        let mut configured = configured_registry.instantiate("core:default").unwrap();
+        let mut state = registry.instantiate("core:default").unwrap();
         assert!(
-            !configured_registry
+            !registry
                 .parameter_binding("core:default")
                 .unwrap()
-                .sanitize_typed_values(&mut configured)
+                .sanitize_typed_values(&mut state)
                 .unwrap()
         );
-        assert_eq!(configured.revision(), 0);
-        assert_eq!(configured.raw_input(), "");
-        assert!(!configured.values.contains_key("query"));
+        assert_eq!(state.revision(), 0);
+        assert_eq!(state.raw_input(), "");
+        assert!(!state.values.contains_key("query"));
     }
 
     #[test]
@@ -1155,9 +1065,13 @@ mod tests {
 
     #[test]
     fn state_from_snapshot_rejects_non_string_plain_values() {
-        let registry =
-            Arc::new(ParameterRegistry::compile(&serde_json::json!({"workflows": {}})).unwrap());
-        let binding = registry.parameter_binding("unknown:view").unwrap();
+        let registry = Arc::new(
+            ParameterRegistry::compile(&serde_json::json!({
+                "workflows": {"core": {"views": {"default": {}}}}
+            }))
+            .unwrap(),
+        );
+        let binding = registry.parameter_binding("core:default").unwrap();
 
         for value in [
             serde_json::json!(7),

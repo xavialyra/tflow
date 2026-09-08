@@ -6,7 +6,8 @@ tags:
   - guarantees
   - limits
   - trust-boundary
-description: "Explanation of the workflow trust boundary, resource budgets, process cleanup, and terminal state invariants."
+  - producers
+description: "Explanation of workflow trust boundaries, producer resource budgets, process cleanup, and terminal state invariants."
 ---
 
 # Runtime Guarantees and Safety Limits
@@ -17,35 +18,55 @@ description: "Explanation of the workflow trust boundary, resource budgets, proc
 
 Workflow scripts execute with the current user's permissions and must be treated as trusted code. Directory confinement, special-file rejection, resource limits, and process groups reduce accidental exposure and resource abuse; they do not provide operating-system isolation from a malicious workflow.
 
-Workflows operate under strict directory and execution boundaries:
-- **Directory Workflow Confinement**: In directory workflows (`$XDG_CONFIG_HOME/tui-launcher/workflows/<workflow-id>/workflow.toml`), companion script references (`source = "script", file = "..."`) are resolved and validated strictly within the workflow root.
-- **Single-File Isolation**: Single-file workflows (`$XDG_CONFIG_HOME/tui-launcher/workflows/<workflow-id>.toml`) must not reference external relative scripts; their executable logic must be declared as inline scripts (`source = "inline"`) or invoke absolute host binaries.
-- **Caller Working Directory ($PWD)**: Host process invocations preserve the caller's working directory (`$PWD`). The launcher injects `$WORKFLOW_DIR` into child process environments for directory workflows so scripts can reliably reference companion resources.
-- **Multi-Line Inline Script Materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (with cache fallback) with strict `0600` permissions and provenance attribution comments. They are executed via shebang interpretation or direct binary invocation.
-- **Path Traversal Prevention**: Relative path traversal attempts (e.g., `../../etc/passwd`) or symlink escapements are caught during configuration validation (`--check`) and runtime startup.
-- **Special File Rejection**: The launcher refuses to load configuration or script files from device nodes, sockets, or named pipes.
+Workflows operate under these boundaries:
 
-## 2. Process Execution Boundaries
+- **Directory workflow confinement**: In `workflows/<workflow-id>/workflow.toml`, producer `handler.file` paths are resolved and validated within the workflow root.
+- **Single-file isolation**: A single-file workflow cannot reference a relative external script file. Use a producer `handler.script` or an absolute host binary/file path.
+- **Caller working directory**: Host process invocations preserve the caller's `$PWD`. Directory workflows receive `$WORKFLOW_DIR` for companion resources.
+- **Inline materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (with cache fallback) using `0600` permissions and source attribution comments. The host interprets shebang arguments and can invoke scripts from a `noexec` filesystem.
+- **Path traversal prevention**: Relative traversal attempts and symlink escapes are rejected during `--check` and runtime preparation.
+- **Special file rejection**: Configuration and script files cannot be device nodes, sockets, or named pipes.
 
-External scripts spawned by command handlers or dynamic feeds are subject to bounded execution parameters:
+All configuration is static and producer handlers are literal data. The host does not recursively evaluate template-looking text in handler tables, inline producer bodies, request data, or generated responses. Runtime data enters scripts only through their documented JSON request.
 
-| Resource | Default Limit | Maximum / Configurable Limit |
-| :--- | :--- | :--- |
-| **Execution Timeout** | 10 seconds | Configurable per command |
-| **Argument Vector (`argv`)** | 64 KiB total | Fixed safety bound |
-| **Standard Error (`stderr`)**| 64 KiB total | Fixed diagnostic buffer |
-| **Standard Output (`stdout`)**| 1 MiB | Up to 64 MiB for picker feeds |
-| **Template Budget** | 16 MiB | Shared memory evaluation ceiling |
+## 2. Producer Protocol and Process Limits
 
-## 3. Process Group Lifecycle & Cleanup
+Producer scripts receive one JSON request on stdin and must write one complete version-1 JSON response on stdout. Stderr is reserved for diagnostics.
 
-Terminal applications often risk leaving orphaned child processes when interrupted:
-- **Process Groups**: When an embedded process or script handler is spawned, it is placed in its own dedicated process group.
-- **Cooperative Shutdown**: Upon view cancellation or normal exit, signals (`SIGTERM`, followed by `SIGKILL` if unresponsive) are propagated to the entire process group.
-- **Zombie Reaping**: Child processes are cleanly reaped to prevent process table leakage.
+| Resource | Policy |
+| :--- | :--- |
+| **Execution timeout** | 10 seconds for bounded scripts |
+| **Argument vector** | 64 KiB total safety bound |
+| **Standard error** | 64 KiB |
+| **Standard output** | 1 MiB for command and Capture producers |
+| **Picker item producer stdout** | 64 MiB, to support large candidate sets |
+
+Producer stdout is strict: surrounding whitespace is allowed, but malformed JSON, a second JSON document, unknown fields, an unsupported version, a nonzero exit status, or a response with the wrong operation type is failure. No failed protocol response is applied. Capture and command producers use the default stdout bound; Picker items use the larger bound.
+
+## 3. Process Group Lifecycle and Cleanup
+
+When a bounded script or external process is spawned:
+
+- It is placed in a managed process group.
+- Cancellation, timeout, or View close terminates the group, escalating from `SIGTERM` to `SIGKILL` when required.
+- The launcher waits for and reaps the managed child before reporting the task terminal state.
+- A task result that is stale, cancelled, or associated with an unmounted View cannot publish state even if the process completed.
+
+Capture output work begins after the Capture View mounts. Return processor work begins only after the child closes and the recorded caller is active. A provider or processor failure does not reopen a closed View or retry a potentially side-effecting script.
 
 ## 4. Terminal State Restoration Invariants
 
-Messing up the user's terminal state (e.g. leaving raw mode active or the alternate screen unreleased) is a fatal user-experience failure:
-- **Panic Hooks**: The launcher installs custom panic hooks ensuring that raw mode is disabled, the alternate screen buffer is vacated, and the cursor is restored before printing any stack trace.
-- **Signal Handlers**: Handlers for `SIGINT`, `SIGTERM`, and `SIGHUP` execute the full terminal teardown sequence.
+Foreground and Embedded processes have distinct terminal policies, but every path must restore launcher-owned terminal state:
+
+- **Foreground effects**: The application suspends terminal ownership for the child, waits through completion/cancellation, then restores terminal settings before resuming TUI polling and rendering.
+- **Embedded effects**: The Embedded View owns its PTY surface and closes/cancels/reaps its process when the View closes.
+- **Panic hooks**: Raw mode is disabled, the alternate screen is vacated, and the cursor is restored before a panic report is printed.
+- **Signal handling**: `SIGINT`, `SIGTERM`, and `SIGHUP` trigger the terminal teardown sequence.
+
+A restoration failure is a host-level failure, not a normal in-TUI producer diagnostic.
+
+## 5. What These Guarantees Do Not Provide
+
+The launcher does not sandbox workflow code, roll back script side effects, or limit what a trusted script can do with the user's permissions. Resource bounds constrain launcher-managed I/O and process lifetime; they are not security isolation.
+
+For the exact workflow and producer schema, see [workflow.toml Specification](../reference/workflow-toml.md). For literal values and runtime data boundaries, see [Static Values and Runtime Data](../reference/expressions.md).

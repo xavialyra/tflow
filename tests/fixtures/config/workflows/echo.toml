@@ -13,46 +13,106 @@ message = { type = "string", default = "Hello from single-file workflow!" }
 type = "capture"
 
 [views.main.engine.config]
-title = "Echo Service"
-output = "{{ view.query.message }}"
+
+[views.main.engine.config.output]
+producer = "script"
+
+[views.main.engine.config.output.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+parameters = request.get("parameters", {})
+message = parameters.get("message", "") if isinstance(parameters, dict) else ""
+if not isinstance(message, str):
+    raise SystemExit("echo message must be a string")
+json.dump({"version": 1, "output": message}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 
 [views.main.commands.copy]
 key = "enter"
 label = "Copy & Exit"
 type = "return"
+producer = "declared"
+
+[views.main.commands.copy.handler]
 
 [views.main.commands.inline_multiline]
 key = "ctrl+r"
 label = "Run Multi-line Script"
 type = "run"
-[views.main.commands.inline_multiline.payload]
-args = ["{{ view.query.message }}"]
-exit = true
-script = """
-#!/usr/bin/env -S sh -eu
-msg="$1"
-printf 'ECHO_MULTILINE:%s\n' "$msg"
-"""
+producer = "script"
+
+[views.main.commands.inline_multiline.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+parameters = request.get("parameters", {})
+message = parameters.get("message", "") if isinstance(parameters, dict) else ""
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["python3", "-c", "import sys; print('ECHO_MULTILINE:' + sys.argv[1])", message],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 
 [views.main.commands.inline_single]
 key = "ctrl+s"
 label = "Run Single-line Script"
 type = "run"
-[views.main.commands.inline_single.payload]
-args = ["{{ view.query.message }}"]
-exit = true
-script = 'printf "ECHO_SINGLE:%s\n" "$1"'
+producer = "script"
+
+[views.main.commands.inline_single.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+parameters = request.get("parameters", {})
+message = parameters.get("message", "") if isinstance(parameters, dict) else ""
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["python3", "-c", "import sys; print('ECHO_SINGLE:' + sys.argv[1])", message],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 
 [views.main.commands.inline_python]
 key = "ctrl+y"
 label = "Run Python Script"
 type = "run"
-[views.main.commands.inline_python.payload]
-args = ["{{ view.query.message }}"]
-exit = true
-script = """
-#!/usr/bin/env python3
+producer = "script"
+
+[views.main.commands.inline_python.handler]
+script = '''#!/usr/bin/env python3
+import json
 import sys
-msg = sys.argv[1] if len(sys.argv) > 1 else ""
-print(f"ECHO_PYTHON:{msg}")
-"""
+
+request = json.load(sys.stdin)
+parameters = request.get("parameters", {})
+message = parameters.get("message", "") if isinstance(parameters, dict) else ""
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["python3", "-c", "import sys; print('ECHO_PYTHON:' + sys.argv[1])", message],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''

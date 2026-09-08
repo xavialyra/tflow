@@ -3,15 +3,13 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct CaptureSession {
-    title: String,
     output: String,
     lines: Arc<[String]>,
 }
 
 impl CaptureSession {
-    pub(crate) fn new(title: &str, output: &str) -> Self {
+    pub(crate) fn new(output: &str) -> Self {
         Self {
-            title: title.to_string(),
             output: output.to_string(),
             lines: capture_lines(output).into(),
         }
@@ -19,10 +17,6 @@ impl CaptureSession {
 
     pub(crate) fn output(&self) -> &str {
         &self.output
-    }
-
-    pub(crate) fn title(&self) -> &str {
-        &self.title
     }
 
     pub(crate) fn shared_lines(&self) -> Arc<[String]> {

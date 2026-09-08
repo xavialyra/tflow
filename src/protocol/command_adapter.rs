@@ -3,7 +3,7 @@ use crate::view::{
     CallBoundary, CallReturnHandler, ViewCommandSnapshot, ViewContext, ViewDecision, ViewLocation,
     ViewResult,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Immutable command bindings projected into protocol-native Views.
 /// Runtime preparation remains owned by `ProtocolCommandService`.
@@ -14,7 +14,6 @@ pub(crate) struct ViewCommandBindings {
     pub(crate) has_unbound: bool,
     view_invocations:
         std::collections::BTreeMap<(String, String), crate::workflow::command::CommandInvocation>,
-    pub(crate) current_fields: &'static [&'static str],
 }
 
 #[derive(Clone)]
@@ -31,7 +30,6 @@ impl ViewCommandBindings {
         config: &crate::workflow::config::CompiledConfig,
         view_ref: &str,
         _cancellation: crate::lifecycle::CancellationObserver,
-        current_fields: &'static [&'static str],
     ) -> anyhow::Result<Self> {
         let mut bindings = Vec::new();
         let mut overflow_binding = None;
@@ -60,6 +58,23 @@ impl ViewCommandBindings {
             }
             Ok(())
         };
+        let mut globals = config.commands.bindings.clone();
+        if !globals.contains_key("commands") && config.view("selectors:commands").is_some() {
+            globals.insert(
+                "commands".to_string(),
+                crate::workflow::config::CommandBinding::builtin_commands(),
+            );
+        }
+        for (id, binding) in globals {
+            let Some(command) = binding.as_command(&id) else {
+                continue;
+            };
+            add(
+                id.clone(),
+                &binding,
+                crate::workflow::command::CommandInvocation::session_command(view_ref, id, command),
+            )?;
+        }
         if let Some(view) = config.view(view_ref) {
             for (id, command) in &view.commands {
                 add(
@@ -79,23 +94,6 @@ impl ViewCommandBindings {
                     ),
                 )?;
             }
-        }
-        let mut globals = config.commands.bindings.clone();
-        if !globals.contains_key("commands") && config.view("selectors:commands").is_some() {
-            globals.insert(
-                "commands".to_string(),
-                crate::workflow::config::CommandBinding::builtin_commands(),
-            );
-        }
-        for (id, binding) in globals {
-            let Some(command) = binding.as_command(&id) else {
-                continue;
-            };
-            add(
-                id.clone(),
-                &binding,
-                crate::workflow::command::CommandInvocation::session_command(view_ref, id, command),
-            )?;
         }
         let view_invocations = config
             .iter_views()
@@ -126,7 +124,6 @@ impl ViewCommandBindings {
             overflow_binding,
             has_unbound,
             view_invocations,
-            current_fields,
         })
     }
 
@@ -177,9 +174,13 @@ impl ViewCommandBindings {
     }
 
     pub(crate) fn view_bindings(&self) -> crate::view::BindingSet {
-        crate::view::BindingSet::new(self.bindings.iter().map(|binding| crate::view::Binding {
-            key: binding.key,
-            label: binding.label.clone(),
+        let mut seen = std::collections::HashSet::new();
+        crate::view::BindingSet::new(self.bindings.iter().filter_map(|binding| {
+            seen.insert(binding.key.binding_identity())
+                .then_some(crate::view::Binding {
+                    key: binding.key,
+                    label: binding.label.clone(),
+                })
         }))
     }
 
@@ -196,11 +197,7 @@ impl ViewCommandBindings {
         invocation: crate::workflow::command::CommandInvocation,
         owner: Option<crate::workflow::command::CommandOwnerContext>,
     ) -> crate::view::ViewDecision {
-        crate::view::ViewDecision::RequestCommand(crate::view::CommandRequest {
-            invocation,
-            owner,
-            current_fields: self.current_fields,
-        })
+        crate::view::ViewDecision::RequestCommand(crate::view::CommandRequest { invocation, owner })
     }
 
     pub(crate) fn view_invocation(
@@ -263,8 +260,6 @@ impl CommandService for ProtocolCommandService {
                     .as_ref()
                     .map(|publication| publication.current.clone())
                     .unwrap_or(serde_json::Value::Null),
-                current_fields: request.current_fields,
-                runtime: snapshot.runtime.clone(),
             },
         };
         let prepared = crate::workflow::command::prepare_command_action(
@@ -312,45 +307,70 @@ struct ProtocolCallReturnHandler {
     cancellation: crate::lifecycle::CancellationToken,
     origin: crate::workflow::command::CommandOrigin,
     context: crate::workflow::command::CommandContext,
-    then: Option<Box<crate::workflow::config::CommandAction>>,
+    return_processor: Option<crate::workflow::config::ReturnProcessor>,
+    invoke_selected: bool,
 }
 
 impl CallReturnHandler for ProtocolCallReturnHandler {
+    fn post_commit(&self) -> bool {
+        self.return_processor.is_some() || self.invoke_selected
+    }
+
     fn resume(
         &self,
-        source: &ViewLocation,
+        _source: &ViewLocation,
         caller: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
+        _snapshot: &ViewCommandSnapshot,
         result: &ViewResult,
     ) -> Result<ViewDecision> {
-        let Some(then) = &self.then else {
-            return Ok(ViewDecision::Stay);
-        };
-        let output = serde_json::from_value(result.value.clone())
-            .context("called View returned an invalid command output")?;
-        let returned = crate::workflow::command::ViewReturn {
-            source_view: source.target.clone(),
-            output,
-            adapter: result.adapter.clone(),
-        };
-        let mut context = self.context.clone();
-        context.runtime = snapshot.runtime.clone();
-        let action = crate::workflow::command::prepare_continuation(
-            &self.config,
-            &self.invocation,
-            then,
-            self.origin.clone(),
-            context,
-            &crate::workflow::command::return_value(&returned),
-            &self.cancellation,
-        )?;
-        map_prepared_action(
-            &self.config,
-            &self.invocation,
-            &self.cancellation,
-            action,
-            caller.instance,
-        )
+        let context = self.context.clone();
+        if let Some(processor) = &self.return_processor {
+            let action = crate::workflow::command::prepare_return_processor(
+                &self.config,
+                &self.invocation,
+                processor,
+                self.origin.clone(),
+                context,
+                caller,
+                result,
+                &self.cancellation,
+            )?;
+            return map_prepared_action(
+                &self.config,
+                &self.invocation,
+                &self.cancellation,
+                action,
+                caller.instance,
+            );
+        }
+        if self.invoke_selected {
+            let output: crate::workflow::command::ViewOutput =
+                serde_json::from_value(result.value.clone())
+                    .context("command selector returned an invalid command output")?;
+            let crate::workflow::command::ViewOutput::Value { value } = output else {
+                bail!("command selector must return a command reference value");
+            };
+            let reference: crate::workflow::command::CommandRef =
+                serde_json::from_value(value).context("command selector must return {view, id}")?;
+            let invocation = crate::workflow::command::resolve_visible_command(
+                &self.config,
+                &context,
+                &reference,
+            )?;
+            return map_prepared_action(
+                &self.config,
+                &self.invocation,
+                &self.cancellation,
+                crate::workflow::command::PreparedAction::Invoke(
+                    crate::workflow::command::CommandExecution {
+                        invocation,
+                        context,
+                    },
+                ),
+                caller.instance,
+            );
+        }
+        Ok(ViewDecision::Stay)
     }
 }
 
@@ -383,7 +403,8 @@ pub(crate) fn map_prepared_action(
                     cancellation: cancellation.clone(),
                     origin: call.origin,
                     context: call.context,
-                    then: call.then,
+                    return_processor: call.return_processor,
+                    invoke_selected: call.invoke_selected,
                 }),
             };
             Ok(ViewDecision::Transition(TransitionRequest::Call {
@@ -393,7 +414,6 @@ pub(crate) fn map_prepared_action(
         }
         PreparedAction::Return(returned) => Ok(ViewDecision::Return(ViewResult {
             value: serde_json::to_value(returned.output)?,
-            adapter: returned.adapter,
         })),
         PreparedAction::EditInput { value, cursor } => Ok(ViewDecision::Command(
             crate::view::CommandResult::EditInput { value, cursor },
@@ -454,7 +474,6 @@ fn protocol_navigation_request(
         protocol_request = protocol_request.with_input(text, cursor)?;
     }
     protocol_request.presentation = request.presentation;
-    protocol_request.engine_options = request.engine_options;
     Ok(protocol_request)
 }
 

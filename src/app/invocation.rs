@@ -1,10 +1,7 @@
 use super::SessionOutcome;
 use crate::lifecycle::CancellationToken;
 use crate::workflow::command::ViewOutput;
-use crate::workflow::config::{
-    CompiledConfig, EvaluationSnapshot, InvocationScope, OwnerViewScope, ReturnScope, SessionScope,
-};
-use crate::workflow::expression::EvaluationStage;
+use crate::workflow::config::CompiledConfig;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
@@ -15,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const RESULT_STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 
 pub(crate) struct InputArtifact {
     path: Option<PathBuf>,
@@ -78,7 +74,7 @@ pub(crate) fn finish(
     config: &CompiledConfig,
     invocation: &crate::workflow::InvocationContext,
     outcome: SessionOutcome,
-    cancellation: &CancellationToken,
+    _cancellation: &CancellationToken,
 ) -> Result<InvocationResult> {
     let SessionOutcome::Completed(returned) = outcome else {
         let exit_code = config
@@ -99,77 +95,7 @@ pub(crate) fn finish(
         });
     };
     let returned = *returned;
-    let Some(adapter) = returned.adapter.as_ref() else {
-        return Ok(default_result(returned.output));
-    };
-    let command = config
-        .view(&adapter.command.view)
-        .and_then(|view| view.commands.get(&adapter.command.id))
-        .with_context(|| {
-            format!(
-                "return command {:?} is not configured for view {:?}",
-                adapter.command.id, adapter.command.view
-            )
-        })?;
-    let Some(payload) = command.action.return_payload() else {
-        anyhow::bail!(
-            "command {:?} for view {:?} is not a return command",
-            adapter.command.id,
-            adapter.command.view
-        );
-    };
-    let Some(handler_config) = payload.handler.as_ref() else {
-        return Ok(default_result(returned.output));
-    };
-    let owner = &adapter.context.owner;
-    anyhow::ensure!(
-        owner.view_ref == adapter.command.view,
-        "return command owner is not available in its adapter context"
-    );
-    let returned_value = crate::workflow::command::return_value(&returned);
-    let owner_scope = OwnerViewScope::new(&owner.view_ref, &owner.parameters)
-        .with_binding_raw(Some(&owner.binding_raw));
-    let snapshot = EvaluationSnapshot::new(
-        InvocationScope::new(invocation.input_value()),
-        SessionScope::new(&adapter.context.runtime),
-        Some(owner_scope),
-        Some(cancellation),
-    )
-    .with_current(&adapter.context.current)
-    .with_current_fields(adapter.context.current_fields)
-    .with_return_scope(Some(ReturnScope::new(&returned_value)));
-    let handler_value =
-        config.evaluate_value(&snapshot, EvaluationStage::Return, handler_config)?;
-    let handler_target = handler_value
-        .as_str()
-        .context("return handler must evaluate to a string")?;
-    let workflow_root = config
-        .workflow_root(&adapter.command.view)
-        .with_context(|| {
-            format!(
-                "return handler for command {:?} has no workflow root",
-                adapter.command.id
-            )
-        })?;
-    let arguments = config.evaluate_argv(
-        payload.args.as_ref(),
-        &snapshot,
-        EvaluationStage::Return,
-        "return args",
-    )?;
-    let output = crate::execution::run_script(
-        workflow_root,
-        handler_target,
-        &arguments,
-        Some(RESULT_STDOUT_LIMIT),
-        cancellation,
-    )
-    .with_context(|| format!("could not run result handler {handler_target:?}"))?;
-    Ok(InvocationResult {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        exit_code: output.status.code().unwrap_or(1),
-    })
+    Ok(default_result(returned.output))
 }
 
 impl Drop for InputArtifact {

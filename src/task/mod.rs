@@ -27,6 +27,7 @@ impl TaskTags {
         Self { engine, task_class }
     }
 
+    #[cfg(test)]
     const DEFAULT: Self = Self::new("runtime", "task");
 }
 
@@ -48,8 +49,10 @@ pub(crate) enum TaskCancellationReason {
     LatestWinsPendingReplacement,
     LatestWinsActiveReplacement,
     MountClosed,
+    #[cfg(test)]
     ExplicitHandle,
     DroppedHandle,
+    #[cfg(test)]
     RuntimeCancellation,
     ShutdownActive,
     ShutdownQueueDrain,
@@ -77,6 +80,7 @@ pub(crate) struct TaskTerminalSample {
     pub(crate) process_reaped_at: Option<TaskElapsed>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TaskActiveSnapshot {
     pub(crate) tags: TaskTags,
@@ -86,6 +90,7 @@ pub(crate) struct TaskActiveSnapshot {
     pub(crate) cancellation: Option<TaskCancellationSample>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TaskRuntimeMetricsSnapshot {
     pub(crate) now: TaskElapsed,
@@ -379,6 +384,7 @@ impl MountTaskStarter {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn spawn_latest_with_snapshot<T, F>(
         &self,
         lane: impl AsRef<str>,
@@ -422,6 +428,7 @@ pub(crate) struct TaskHandle<T> {
 }
 
 pub(crate) struct TaskContext {
+    #[cfg(test)]
     pub(crate) runtime: Value,
     /// Cooperative cancellation requested by the task handle or runtime.
     pub(crate) cancellation: CancellationToken,
@@ -608,12 +615,23 @@ impl TaskRuntime {
                 (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
             } else {
                 match catch_unwind(AssertUnwindSafe(|| {
-                    task(TaskContext {
+                    #[cfg(test)]
+                    let task_context = TaskContext {
                         runtime,
                         cancellation: cancellation.clone(),
                         metrics: Arc::clone(&execute_metrics),
                         record: Arc::clone(&execute_record),
-                    })
+                    };
+                    #[cfg(not(test))]
+                    let task_context = {
+                        let _ = runtime;
+                        TaskContext {
+                            cancellation: cancellation.clone(),
+                            metrics: Arc::clone(&execute_metrics),
+                            record: Arc::clone(&execute_record),
+                        }
+                    };
+                    task(task_context)
                 })) {
                     Ok(Ok(_value)) if cancellation.is_cancelled() => {
                         (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
@@ -698,6 +716,7 @@ impl TaskRuntime {
 
     /// Internal diagnostics observation point. This does not affect task or
     /// event delivery and deliberately has no user-facing presentation API.
+    #[cfg(test)]
     pub(crate) fn metrics_snapshot(&self) -> TaskRuntimeMetricsSnapshot {
         let (queue_depth, active) = {
             let state = self
@@ -1053,6 +1072,7 @@ impl<T> TaskHandle<T> {
         self.completion.try_recv()
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         self.metrics
             .cancel(&self.record, TaskCancellationReason::ExplicitHandle);

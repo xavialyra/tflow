@@ -18,26 +18,50 @@ items = [
 key = "enter"
 label = "Execute Recipe"
 type = "return"
+producer = "script"
 
-[views.recipe.commands.execute.payload]
-value = "Recipe executed: {{ selection.value }}"
+[views.recipe.commands.execute.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+item = request.get("engine_output", {}).get("selected_item")
+value = item.get("value") if isinstance(item, dict) else None
+if not isinstance(value, str):
+    raise SystemExit("recipe command requires a selected item with a value")
+json.dump({
+    "version": 1,
+    "operation": {"type": "return", "value": f"Recipe executed: {value}"},
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 
 [views.recipe.commands.run_inline]
 key = "ctrl+r"
 label = "Run Inline Script"
 type = "run"
-[views.recipe.commands.run_inline.payload]
-args = ["{{ selection.value }}"]
-exit = true
-script = """
-#!/usr/bin/env -S sh -eu
-action="$1"
-case "$action" in
-    pwd)
-        printf 'RECIPE_PWD:%s\n' "$PWD"
-        ;;
-    hello)
-        printf 'RECIPE_HELLO:%s\n' "world"
-        ;;
-esac
-"""
+producer = "script"
+
+[views.recipe.commands.run_inline.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+item = request.get("engine_output", {}).get("selected_item")
+action = item.get("value") if isinstance(item, dict) else None
+if not isinstance(action, str):
+    raise SystemExit("recipe command requires a selected item with a value")
+code = "import os, sys; action = sys.argv[1]; print('RECIPE_PWD:' + os.getcwd()) if action == 'pwd' else print('RECIPE_HELLO:world') if action == 'hello' else None"
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["python3", "-c", code, action],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''

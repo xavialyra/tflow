@@ -3,25 +3,25 @@ title: "Building Your First Workflow"
 type: "tutorial"
 tags:
   - workflow
+  - producers
   - scripts
   - views
   - commands
-description: "Learn how to build a complete workflow with script execution, dynamic templates, and query parameters."
+description: "Build a Picker workflow with literal items and a JSON command producer without embedded expressions."
 ---
 
 # Building Your First Workflow
 
-In this tutorial, you will create a workflow called `notes` that displays note files from a directory and lets you open them in your editor.
+In this tutorial, you will create a workflow called `notes` with a Picker list and a command that opens the selected note. The item value travels to the command script through the producer request.
 
 ## What You Will Learn
 
-- How to structure single-file and directory workflows.
-- How to write multi-line inline scripts.
-- How to define commands with dynamic `{{ selection.value }}` arguments while preserving caller `$PWD`.
+- How to choose a single-file or directory workflow package.
+- How to keep View and item configuration literal.
+- How to read `engine_output.selected_item` from a command producer request.
+- How to return a typed foreground operation from a script.
 
-## Option A: Standalone Single-File Workflow
-
-Single-file workflows live directly in `$XDG_CONFIG_HOME/tui-launcher/workflows/<id>.toml`:
+## Option A: Single-file Workflow
 
 Create `~/.config/tui-launcher/workflows/notes.toml`:
 
@@ -38,68 +38,114 @@ type = "picker"
 
 [views.main.engine.config]
 items = [
-  { display = "Project Ideas", value = "ideas.txt", description = "Future app thoughts" },
-  { display = "Meeting Notes", value = "meeting.txt", description = "Weekly sync" },
-  { display = "Shopping List", value = "shopping.txt", description = "Groceries" }
+  { display = "Project Ideas", value = "ideas.txt", metadata = {} },
+  { display = "Meeting Notes", value = "meeting.txt", metadata = {} },
+  { display = "Shopping List", value = "shopping.txt", metadata = {} },
 ]
 
 [views.main.commands.open]
 key = "enter"
-label = "Edit Note"
+label = "Edit note"
 type = "run"
-args = ["{{ selection.value }}"]
-exit = true
-script = """
-#!/usr/bin/env -S sh -eu
-target="$1"
-${EDITOR:-vim} "$target"
-"""
+producer = "script"
+
+[views.main.commands.open.handler]
+script = '''#!/usr/bin/env python3
+import json
+import os
+import sys
+
+request = json.load(sys.stdin)
+item = request.get("engine_output", {}).get("selected_item")
+path = item.get("value") if isinstance(item, dict) else None
+if not isinstance(path, str):
+    raise SystemExit("select a note first")
+editor = os.environ.get("EDITOR", "vi")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": [editor, path],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 ```
 
-Test it immediately:
+Run validation and launch it:
 
 ```bash
+tui-launcher --check
 tui-launcher notes
 ```
 
-Because caller working directory (`$PWD`) is preserved, your editor opens the target note relative to wherever you executed the command.
-
----
+The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tui-launcher`.
 
 ## Option B: Directory Package Workflow
 
-For multi-script or complex extensions:
-
-### 1. Directory Structure
-
-Create a dedicated workflow folder:
+Use a package when the workflow has multiple scripts or assets:
 
 ```bash
 mkdir -p ~/.config/tui-launcher/workflows/notes/scripts
 ```
 
-### 2. Write the List Script
+Create `~/.config/tui-launcher/workflows/notes/scripts/list_notes.py`:
 
-Create `~/.config/tui-launcher/workflows/notes/scripts/list_notes.sh`:
+```python
+#!/usr/bin/env python3
+import json
+import sys
 
-```bash
-#!/bin/sh
-cat << 'ITEMS_EOF'
-[
-  {"display": "Project Ideas", "value": "ideas.txt", "description": "Future app thoughts"},
-  {"display": "Meeting Notes", "value": "meeting.txt", "description": "Weekly sync"},
-  {"display": "Shopping List", "value": "shopping.txt", "description": "Groceries"}
+request = json.load(sys.stdin)
+needle = request.get("request", {}).get("input", "").lower()
+notes = [
+    ("Project Ideas", "ideas.txt"),
+    ("Meeting Notes", "meeting.txt"),
+    ("Shopping List", "shopping.txt"),
 ]
-ITEMS_EOF
+items = [
+    {"display": label, "value": path, "metadata": {}}
+    for label, path in notes
+    if needle in label.lower()
+]
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
 ```
 
-Make it executable:
+Create `~/.config/tui-launcher/workflows/notes/scripts/open_note.py`:
+
+```python
+#!/usr/bin/env python3
+import json
+import os
+import sys
+
+request = json.load(sys.stdin)
+item = request.get("engine_output", {}).get("selected_item")
+path = item.get("value") if isinstance(item, dict) else None
+if not isinstance(path, str):
+    raise SystemExit("select a note first")
+editor = os.environ.get("EDITOR", "vi")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": [editor, path],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+```
+
+Make both scripts executable:
 
 ```bash
-chmod +x ~/.config/tui-launcher/workflows/notes/scripts/list_notes.sh
+chmod +x ~/.config/tui-launcher/workflows/notes/scripts/list_notes.py
+chmod +x ~/.config/tui-launcher/workflows/notes/scripts/open_note.py
 ```
-
-### 3. Define the Workflow Manifest
 
 Create `~/.config/tui-launcher/workflows/notes/workflow.toml`:
 
@@ -115,42 +161,30 @@ alias = "notes"
 type = "picker"
 
 [views.main.engine.config.items]
-source = "script"
-file = "scripts/list_notes.sh"
+producer = "script"
+
+[views.main.engine.config.items.handler]
+file = "scripts/list_notes.py"
 
 [views.main.commands.open]
 key = "enter"
-label = "Open Note"
+label = "Edit note"
 type = "run"
+producer = "script"
 
-[views.main.commands.open.payload]
-handler = { source = "script", file = "scripts/open_note.sh" }
-args = ["{{ selection.value }}"]
-exit = true
+[views.main.commands.open.handler]
+file = "scripts/open_note.py"
 ```
 
-### 4. Create the Open Script
-
-Create `~/.config/tui-launcher/workflows/notes/scripts/open_note.sh`:
+Validate and run:
 
 ```bash
-#!/bin/sh
-note_path="$1"
-${EDITOR:-vim} "$note_path"
-```
-
-Make it executable:
-
-```bash
-chmod +x ~/.config/tui-launcher/workflows/notes/scripts/open_note.sh
-```
-
-### 5. Run the Workflow
-
-Launch directly by alias or view identifier:
-
-```bash
+tui-launcher --check
 tui-launcher notes:main
-# Or via alias:
-tui-launcher notes
 ```
+
+## Next Steps
+
+- Read [workflow.toml Specification](../reference/workflow-toml.md) for all six operation types and strict protocol rules.
+- Follow [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) for request filtering and previews.
+- Read [Static Values and Runtime Data](../reference/expressions.md) when deciding whether runtime data belongs in a producer request.

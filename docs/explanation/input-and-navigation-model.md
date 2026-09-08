@@ -53,8 +53,8 @@ To ensure reliable, deterministic interaction across complex nested views and em
 ## 4. View Lifecycle Sequences
 
 ### The `call` and `return` Boundary
-- When a command uses `type = "call"`, the router establishes a return frame on the view stack.
-- When the target view invokes `type = "return"`, the top view is popped, and its result payload is adapted and delivered back to the caller frame.
+- When a command uses `type = "call"`, the Router establishes a return frame on the View stack. A producer call may return a typed operation from a literal or JSON protocol handler.
+- When the target View invokes `type = "return"`, the active child View is popped and its result is delivered to the recorded caller. A producer `return_processor` runs only after the child is closed and the caller is active.
 
 ### Task Correlation and Cancellation
 - Asynchronous tasks (such as background script feeds or PTY streams) are tagged with unique task IDs associated with their owning view.

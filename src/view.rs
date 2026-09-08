@@ -156,14 +156,12 @@ pub(crate) enum ViewEvent {
 pub(crate) struct CommandRequest {
     pub(crate) invocation: crate::workflow::command::CommandInvocation,
     pub(crate) owner: Option<crate::workflow::command::CommandOwnerContext>,
-    pub(crate) current_fields: &'static [&'static str],
 }
 
 impl PartialEq for CommandRequest {
     fn eq(&self, other: &Self) -> bool {
         self.invocation.source_view() == other.invocation.source_view()
             && self.invocation.id() == other.invocation.id()
-            && self.current_fields == other.current_fields
             && self
                 .owner
                 .as_ref()
@@ -218,7 +216,6 @@ pub(crate) struct RelativeCursor {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ViewMetadata {
-    pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     /// `None` means use the View's binding declaration. `Some(empty)` is an
@@ -230,7 +227,6 @@ pub(crate) struct ViewMetadata {
 /// as editors, query lines, selections, and terminal surfaces is not exposed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ViewChrome {
-    pub(crate) title: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: Option<BindingSet>,
@@ -279,10 +275,6 @@ pub(crate) enum EffectRequest {
 #[derive(Debug, Clone)]
 pub(crate) struct ViewResult {
     pub(crate) value: Value,
-    /// Metadata needed by the application finish adapter for configured
-    /// return handlers. It is intentionally carried with the protocol result
-    /// instead of stored in Router/session state.
-    pub(crate) adapter: Option<crate::workflow::command::ReturnAdapter>,
 }
 
 impl PartialEq for ViewResult {
@@ -297,7 +289,6 @@ pub(crate) struct NavigationRequest {
     pub(crate) query: ParsedQuery,
     pub(crate) input: Option<ViewInputSeed>,
     pub(crate) presentation: ViewPresentation,
-    pub(crate) engine_options: Option<Value>,
 }
 
 impl NavigationRequest {
@@ -307,7 +298,6 @@ impl NavigationRequest {
             query,
             input: None,
             presentation: ViewPresentation::default(),
-            engine_options: None,
         }
     }
 
@@ -318,12 +308,6 @@ impl NavigationRequest {
         }
         self.input = Some(ViewInputSeed { text, cursor });
         Ok(self)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn with_engine_options(mut self, engine_options: Value) -> Self {
-        self.engine_options = Some(engine_options);
-        self
     }
 }
 
@@ -358,6 +342,12 @@ impl ParsedQuery {
 }
 
 pub(crate) trait CallReturnHandler {
+    /// Return processors run only after the child is closed and the caller
+    /// has been activated.
+    fn post_commit(&self) -> bool {
+        false
+    }
+
     fn resume(
         &self,
         source: &ViewLocation,
@@ -436,6 +426,7 @@ pub(crate) enum ViewDecision {
     Command(CommandResult),
     Batch(Vec<ViewDecision>),
     Close,
+    CloseWithError(String),
     Exit,
 }
 
@@ -448,6 +439,7 @@ impl ViewDecision {
                 | Self::RequestCommand(_)
                 | Self::Command(_)
                 | Self::Close
+                | Self::CloseWithError(_)
                 | Self::Exit
         )
     }
@@ -794,9 +786,13 @@ impl Router {
         self.pending_result.take()
     }
 
+    pub(crate) fn take_recorded_error(&mut self) -> Option<RouterError> {
+        self.last_error.take()
+    }
+
     #[cfg(test)]
     pub(crate) fn take_error(&mut self) -> Option<RouterError> {
-        self.last_error.take()
+        self.take_recorded_error()
     }
 
     pub(crate) fn push(&mut self, request: NavigationRequest) -> Result<ViewInstanceId> {
@@ -1348,6 +1344,13 @@ impl Router {
                 self.result_committed = false;
                 self.finish_return(executor)?;
             }
+            ViewDecision::CloseWithError(message) => {
+                let error = anyhow::anyhow!(message);
+                self.record_error(source, &error);
+                self.pending_result = None;
+                self.result_committed = false;
+                self.finish_return(executor)?;
+            }
             ViewDecision::Exit => {
                 self.close_all()?;
             }
@@ -1368,15 +1371,11 @@ impl Router {
         };
         let active_id = self.stack[active_index].id;
         let source_location = self.stack[active_index].context.location.clone();
-        let call_boundary = self
-            .stack
-            .iter()
-            .rev()
-            .find_map(|entry| match &entry.continuation {
-                Continuation::Call(boundary) => Some(boundary.clone()),
-                Continuation::None | Continuation::ReturnTo(_) => None,
-            });
         let continuation = self.stack[active_index].continuation.clone();
+        let call_boundary = match &continuation {
+            Continuation::Call(boundary) => Some(boundary.clone()),
+            Continuation::None | Continuation::ReturnTo(_) => None,
+        };
         let target_id = call_boundary.as_ref().map(|boundary| boundary.caller);
         let target = match target_id
             .map(Continuation::ReturnTo)
@@ -1395,22 +1394,33 @@ impl Router {
             Continuation::Call(_) => unreachable!("call boundary target was resolved above"),
             Continuation::None => active_index.saturating_sub(1),
         };
-        let continuation_decision = match (&call_boundary, self.pending_result.as_ref()) {
-            (Some(boundary), Some(result)) if !result.value.is_null() => {
-                let caller = self
-                    .stack
-                    .iter()
-                    .find(|entry| entry.id == boundary.caller)
-                    .expect("validated call continuation target must remain mounted");
-                let snapshot = caller.view.command_snapshot();
-                Some(boundary.handler.resume(
-                    &source_location,
-                    &caller.context,
-                    &snapshot,
-                    result,
-                )?)
+        let post_commit_processor = call_boundary
+            .as_ref()
+            .is_some_and(|boundary| boundary.handler.post_commit());
+        let post_commit_result = post_commit_processor
+            .then(|| self.pending_result.as_ref())
+            .flatten()
+            .cloned();
+        let continuation_decision = if post_commit_processor {
+            None
+        } else {
+            match (&call_boundary, self.pending_result.as_ref()) {
+                (Some(boundary), Some(result)) if !result.value.is_null() => {
+                    let caller = self
+                        .stack
+                        .iter()
+                        .find(|entry| entry.id == boundary.caller)
+                        .expect("validated call continuation target must remain mounted");
+                    let snapshot = caller.view.command_snapshot();
+                    Some(boundary.handler.resume(
+                        &source_location,
+                        &caller.context,
+                        &snapshot,
+                        result,
+                    )?)
+                }
+                _ => None,
             }
-            _ => None,
         };
 
         // Covered frames below the continuation target are fully closed first.
@@ -1477,8 +1487,24 @@ impl Router {
         };
         self.pending_result.take();
         self.result_committed = false;
-        let Some(decision) = continuation_decision else {
-            return Ok(());
+        let decision = if post_commit_processor {
+            let Some(result) = post_commit_result.as_ref() else {
+                return Ok(());
+            };
+            let caller = self
+                .stack
+                .iter()
+                .find(|entry| entry.id == boundary.caller)
+                .expect("validated call continuation target must remain mounted");
+            let snapshot = caller.view.command_snapshot();
+            boundary
+                .handler
+                .resume(&source_location, &caller.context, &snapshot, result)?
+        } else {
+            let Some(decision) = continuation_decision else {
+                return Ok(());
+            };
+            decision
         };
         self.process_decision_inner(decision, executor, Some(boundary.caller))
     }
@@ -1596,7 +1622,6 @@ mod tests {
                     key: Key::Enter, ..
                 }) => ViewDecision::Return(ViewResult {
                     value: Value::String("done".into()),
-                    adapter: None,
                 }),
                 _ => ViewDecision::Invalidate,
             })
@@ -1616,6 +1641,52 @@ mod tests {
         ) -> Result<Box<dyn View>> {
             Ok(Box::new(TestView {
                 runtime: Value::Null,
+            }))
+        }
+    }
+
+    struct PushThenReturnView {
+        target: String,
+    }
+
+    impl View for PushThenReturnView {
+        fn bindings(&self, _: &ViewContext) -> BindingSet {
+            BindingSet::default()
+        }
+
+        fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+            Ok(match event {
+                ViewEvent::Lifecycle(_) => ViewDecision::Stay,
+                ViewEvent::Input(InputEvent::Key {
+                    key: Key::Enter, ..
+                }) if self.target == "child" => {
+                    ViewDecision::Transition(TransitionRequest::Push(request("grandchild")))
+                }
+                ViewEvent::Input(InputEvent::Key {
+                    key: Key::Enter, ..
+                }) => ViewDecision::Return(ViewResult {
+                    value: Value::String("grandchild-value".into()),
+                }),
+                _ => ViewDecision::Stay,
+            })
+        }
+
+        fn render(&self, _: &mut Frame, _: Rect, _: &RenderContext) -> Result<RenderResult> {
+            Ok(RenderResult::default())
+        }
+    }
+
+    struct PushThenReturnFactory;
+
+    impl ViewFactory for PushThenReturnFactory {
+        fn create(
+            &self,
+            request: &NavigationRequest,
+            _: ViewInstanceId,
+            _: &ViewServices<'_>,
+        ) -> Result<Box<dyn View>> {
+            Ok(Box::new(PushThenReturnView {
+                target: request.target.clone(),
             }))
         }
     }
@@ -2037,6 +2108,45 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_a_pushed_view_does_not_skip_to_an_older_call_boundary() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("root", "root");
+        routes.insert("child", "child");
+        routes.insert("grandchild", "grandchild");
+        let mut router = Router::new(Box::new(routes), Box::new(PushThenReturnFactory));
+        let root = router.push(request("root")).unwrap();
+        let child = router
+            .call(
+                request("child"),
+                call_boundary(root, Rc::clone(&calls), ViewDecision::Stay),
+            )
+            .unwrap();
+
+        router
+            .dispatch(ViewEvent::Input(InputEvent::Key {
+                key: Key::Enter,
+                raw: b"\\r".to_vec(),
+            }))
+            .unwrap();
+        let grandchild = router.active().unwrap().id;
+        assert_ne!(grandchild, child);
+
+        router
+            .dispatch(ViewEvent::Input(InputEvent::Key {
+                key: Key::Enter,
+                raw: b"\\r".to_vec(),
+            }))
+            .unwrap();
+        assert_eq!(router.active().map(|entry| entry.id), Some(child));
+        assert!(calls.borrow().is_empty());
+
+        router.return_active().unwrap();
+        assert_eq!(router.active().map(|entry| entry.id), Some(root));
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
+    #[test]
     fn call_continuation_command_result_is_delivered_to_the_caller() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut routes = MapRouteCatalog::default();
@@ -2120,10 +2230,7 @@ mod tests {
         let mut executor = None;
         router
             .process_decision_inner(
-                ViewDecision::Return(ViewResult {
-                    value: Value::Null,
-                    adapter: None,
-                }),
+                ViewDecision::Return(ViewResult { value: Value::Null }),
                 &mut executor,
                 Some(child),
             )
@@ -2163,7 +2270,6 @@ mod tests {
                     Rc::clone(&calls),
                     ViewDecision::Return(ViewResult {
                         value: Value::String("continued".to_string()),
-                        adapter: None,
                     }),
                 ),
             )
@@ -2174,7 +2280,6 @@ mod tests {
             .process_decision_inner(
                 ViewDecision::Return(ViewResult {
                     value: Value::String("child-value".to_string()),
-                    adapter: None,
                 }),
                 &mut executor,
                 Some(child),

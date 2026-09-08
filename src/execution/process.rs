@@ -12,23 +12,6 @@ use std::time::Duration;
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-pub(crate) const MANAGED_ENVIRONMENT: &[&str] = &[
-    "LAUNCHER_COMMAND",
-    "LAUNCHER_INPUT",
-    "LAUNCHER_ITEM",
-    "LAUNCHER_ITEM_PLUGIN",
-    "LAUNCHER_ITEM_VIEW_REF",
-    "LAUNCHER_LOG_FILE",
-    "LAUNCHER_METADATA",
-    "LAUNCHER_PLUGIN",
-    "LAUNCHER_PLUGIN_DIR",
-    "LAUNCHER_QUERY",
-    "LAUNCHER_STDIN_FILE",
-    "LAUNCHER_VALUE",
-    "LAUNCHER_VIEW",
-    "LAUNCHER_VIEW_REF",
-];
-
 pub(crate) struct ProcessGroupGuard {
     pid: libc::pid_t,
     child: Option<Child>,
@@ -251,12 +234,6 @@ pub(crate) struct PreparedProcess {
     pub(crate) current_dir: Option<PathBuf>,
 }
 
-pub(crate) fn clear_managed_environment(command: &mut Command) {
-    for key in MANAGED_ENVIRONMENT {
-        command.env_remove(key);
-    }
-}
-
 impl PreparedProcess {
     fn command(&self) -> io::Result<Command> {
         let Some(program) = self.argv.first() else {
@@ -267,7 +244,6 @@ impl PreparedProcess {
         };
         let mut command = Command::new(program);
         command.args(&self.argv[1..]);
-        clear_managed_environment(&mut command);
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
         }
@@ -357,36 +333,7 @@ pub(crate) fn run_foreground_process(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::fs;
-
-    #[test]
-    fn command_removes_unset_launcher_environment() {
-        let prepared = PreparedProcess {
-            argv: vec!["true".to_string()],
-            environment: vec![("LAUNCHER_VIEW".to_string(), "core:default".to_string())],
-            current_dir: None,
-        };
-
-        let command = prepared.command().unwrap();
-        let environment = command
-            .get_envs()
-            .map(|(key, value)| {
-                (
-                    key.to_string_lossy().into_owned(),
-                    value.map(|value| value.to_string_lossy().into_owned()),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        assert_eq!(
-            environment["LAUNCHER_VIEW"].as_deref(),
-            Some("core:default")
-        );
-        assert_eq!(environment["LAUNCHER_PLUGIN_DIR"], None);
-        assert_eq!(environment["LAUNCHER_LOG_FILE"], None);
-        assert_eq!(environment["LAUNCHER_STDIN_FILE"], None);
-    }
 
     #[test]
     fn cancellation_kills_the_process_group() {

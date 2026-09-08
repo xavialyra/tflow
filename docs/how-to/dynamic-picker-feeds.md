@@ -4,73 +4,143 @@ type: "guide"
 tags:
   - picker
   - preview
+  - producers
   - scripts
   - feed
-description: "How to configure script-backed item feeds and dynamic preview panes in the picker engine."
+description: "Configure a version-1 script producer for Picker items and a static metadata-backed preview."
 ---
 
 # How to Build Dynamic Picker Feeds and Previews
 
-The `picker` engine supports both static item lists and dynamically generated feeds backed by shell scripts.
+Use a Picker items producer when the complete item list must be computed at request time. The launcher sends a JSON request on stdin and expects one version-1 JSON response on stdout.
 
 ## Problem
 
-You want to display items that are computed on the fly (e.g., git branches, running containers, or file trees) and show detailed information for the currently selected item in a side preview pane.
+You want to show items computed from a repository, service, or file tree and filter them as the user types.
 
 ## Solution
 
-### 1. Configure the Script-backed Feed
+### 1. Configure the Items Producer
 
-Under `[views.<name>.engine.config]`, assign `items` to an object with `source = "script"`:
+In a directory workflow, declare the producer under the Picker Engine:
 
 ```toml
 [views.branches.engine]
 type = "picker"
 
-[views.branches.engine.config]
-items = { source = "script", file = "scripts/get_branches.sh" }
+[views.branches.engine.config.items]
+producer = "script"
+
+[views.branches.engine.config.items.handler]
+file = "scripts/get_branches.py"
 ```
 
-The script must write valid JSON array elements to stdout:
+The handler must define exactly one non-empty `file` or inline `script` field. Relative files are resolved inside the workflow package.
+
+### 2. Read the Request and Write the Complete Collection
+
+Create `scripts/get_branches.py`:
+
+```python
+#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+
+request = json.load(sys.stdin)
+needle = request.get("request", {}).get("input", "")
+branches = subprocess.check_output(
+    ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    text=True,
+).splitlines()
+items = [
+    {"display": branch, "value": branch, "metadata": {}}
+    for branch in branches
+    if needle.lower() in branch.lower()
+]
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+```
+
+Make it executable:
 
 ```bash
-#!/bin/sh
-# scripts/get_branches.sh
-git for-each-ref --format='{"label": "%(refname:short)", "value": "%(refname:short)", "description": "%(subject)"}' refs/heads/
+chmod +x ~/.config/tui-launcher/workflows/branches/scripts/get_branches.py
 ```
 
-### 2. Configure a Live Preview Pane
+The request includes `entrypoint = "picker-items"`, the owning View, its bound parameters, invocation facts, and `request.input`. The response must contain the complete `items` array:
 
-To display contextual details when navigating the list, configure `preview`:
+```json
+{"version":1,"items":[{"display":"main","value":"main","metadata":{}}]}
+```
+
+The host normalizes display values, owns feed composition and selection state, and assigns `source_view` to selected items. A producer cannot return navigation or other View configuration. Item stdout is limited to 64 MiB so large feeds remain usable.
+
+### 3. Use a Declared List for Small Fixed Feeds
+
+No script is needed when the list is static:
 
 ```toml
+[views.actions.engine]
+type = "picker"
+
+[views.actions.engine.config.items]
+producer = "declared"
+
+[views.actions.engine.config.items.handler]
+items = [
+  { display = "Show date", value = "date" },
+  { display = "System information", value = "info" },
+]
+```
+
+The plain `items = [...]` array is also supported as a declared shorthand.
+
+### 4. Configure a Preview
+
+Preview layout and content sources are static Engine configuration. A preview block reads a JSON Pointer from the selected item's metadata; it does not execute a script or interpolate a selected value.
+
+```toml
+[views.branches.engine.config.layout]
+direction = "horizontal"
+gap = 1
+
+[[views.branches.engine.config.layout.panes]]
+slot = "items"
+grow = 1
+min = 28
+
+[[views.branches.engine.config.layout.panes]]
+slot = "preview"
+size = 36
+min = 24
+
 [views.branches.engine.config.preview]
-source = "script"
-file = "scripts/preview_branch.sh"
-args = ["{{ selection.value }}"]
+
+[[views.branches.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/summary"
+grow = 1
 ```
 
-The preview script receives the selected branch name as an argument and outputs text to be rendered in the preview area:
+The items producer should place preview data under `metadata`, for example `{"metadata":{"summary":"recent commits"}}`. Image blocks use a metadata JSON Pointer to an image path. Missing or invalid preview data is rendered as a preview diagnostic.
 
-```bash
-#!/bin/sh
-# scripts/preview_branch.sh
-BRANCH="$1"
-git log -n 5 --color=always "$BRANCH"
-```
+### 5. Toggle the Preview Pane
 
-### 3. Toggle the Preview Pane
-
-You can allow users to toggle the preview pane visibility using engine keymap actions:
+You can bind a key to the built-in preview action:
 
 ```toml
 [views.branches.keymap]
 "ctrl+p" = "toggle_preview"
 ```
 
-## Security & Resource Limits
+## Troubleshooting
 
-Script execution within feeds is protected by the launcher runtime:
-- Standard script execution timeout is **10 seconds**.
-- Default `stdout` is capped at **1 MiB** (can be configured up to **64 MiB** for large feeds).
-- Paths are strictly confined within the owning workflow's root directory.
+- Put diagnostics on stderr. Any extra stdout text makes the response invalid.
+- End stdout with an actual newline, not the two characters `\\n`.
+- Return one JSON object only. Unknown response fields, a missing `version`, malformed items, or a second JSON document fail the request.
+- `--check` validates the handler shape and confined file path before the workflow starts.
+
+## Resource Limits
+
+The standard script timeout is 10 seconds. Producer stdout defaults to 1 MiB, except Picker item producers, which use a 64 MiB bound. Stderr is capped at 64 KiB. Process groups are cancelled and reaped by the shared execution layer. These controls do not sandbox trusted workflow code.

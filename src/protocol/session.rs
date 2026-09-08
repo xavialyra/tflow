@@ -213,6 +213,9 @@ impl ProtocolSession {
         event: ViewEvent,
         effects: &mut dyn EffectExecutor,
     ) -> Result<ViewDecision> {
+        // A failed dispatch is reported from its returned error. Discard its
+        // Router-side copy before the next event so it cannot be reported twice.
+        let _ = self.router.take_recorded_error();
         if matches!(event, ViewEvent::Input(_)) && self.error_source == Some(ErrorSource::Session) {
             self.active_error = None;
             self.error_source = None;
@@ -240,6 +243,9 @@ impl ProtocolSession {
             self.router.process_with_effects(next, source, effects)?;
         }
         self.resize_new_active_view(active, effects)?;
+        if let Some(error) = self.router.take_recorded_error() {
+            self.report_error(&error.message);
+        }
         Ok(decision)
     }
 
@@ -482,7 +488,9 @@ mod tests {
         Arc::new(
             crate::workflow::InvocationContext::new(
                 root_view.to_string(),
-                Value::Null,
+                serde_json::json!({
+                    "stdin": {"path": null, "length": 0, "is_tty": true}
+                }),
                 config.instantiate_parameters(root_view).unwrap(),
             )
             .unwrap(),
@@ -596,7 +604,6 @@ mod tests {
                             ..
                         } => Ok(ViewDecision::Return(ViewResult {
                             value: Value::String(self.target.clone()),
-                            adapter: None,
                         })),
                         InputEvent::Eof => Ok(ViewDecision::Exit),
                         _ => Ok(ViewDecision::Invalidate),
@@ -647,7 +654,6 @@ mod tests {
                     visible: true,
                 }),
                 metadata: ViewMetadata {
-                    title: None,
                     status: Some(self.target.clone()),
                     error: None,
                     bindings: None,
@@ -869,7 +875,7 @@ mod tests {
         let config = crate::workflow::config::load_test_fixture().unwrap();
         let cancellation = crate::lifecycle::CancellationToken::new();
         let adapter =
-            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer(), &[]).unwrap();
+            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer()).unwrap();
         let mut binding = adapter
             .bindings
             .iter()
@@ -905,109 +911,11 @@ mod tests {
     }
 
     #[test]
-    fn protocol_call_return_continuation_retains_invocation_input() {
-        let mut config = crate::workflow::config::load_test_fixture().unwrap();
-        let continuation = crate::workflow::config::CommandAction::EditInput {
-            payload: crate::workflow::config::EditInputPayload {
-                value: toml::Value::String("{{ input.stdin.path }}".to_string()),
-                cursor: None,
-            },
-        };
-        config
-            .test_views_mut()
-            .get_mut("core:default")
-            .unwrap()
-            .commands
-            .insert(
-                "call-with-input".to_string(),
-                crate::workflow::config::Command {
-                    key: Some("ctrl+k".to_string()),
-                    label: "Call with input".to_string(),
-                    scope: crate::workflow::config::CommandScope::View,
-                    requires: crate::workflow::config::CommandRequirement::Input,
-                    passthrough: false,
-                    action: crate::workflow::config::CommandAction::Call {
-                        payload: crate::workflow::config::CallPayload {
-                            target: toml::Value::String("dmenu:main".to_string()),
-                            query: None,
-                            presentation: crate::workflow::config::ViewPresentation::default(),
-                            engine: None,
-                            then: Some(Box::new(continuation)),
-                        },
-                    },
-                },
-            );
-        config.test_config_value_mut()["continuation-template"] =
-            serde_json::json!("{{ input.stdin.path }}");
-        config.test_rebuild_compiled().unwrap();
-
-        let cancellation = crate::lifecycle::CancellationToken::new();
-        let adapter =
-            ViewCommandBindings::new(&config, "core:default", cancellation.observer(), &[])
-                .unwrap();
-        let binding = adapter
-            .bindings
-            .iter()
-            .find(|binding| binding.invocation.id() == "call-with-input")
-            .expect("test command must have a protocol binding");
-        let caller = ViewContext::new(ViewInstanceId(42), "core:default");
-        let parameters = config.instantiate_parameters("core:default").unwrap();
-        let snapshot = ViewCommandSnapshot {
-            parameters: config.parameter_values(&parameters).unwrap(),
-            raw_input: String::new(),
-            runtime: Value::Null,
-            publication: None,
-            revision: 0,
-        };
-        let ViewDecision::RequestCommand(request) = adapter.request(binding, None) else {
-            panic!("binding must produce a command request");
-        };
-        let invocation = Arc::new(
-            crate::workflow::InvocationContext::new(
-                "core:default".to_string(),
-                serde_json::json!({"stdin": {"path": "/tmp/protocol-return-input"}}),
-                config.instantiate_parameters("core:default").unwrap(),
-            )
-            .unwrap(),
-        );
-        let mut service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
-        let decision = service.execute(request, &caller, &snapshot).unwrap();
-        let ViewDecision::Transition(crate::view::TransitionRequest::Call {
-            continuation: crate::view::Continuation::Call(boundary),
-            ..
-        }) = decision
-        else {
-            panic!("test command must prepare a protocol Call");
-        };
-
-        let continued = boundary
-            .handler
-            .resume(
-                &ViewLocation::new("dmenu:main"),
-                &caller,
-                &snapshot,
-                &ViewResult {
-                    value: serde_json::to_value(crate::workflow::command::ViewOutput::Value {
-                        value: Value::Null,
-                    })
-                    .unwrap(),
-                    adapter: None,
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            continued,
-            ViewDecision::Command(crate::view::CommandResult::EditInput { value, cursor })
-                if value == "/tmp/protocol-return-input" && cursor == value.len()
-        ));
-    }
-
-    #[test]
     fn command_call_records_caller_and_runs_non_null_return_continuation() {
         let config = crate::workflow::config::load_test_fixture().unwrap();
         let cancellation = crate::lifecycle::CancellationToken::new();
         let adapter =
-            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer(), &[]).unwrap();
+            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer()).unwrap();
         let binding = adapter
             .overflow_binding
             .as_ref()
@@ -1028,11 +936,10 @@ mod tests {
                 serde_json::json!({
                     "item": {
                         "text": "first",
-                        "value": null,
+                        "value": "0",
                         "metadata": {},
                         "owner_view": "dmenu:main"
                     },
-                    "source": "dmenu:main",
                     "input": ""
                 }),
                 true,
@@ -1043,7 +950,25 @@ mod tests {
         let ViewDecision::RequestCommand(request) = adapter.request(binding, None) else {
             panic!("binding must produce a command request");
         };
-        let invocation = test_invocation(&config, "dmenu:main");
+        let stdin_path = std::env::temp_dir().join(format!(
+            "tui-launcher-protocol-session-{}",
+            std::process::id()
+        ));
+        std::fs::write(&stdin_path, b"first\n").unwrap();
+        let invocation = Arc::new(
+            crate::workflow::InvocationContext::new(
+                "dmenu:main".to_string(),
+                serde_json::json!({
+                    "stdin": {
+                        "path": stdin_path.to_string_lossy(),
+                        "length": 6,
+                        "is_tty": false
+                    }
+                }),
+                config.instantiate_parameters("dmenu:main").unwrap(),
+            )
+            .unwrap(),
+        );
         let mut service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
         let decision = service.execute(request, &caller, &snapshot).unwrap();
         let ViewDecision::Transition(crate::view::TransitionRequest::Call {
@@ -1066,7 +991,6 @@ mod tests {
                 &snapshot,
                 &ViewResult {
                     value: serde_json::to_value(selected_command).unwrap(),
-                    adapter: None,
                 },
             )
             .unwrap();
@@ -1075,13 +999,13 @@ mod tests {
         };
         let output: crate::workflow::command::ViewOutput =
             serde_json::from_value(result.value).unwrap();
-        assert!(matches!(
+        assert_eq!(
             output,
-            crate::workflow::command::ViewOutput::Selected {
-                item: Some(item),
-                input,
-            } if item.text == "first" && input.is_empty()
-        ));
+            crate::workflow::command::ViewOutput::Value {
+                value: serde_json::json!("first"),
+            }
+        );
+        std::fs::remove_file(stdin_path).unwrap();
     }
 
     #[test]
@@ -1320,7 +1244,6 @@ mod tests {
                 Ok(RenderResult {
                     cursor: None,
                     metadata: ViewMetadata {
-                        title: None,
                         status: None,
                         error: None,
                         bindings: None,
@@ -1329,7 +1252,6 @@ mod tests {
             }
             fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
                 Ok(crate::view::ViewChrome {
-                    title: None,
                     status: None,
                     error: self.0.borrow().clone(),
                     bindings: Some(self.bindings(context)),

@@ -161,16 +161,20 @@ mod tests {
     }
 
     #[test]
-    fn validation_accepts_dynamic_binding_paths() {
-        PickerKeymap::validate_value(Some(&json!("{{ view.input }}"))).unwrap();
-        PickerKeymap::validate_value(Some(&json!({
-            "exit": ["{{ view.input }}"]
-        })))
-        .unwrap();
-        PickerKeymap::validate_keymap_value(Some(&json!({
-            "escape": false,
-            "ctrl+y": "{{ view.input }}"
-        })))
-        .unwrap();
+    fn validation_rejects_dynamic_binding_paths() {
+        assert!(PickerKeymap::validate_value(Some(&json!("{{ view.input }}"))).is_err());
+        assert!(
+            PickerKeymap::validate_value(Some(&json!({
+                "exit": ["{{ view.input }}"]
+            })))
+            .is_err()
+        );
+        assert!(
+            PickerKeymap::validate_keymap_value(Some(&json!({
+                "escape": false,
+                "ctrl+y": "{{ view.input }}"
+            })))
+            .is_err()
+        );
     }
 }

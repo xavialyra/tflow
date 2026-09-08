@@ -58,6 +58,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_noncanonical_theme_field_aliases() {
+        for (section, field) in [
+            ("picker", "input-prefix"),
+            ("picker", "prefix"),
+            ("picker", "selected-muted"),
+            ("picker", "badge-selected"),
+            ("chrome", "muted-text"),
+            ("chrome", "footer-title"),
+            ("chrome", "footer-status"),
+            ("chrome", "footer-key"),
+        ] {
+            let source = format!("[{section}]\n{field} = {{ foreground = \"ansi:red\" }}\n");
+            let error = toml::from_str::<RawTheme>(&source).expect_err(&source);
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
+    }
+
+    #[test]
     fn terminal_theme_contains_default_bindings() {
         let theme = ResolvedTheme::terminal();
 

@@ -5,19 +5,18 @@ name = "btop resource monitor"
 [views.main]
 alias = "btop"
 
+[views.main.query]
+type = "object"
+input_order = ["resource"]
+resource = { type = "string", default = "cpu" }
+next = { type = "object", default = { resource = "memory", next = { resource = "network", next = { resource = "processes", next = { resource = "cpu" } } } } }
+
 [views.main.engine]
 type = "embedded"
 
 [views.main.engine.config]
-command = ["sh", "scripts/btop.sh", "{{ view.query.resource }}"]
-title = "btop / {{ view.query.resource }}"
+command = ["sh", "scripts/btop-entry.sh"]
 escape-cancels = true
-
-[views.main.query]
-type = "object"
-input_order = []
-resource = { type = "string", default = "cpu" }
-next = { type = "object", default = { resource = "memory", next = { resource = "network", next = { resource = "processes", next = { resource = "cpu" } } } } }
 
 [views.main.commands.next]
 key = "tab"
@@ -26,11 +25,10 @@ scope = "view"
 requires = "input"
 passthrough = true
 type = "navigate"
+producer = "script"
 
-[views.main.commands.next.payload]
-target = "btop:main"
-query = "{{ view.query.next }}"
-replace = true
+[views.main.commands.next.handler]
+file = "scripts/next.sh"
 
 [views.main.commands.reset]
 label = "Reset monitor"
@@ -38,8 +36,8 @@ scope = "view"
 requires = "input"
 passthrough = true
 type = "navigate"
+producer = "declared"
 
-[views.main.commands.reset.payload]
+[views.main.commands.reset.handler]
 target = "btop:main"
-query = { resource = "cpu" }
 replace = true

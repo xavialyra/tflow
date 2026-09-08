@@ -11,9 +11,9 @@ type = "picker"
 [views.commands.engine.config]
 
 [views.commands.engine.config.items]
-source = "script"
+producer = "script"
+[views.commands.engine.config.items.handler]
 file = "scripts/commands.sh"
-args = ["{{ view.query.commands }}", "{{ view.query.search }}"]
 
 [views.commands.query]
 type = "object"
@@ -27,6 +27,6 @@ label = "Select"
 scope = "selection"
 requires = "items"
 type = "return"
-
-[views.commands.commands.accept.payload]
-value = "{{ selection.metadata.command }}"
+producer = "script"
+[views.commands.commands.accept.handler]
+file = "scripts/result.sh"

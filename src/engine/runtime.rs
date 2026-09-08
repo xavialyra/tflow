@@ -528,14 +528,10 @@ pub(crate) trait EngineRuntime {
 
     /// Start work that was made ready by the live Engine change. Session
     /// calls this only after publishing the corresponding Host runtime state.
-    /// The starter and snapshot are both tied to that committed mount state.
-    /// An `External` runtime must keep irreversible resource start in its
-    /// explicit external phase instead of using this prepared-work hook.
-    fn start_prepared_work(
-        &mut self,
-        _starter: &crate::task::MountTaskStarter,
-        _runtime_snapshot: &Value,
-    ) -> bool {
+    /// The starter is tied to that committed mount state. An `External`
+    /// runtime must keep irreversible resource start in its explicit external
+    /// phase instead of using this prepared-work hook.
+    fn start_prepared_work(&mut self, _starter: &crate::task::MountTaskStarter) -> bool {
         false
     }
 
@@ -602,7 +598,6 @@ pub(crate) trait EngineRuntime {
 pub(crate) struct FactoryFieldPlan {
     pub(crate) runtime: &'static [&'static str],
     pub(crate) binding: &'static [&'static str],
-    pub(crate) deferred_runtime_errors: &'static [&'static str],
     pub(crate) binding_defaults: Option<&'static [&'static str]>,
 }
 
@@ -610,17 +605,11 @@ pub(crate) struct FactoryFieldPlan {
 pub(crate) struct EngineDefinition {
     pub(crate) actions: Vec<ActionSpec>,
     pub(crate) factory_fields: FactoryFieldPlan,
-    pub(crate) current_fields: &'static [&'static str],
 }
 
 impl EngineDefinition {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    pub(crate) fn with_current_fields(mut self, current_fields: &'static [&'static str]) -> Self {
-        self.current_fields = current_fields;
-        self
     }
 
     pub(crate) fn with_factory_fields(mut self, factory_fields: FactoryFieldPlan) -> Self {

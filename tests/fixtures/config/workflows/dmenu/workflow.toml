@@ -12,16 +12,14 @@ type = "picker"
 [views.main.engine.config]
 
 [views.main.engine.config.items]
-source = "script"
+producer = "script"
+[views.main.engine.config.items.handler]
 file = "scripts/items.sh"
-args = ["{{ input }}", "{{ view.query }}"]
-max_output_bytes = 67108864
 
 [views.main.query]
 type = "object"
 input_order = ["initial"]
 initial = { type = "string", default = "" }
-dmenu0 = { type = "boolean", default = false }
 index = { type = "boolean", default = false }
 with-nth = { type = "string", nullable = true }
 accept-nth = { type = "string", nullable = true }
@@ -36,26 +34,14 @@ key = "enter"
 label = "Accept"
 requires = "input"
 type = "return"
-
-[views.main.commands.accept.payload]
-handler = "scripts/result.sh"
-args = [
-  "{{ view.query }}",
-  "{{ input.stdin }}",
-  "{{ selection }}",
-  "{{ page.input }}",
-]
+producer = "script"
+[views.main.commands.accept.handler]
+file = "scripts/result.sh"
 
 [views.main.commands.copy]
 label = "Copy selection"
 requires = "input"
 type = "return"
-
-[views.main.commands.copy.payload]
-handler = "scripts/result.sh"
-args = [
-  "{{ view.query }}",
-  "{{ input.stdin }}",
-  "{{ selection }}",
-  "{{ page.input }}",
-]
+producer = "script"
+[views.main.commands.copy.handler]
+file = "scripts/result.sh"

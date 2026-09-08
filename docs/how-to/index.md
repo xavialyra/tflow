@@ -5,10 +5,10 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 ## Guides
 
 - **[Dynamic Picker Feeds](dynamic-picker-feeds.md)**
-  Configure script-backed item generators, stream dynamic output, and render preview panes.
+  Configure JSON-backed Picker item producers, request filtering, and static metadata-backed previews.
 
 - **[View Navigation & Popups](view-navigation-and-popups.md)**
-  Master view stack management: navigate across views, open popup overlays, and use call/return flows.
+  Configure declared or script-produced navigation, popup calls, return values, and post-commit processors.
 
 - **[Custom Themes](custom-themes.md)**
   Create custom color palettes, brand color schemes, and UI element styling.

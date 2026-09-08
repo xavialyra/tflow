@@ -30,14 +30,12 @@ src/
     invocation.rs             Stdin capture and invocation result adaptation
 
   workflow/
-    config/                   Loading, normalization, compilation, evaluation
-    expression/               Bounded dynamic expression language
+    config/                   Loading, normalization, compilation, and validation
     parameter/                Parameter schemas and state instances
     command/                  Command contracts and preparation
     navigation.rs             Router and route resolution
     runtime.rs                Shared workflow runtime store
 
-  session/                    Stateful workflow execution and orchestration
   engine/                     View Engine protocol and concrete implementations
   input/                      Terminal input model and layered keymaps
   ui/                         Chrome and Theme presentation modules
@@ -56,7 +54,7 @@ The following 14 dependency rules define the intended architecture. They are des
 1. **`workflow/config/model`** contains purely data and `serde` definitions. It must not depend on `session`, `ratatui`, or terminal I/O.
 2. **`workflow/config/loader`** owns filesystem access and workflow package discovery. Runtime session code must never load files directly.
 3. **`workflow/config/validation`** owns static safety and schema checks. Runtime code may invoke validation APIs, but must not duplicate validation logic.
-4. **`workflow/config/evaluation`** projects explicitly allowlisted values from runtime state. Expressions must never receive the complete runtime JSON tree.
+4. **`workflow/config`** compiles and validates static values. Runtime data must enter scripts through an explicit producer request; no configuration expression evaluator or runtime tree projection exists.
 5. **`engine`** owns the View Engine protocol and concrete View implementations. The runtime `Router` owns View navigation and transitions; `session` owns the terminal host and orchestration around the `Router`.
 6. **`ui/chrome`** is split conceptually into `ContentHost` and `Footer`:
    - `ContentHost` owns framing, inline/popup placement, and view content rendering.
@@ -64,7 +62,7 @@ The following 14 dependency rules define the intended architecture. They are des
    - Neither component owns or renders View-private input, query text, completion rows, or cursor state.
 7. **Interactive query editing is Picker-owned**. Terminal byte decoding and event transport remain independent infrastructure; shared UI must not own or duplicate Picker input state.
 8. **`ui/theme/model` and `color`** must not read files. Only `ui/theme/load` may depend on the filesystem.
-9. **Engines consume stable configuration queries**. Code should not reach into `CompiledConfig` internals or `config_value` directly.
+9. **Engines consume stable configuration queries**. Code should not reach into `CompiledConfig` internals or reconstruct a mutable configuration tree at runtime.
 10. **Encapsulation over visibility**: New crate-visible fields are not a substitute for an API; prefer private fields with focused constructors and accessors.
 11. **`task` owns generic background scheduling, cancellation, and task handles**. It must not depend on a concrete engine or picker item types. Task closures must cooperate with cancellation; latest-wins replacement must use an explicit lane.
 12. **`session` depends on abstract contracts** (`ViewFactory` and `TaskRuntime`), not on concrete `EngineRegistry` or `engine::picker` types.

@@ -4,4 +4,4 @@ command -v python3 >/dev/null 2>&1 || {
   exit 127
 }
 workflow_dir="${WORKFLOW_DIR:-.}"
-exec python3 "$workflow_dir/scripts/dmenu.py" items "$@"
+exec python3 "$workflow_dir/scripts/dmenu.py"

@@ -1,9 +1,10 @@
 #!/bin/sh
-query=${1:-{}}
+request=$(cat)
+query=$(printf '%s' "$request" | jq -c '.parameters // {}')
 
 # Fast path for empty text in query
 if [ -z "$query" ] || [ "$query" = "{}" ] || ! printf '%s' "$query" | grep -q '"text"[[:space:]]*:[[:space:]]*"[^"]'; then
-  printf '[]\n'
+  printf '{"version":1,"items":[]}\n'
   exit 0
 fi
 
@@ -12,7 +13,7 @@ $(printf '%s' "$query" | jq -r '[(.source // ""), (.target // ""), (.text // "")
 EOF
 
 if [ -z "$text" ]; then
-  printf '[]\n'
+  printf '{"version":1,"items":[]}\n'
   exit 0
 fi
 
@@ -24,4 +25,4 @@ else
 fi |
 jq -R -c --argjson query "$query" \
   '{display: ., value: ., metadata: {query: $query}}' |
-jq -s '.'
+jq -s '{version: 1, items: .}'

@@ -1,5 +1,4 @@
 use crate::input::{BindingKey, Key};
-use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -17,12 +16,6 @@ where
     let Some(value) = value else {
         return Ok(());
     };
-    if let Some(source) = value.as_str() {
-        if Template::parse(source)?.is_complete_path() {
-            return Ok(());
-        }
-        bail!("{label} keymap must be an object or complete dynamic path");
-    }
     let patch = value
         .as_object()
         .with_context(|| format!("{label} keymap must be an object"))?;
@@ -44,12 +37,8 @@ where
                 source
             )
         })?;
-        if is_dynamic_string(action) {
-            Template::parse(action)?;
-        } else {
-            parse_action(action)
-                .with_context(|| format!("unsupported {label} keymap action {:?}", action))?;
-        }
+        parse_action(action)
+            .with_context(|| format!("unsupported {label} keymap action {:?}", action))?;
     }
     Ok(())
 }
@@ -61,11 +50,7 @@ pub(crate) fn static_bindings(value: Option<&Value>) -> Option<Value> {
     let mut static_bindings = serde_json::Map::new();
     for (action, values) in bindings {
         let values = values.as_array()?;
-        let values = values
-            .iter()
-            .filter(|value| !value.as_str().is_some_and(is_dynamic_string))
-            .cloned()
-            .collect();
+        let values = values.iter().cloned().collect();
         static_bindings.insert(action.clone(), Value::Array(values));
     }
     Some(Value::Object(static_bindings))
@@ -77,7 +62,6 @@ pub(crate) fn static_patch(value: Option<&Value>) -> Option<Value> {
     };
     let patch = patch
         .iter()
-        .filter(|(_, value)| !value.as_str().is_some_and(is_dynamic_string))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     Some(Value::Object(patch))
@@ -95,7 +79,7 @@ where
 {
     let patch = value
         .as_object()
-        .with_context(|| format!("{label} keymap must evaluate to an object"))?;
+        .with_context(|| format!("{label} keymap must be an object"))?;
     let mut tombstones = HashSet::new();
     let mut rebound = HashSet::new();
 
@@ -190,15 +174,6 @@ impl<A: KeymapAction + 'static> ActionBindings<A> {
         let Some(value) = value else {
             return Ok(());
         };
-        if let Some(source) = value.as_str() {
-            if Template::parse(source)?.is_complete_path() {
-                return Ok(());
-            }
-            bail!(
-                "{} bindings must be an object or complete dynamic path",
-                A::LABEL
-            );
-        }
         let bindings = value
             .as_object()
             .with_context(|| format!("{} bindings must be an object", A::LABEL))?;
@@ -212,12 +187,8 @@ impl<A: KeymapAction + 'static> ActionBindings<A> {
                 let source = value.as_str().with_context(|| {
                     format!("{} binding {:?} entries must be strings", A::LABEL, name)
                 })?;
-                if is_dynamic_string(source) {
-                    Template::parse(source)?;
-                } else {
-                    Key::parse_binding(source)
-                        .with_context(|| format!("{} binding action {:?}", A::LABEL, name))?;
-                }
+                Key::parse_binding(source)
+                    .with_context(|| format!("{} binding action {:?}", A::LABEL, name))?;
             }
         }
         Ok(())
@@ -247,7 +218,7 @@ impl<A: KeymapAction + 'static> ActionBindings<A> {
     fn apply_bindings(&mut self, value: Value) -> Result<()> {
         let overrides = value
             .as_object()
-            .with_context(|| format!("{} bindings must evaluate to an object", A::LABEL))?;
+            .with_context(|| format!("{} bindings must be an object", A::LABEL))?;
         let mut actions = HashSet::new();
         for name in overrides.keys() {
             let action = A::parse(name)

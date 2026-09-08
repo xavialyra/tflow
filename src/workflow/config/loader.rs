@@ -1,9 +1,6 @@
 use super::{
     CompiledConfig, RawConfig, WorkflowHeader,
-    normalize::{
-        normalize_engine_configs, normalize_keymap_tables, normalize_view_keymaps,
-        remove_disabled_workflows,
-    },
+    normalize::{normalize_view_keymaps, remove_disabled_workflows},
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -14,7 +11,6 @@ use std::{
 
 pub(crate) struct LoadedConfig {
     raw: RawConfig,
-    merged: toml::Value,
     workflow_roots: BTreeMap<String, PathBuf>,
     log_file: Option<PathBuf>,
     theme_selector: Option<String>,
@@ -28,20 +24,12 @@ impl LoadedConfig {
     pub(crate) fn compile(self) -> Result<CompiledConfig> {
         let LoadedConfig {
             raw,
-            mut merged,
             workflow_roots,
             log_file,
             ..
         } = self;
-        if let Some(table) = merged.as_table_mut() {
-            table.remove("theme");
-            table.remove("log_file");
-        }
-        let mut config_value = super::toml_to_json(&merged)
-            .context("merged configuration cannot be represented as JSON")?;
-        normalize_engine_configs(&mut config_value);
-        let mut config = CompiledConfig::from_raw(raw, workflow_roots, config_value)
-            .context("could not compile dynamic configuration values")?;
+        let mut config = CompiledConfig::from_raw(raw, workflow_roots)
+            .context("could not compile static configuration")?;
         config.log_file = log_file;
         Ok(config)
     }
@@ -53,14 +41,11 @@ impl CompiledConfig {
             .with_context(|| format!("could not read config {}", user_path.display()))?;
         let mut user_config: toml::Value = toml::from_str(&user_source)
             .with_context(|| format!("cannot parse config {}", user_path.display()))?;
-        reject_root_workflows(&user_config)?;
+        reject_inline_workflows(&user_config)?;
         let disabled_workflows = disabled_workflows(Some(&user_config))?;
         if let Some(table) = user_config.as_table_mut() {
             table.remove("disabled_workflows");
         }
-        remove_disabled_workflows(&mut user_config, &disabled_workflows);
-        normalize_keymap_tables(&mut user_config)
-            .with_context(|| format!("invalid keymap in {}", user_path.display()))?;
         let mut merged = toml::Value::Table(toml::map::Map::new());
         let workflow_directory = user_path
             .parent()
@@ -71,7 +56,7 @@ impl CompiledConfig {
         merge_values(&mut merged, user_config);
         remove_disabled_workflows(&mut merged, &disabled_workflows);
 
-        let raw: RawConfig = merged.clone().try_into().with_context(|| {
+        let raw: RawConfig = merged.try_into().with_context(|| {
             format!(
                 "merged configuration from {} does not match the launcher schema",
                 user_path.display()
@@ -84,7 +69,6 @@ impl CompiledConfig {
             .map(|path| resolve_config_path(user_path, path));
         Ok(LoadedConfig {
             raw,
-            merged,
             workflow_roots,
             log_file,
             theme_selector,
@@ -92,10 +76,10 @@ impl CompiledConfig {
     }
 }
 
-pub(super) fn reject_root_workflows(user_config: &toml::Value) -> Result<()> {
-    if user_config.get("workflows").is_some() || user_config.get("plugins").is_some() {
+pub(super) fn reject_inline_workflows(user_config: &toml::Value) -> Result<()> {
+    if user_config.get("workflows").is_some() {
         bail!(
-            "root configuration cannot define plugins or workflows; use the sibling workflows/ directory with single-file workflows (<id>.toml) or directory packages (<id>/workflow.toml)"
+            "root configuration cannot define workflows; use the sibling workflows/ directory with single-file workflows (<id>.toml) or directory packages (<id>/workflow.toml)"
         );
     }
     Ok(())
@@ -258,14 +242,10 @@ pub(super) fn read_workflow_package(
     let mut value: toml::Value = toml::from_str(&source)
         .with_context(|| format!("could not parse workflow manifest {}", manifest.display()))?;
 
-    if value.get("plugin").is_some() {
-        bail!(
-            "workflow manifest {} uses legacy [plugin]; workflows must declare [workflow] as of ADR 0001",
-            manifest.display()
-        );
-    }
-
-    let header_value = value.get("workflow").cloned().with_context(|| {
+    let table = value
+        .as_table_mut()
+        .context("workflow manifest root is not a table")?;
+    let header_value = table.remove("workflow").with_context(|| {
         format!(
             "workflow manifest {} is missing [workflow]",
             manifest.display()
@@ -282,10 +262,6 @@ pub(super) fn read_workflow_package(
         );
     }
 
-    let table = value
-        .as_table_mut()
-        .context("workflow manifest root is not a table")?;
-    table.remove("workflow");
     let mut views = table
         .remove("views")
         .with_context(|| format!("workflow {:?} is missing [views.*]", workflow_id))?;
@@ -296,6 +272,14 @@ pub(super) fn read_workflow_package(
     workflow_table.insert("views".to_string(), views);
     if let Some(styles) = table.remove("styles") {
         workflow_table.insert("styles".to_string(), styles);
+    }
+    if !table.is_empty() {
+        let fields = table.keys().cloned().collect::<Vec<_>>();
+        bail!(
+            "workflow manifest {} has unsupported fields {:?}",
+            manifest.display(),
+            fields
+        );
     }
     let mut workflows_table = toml::map::Map::new();
     workflows_table.insert(workflow_id.to_string(), toml::Value::Table(workflow_table));

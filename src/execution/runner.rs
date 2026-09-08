@@ -1,4 +1,4 @@
-use crate::execution::{ProcessGroupGuard, clear_managed_environment};
+use crate::execution::ProcessGroupGuard;
 use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
 use crate::lifecycle::CancellationToken;
@@ -44,6 +44,7 @@ impl BoundedCommandOutcome {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn run_bounded_command_with_stdin(
     process: Command,
     stdin: Option<&[u8]>,
@@ -71,7 +72,6 @@ pub(crate) fn run_bounded_command_with_stdin_outcome(
     stderr_limit: usize,
     cancellation: &dyn CancellationStatus,
 ) -> BoundedCommandOutcome {
-    clear_managed_environment(&mut process);
     process
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -322,23 +322,6 @@ mod tests {
         .expect_err("detached pipe holder should keep the command incomplete");
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2));
-    }
-
-    #[test]
-    fn bounded_command_does_not_inherit_launcher_log_environment() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "test -z \"${LAUNCHER_LOG_FILE+x}\""]);
-        command.env("LAUNCHER_LOG_FILE", "/tmp/should-not-be-visible");
-        let output = run_bounded_command_with_stdin(
-            command,
-            None,
-            Duration::from_secs(1),
-            1024,
-            1024,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert!(output.status.success());
     }
 
     #[test]

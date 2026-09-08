@@ -1,14 +1,6 @@
 use crate::workflow::config::{CompiledConfig, ViewRef};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RouteResolution {
-    NotMatched,
-    Current { query: String },
-    Navigate { target: ViewRef, query: String },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RouteDisplay {
     pub(crate) view_ref: ViewRef,
@@ -110,39 +102,6 @@ impl Router {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn resolve(&self, current_view_ref: &str, input: &str) -> RouteResolution {
-        let Some((selector, query)) = split_selector(input) else {
-            return RouteResolution::NotMatched;
-        };
-        if selector.is_empty() {
-            return RouteResolution::NotMatched;
-        }
-
-        let target = if selector.contains(':') {
-            if !valid_view_ref(selector) || !self.views.contains(selector) {
-                return RouteResolution::NotMatched;
-            }
-            selector
-        } else {
-            let Some(target) = self.aliases.get(selector) else {
-                return RouteResolution::NotMatched;
-            };
-            target
-        };
-
-        if target == current_view_ref {
-            RouteResolution::Current {
-                query: query.to_string(),
-            }
-        } else {
-            RouteResolution::Navigate {
-                target: target.to_string(),
-                query: query.to_string(),
-            }
-        }
-    }
-
     pub(crate) fn display(&self, view_ref: &str) -> RouteDisplay {
         self.display
             .get(view_ref)
@@ -193,13 +152,6 @@ fn view_match_score(candidate: &ViewCandidate, query: &str) -> Option<u8> {
     })
 }
 
-#[cfg(test)]
-fn split_selector(input: &str) -> Option<(&str, &str)> {
-    input
-        .split_once(char::is_whitespace)
-        .map(|(selector, query)| (selector, query.trim_start()))
-}
-
 fn valid_view_ref(view_ref: &str) -> bool {
     let Some((package, view)) = view_ref.split_once(':') else {
         return false;
@@ -210,135 +162,51 @@ fn valid_view_ref(view_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::config::{
-        ENGINE_PICKER, EngineOptions, EngineSpec, View, WorkflowMetadata,
-    };
-    use serde_json::Value;
-    use std::collections::BTreeMap;
 
-    fn view(alias: Option<&str>) -> View {
-        View {
-            engine: EngineSpec {
-                engine_type: ENGINE_PICKER.to_string(),
-                config: EngineOptions::default(),
-            },
-            alias: alias.map(str::to_string),
-            run_shell: None,
-            cancel_exit_code: None,
-            query: None,
-            keymap: None,
-            commands: BTreeMap::new(),
-        }
-    }
-
-    fn config() -> CompiledConfig {
-        CompiledConfig::test_new(
-            Some("core:default".to_string()),
-            BTreeMap::from([
-                ("core:default".to_string(), view(None)),
-                ("package-a:default".to_string(), view(Some("temp"))),
-                ("package-a:view2".to_string(), view(Some("detail"))),
-            ]),
-            BTreeMap::from([
-                (
-                    "core".to_string(),
-                    WorkflowMetadata {
-                        name: "core".to_string(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "package-a".to_string(),
-                    WorkflowMetadata {
-                        name: "template".to_string(),
-                        ..Default::default()
-                    },
-                ),
-            ]),
-            BTreeMap::new(),
-            Value::Object(serde_json::Map::new()),
-        )
-        .unwrap()
+    fn router() -> Router {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        Router::new(&config)
     }
 
     #[test]
     fn resolves_alias_and_canonical_view_references() {
-        let router = Router::new(&config());
+        let router = router();
+        assert_eq!(router.resolve_selector("sys"), Some("sys:main".to_string()));
         assert_eq!(
-            router.resolve("core:default", "temp aa"),
-            RouteResolution::Navigate {
-                target: "package-a:default".to_string(),
-                query: "aa".to_string(),
-            }
+            router.resolve_selector("sys:main"),
+            Some("sys:main".to_string())
         );
-        assert_eq!(
-            router.resolve("core:default", "temp"),
-            RouteResolution::NotMatched
-        );
-        assert_eq!(
-            router.resolve("core:default", "package-a:view2"),
-            RouteResolution::NotMatched
-        );
-        assert_eq!(
-            router.resolve("core:default", "package-a:view2 "),
-            RouteResolution::Navigate {
-                target: "package-a:view2".to_string(),
-                query: String::new(),
-            }
-        );
-        assert_eq!(
-            router.resolve("core:default", "package-a:view2 aa"),
-            RouteResolution::Navigate {
-                target: "package-a:view2".to_string(),
-                query: "aa".to_string(),
-            }
-        );
-        assert_eq!(
-            router.resolve("package-a:default", "temp aa"),
-            RouteResolution::Current {
-                query: "aa".to_string(),
-            }
-        );
+        assert_eq!(router.resolve_selector("unknown"), None);
+        assert_eq!(router.resolve_selector("sys:missing"), None);
     }
 
     #[test]
     fn completion_searches_aliases_references_and_workflow_names() {
-        let router = Router::new(&config());
+        let router = router();
         assert_eq!(
-            router.complete_views("det", "core:default")[0].view_ref,
-            "package-a:view2"
+            router.complete_views("sys", "core:default")[0].view_ref,
+            "sys:main"
         );
         assert_eq!(
-            router.complete_views("package-a:", "core:default")[0].view_ref,
-            "package-a:default"
+            router.complete_views("system", "core:default")[0].view_ref,
+            "sys:main"
         );
-        assert_eq!(router.complete_views("template", "core:default").len(), 2);
-        assert_eq!(
-            router.complete_views("temp", "core:default")[0]
-                .alias
-                .as_deref(),
-            Some("temp")
-        );
-        assert!(router.complete_views("core", "core:default").is_empty());
-    }
-
-    #[test]
-    fn plain_workflow_id_does_not_expand_to_default() {
-        let router = Router::new(&config());
-        assert_eq!(
-            router.resolve("core:default", "package-a query"),
-            RouteResolution::NotMatched
+        assert!(
+            router
+                .complete_views("core:default", "core:default")
+                .is_empty()
         );
     }
 
     #[test]
     fn display_contains_the_optional_alias() {
-        let router = Router::new(&config());
-        let aliased = router.display("package-a:default");
-        assert_eq!(aliased.view_ref, "package-a:default");
-        assert_eq!(aliased.alias.as_deref(), Some("temp"));
+        let router = router();
+        let aliased = router.display("sys:main");
+        assert_eq!(aliased.view_ref, "sys:main");
+        assert_eq!(aliased.alias.as_deref(), Some("sys"));
+        assert_eq!(aliased.label(), "sys");
         let canonical = router.display("core:default");
-        assert_eq!(canonical.view_ref, "core:default");
         assert_eq!(canonical.alias, None);
+        assert_eq!(canonical.label(), "core:default");
     }
 }

@@ -524,13 +524,7 @@ pub fn run_tty_invocation_with_blocked_stdout_signal(
 fn finish_tty_invocation(process: &mut DmenuProcess, keys: &[u8]) -> RunResult {
     process.master.write_all(keys).unwrap();
     process.master.flush().unwrap();
-    let (status, terminal_output) = wait_for_exit_with_output(process);
-    if status != 0 {
-        eprintln!(
-            "TERMINAL OUTPUT (status={status}):\n{}",
-            String::from_utf8_lossy(&terminal_output)
-        );
-    }
+    let (status, _terminal_output) = wait_for_exit_with_output(process);
     let mut stdout = Vec::new();
     process.output.read_to_end(&mut stdout).unwrap();
     RunResult { status, stdout }
@@ -982,6 +976,37 @@ pub fn wait_for_text(master: &File, needle: &str) -> Vec<u8> {
         assert!(
             Instant::now() < deadline,
             "process did not render {needle:?}; visible screen: {:?}; output: {:?}",
+            observation.visible,
+            output
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+pub fn wait_for_stable_text(master: &File, needle: &str) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    let mut matched_since = None;
+    loop {
+        let before = output.len();
+        drain_master_into(master, &mut output);
+        let observation =
+            observe_pty_output(master, &output[before..]).expect("test PTY is not registered");
+        if !observation.visible.contains("(searching...)") && observation.visible.contains(needle) {
+            let started = *matched_since.get_or_insert_with(Instant::now);
+            if started.elapsed() >= PTY_SCREEN_QUIET_PERIOD {
+                complete_pty_wait(master);
+                let mut observed = output;
+                observed.extend_from_slice(b"\n--- visible screen ---\n");
+                observed.extend_from_slice(observation.visible.as_bytes());
+                return observed;
+            }
+        } else {
+            matched_since = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process did not settle on {needle:?}; visible screen: {:?}; output: {:?}",
             observation.visible,
             output
         );

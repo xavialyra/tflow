@@ -65,6 +65,7 @@ pub(crate) struct ResolvedCustomStyle {
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTheme {
     pub(crate) text: Style,
+    #[cfg(test)]
     pub(crate) muted_text: Style,
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
@@ -77,7 +78,9 @@ pub(crate) struct ResolvedTheme {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChromeTheme {
+    #[cfg(test)]
     pub(crate) text: Style,
+    #[cfg(test)]
     pub(crate) muted_text: Style,
     pub(crate) divider: Style,
     pub(crate) border: Style,
@@ -248,6 +251,7 @@ impl ResolvedTheme {
         )?
         .normal;
 
+        #[cfg(test)]
         let chrome_muted_text = resolve_component(
             raw.chrome.muted_text.as_ref(),
             default_raw.chrome.muted_text.as_ref().unwrap(),
@@ -347,9 +351,12 @@ impl ResolvedTheme {
 
         Ok(Self {
             text: chrome_text,
+            #[cfg(test)]
             muted_text: chrome_muted_text,
             chrome: ChromeTheme {
+                #[cfg(test)]
                 text: chrome_text,
+                #[cfg(test)]
                 muted_text: chrome_muted_text,
                 divider: chrome_divider,
                 border: chrome_border,
@@ -617,20 +624,15 @@ pub(super) struct RawPickerTheme {
     pub(super) text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) muted: Option<RawStyleBinding>,
-    #[serde(
-        default,
-        alias = "input-prefix",
-        alias = "input_prefix",
-        alias = "prefix"
-    )]
+    #[serde(default)]
     pub(super) input_prefix: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) selected: Option<RawStyleBinding>,
-    #[serde(default, alias = "selected-muted", alias = "selected_muted")]
+    #[serde(default)]
     pub(super) selected_muted: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) badge: Option<RawStyleBinding>,
-    #[serde(default, alias = "badge-selected", alias = "badge_selected")]
+    #[serde(default)]
     pub(super) badge_selected: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) marker: Option<RawStyleBinding>,
@@ -645,7 +647,8 @@ pub(super) struct RawPickerTheme {
 pub(super) struct RawChromeTheme {
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
-    #[serde(default, alias = "muted-text", alias = "muted_text")]
+    #[allow(dead_code)]
+    #[serde(default)]
     pub(super) muted_text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) divider: Option<RawStyleBinding>,
@@ -653,11 +656,11 @@ pub(super) struct RawChromeTheme {
     pub(super) border: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) footer: Option<RawStyleBinding>,
-    #[serde(default, alias = "footer-title", alias = "footer_title")]
+    #[serde(default)]
     pub(super) footer_title: Option<RawStyleBinding>,
-    #[serde(default, alias = "footer-status", alias = "footer_status")]
+    #[serde(default)]
     pub(super) footer_status: Option<RawStyleBinding>,
-    #[serde(default, alias = "footer-key", alias = "footer_key")]
+    #[serde(default)]
     pub(super) footer_key: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) error: Option<RawStyleBinding>,

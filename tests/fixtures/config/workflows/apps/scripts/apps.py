@@ -78,7 +78,12 @@ def load_cache(cache_file):
     return refresh_cache(cache_file)
 
 def main():
-    query = sys.argv[1] if len(sys.argv) > 1 else ""
+    request = json.load(sys.stdin)
+    if request.get("entrypoint") != "picker-items":
+        raise ValueError("expected a picker-items producer request")
+    query = request.get("request", {}).get("input", "")
+    if not isinstance(query, str):
+        raise ValueError("picker-items request input must be a string")
     cache_file = get_cache_file()
     lines = load_cache(cache_file)
 
@@ -100,8 +105,12 @@ def main():
         except json.JSONDecodeError:
             continue
 
-    json.dump(result, sys.stdout, separators=(",", ":"))
+    json.dump({"version": 1, "items": result}, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"apps: {error}", file=sys.stderr)
+        raise SystemExit(2)

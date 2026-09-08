@@ -22,7 +22,6 @@ impl PickerItemsScheduler {
         starter: &MountTaskStarter,
         loader: &Arc<dyn PickerItemsLoader>,
         request: ItemsRequest,
-        runtime_snapshot: serde_json::Value,
     ) -> TaskHandle<ItemsResponse> {
         debug_assert_eq!(self.mount_id, starter.mount_id());
         debug_assert_eq!(self.mount_id, request.identity.mount_id);
@@ -32,14 +31,14 @@ impl PickerItemsScheduler {
         let loader = Arc::clone(loader);
         starter.spawn_latest_with_snapshot_tagged(
             lane,
-            runtime_snapshot,
+            serde_json::Value::Null,
             TaskTags::new("picker", "items"),
             move |context| {
                 let request = ItemsRequest {
                     view: view.clone(),
                     identity: identity.clone(),
                 };
-                let outcome = loader.load(&request, &context.runtime, &context.cancellation);
+                let outcome = loader.load(&request, &context.cancellation);
                 if outcome.managed_child_reaped {
                     context.mark_process_reaped();
                 }
@@ -92,7 +91,6 @@ mod tests {
         fn load(
             &self,
             _request: &ItemsRequest,
-            _runtime: &serde_json::Value,
             _cancellation: &crate::lifecycle::CancellationToken,
         ) -> super::super::items::ItemsLoadOutcome {
             super::super::items::ItemsLoadOutcome::without_managed_child(Ok(
@@ -107,7 +105,6 @@ mod tests {
         fn load(
             &self,
             _request: &ItemsRequest,
-            _runtime: &serde_json::Value,
             _cancellation: &crate::lifecycle::CancellationToken,
         ) -> super::super::items::ItemsLoadOutcome {
             super::super::items::ItemsLoadOutcome {
@@ -125,7 +122,6 @@ mod tests {
         fn load(
             &self,
             _request: &ItemsRequest,
-            _runtime: &serde_json::Value,
             cancellation: &crate::lifecycle::CancellationToken,
         ) -> super::super::items::ItemsLoadOutcome {
             if !self.started.swap(true, Ordering::Release) {
@@ -172,8 +168,7 @@ mod tests {
         let loader: Arc<dyn PickerItemsLoader> = Arc::new(EmptyLoader);
         let request = request_for(mount_id, 1);
         let identity = request.identity.clone();
-        let mut handle =
-            scheduler.submit_items(&starter, &loader, request, json!({"marker": true}));
+        let mut handle = scheduler.submit_items(&starter, &loader, request);
 
         match receive(&mut handle) {
             TaskCompletion::Completed(response) => {
@@ -193,12 +188,7 @@ mod tests {
         let scheduler = PickerItemsScheduler::new(MountTaskLease::new(mount_id), "apps:main");
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount_id));
         let loader: Arc<dyn PickerItemsLoader> = Arc::new(ReapedFailedLoader);
-        let mut handle = scheduler.submit_items(
-            &starter,
-            &loader,
-            request_for(mount_id, 1),
-            serde_json::Value::Null,
-        );
+        let mut handle = scheduler.submit_items(&starter, &loader, request_for(mount_id, 1));
 
         match receive(&mut handle) {
             TaskCompletion::Completed(response) => {
@@ -229,12 +219,7 @@ mod tests {
         let loader: Arc<dyn PickerItemsLoader> = Arc::new(BlockingFirstLoader {
             started: Arc::clone(&started),
         });
-        let first = scheduler.submit_items(
-            &starter,
-            &loader,
-            request_for(mount_id, 1),
-            json!({"request": 1}),
-        );
+        let first = scheduler.submit_items(&starter, &loader, request_for(mount_id, 1));
         for _ in 0..200 {
             if started.load(Ordering::Acquire) {
                 break;
@@ -242,12 +227,7 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(started.load(Ordering::Acquire));
-        let mut replacement = scheduler.submit_items(
-            &starter,
-            &loader,
-            request_for(mount_id, 2),
-            json!({"request": 2}),
-        );
+        let mut replacement = scheduler.submit_items(&starter, &loader, request_for(mount_id, 2));
         let mut first = first;
         assert!(matches!(receive(&mut first), TaskCompletion::Cancelled));
         match receive(&mut replacement) {

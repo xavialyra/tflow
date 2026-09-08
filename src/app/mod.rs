@@ -33,7 +33,6 @@ pub(crate) enum SessionOutcome {
 pub struct App {
     session: ProtocolSession,
     cancellation: CancellationToken,
-    root_view: String,
     terminal_size: Arc<Mutex<TerminalSize>>,
     tasks: crate::task::TaskRuntime,
 }
@@ -154,11 +153,6 @@ fn is_terminal_reclaim_error(error: &anyhow::Error) -> bool {
 }
 
 impl App {
-    /// Internal diagnostics hook; metrics remain scheduler-owned and are not a UI API.
-    pub(crate) fn task_metrics_snapshot(&self) -> crate::task::TaskRuntimeMetricsSnapshot {
-        self.tasks.metrics_snapshot()
-    }
-
     pub(crate) fn with_runtime_log_and_engines(
         config: Arc<crate::workflow::config::CompiledConfig>,
         invocation: Arc<crate::workflow::InvocationContext>,
@@ -258,7 +252,6 @@ impl App {
         Ok(Self {
             session,
             cancellation,
-            root_view,
             terminal_size,
             tasks,
         })
@@ -365,7 +358,7 @@ impl App {
 
     fn pending_outcome(&mut self) -> Option<SessionOutcome> {
         if let Some(result) = self.session.take_result() {
-            return Some(self.result_outcome(result.value, result.adapter));
+            return Some(self.result_outcome(result.value));
         }
         self.session
             .router()
@@ -387,18 +380,10 @@ impl App {
         result
     }
 
-    fn result_outcome(
-        &self,
-        value: Value,
-        result_adapter: Option<crate::workflow::command::ReturnAdapter>,
-    ) -> SessionOutcome {
+    fn result_outcome(&self, value: Value) -> SessionOutcome {
         let output = serde_json::from_value(value.clone())
             .unwrap_or(crate::workflow::command::ViewOutput::Value { value });
-        SessionOutcome::Completed(Box::new(crate::workflow::command::ViewReturn {
-            source_view: self.root_view.clone(),
-            output,
-            adapter: result_adapter,
-        }))
+        SessionOutcome::Completed(Box::new(crate::workflow::command::ViewReturn { output }))
     }
 
     pub(crate) fn take_runtime_warning(&mut self) -> Option<String> {

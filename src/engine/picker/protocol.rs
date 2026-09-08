@@ -10,7 +10,7 @@ use super::{
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
     EngineNavigationRequest, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
-    EvaluatedBindingConfig, EvaluatedEngineConfig, InputBindingFactoryContext,
+    InputBindingFactoryContext, ProjectedBindingConfig, ProjectedEngineConfig,
     RendererFactoryContext, ViewContext as EngineContext, ViewIdentity,
 };
 use crate::input::keymap::KeymapAction;
@@ -48,8 +48,8 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) struct PickerProtocolConfig {
     pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
-    pub(crate) engine: EvaluatedEngineConfig,
-    pub(crate) bindings: EvaluatedBindingConfig,
+    pub(crate) engine: ProjectedEngineConfig,
+    pub(crate) bindings: ProjectedBindingConfig,
     pub(crate) services: PickerViewServices,
     pub(crate) parameter_binding: ParameterBinding,
     /// Bindings for route targets used by route-entry submission. The map is
@@ -75,19 +75,10 @@ pub(crate) fn create_protocol_view(
         config.identity.view_ref
     );
     let mount_id = ViewMountId(instance.0);
-    let engine_override = request.engine_options.as_ref();
-    let show_input = engine_override
-        .and_then(|v| v.get("show_input"))
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let show_divider = engine_override
-        .and_then(|v| v.get("show_divider"))
-        .and_then(Value::as_bool)
-        .unwrap_or(show_input);
     let options = PickerOptions {
         preview_enabled: config.engine.field("preview").is_some(),
-        show_input,
-        show_divider,
+        show_input: true,
+        show_divider: true,
     };
     let preview = super::preview::parse(
         config.engine.field("layout").cloned(),
@@ -442,10 +433,7 @@ impl PickerProtocolView {
         let task = TaskId(1);
         let generation = self.task_generation.wrapping_add(1).max(1);
         let starter = self.starter.for_task(task, generation);
-        if self
-            .runtime
-            .start_prepared_work(&starter, &self.runtime_snapshot)
-        {
+        if self.runtime.start_prepared_work(&starter) {
             self.task_generation = generation;
             self.task_registry.register(task, generation);
         }
@@ -546,11 +534,18 @@ impl PickerProtocolView {
             projection.based_on == self.engine_context.identity(),
             "picker command projection is based on a stale ViewContext"
         );
-        let projected = projection
-            .bindings
-            .into_iter()
-            .find(|binding| binding.key.binding_identity() == key.binding_identity());
         let static_binding = self.commands.binding(key).cloned();
+        let static_global = static_binding
+            .as_ref()
+            .is_some_and(|binding| binding.invocation.view_reference().is_none());
+        let projected = (!static_global)
+            .then(|| {
+                projection
+                    .bindings
+                    .into_iter()
+                    .find(|binding| binding.key.binding_identity() == key.binding_identity())
+            })
+            .flatten();
         if projected.is_none() && static_binding.is_none() {
             return Ok(None);
         }
@@ -760,7 +755,6 @@ impl PickerProtocolView {
             }
             EngineDecision::Return(output) => Ok(ViewDecision::Return(ViewResult {
                 value: serde_json::to_value(output).context("could not serialize picker result")?,
-                adapter: None,
             })),
             EngineDecision::Close => {
                 self.pending_command = None;
@@ -1026,6 +1020,13 @@ impl View for PickerProtocolView {
             .collect::<Vec<_>>();
         if let Ok(projection) = self.runtime.command_projection(&self.engine_context) {
             for command in projection.bindings {
+                let has_global_binding = self.commands.bindings.iter().any(|binding| {
+                    binding.key.binding_identity() == command.key.binding_identity()
+                        && binding.invocation.view_reference().is_none()
+                });
+                if has_global_binding {
+                    continue;
+                }
                 entries.retain(|binding| {
                     binding.key.binding_identity() != command.key.binding_identity()
                 });
@@ -1056,7 +1057,6 @@ impl View for PickerProtocolView {
             ));
         }
         Ok(crate::view::ViewChrome {
-            title: None,
             status,
             error: self.diagnostic.clone(),
             bindings: Some(self.bindings(context)),
@@ -1378,7 +1378,6 @@ impl View for PickerProtocolView {
                 },
             ),
             metadata: crate::view::ViewMetadata {
-                title: None,
                 status: self.renderer.chrome(&model).status,
                 error: self.diagnostic.clone(),
                 bindings: Some(self.bindings(&ViewContext::new(self.instance, "picker"))),
@@ -1568,7 +1567,7 @@ impl Drop for PickerProtocolView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::EvaluatedBindingConfig;
+    use crate::engine::ProjectedBindingConfig;
     use crate::view::{MapRouteCatalog, RouteCatalog, ViewContext};
     use ratatui::{Terminal, backend::TestBackend, layout::Position};
     use std::sync::{
@@ -1595,12 +1594,11 @@ mod tests {
                 &config,
                 "core:default",
                 crate::lifecycle::CancellationToken::new().observer(),
-                &[],
             )
             .unwrap(),
             identity: ViewIdentity::new("core:default", crate::workflow::config::ENGINE_PICKER),
-            engine: EvaluatedEngineConfig::default(),
-            bindings: EvaluatedBindingConfig::default(),
+            engine: ProjectedEngineConfig::default(),
+            bindings: ProjectedBindingConfig::default(),
             services,
             parameter_bindings: BTreeMap::new(),
             parameter_binding,
@@ -1643,7 +1641,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_selection_cycles_like_the_legacy_picker() {
+    fn completion_selection_cycles_through_picker_matches() {
         assert_eq!(cycle_completion_selection(0, 3, -1), 2);
         assert_eq!(cycle_completion_selection(2, 3, 1), 0);
         assert_eq!(cycle_completion_selection(0, 0, 1), 0);
@@ -1735,11 +1733,7 @@ mod tests {
             Ok(EngineEmission::decision(EngineDecision::Continue))
         }
 
-        fn start_prepared_work(
-            &mut self,
-            starter: &MountTaskStarter,
-            _runtime_snapshot: &Value,
-        ) -> bool {
+        fn start_prepared_work(&mut self, starter: &MountTaskStarter) -> bool {
             if self.task.is_some() {
                 return false;
             }
@@ -1827,7 +1821,6 @@ mod tests {
                 &fixture,
                 "core:default",
                 crate::lifecycle::CancellationToken::new().observer(),
-                &[],
             )
             .unwrap(),
             route_candidates: Vec::new(),
@@ -2160,155 +2153,14 @@ mod tests {
     }
 
     #[test]
-    fn picker_layout_respects_caller_engine_overrides_to_hide_input_and_divider() {
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("core:default", "core:default");
-        let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
-        let tasks = TaskRuntime::new();
-        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
-        let services = crate::engine::picker::PickerRuntimeServices::new(
-            Arc::clone(&fixture),
-            starter,
-            "core:default",
-        )
-        .view_services();
-        let picker_config = config(services);
-
-        let req = request("core:default").with_engine_options(serde_json::json!({
-            "show_input": false,
-            "show_divider": false,
-        }));
-
-        let mut view =
-            create_protocol_view(picker_config, &req, ViewInstanceId(1), &routes).unwrap();
-
-        let context = ViewContext::new(ViewInstanceId(1), "core:default");
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
-            .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
-            .unwrap();
-
-        view.event(
-            ViewEvent::Task(TaskEvent {
-                instance: ViewInstanceId(1),
-                task: TaskId(1),
-                generation: 0,
-                outcome: TaskOutcome::Completed(serde_json::json!({
-                    "items": [{
-                        "text": "menu option",
-                        "prefix": "ctrl+m",
-                    }]
-                })),
-            }),
-            &context,
-        )
-        .unwrap();
-
-        view.event(ViewEvent::Tick, &context).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let render_context = RenderContext::new(
-            crate::view::TerminalSize {
-                width: 40,
-                height: 5,
-            },
-            None,
-        );
-        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
-        terminal
-            .draw(|frame| {
-                let res = view.render(frame, frame.area(), &render_context).unwrap();
-                assert!(
-                    res.cursor.is_none(),
-                    "Cursor should be hidden when show_input is false"
-                );
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        // 验证第 0 行直接是列表区域（无输入框与分割线），所以列表提示 (searching...) 直接在第 0 行
-        let row0: String = (0..40)
-            .map(|x| buffer.cell((x, 0)).unwrap().symbol())
-            .collect();
-        assert!(
-            row0.contains("(searching...)"),
-            "Row 0 should directly render the items region"
-        );
-
-        // 验证全屏没有任何行绘制分割线 ─
-        for y in 0..5 {
-            let row: String = (0..40)
-                .map(|x| buffer.cell((x, y)).unwrap().symbol())
-                .collect();
-            assert!(
-                !row.contains('─'),
-                "No row should contain divider when show_divider is false, but row {y} was: {row}"
-            );
-        }
-
-        // 验证普通按键不会被写入隐藏的 editor
-        let decision = view
-            .event(
-                ViewEvent::Input(InputEvent::Key {
-                    key: Key::Char('z'),
-                    raw: vec![],
-                }),
-                &context,
-            )
-            .unwrap();
-        assert!(matches!(decision, ViewDecision::Stay));
-
-        // 作为对比：验证默认未覆盖时带有输入框和分割线
-        let default_view = create_protocol_view(
-            config(
-                crate::engine::picker::PickerRuntimeServices::new(
-                    fixture,
-                    MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(2))),
-                    "core:default",
-                )
-                .view_services(),
-            ),
-            &request("core:default"),
-            ViewInstanceId(2),
-            &routes,
-        )
-        .unwrap();
-        let mut default_term = Terminal::new(TestBackend::new(40, 5)).unwrap();
-        default_term
-            .draw(|frame| {
-                let res = default_view
-                    .render(frame, frame.area(), &render_context)
-                    .unwrap();
-                assert!(res.cursor.is_some(), "Cursor should be visible by default");
-            })
-            .unwrap();
-        let def_buf = default_term.backend().buffer();
-        let def_row1: String = (0..40)
-            .map(|x| def_buf.cell((x, 1)).unwrap().symbol())
-            .collect();
-        assert!(
-            def_row1.contains('─'),
-            "Default layout row 1 must be divider"
-        );
-    }
-
-    #[test]
-    fn builtin_commands_action_specifies_engine_overrides() {
+    fn builtin_commands_are_an_internal_action() {
         let binding = crate::workflow::config::CommandBinding::builtin_commands();
         let action = binding
             .command_action("commands")
             .expect("commands action should exist");
-        let crate::workflow::config::CommandAction::Call { payload } = action else {
-            panic!("commands action must be Call");
-        };
-        let engine = payload.engine.expect("engine options must be configured");
-        let toml::Value::Table(table) = engine else {
-            panic!("engine options must be a table");
-        };
-        assert_eq!(table.get("show_input"), Some(&toml::Value::Boolean(false)));
-        assert_eq!(
-            table.get("show_divider"),
-            Some(&toml::Value::Boolean(false))
-        );
+        assert!(matches!(
+            action,
+            crate::workflow::config::CommandAction::OpenCommands
+        ));
     }
 }

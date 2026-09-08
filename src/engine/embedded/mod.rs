@@ -13,12 +13,10 @@ use super::{
     ActionId, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput, EngineDecision,
     EngineEmission, EngineNotice, EngineRuntime, EngineValidationContext, ExternalTickResult,
     InputBindingFactoryContext, RawInputReceiver, RenderModel, RendererFactoryContext,
-    RuntimeFactoryContext, evaluate_field, evaluate_optional_string, require_field,
-    validate_fields,
+    RuntimeFactoryContext, require_field, validate_fields,
 };
 use crate::execution::PreparedProcess;
 use crate::input::keymap::KeymapAction;
-use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use serde::Deserialize;
@@ -88,7 +86,7 @@ fn parse_escape_cancels_value(view_ref: &str, value: Option<Value>) -> Result<bo
         .map(|value| {
             value.as_bool().with_context(|| {
                 format!(
-                    "view {:?} embedded escape-cancels must evaluate to a boolean",
+                    "view {:?} embedded escape-cancels must be a boolean",
                     view_ref
                 )
             })
@@ -97,25 +95,11 @@ fn parse_escape_cancels_value(view_ref: &str, value: Option<Value>) -> Result<bo
         .map(|value| value.unwrap_or(true))
 }
 
-fn contains_dynamic(value: &toml::Value) -> bool {
-    match value {
-        toml::Value::String(source) => is_dynamic_string(source),
-        toml::Value::Array(values) => values.iter().any(contains_dynamic),
-        toml::Value::Table(values) => values.values().any(contains_dynamic),
-        toml::Value::Boolean(_)
-        | toml::Value::Datetime(_)
-        | toml::Value::Float(_)
-        | toml::Value::Integer(_) => false,
-    }
-}
-
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
-        .with_current_fields(&[])
         .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["command", "title", "result"],
+            runtime: &["command", "result"],
             binding: &["escape-cancels"],
-            deferred_runtime_errors: &[],
             binding_defaults: None,
         })
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
@@ -136,28 +120,12 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     let name = context.view_ref;
     let view = context.view;
     reject_picker_sources(name, view)?;
-    validate_fields(
-        name,
-        view,
-        &["command", "title", "result", "escape-cancels"],
-    )?;
+    validate_fields(name, view, &["command", "result", "escape-cancels"])?;
     require_field(name, view, "command")?;
-    if let Some(title) = view.engine_field("title")
-        && !title.is_str()
-    {
-        anyhow::bail!(
-            "view {:?} embedded title must be a string or template",
-            name
-        );
-    }
-    if let Some(result) = view.engine_field("result")
-        && !contains_dynamic(result)
-    {
+    if let Some(result) = view.engine_field("result") {
         parse_result_config(name, Some(result))?;
     }
-    if let Some(escape_cancels) = view.engine_field("escape-cancels")
-        && !contains_dynamic(escape_cancels)
-    {
+    if let Some(escape_cancels) = view.engine_field("escape-cancels") {
         parse_escape_cancels_value(
             name,
             Some(crate::workflow::config::toml_to_json(escape_cancels)?),
@@ -166,21 +134,9 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     let command = view
         .engine_field("command")
         .expect("required embedded command was checked");
-    if let Some(source) = command.as_str() {
-        if Template::parse(source)?.is_complete_path() {
-            return Ok(());
-        }
-        anyhow::bail!(
-            "view {:?} embedded command must be an argv array or complete dynamic path",
-            name
-        );
-    }
-    let arguments = command.as_array().ok_or_else(|| {
-        anyhow::anyhow!(
-            "view {:?} embedded command must be an argv array or dynamic path",
-            name
-        )
-    })?;
+    let arguments = command
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("view {:?} embedded command must be an argv array", name))?;
     if arguments.is_empty() || arguments.iter().any(|argument| !argument.is_str()) {
         anyhow::bail!(
             "view {:?} embedded command must be a non-empty array of strings",
@@ -194,11 +150,13 @@ pub(super) fn create_view(
     context: RuntimeFactoryContext,
 ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
     let view_ref = context.identity.view_ref.clone();
-    let command = evaluate_field(&context.config, "command")?
+    let command = context
+        .config
+        .field("command")
         .context("embedded engine requires a command field")?;
     let command = command
         .as_array()
-        .context("embedded command must evaluate to an array")?
+        .context("embedded command must be an argv array")?
         .iter()
         .map(|argument| {
             argument
@@ -225,7 +183,6 @@ pub(super) fn create_view(
     } else {
         command
     };
-    let _ = evaluate_optional_string(&context.config, "title")?;
     let mut environment = vec![(
         "LAUNCHER_INPUT".to_string(),
         context.parameters.raw_input().to_string(),
@@ -236,7 +193,7 @@ pub(super) fn create_view(
             root.to_string_lossy().into_owned(),
         ));
     }
-    let result = parse_result_config_value(&view_ref, evaluate_field(&context.config, "result")?)?;
+    let result = parse_result_config_value(&view_ref, context.config.field("result").cloned())?;
     let session = EmbeddedSession::new(
         PreparedProcess {
             argv: command,
@@ -311,20 +268,25 @@ impl EmbeddedView {
         let notice = Some(if success {
             EngineNotice::Info {
                 view_ref: self.view_ref.clone(),
-                message,
+                message: message.clone(),
             }
         } else {
             EngineNotice::Error {
                 view_ref: self.view_ref.clone(),
-                message,
+                message: message.clone(),
             }
         });
         Ok(match &result.outcome {
             EmbeddedOutcome::Returned(output) => {
                 ExternalTickResult::return_with(output.clone(), notice)
             }
-            EmbeddedOutcome::Failed(error) => ExternalTickResult::fail_with(error.clone(), notice),
-            _ => ExternalTickResult::close_with(notice),
+            EmbeddedOutcome::Cancelled | EmbeddedOutcome::Exited(0) => {
+                ExternalTickResult::close_with(notice)
+            }
+            EmbeddedOutcome::Exited(_) | EmbeddedOutcome::Signaled(_) => {
+                ExternalTickResult::fail_with(message, notice)
+            }
+            EmbeddedOutcome::Failed(_) => ExternalTickResult::fail_with(message, notice),
         })
     }
 }
@@ -560,7 +522,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("escape-cancels must evaluate to a boolean")
+                .contains("escape-cancels must be a boolean")
         );
     }
 }

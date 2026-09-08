@@ -20,7 +20,7 @@ description: "Architecture Decision Record establishing decentralized workflow p
 
 ## Context
 
-`tui-launcher` is an extensible terminal workflow host designed for keyboard-driven navigation and command orchestration. In the host runtime, views are governed by explicit query schemas, structured view stacks (with modal popup and call/return boundaries), and bounded expression evaluation.
+`tui-launcher` is an extensible terminal workflow host designed for keyboard-driven navigation and command orchestration. In the host runtime, views are governed by explicit query schemas, structured view stacks (with modal popup and call/return boundaries), and bounded producer protocols.
 
 Historically, external views and commands were bundled as "plugins" located strictly in subdirectories under `$XDG_CONFIG_HOME/tui-launcher/plugins/<id>/plugin.toml`. As adoption patterns matured, several architectural tensions emerged:
 
@@ -35,7 +35,7 @@ Historically, external views and commands were bundled as "plugins" located stri
 * **Unix Philosophy**: Everything is a file; plain text is the universal interface; conventions over complex configuration registries.
 * **Frictionless Sharing**: A workflow should be capable of existing as a self-contained, single-file document that can be installed via a direct copy or `curl`.
 * **Orthogonal Namespaces**: Workflows operate as peers without imperative execution sequence or heuristic priority rules.
-* **Preservation of Core Guarantees**: Retain the host's strict schema verification, bounded expression evaluation, and Material Design 3 (M3) semantic styling contract.
+* **Preservation of Core Guarantees**: Retain the host's strict schema verification, bounded producer execution, and Material Design 3 (M3) semantic styling contract.
 
 ---
 
@@ -61,7 +61,7 @@ The loader scans `workflows/` and uniformly resolves two physical layouts:
 2. **Directory Workflows (`workflows/<id>/workflow.toml`)**:
    - Suited for complex workflows requiring private test suites, multi-file Python/Bash scripts, or local static assets.
    - Namespace resolves to `<id>`.
-   - Relative script references in manifests (e.g., `script = "scripts/feed.sh"`) are resolved by the host directly to absolute paths prior to execution.
+   - Relative producer script references in manifests (e.g., `handler.file = "scripts/feed.sh"`) are confined to the workflow root and resolved by the host before execution.
    - The host injects `WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tui-launcher/workflows/<id>`) for inter-script asset references.
 3. **Host-Side Absolute Path Resolution (Zero `$PATH` Pollution)**:
    - The host does not prepend or mutate the child process `$PATH`, completely eliminating the risk of system command hijacking (e.g., shadowing `git`, `cat`, `test`) and environment leakage to sub-processes.
@@ -74,12 +74,13 @@ Command specifications support inline script bodies alongside external file path
 [views.main.commands.checkout]
 key = "enter"
 type = "run"
-args = ["{{ current.value }}"]
+producer = "script"
+
+[views.main.commands.checkout.handler]
 script = """
 #!/usr/bin/env bash
 set -euo pipefail
-target="$1"
-git checkout "$target"
+printf '%s\n' "checkout producer"
 """
 ```
 
@@ -94,7 +95,7 @@ git checkout "$target"
   - The host directly invokes the interpreter (`Command::new(interpreter)...`), passing the temporary script path as an argument. Because the script is opened in read-only mode by the system interpreter (rather than executed directly via kernel `execve`), inline scripts are completely immune to `noexec` restrictions across `/tmp`, `/run`, or cache directories.
 - **Deterministic Diagnostics & Source Attribution**:
   - File-backed execution preserves line numbers and clear stack traces when scripts fail, while keeping standard input/output fully attached for interactive terminal workflows.
-  - **Source Attribution**: The host embeds human-readable origin comments immediately following the shebang (e.g., `# [tui-launcher] source: workflows/<id>.toml -> [views.<name>.commands.<key>]`). Temporary files incorporate semantic prefixes (`<id>_<command>_<hash>`), ensuring that any runtime stack trace or syntax error printed to stderr directly identifies the originating workflow and command definition.
+  - **Source Attribution**: The host embeds human-readable origin comments immediately following the shebang (e.g., `# [tui-launcher] source: workflows/<id>.toml -> [views.<name>.commands.<key>]`). Temporary files incorporate semantic prefixes (`<id>_<command>_<hash>`), ensuring that any runtime stack trace or syntax error printed to stderr identifies the originating workflow and command definition.
 
 ### 4. Working Directory (CWD) Invariant
 

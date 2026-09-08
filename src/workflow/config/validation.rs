@@ -1,10 +1,5 @@
-use super::{
-    CommandAction, CommandBindingVisibility, CompiledConfig, Defaults, ScriptSourceSpec, View,
-    ViewRef, validate_script_source_args,
-};
-use crate::workflow::expression::{EvaluationStage, Template, TemplateRegistry, is_dynamic_string};
+use super::{CommandAction, CommandBindingVisibility, CompiledConfig, Defaults, View, ViewRef};
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
 pub(crate) trait EngineConfigValidator {
@@ -13,220 +8,6 @@ pub(crate) trait EngineConfigValidator {
     fn validate_relations(&self, config: &CompiledConfig) -> Result<()>;
 }
 
-pub(super) fn validate_json_requirements(
-    templates: &TemplateRegistry,
-    value: &Value,
-    stage: EvaluationStage,
-    consumer: &str,
-) -> Result<()> {
-    templates
-        .requirements_for_value(value)?
-        .validate_stage(stage, consumer)
-}
-
-pub(super) fn validate_toml_requirements(
-    templates: &TemplateRegistry,
-    value: &toml::Value,
-    stage: EvaluationStage,
-    consumer: &str,
-) -> Result<()> {
-    let value = super::toml_to_json(value)?;
-    validate_json_requirements(templates, &value, stage, consumer)
-}
-
-pub(super) fn validate_string_requirements(
-    templates: &TemplateRegistry,
-    value: &str,
-    stage: EvaluationStage,
-    consumer: &str,
-) -> Result<()> {
-    validate_json_requirements(
-        templates,
-        &Value::String(value.to_string()),
-        stage,
-        consumer,
-    )
-}
-
-pub(super) fn validate_optional_string_requirements(
-    templates: &TemplateRegistry,
-    value: Option<&str>,
-    stage: EvaluationStage,
-    consumer: &str,
-) -> Result<()> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    validate_string_requirements(templates, value, stage, consumer)
-}
-
-pub(super) fn validate_run_payload(
-    payload: &super::RunPayload,
-    script_root: Option<&Path>,
-    owner: &str,
-) -> Result<()> {
-    if let Some(script) = &payload.script {
-        if script.trim().is_empty() {
-            bail!("{} has an empty script body", owner);
-        }
-        return Ok(());
-    }
-    let Some(handler) = &payload.handler else {
-        bail!("{} run command must define either script or handler", owner);
-    };
-    validate_run_handler(handler, script_root, owner)
-}
-
-pub(super) fn validate_run_handler(
-    handler: &toml::Value,
-    script_root: Option<&Path>,
-    owner: &str,
-) -> Result<()> {
-    let spec = match handler {
-        toml::Value::Table(_) => {
-            let spec = ScriptSourceSpec::parse(handler)
-                .with_context(|| format!("{} has an invalid command handler source", owner))?;
-            spec.validate_command_handler()
-                .with_context(|| format!("{} has an invalid command handler source", owner))?;
-            spec
-        }
-        toml::Value::String(_) => {
-            bail!(
-                "{} command handler must be an explicit script source object; use {{ source = \"script\", file = \"...\" }} or {{ source = \"inline\", script = \"...\" }}",
-                owner
-            )
-        }
-        _ => {
-            bail!("{} command handler must be a script source table", owner)
-        }
-    };
-    if let Some(script) = spec.script_value()
-        && script.trim().is_empty()
-    {
-        bail!("{} has an empty command handler script", owner);
-    }
-    if let Some(file) = spec.file_value()
-        && file.trim().is_empty()
-    {
-        bail!("{} has an empty command handler file", owner);
-    }
-    spec.validate_target(script_root)
-        .with_context(|| format!("{} has an invalid command handler file", owner))
-}
-
-pub(super) fn validate_argv_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {
-    validate_script_source_args(Some(arguments))
-        .with_context(|| format!("{} args must be an array or complete dynamic path", owner))
-}
-
-pub(super) fn validate_run_arguments(arguments: &toml::Value, owner: &str) -> Result<()> {
-    validate_argv_arguments(arguments, &format!("{} command", owner))
-}
-
-pub(super) fn validate_command_action_requirements(
-    templates: &TemplateRegistry,
-    action: &CommandAction,
-    stage: EvaluationStage,
-    consumer: &str,
-    depth: usize,
-) -> Result<()> {
-    if depth > 16 {
-        bail!("{consumer} action nesting exceeds 16 levels");
-    }
-    let validate = |value: &toml::Value, label: &str, value_stage: EvaluationStage| {
-        validate_toml_requirements(templates, value, value_stage, label)
-    };
-    match action {
-        CommandAction::Run { .. } => {
-            let payload = action.run_payload().unwrap_or_default();
-            if let Some(handler) = &payload.handler {
-                validate_run_handler_requirements(
-                    templates,
-                    handler,
-                    stage,
-                    &format!("{consumer} handler"),
-                )?;
-            }
-            if let Some(args) = &payload.args {
-                validate(args, &format!("{consumer} args"), stage)?;
-            }
-            if let Some(shell) = &payload.shell {
-                validate(
-                    &toml::Value::String(shell.clone()),
-                    &format!("{consumer} shell"),
-                    stage,
-                )?;
-            }
-        }
-        CommandAction::Navigate { payload } => {
-            validate_presentation(&format!("{consumer} presentation"), &payload.presentation)?;
-            validate(&payload.target, &format!("{consumer} target"), stage)?;
-            if let Some(query) = &payload.query {
-                validate(query, &format!("{consumer} query"), stage)?;
-            }
-        }
-        CommandAction::Call { payload } => {
-            validate_presentation(&format!("{consumer} presentation"), &payload.presentation)?;
-            validate(&payload.target, &format!("{consumer} target"), stage)?;
-            if let Some(query) = &payload.query {
-                validate(query, &format!("{consumer} query"), stage)?;
-            }
-            if let Some(engine) = &payload.engine {
-                validate(engine, &format!("{consumer} engine"), stage)?;
-            }
-            if let Some(then) = &payload.then {
-                validate_command_action_requirements(
-                    templates,
-                    then,
-                    EvaluationStage::Return,
-                    &format!("{consumer} continuation"),
-                    depth + 1,
-                )?;
-            }
-        }
-        CommandAction::Return { .. } => {
-            let payload = action.return_payload().unwrap_or_default();
-            if let Some(value) = &payload.value {
-                validate(value, &format!("{consumer} value"), stage)?;
-            }
-            if let Some(handler) = &payload.handler {
-                validate(
-                    handler,
-                    &format!("{consumer} handler"),
-                    EvaluationStage::Return,
-                )?;
-            }
-            if let Some(args) = &payload.args {
-                validate(args, &format!("{consumer} args"), EvaluationStage::Return)?;
-            }
-        }
-        CommandAction::EditInput { payload } => {
-            validate(&payload.value, &format!("{consumer} value"), stage)?;
-            if let Some(cursor) = &payload.cursor {
-                validate(cursor, &format!("{consumer} cursor"), stage)?;
-            }
-        }
-        CommandAction::Invoke { payload } => {
-            validate(&payload.command, &format!("{consumer} command"), stage)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_run_handler_requirements(
-    templates: &TemplateRegistry,
-    handler: &toml::Value,
-    stage: EvaluationStage,
-    consumer: &str,
-) -> Result<()> {
-    let mut handler = handler.clone();
-    if let Some(handler) = handler.as_table_mut() {
-        handler.remove("script");
-    }
-    validate_toml_requirements(templates, &handler, stage, consumer)
-}
-
-#[allow(dead_code)]
 pub(super) fn validate_view_commands(
     view_ref: &str,
     commands: &BTreeMap<String, super::Command>,
@@ -254,164 +35,137 @@ fn validate_command_action(
             command_id
         );
     }
-    let owner = format!("{}:{}", view_ref, command_id);
-    match action {
-        CommandAction::Run { .. } => {
-            let payload = action.run_payload().context("invalid run action")?;
-            validate_run_payload(&payload, script_root, &owner)?;
-            if let Some(args) = &payload.args {
-                validate_run_arguments(args, &owner)?;
-            }
-        }
-
-        CommandAction::Navigate { payload } => {
-            validate_target(view_ref, command_id, "navigation", &payload.target, views)?;
-            if let Some(query) = &payload.query {
-                validate_templates(query)?;
-            }
-        }
-        CommandAction::Call { payload } => {
-            validate_target(view_ref, command_id, "call", &payload.target, views)?;
-            if let Some(value) = &payload.query {
-                validate_templates(value)?;
-            }
-            if let Some(value) = &payload.engine {
-                validate_templates(value)?;
-            }
-            if let Some(then) = &payload.then {
-                validate_command_action(view_ref, command_id, then, views, script_root, depth + 1)?;
-            }
-        }
-        CommandAction::Return { .. } => {
-            let payload = action.return_payload().unwrap_or_default();
-            if depth > 0 && (payload.handler.is_some() || payload.args.is_some()) {
-                bail!(
-                    "view {:?} command {:?} continuation return cannot define handler or args",
-                    view_ref,
-                    command_id
-                );
-            }
-            if payload.handler.is_none() && payload.args.is_some() {
-                bail!(
-                    "view {:?} command {:?} return args require a handler",
-                    view_ref,
-                    command_id
-                );
-            }
-            if let Some(value) = &payload.value {
-                validate_templates(value)?;
-            }
-            if let Some(handler) = &payload.handler {
-                validate_result_handler(handler, &owner, script_root)?;
-            }
-            if let Some(args) = &payload.args {
-                validate_argv_arguments(
-                    args,
-                    &format!("view {:?} command {:?}", view_ref, command_id),
-                )?;
-            }
-        }
-        CommandAction::EditInput { payload } => {
-            validate_templates(&payload.value)?;
-            if let Some(cursor) = &payload.cursor {
-                validate_templates(cursor)?;
-            }
-        }
-        CommandAction::Invoke { payload } => validate_templates(&payload.command)?,
+    if matches!(action, CommandAction::OpenCommands) {
+        return Ok(());
     }
-    Ok(())
+    validate_producer_action(view_ref, command_id, action, views, script_root)
 }
 
-fn validate_presentation(consumer: &str, presentation: &super::ViewPresentation) -> Result<()> {
-    if presentation.mode != super::ViewPresentationMode::Popup
-        && (presentation.width.is_some() || presentation.height.is_some())
-    {
-        bail!("{consumer} width and height require popup mode");
-    }
-    if presentation.width == Some(0) || presentation.height == Some(0) {
-        bail!("{consumer} width and height must be positive");
-    }
-    Ok(())
-}
-
-fn validate_target(
+fn validate_producer_action(
     view_ref: &str,
     command_id: &str,
-    kind: &str,
-    target: &toml::Value,
+    action: &CommandAction,
+    views: &BTreeMap<ViewRef, View>,
+    script_root: Option<&Path>,
+) -> Result<()> {
+    let owner = format!("view {:?} command {:?}", view_ref, command_id);
+    let producer = action
+        .producer()
+        .expect("producer action validation requires a producer");
+    let handler = producer_handler(action);
+    let operation_type = action.operation_type();
+    match producer {
+        super::ProducerKind::Declared => {
+            let operation = crate::protocol::parse_declared_operation(
+                operation_type,
+                handler,
+                &format!("{owner} declared handler"),
+            )?;
+            validate_operation_target(view_ref, command_id, &operation, views)?;
+        }
+        super::ProducerKind::Script => {
+            super::parse_producer_script_handler(handler, script_root)
+                .with_context(|| format!("{owner} script handler"))?;
+        }
+    }
+
+    if let CommandAction::Call {
+        return_processor: Some(processor),
+        ..
+    } = action
+    {
+        validate_return_processor(view_ref, command_id, processor, views, script_root)?;
+    }
+    Ok(())
+}
+
+fn producer_handler(action: &CommandAction) -> &toml::Value {
+    match action {
+        CommandAction::Run { handler, .. }
+        | CommandAction::Navigate { handler, .. }
+        | CommandAction::Call { handler, .. }
+        | CommandAction::Return { handler, .. }
+        | CommandAction::EditInput { handler, .. }
+        | CommandAction::Invoke { handler, .. } => handler,
+        CommandAction::OpenCommands => unreachable!("built-in commands have no producer handler"),
+    }
+}
+
+fn validate_return_processor(
+    view_ref: &str,
+    command_id: &str,
+    processor: &super::ReturnProcessor,
+    views: &BTreeMap<ViewRef, View>,
+    script_root: Option<&Path>,
+) -> Result<()> {
+    let owner = format!(
+        "view {:?} command {:?} return processor",
+        view_ref, command_id
+    );
+    match processor.producer {
+        super::ProducerKind::Declared => {
+            let operation = crate::protocol::parse_declared_operation(
+                &processor.operation,
+                &processor.handler,
+                &format!("{owner} declared handler"),
+            )?;
+            validate_operation_target(view_ref, command_id, &operation, views)?;
+        }
+        super::ProducerKind::Script => {
+            anyhow::ensure!(
+                matches!(
+                    processor.operation.as_str(),
+                    "navigate" | "call" | "return" | "run" | "edit-input" | "invoke"
+                ),
+                "{owner} has unsupported operation {:?}",
+                processor.operation
+            );
+            super::parse_producer_script_handler(&processor.handler, script_root)
+                .with_context(|| format!("{owner} script handler"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_operation_target(
+    view_ref: &str,
+    command_id: &str,
+    operation: &crate::protocol::ProtocolOperation,
     views: &BTreeMap<ViewRef, View>,
 ) -> Result<()> {
-    validate_templates(target).with_context(|| {
-        format!(
-            "view {:?} command {:?} has invalid {} payload",
-            view_ref, command_id, kind
-        )
-    })?;
-    let target = target
-        .as_str()
-        .with_context(|| format!("{} target must be a string or dynamic path", kind))?;
+    let (kind, target, presentation) = match operation {
+        crate::protocol::ProtocolOperation::Navigate {
+            target,
+            presentation,
+            ..
+        } => ("navigation", target, presentation),
+        crate::protocol::ProtocolOperation::Call {
+            target,
+            presentation,
+            ..
+        } => ("call", target, presentation),
+        _ => return Ok(()),
+    };
     let configured = views.contains_key(target)
         || views
             .values()
             .any(|view| view.alias.as_deref() == Some(target));
-    if !is_dynamic_string(target) && !configured {
+    if !configured {
         bail!(
-            "view {:?} command {:?} references missing view {:?}",
+            "view {:?} command {:?} references missing {} target {:?}",
             view_ref,
             command_id,
+            kind,
             target
         );
     }
-    Ok(())
-}
-
-fn validate_result_handler(
-    handler: &toml::Value,
-    owner: &str,
-    script_root: Option<&Path>,
-) -> Result<()> {
-    let handler = handler
-        .as_str()
-        .with_context(|| format!("{} result handler must be a string or dynamic path", owner))?;
-    if is_dynamic_string(handler) {
-        Template::parse(handler)?;
-        return Ok(());
-    }
-    let root =
-        script_root.with_context(|| format!("{} result handler has no workflow root", owner))?;
-    let path = Path::new(handler);
-    if handler.trim().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+    if presentation.mode != super::ViewPresentationMode::Popup
+        && (presentation.width.is_some() || presentation.height.is_some())
     {
-        bail!("{} has invalid result handler {:?}", owner, handler);
+        bail!("producer presentation width and height require popup mode");
     }
-    crate::execution::validate_script_target(root, handler)
-        .with_context(|| format!("{} has an invalid result handler target", owner))?;
-    Ok(())
-}
-
-pub(crate) fn validate_templates(value: &toml::Value) -> Result<()> {
-    match value {
-        toml::Value::String(source) => {
-            Template::parse(source)?;
-        }
-        toml::Value::Array(values) => {
-            for value in values {
-                validate_templates(value)?;
-            }
-        }
-        toml::Value::Table(values) => {
-            for value in values.values() {
-                validate_templates(value)?;
-            }
-        }
-        toml::Value::Boolean(_)
-        | toml::Value::Datetime(_)
-        | toml::Value::Float(_)
-        | toml::Value::Integer(_) => {}
+    if presentation.width == Some(0) || presentation.height == Some(0) {
+        bail!("producer presentation width and height must be positive");
     }
     Ok(())
 }
@@ -424,29 +178,8 @@ impl CompiledConfig {
         if let Some(default_view) = &self.default_view {
             self.engine(default_view)?;
         }
-        let defaults = &self.defaults;
-        let template_registry = &self.template_registry;
-        let workflows = &self.workflows;
-        let views = &self.views;
-
-        engines.validate_defaults(defaults)?;
-        if let Some(bindings) = &defaults.picker.bindings {
-            validate_toml_requirements(
-                &template_registry,
-                bindings,
-                EvaluationStage::Operation,
-                "root picker defaults",
-            )?;
-        }
-        if let Some(bindings) = &defaults.capture.bindings {
-            validate_toml_requirements(
-                &template_registry,
-                bindings,
-                EvaluationStage::Operation,
-                "root capture defaults",
-            )?;
-        }
-        for (package_id, workflow) in workflows {
+        engines.validate_defaults(&self.defaults)?;
+        for (package_id, workflow) in &self.workflows {
             if workflow.name.trim().is_empty() {
                 bail!("workflow {:?} has an empty name", package_id);
             }
@@ -462,34 +195,26 @@ impl CompiledConfig {
             {
                 bail!("session command \"commands\" is built in; configure only its key");
             }
-            let action = binding.command_action(id).with_context(|| {
-                format!("session command binding {id:?} must define a call action")
-            })?;
-            if !matches!(action, CommandAction::Call { .. }) {
-                bail!("session command binding {id:?} must use a call action");
+            let action = binding
+                .command_action(id)
+                .with_context(|| format!("session command binding {id:?} must define an action"))?;
+            if id == "commands" {
+                anyhow::ensure!(
+                    matches!(action, CommandAction::OpenCommands),
+                    "session command binding \"commands\" is built in"
+                );
+                anyhow::ensure!(
+                    self.view("selectors:commands").is_some(),
+                    "session command binding \"commands\" requires view \"selectors:commands\""
+                );
             }
-            let key_source = binding
+            let key = binding
                 .key(id)
                 .with_context(|| format!("session command binding {id:?} has no key"))?;
-            let label = binding
+            let _label = binding
                 .label(id)
                 .with_context(|| format!("session command binding {id:?} has no label"))?;
-            let visibility = binding
-                .visibility(id)
-                .with_context(|| format!("session command binding {id:?} has no visibility"))?;
-            validate_string_requirements(
-                &template_registry,
-                key_source,
-                EvaluationStage::Bootstrap,
-                &format!("session command binding {id:?} key"),
-            )?;
-            validate_string_requirements(
-                &template_registry,
-                label,
-                EvaluationStage::Bootstrap,
-                &format!("session command binding {id:?} label"),
-            )?;
-            let key = super::normalize_key(key_source)?;
+            let key = super::normalize_key(key)?;
             if let Some(previous) = command_keys.insert(key.clone(), id) {
                 bail!(
                     "session command bindings {:?} and {:?} both use key {:?}",
@@ -498,6 +223,9 @@ impl CompiledConfig {
                     key
                 );
             }
+            let visibility = binding
+                .visibility(id)
+                .with_context(|| format!("session command binding {id:?} has no visibility"))?;
             if visibility == CommandBindingVisibility::Overflow {
                 overflow_commands += 1;
             }
@@ -505,15 +233,8 @@ impl CompiledConfig {
                 self.default_view.as_deref().unwrap_or("<root>"),
                 &format!("session:command:{id}"),
                 &action,
-                &views,
+                &self.views,
                 None,
-                0,
-            )?;
-            validate_command_action_requirements(
-                &template_registry,
-                &action,
-                EvaluationStage::Operation,
-                &format!("session command binding {id:?}"),
                 0,
             )?;
         }
@@ -522,7 +243,7 @@ impl CompiledConfig {
         }
 
         let mut aliases = BTreeMap::<&str, &str>::new();
-        for (view_ref, view) in views {
+        for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
             if let Some(alias) = &view.alias {
                 if alias.trim().is_empty()
@@ -540,18 +261,13 @@ impl CompiledConfig {
                     );
                 }
             }
-            let items = view.selected_items();
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
-            self.validate_view_operation_requirements(view_ref, view)?;
-            if let Some(items) = items {
-                validate_toml_requirements(
-                    &template_registry,
-                    items,
-                    EvaluationStage::Operation,
-                    &format!("view {view_ref:?} items"),
-                )?;
-            }
-
+            validate_view_commands(
+                view_ref,
+                &view.commands,
+                &self.views,
+                self.workflow_root(view_ref),
+            )?;
             let mut keys = BTreeMap::new();
             for (command_id, command) in &view.commands {
                 if command.label.trim().is_empty() {
@@ -568,54 +284,9 @@ impl CompiledConfig {
                         bail!("view {:?} has duplicate command key {:?}", view_ref, key);
                     }
                 }
-                validate_command_action(
-                    view_ref,
-                    command_id,
-                    &command.action,
-                    &views,
-                    self.workflow_root(view_ref),
-                    0,
-                )?;
             }
         }
         engines.validate_relations(self)?;
-
-        Ok(())
-    }
-
-    fn validate_view_operation_requirements(&self, view_ref: &str, view: &View) -> Result<()> {
-        let template_registry = &self.template_registry;
-        for (field, value) in view.selected_engine_config() {
-            validate_toml_requirements(
-                &template_registry,
-                value,
-                EvaluationStage::Operation,
-                &format!("view {view_ref:?} engine field {field:?}"),
-            )?;
-        }
-        if let Some(keymap) = &view.keymap {
-            validate_toml_requirements(
-                &template_registry,
-                keymap,
-                EvaluationStage::Operation,
-                &format!("view {view_ref:?} keymap"),
-            )?;
-        }
-        validate_optional_string_requirements(
-            &template_registry,
-            view.run_shell.as_deref(),
-            EvaluationStage::Operation,
-            &format!("view {view_ref:?} run_shell"),
-        )?;
-        for (command_id, command) in &view.commands {
-            validate_command_action_requirements(
-                &template_registry,
-                &command.action,
-                EvaluationStage::Operation,
-                &format!("view {view_ref:?} command {command_id:?}"),
-                0,
-            )?;
-        }
         Ok(())
     }
 }

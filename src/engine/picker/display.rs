@@ -1,6 +1,5 @@
 use ratatui::layout::{Alignment, Constraint};
 use serde::{Deserialize, Serialize};
-use unicode_width::UnicodeWidthStr;
 
 /// Semantic visual role for text rendering.
 /// Raw styles (colors, modifiers) are prohibited in item data; they must be resolved
@@ -113,39 +112,6 @@ impl NormalizedItemDisplay {
     #[allow(dead_code)]
     pub fn row_count(&self) -> usize {
         self.rows.len().max(1)
-    }
-
-    /// Injects a source badge into the top-right corner (Row 0) of the item.
-    /// Secondary rows (Row 1..N) are left untouched to preserve description layouts.
-    pub fn inject_badge(&mut self, badge_text: &str, slot: SlotToken) {
-        if badge_text.is_empty() {
-            return;
-        }
-        if self.rows.is_empty() {
-            self.rows.push(NormalizedRow {
-                constraints: Vec::new(),
-                cells: Vec::new(),
-            });
-        }
-        let row = &mut self.rows[0];
-        let badge_len = UnicodeWidthStr::width(badge_text) as u16;
-        let badge_cell = NormalizedCell {
-            align: Alignment::Right,
-            spans: vec![NormalizedSpan {
-                text: badge_text.to_string(),
-                slot,
-            }],
-        };
-
-        // Ensure all existing cells in Row 0 have a valid constraint.
-        if row.constraints.len() < row.cells.len() {
-            row.constraints.resize(row.cells.len(), Constraint::Fill(1));
-        } else if row.constraints.is_empty() && !row.cells.is_empty() {
-            row.constraints.resize(row.cells.len(), Constraint::Fill(1));
-        }
-
-        row.constraints.push(Constraint::Length(badge_len + 1));
-        row.cells.push(badge_cell);
     }
 }
 
@@ -418,59 +384,6 @@ mod tests {
         assert_eq!(normalized.rows[0].cells[0].spans[0].text, "Title");
         assert_eq!(normalized.rows[1].cells[0].spans[0].text, "Description");
         assert_eq!(normalized.rows[1].cells[0].spans[0].slot, SlotToken::Muted);
-    }
-
-    #[test]
-    fn test_inject_badge_single_line() {
-        let input = ItemDisplayInput::Plain("Termius".to_string());
-        let mut display = NormalizedItemDisplay::from(input);
-        display.inject_badge("app", SlotToken::Badge);
-
-        assert_eq!(display.rows.len(), 1);
-        let row = &display.rows[0];
-        assert_eq!(row.cells.len(), 2);
-        assert_eq!(row.cells[0].spans[0].text, "Termius");
-        assert_eq!(row.cells[0].align, Alignment::Left);
-        assert_eq!(row.cells[1].spans[0].text, "app");
-        assert_eq!(row.cells[1].spans[0].slot, SlotToken::Badge);
-        assert_eq!(row.cells[1].align, Alignment::Right);
-        assert_eq!(
-            row.constraints,
-            vec![Constraint::Fill(1), Constraint::Length(4)]
-        );
-    }
-
-    #[test]
-    fn test_inject_badge_multi_line_anchors_to_row_0() {
-        let json = r#"{
-            "rows": [
-                { "cells": [{"text": "Termius"}] },
-                { "cells": [{"text": "SSH Client", "slot": "secondary"}] }
-            ]
-        }"#;
-        let input: ItemDisplayInput = serde_json::from_str(json).unwrap();
-        let mut display = NormalizedItemDisplay::from(input);
-        display.inject_badge("app", SlotToken::Badge);
-
-        assert_eq!(display.rows.len(), 2);
-        // Row 0 has badge injected
-        let row0 = &display.rows[0];
-        assert_eq!(row0.cells.len(), 2);
-        assert_eq!(row0.cells[0].spans[0].text, "Termius");
-        assert_eq!(row0.cells[1].spans[0].text, "app");
-        assert_eq!(row0.cells[1].align, Alignment::Right);
-        assert_eq!(row0.cells[1].spans[0].slot, SlotToken::Badge);
-        assert_eq!(
-            row0.constraints,
-            vec![Constraint::Fill(1), Constraint::Length(4)]
-        );
-
-        // Row 1 is untouched
-        let row1 = &display.rows[1];
-        assert_eq!(row1.cells.len(), 1);
-        assert_eq!(row1.cells[0].spans[0].text, "SSH Client");
-        assert_eq!(row1.cells[0].spans[0].slot, SlotToken::Secondary);
-        assert_eq!(row1.constraints, vec![Constraint::Fill(1)]);
     }
 
     #[test]

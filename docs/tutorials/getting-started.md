@@ -5,16 +5,17 @@ tags:
   - onboarding
   - quickstart
   - setup
-description: "A step-by-step introduction to building, configuring, and running tui-launcher for the first time."
+  - producers
+description: "Build, configure, validate, and launch a minimal workflow using literal items and a JSON command producer."
 ---
 
 # Getting Started with tui-launcher
 
-This tutorial walks you through setting up `tui-launcher`, creating a minimal configuration file, and launching your first view.
+This tutorial builds the binary, creates a minimal single-file workflow, and launches a Picker whose command is backed by a version-1 producer script.
 
-## 1. Prerequisites & Installation
+## 1. Install
 
-Ensure you have Rust and Cargo installed (edition 2021 or later). Clone the repository and build the binary:
+Ensure Rust and Cargo are installed, then build the binary:
 
 ```bash
 git clone https://github.com/example/tui-launcher.git
@@ -22,26 +23,23 @@ cd tui-launcher
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/tui-launcher`. You can add it to your `$PATH` or create an alias.
+The binary is `target/release/tui-launcher`. Add it to your `$PATH` or invoke it by its path.
 
-## 2. Directory Layout
+## 2. Create the Configuration Directory
 
-`tui-launcher` discovers configurations according to the XDG Base Directory specification:
+`tui-launcher` discovers configuration using the XDG Base Directory layout:
 
 ```text
 $XDG_CONFIG_HOME/tui-launcher/
-├── config.toml         # Main launcher settings
-├── themes/             # Named themes
-└── workflows/          # Workflows (single-file .toml or package directories)
-    ├── hello.toml      # Single-file workflow
-    └── git/            # Directory workflow package
+├── config.toml
+└── workflows/
+    ├── hello.toml
+    └── git/
         ├── workflow.toml
         └── scripts/
 ```
 
-If `$XDG_CONFIG_HOME` is unset, it defaults to `$HOME/.config/tui-launcher/`.
-
-Create this directory structure now:
+If `$XDG_CONFIG_HOME` is unset, the default is `$HOME/.config`. Create the workflow directory:
 
 ```bash
 mkdir -p ~/.config/tui-launcher/workflows
@@ -49,7 +47,7 @@ mkdir -p ~/.config/tui-launcher/workflows
 
 ## 3. Create a Minimal Workflow
 
-Create a single-file workflow at `~/.config/tui-launcher/workflows/hello.toml`:
+Create `~/.config/tui-launcher/workflows/hello.toml`:
 
 ```toml
 [workflow]
@@ -64,23 +62,44 @@ type = "picker"
 
 [views.main.engine.config]
 items = [
-  { label = "Echo Hello", value = "hello" },
-  { label = "Current Date", value = "date" },
+  { display = "Echo Hello", value = "hello", metadata = {} },
+  { display = "Current Date", value = "date", metadata = {} },
 ]
 
 [views.main.commands.execute]
 key = "enter"
 label = "Run"
 type = "run"
+producer = "script"
 
-[views.main.commands.execute.payload]
-handler = { source = "inline", command = "echo Selected: {{ selection.value }}" }
-exit = true
+[views.main.commands.execute.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+item = request.get("engine_output", {}).get("selected_item")
+value = item.get("value") if isinstance(item, dict) else None
+if not isinstance(value, str):
+    raise SystemExit("select an item first")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["printf", "selected:%s\\n" % value],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
 ```
 
-## 4. Create the Main Configuration
+The handler reads the selected item from request JSON and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
 
-Create `~/.config/tui-launcher/config.toml` to set this view as your default:
+## 4. Set the Default View
+
+Create `~/.config/tui-launcher/config.toml`:
 
 ```toml
 default_view = "hello:main"
@@ -88,22 +107,22 @@ default_view = "hello:main"
 
 ## 5. Validate and Launch
 
-Before opening the TUI, you can validate the configuration:
+Run validation before opening the TUI:
 
 ```bash
 tui-launcher --check
 ```
 
-If the validation passes with zero errors, start the launcher:
+Then launch it:
 
 ```bash
 tui-launcher
 ```
 
-You will see an interactive picker containing your items. Pressing `Enter` runs the command and closes the launcher.
+The Picker displays the two literal items. Press `Enter` to run the producer operation. The foreground command inherits the caller's working directory and the launcher exits because the operation sets `exit = true`.
 
 ## Next Steps
 
-Now that you have a working launcher:
-- Follow [Your First Workflow](first-workflow.md) to explore parameters and script execution.
-- Learn how to build [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) using external shell scripts.
+- Follow [Your First Workflow](first-workflow.md) to build a directory package with separate item and command scripts.
+- Read [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) for request-driven item generation.
+- Use [workflow.toml Specification](../reference/workflow-toml.md) for the full operation and protocol reference.

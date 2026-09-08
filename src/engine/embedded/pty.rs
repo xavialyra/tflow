@@ -1,6 +1,6 @@
 use crate::engine::EmbeddedTerminal;
 use crate::engine::{EmbeddedResultConfig, EmbeddedResultFormat};
-use crate::execution::{MANAGED_ENVIRONMENT, PreparedProcess, ProcessGroupGuard};
+use crate::execution::{PreparedProcess, ProcessGroupGuard};
 use crate::lifecycle::{CancellationObserver, CancellationStatus};
 use crate::workflow::command::ViewOutput;
 use anyhow::{Context, Result, bail};
@@ -39,9 +39,6 @@ pub struct EmbeddedRunResult {
 
 fn build_child_environment(overrides: &[(String, String)]) -> Result<Vec<CString>> {
     let mut environment: BTreeMap<OsString, OsString> = env::vars_os().collect();
-    for key in MANAGED_ENVIRONMENT {
-        environment.remove(OsStr::new(key));
-    }
     for (key, value) in overrides {
         environment.insert(OsString::from(key), OsString::from(value));
     }

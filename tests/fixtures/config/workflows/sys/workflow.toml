@@ -10,34 +10,31 @@ type = "picker"
 
 [views.main.engine.config]
 [views.main.engine.config.items]
-source = "script"
+producer = "script"
+[views.main.engine.config.items.handler]
 file = "scripts/items.sh"
-args = ["{{ view.query }}"]
 
 [views.main.commands.run]
 key = "enter"
 label = "Run"
 type = "navigate"
-
-[views.main.commands.run.payload]
-target = "sys:output"
-query = "{{ selection.text }}"
+producer = "script"
+[views.main.commands.run.handler]
+file = "scripts/command.sh"
 
 [views.main.commands.info]
 label = "Info"
 type = "navigate"
-
-[views.main.commands.info.payload]
-target = "sys:output"
-query = "{{ selection.text }}"
+producer = "script"
+[views.main.commands.info.handler]
+file = "scripts/command.sh"
 
 [views.output.engine]
 type = "capture"
 
 [views.output.engine.config]
-title = "{{ view.ref }}"
 
 [views.output.engine.config.output]
-source = "script"
+producer = "script"
+[views.output.engine.config.output.handler]
 file = "scripts/run.sh"
-args = ["{{ view.query }}"]

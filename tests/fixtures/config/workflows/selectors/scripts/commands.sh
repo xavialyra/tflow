@@ -1,11 +1,17 @@
 #!/bin/sh
-python3 - "$@" <<'PY'
+set -eu
+
+exec python3 -c '
 import json
 import sys
 
-commands = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
-query = sys.argv[2] if len(sys.argv) > 2 else ""
-tokens = str(query).casefold().split()
+request = json.load(sys.stdin)
+parameters = request.get("parameters", {})
+commands = parameters.get("commands", [])
+query = request.get("request", {}).get("input", "")
+if not isinstance(commands, list) or not isinstance(query, str):
+    raise SystemExit("invalid command selector request")
+tokens = query.casefold().split()
 items = []
 for command in commands:
     ref = command.get("ref")
@@ -17,10 +23,7 @@ for command in commands:
     searchable = " ".join([label, key, owner]).casefold()
     if not all(token in searchable for token in tokens):
         continue
-    item = {
-        "value": key,
-        "metadata": {"command": ref},
-    }
+    item = {"value": key, "metadata": {"command": ref}}
     if key:
         item["display"] = {
             "constraints": [{"Fill": 1}, {"Length": len(key)}],
@@ -32,6 +35,6 @@ for command in commands:
     else:
         item["display"] = label
     items.append(item)
-json.dump(items, sys.stdout, separators=(",", ":"))
-print()
-PY
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'

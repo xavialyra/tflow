@@ -183,30 +183,28 @@ def sanitize(text):
     return "".join(output)
 
 
-def strip_rofi_metadata(record):
-    return record.split(b"\0", 1)[0]
-
-
-def read_candidates(path, nul_records):
+def read_candidates(path):
     if path is None:
         return []
     with open(path, "rb") as source:
         data = source.read()
     if not data:
         return []
-    separator = b"\0" if nul_records else b"\n"
+    separator = b"\n"
     if data.endswith(separator):
         data = data[: -len(separator)]
     candidates = []
     for index, record in enumerate(data.split(separator)):
-        if not nul_records and record.endswith(b"\r"):
+        if record.endswith(b"\r"):
             record = record[:-1]
-        text_bytes = record if nul_records else strip_rofi_metadata(record)
+        try:
+            text = record.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise DmenuError("candidate input must be valid UTF-8") from error
         candidates.append(
             {
                 "index": index,
-                "raw": text_bytes,
-                "text": text_bytes.decode("utf-8", errors="replace"),
+                "text": text,
             }
         )
     return candidates
@@ -240,10 +238,7 @@ def item_mode(context):
     delimiter = parse_delimiter(options)
     with_nth = parse_format(string_option(options, "with-nth"))
     match_nth = parse_format(string_option(options, "match-nth"))
-    candidates = read_candidates(
-        invocation_path(context.get("input", {}).get("stdin")),
-        bool_option(options, "dmenu0"),
-    )
+    candidates = read_candidates(invocation_path(context.get("input", {}).get("stdin")))
     items = []
     for candidate in candidates:
         display = sanitize(render_format(with_nth, candidate["text"], delimiter, " "))
@@ -257,9 +252,7 @@ def item_mode(context):
             if not display:
                 item["allow_empty"] = True
             items.append(item)
-    json.dump(items, sys.stdout, separators=(",", ":"))
-    sys.stdout.write("\n")
-    return 0
+    return items
 
 
 def result_mode(context):
@@ -272,8 +265,7 @@ def result_mode(context):
         raise DmenuError("dmenu selected item must be an object or null")
 
     candidate_index = selected.get("value") if selected is not None else None
-    nul_records = bool_option(options, "dmenu0")
-    separator = b"\0" if nul_records else b"\n"
+    separator = b"\n"
     if candidate_index is None:
         if not isinstance(typed, str):
             raise DmenuError("dmenu unmatched input must be a string")
@@ -283,7 +275,7 @@ def result_mode(context):
             index = int(candidate_index, 10)
         except (TypeError, ValueError) as error:
             raise DmenuError("dmenu selected item has an invalid index") from error
-        candidates = read_candidates(invocation_path(context.get("stdin")), nul_records)
+        candidates = read_candidates(invocation_path(context.get("stdin")))
         if index < 0 or index >= len(candidates):
             raise DmenuError(f"dmenu selected item index {index} is out of range")
         candidate = candidates[index]
@@ -292,22 +284,58 @@ def result_mode(context):
         else:
             accept_nth = parse_format(string_option(options, "accept-nth"))
             if accept_nth is None:
-                output = candidate["raw"]
+                output = candidate["text"].encode("utf-8")
             else:
                 delimiter = parse_delimiter(options)
                 joiner = delimiter[1]
                 output = render_format(
                     accept_nth, candidate["text"], delimiter, joiner
                 ).encode("utf-8")
-    sys.stdout.buffer.write(output)
-    sys.stdout.buffer.write(separator)
-    return 0
+    output += separator
+    return output
 
 
 def main():
     try:
-        if len(sys.argv) < 2:
-            raise DmenuError("expected items or result mode")
+        if len(sys.argv) == 1:
+            request = json.load(sys.stdin)
+            entrypoint = request.get("entrypoint")
+            if entrypoint == "picker-items":
+                context = {
+                    "input": request.get("invocation"),
+                    "query": request.get("parameters", {}),
+                }
+                items = item_mode(context)
+                json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+                sys.stdout.write("\n")
+                return 0
+            if entrypoint == "command":
+                engine_output = request.get("engine_output", {})
+                if not isinstance(engine_output, dict):
+                    raise DmenuError("dmenu command engine output must be an object")
+                invocation = request.get("invocation", {})
+                if not isinstance(invocation, dict):
+                    raise DmenuError("dmenu command invocation must be an object")
+                context = {
+                    "options": request.get("parameters", {}),
+                    "stdin": invocation.get("stdin"),
+                    "selected": engine_output.get("selected_item"),
+                    "typed": engine_output.get("input", ""),
+                }
+                output = result_mode(context)
+                if output.endswith(b"\n"):
+                    output = output[:-1]
+                response = {
+                    "version": 1,
+                    "operation": {
+                        "type": "return",
+                        "value": output.decode("utf-8", errors="replace"),
+                    },
+                }
+                json.dump(response, sys.stdout, separators=(",", ":"))
+                sys.stdout.write("\n")
+                return 0
+            raise DmenuError("expected a picker-items or command producer request")
         if sys.argv[1] == "items":
             if len(sys.argv) != 4:
                 raise DmenuError("items mode requires input and query arguments")
@@ -315,17 +343,10 @@ def main():
                 "input": json.loads(sys.argv[2]),
                 "query": json.loads(sys.argv[3]),
             }
-            return item_mode(context)
-        if sys.argv[1] == "result":
-            if len(sys.argv) != 6:
-                raise DmenuError("result mode requires options, stdin, selection, and input arguments")
-            context = {
-                "options": json.loads(sys.argv[2]),
-                "stdin": json.loads(sys.argv[3]),
-                "selected": json.loads(sys.argv[4]),
-                "typed": sys.argv[5],
-            }
-            return result_mode(context)
+            items = item_mode(context)
+            json.dump(items, sys.stdout, separators=(",", ":"))
+            sys.stdout.write("\n")
+            return 0
         raise DmenuError(f"unsupported mode {sys.argv[1]!r}")
     except (DmenuError, OSError, json.JSONDecodeError) as error:
         print(f"dmenu: {error}", file=sys.stderr)

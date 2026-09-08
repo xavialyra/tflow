@@ -1,6 +1,6 @@
 # Technical Reference
 
-The Reference section contains formal specifications, configuration schemas, command-line arguments, and expression syntax definitions for `tui-launcher`.
+The Reference section contains formal specifications, configuration schemas, command-line arguments, and protocol boundary definitions for `tui-launcher`.
 
 ## References
 
@@ -11,7 +11,7 @@ The Reference section contains formal specifications, configuration schemas, com
   Root configuration specification, including theme selection, default view, global keymap defaults, and session commands.
 
 - **[workflow.toml Specification](workflow-toml.md)**
-  Workflow manifest format, single-file workflows, view declarations, query schema types, engine configurations (`picker`, `capture`, `embedded`), and command actions.
+  Workflow manifest format, single-file workflows, static View declarations, query schemas, Engine configurations, producer handlers, and the version-1 JSON protocol.
 
-- **[Expression Syntax](expressions.md)**
-  Dynamic `{{ namespace.path }}` syntax, evaluation stages, available namespaces, and execution limits.
+- **[Static Values and Runtime Data](expressions.md)**
+  Literal configuration values, rejected expression forms, and the explicit producer request/response boundary.

@@ -1,11 +1,8 @@
-use crate::execution::{
-    BoundedCommandOutcome, run_bounded_command_with_stdin, run_bounded_command_with_stdin_outcome,
-};
+use crate::execution::{BoundedCommandOutcome, run_bounded_command_with_stdin_outcome};
 use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 #[cfg(target_os = "linux")]
@@ -20,66 +17,47 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_MAX_SCRIPT_STDOUT: usize = 1024 * 1024;
 pub(crate) const MAX_CONFIGURABLE_SCRIPT_STDOUT: usize = 64 * 1024 * 1024;
 const MAX_SCRIPT_STDERR: usize = 64 * 1024;
-const MAX_SCRIPT_ARGS: usize = 64 * 1024;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 
-/// Run a workflow-relative script with argv arguments and return its raw output.
-///
-/// The launcher owns transport concerns here—path confinement, cancellation,
-/// timeouts, and I/O limits—but deliberately does not interpret stdout or
-/// exit status. The consuming engine decides what the script's result means.
-pub(crate) fn run_script(
-    root: &Path,
-    target: &str,
-    args: &[String],
-    max_output_bytes: Option<usize>,
-    cancellation: &dyn CancellationStatus,
-) -> Result<Output> {
-    if target.is_empty() {
-        bail!("script source requires a non-empty file")
-    }
-    validate_max_output_bytes(max_output_bytes)?;
-    let max_output_bytes = max_output_bytes.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
-    let (path, file) = open_confined_script(root, target)?;
-    #[cfg(target_os = "linux")]
-    let script_path = {
-        clear_close_on_exec(file.as_raw_fd())?;
-        format!("/proc/self/fd/{}", file.as_raw_fd())
-    };
-    #[cfg(not(target_os = "linux"))]
-    let script_path = path.to_string_lossy().into_owned();
-    #[cfg(not(target_os = "linux"))]
-    let _file = file;
-    let mut process = ProcessCommand::new("/bin/sh");
-    process
-        .arg(script_path)
-        .args(args)
-        .env("WORKFLOW_DIR", root);
-    run_bounded_command_with_stdin(
-        process,
-        None,
-        SCRIPT_TIMEOUT,
-        max_output_bytes,
-        MAX_SCRIPT_STDERR,
-        cancellation,
-    )
-    .with_context(|| format!("could not run script {}", path.display()))
-}
-
-/// Execute a resolved script while preserving whether its managed child was
-/// actually reaped, including error paths after spawn.
-pub(crate) fn run_resolved_script_with_outcome(
+/// Execute a resolved script with an optional protocol request on stdin.
+#[cfg(test)]
+pub(crate) fn run_resolved_script_with_stdin_outcome(
     workflow_id: &str,
     source_label: &str,
     root: Option<&Path>,
     source: &crate::workflow::config::ResolvedScriptSource,
     args: &[String],
+    stdin: Option<&[u8]>,
+    cancellation: &dyn CancellationStatus,
+) -> BoundedCommandOutcome {
+    run_resolved_script_with_stdin_outcome_with_limit(
+        workflow_id,
+        source_label,
+        root,
+        source,
+        args,
+        stdin,
+        None,
+        cancellation,
+    )
+}
+
+/// Execute a resolved script with an optional protocol request on stdin and
+/// an entry-point-specific stdout limit override.
+pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
+    workflow_id: &str,
+    source_label: &str,
+    root: Option<&Path>,
+    source: &crate::workflow::config::ResolvedScriptSource,
+    args: &[String],
+    stdin: Option<&[u8]>,
+    max_output_override: Option<usize>,
     cancellation: &dyn CancellationStatus,
 ) -> BoundedCommandOutcome {
     let mut managed_child_reaped = false;
     let result = (|| -> Result<Output> {
-        validate_max_output_bytes(source.max_output_bytes)?;
-        let max_output_bytes = source.max_output_bytes.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
+        let max_output_bytes = max_output_override.unwrap_or(DEFAULT_MAX_SCRIPT_STDOUT);
+        validate_max_output_bytes(Some(max_output_bytes))?;
         match &source.target {
             crate::workflow::config::ResolvedScriptTarget::Inline(script_body) => {
                 let argv = crate::execution::prepare_inline_script_command(
@@ -95,7 +73,7 @@ pub(crate) fn run_resolved_script_with_outcome(
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
-                    None,
+                    stdin,
                     SCRIPT_TIMEOUT,
                     max_output_bytes,
                     MAX_SCRIPT_STDERR,
@@ -162,7 +140,7 @@ pub(crate) fn run_resolved_script_with_outcome(
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
-                    None,
+                    stdin,
                     SCRIPT_TIMEOUT,
                     max_output_bytes,
                     MAX_SCRIPT_STDERR,
@@ -189,40 +167,6 @@ pub(crate) fn ensure_script_success(output: &Output) -> Result<()> {
         bail!("script failed: {}", stderr);
     }
     Ok(())
-}
-
-pub(crate) fn resolve_argv(value: Option<&Value>, label: &str) -> Result<Vec<String>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let values = value
-        .as_array()
-        .with_context(|| format!("{label} must evaluate to an array"))?;
-    let mut total_bytes: usize = 0;
-    values
-        .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            let argument = match value {
-                Value::String(value) => value.clone(),
-                value => serde_json::to_string(value)
-                    .with_context(|| format!("{label}[{index}] could not be JSON-encoded"))?,
-            };
-            anyhow::ensure!(
-                !argument.contains('\0'),
-                "{label}[{index}] cannot contain a NUL byte"
-            );
-            total_bytes = total_bytes
-                .checked_add(argument.len().saturating_add(1))
-                .context("script argument byte budget overflow")?;
-            anyhow::ensure!(
-                total_bytes <= MAX_SCRIPT_ARGS,
-                "{label} exceeded {} bytes",
-                MAX_SCRIPT_ARGS
-            );
-            Ok(argument)
-        })
-        .collect()
 }
 
 pub(crate) fn validate_max_output_bytes(max_output_bytes: Option<usize>) -> Result<()> {
@@ -364,7 +308,19 @@ mod tests {
     }
 
     fn run(root: &Path, name: &str) -> Result<Output> {
-        run_script(root, name, &[], None, &CancellationToken::new())
+        let source = crate::workflow::config::ResolvedScriptSource {
+            target: crate::workflow::config::ResolvedScriptTarget::File(name.to_string()),
+        };
+        run_resolved_script_with_stdin_outcome(
+            "test",
+            name,
+            Some(root),
+            &source,
+            &[],
+            None,
+            &CancellationToken::new(),
+        )
+        .into_result()
     }
 
     #[test]
@@ -378,19 +334,28 @@ mod tests {
     }
 
     #[test]
-    fn argv_scripts_receive_exact_values_and_json_encode_structures() {
+    fn resolved_scripts_receive_literal_arguments() {
         let root = test_root();
         write_script(
             &root,
             "args.sh",
             "[ \"$#\" -eq 2 ] || exit 10\n[ \"$1\" = \"two words\" ] || exit 11\n[ \"$2\" = '{\"x\":1}' ] || exit 12\nprintf '%s' '[{\"label\":\"ok\"}]'\n",
         );
-        let args = resolve_argv(
-            Some(&serde_json::json!(["two words", {"x": 1}])),
-            "script args",
+        let args = vec!["two words".to_string(), r#"{"x":1}"#.to_string()];
+        let source = crate::workflow::config::ResolvedScriptSource {
+            target: crate::workflow::config::ResolvedScriptTarget::File("args.sh".to_string()),
+        };
+        let output = run_resolved_script_with_stdin_outcome(
+            "test",
+            "args.sh",
+            Some(&root),
+            &source,
+            &args,
+            None,
+            &CancellationToken::new(),
         )
+        .into_result()
         .unwrap();
-        let output = run_script(&root, "args.sh", &args, None, &CancellationToken::new()).unwrap();
         ensure_script_success(&output).unwrap();
         assert_eq!(output.stdout, br#"[{"label":"ok"}]"#);
         fs::remove_dir_all(root).unwrap();
@@ -421,18 +386,24 @@ mod tests {
     }
 
     #[test]
-    fn argv_and_stdout_limits_are_enforced() {
+    fn stdout_limits_are_enforced_for_resolved_scripts() {
         let root = test_root();
-        let error = resolve_argv(
-            Some(&serde_json::json!(["x".repeat(MAX_SCRIPT_ARGS)])),
-            "script args",
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("script args exceeded"));
-
         write_script(&root, "large.sh", "printf '1234'\n");
-        let error =
-            run_script(&root, "large.sh", &[], Some(3), &CancellationToken::new()).unwrap_err();
+        let source = crate::workflow::config::ResolvedScriptSource {
+            target: crate::workflow::config::ResolvedScriptTarget::File("large.sh".to_string()),
+        };
+        let error = run_resolved_script_with_stdin_outcome_with_limit(
+            "test",
+            "large.sh",
+            Some(&root),
+            &source,
+            &[],
+            None,
+            Some(3),
+            &CancellationToken::new(),
+        )
+        .into_result()
+        .unwrap_err();
         let message = format!("{error:#}");
         assert!(
             message.contains("output exceeded") || message.contains("stdout limit"),

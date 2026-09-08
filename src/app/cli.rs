@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::env;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -54,7 +54,10 @@ struct Args {
 }
 
 fn effective_cli_args() -> Vec<String> {
-    let args: Vec<String> = env::args().collect();
+    effective_cli_args_from(env::args().collect())
+}
+
+fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     if args.is_empty() {
         return args;
     }
@@ -64,44 +67,36 @@ fn effective_cli_args() -> Vec<String> {
         .unwrap_or("")
         .to_string();
 
-    if !stem.is_empty()
-        && stem != "tui-launcher"
-        && stem != "tui_launcher"
-        && !stem.starts_with("tui-launcher-")
-        && !stem.starts_with("launcher-")
-        && stem != "cargo"
-    {
-        if args
-            .iter()
-            .any(|a| a == "--check" || a == "-C" || a == "--inspect")
-        {
-            return args;
-        }
-        let mut global_prefix = Vec::new();
-        let mut remainder = Vec::new();
-        let mut iter = args.into_iter();
-        let exe = iter.next().unwrap();
-
-        while let Some(arg) = iter.next() {
-            if arg == "--config" || arg == "-c" || arg == "--theme" || arg == "-t" {
-                global_prefix.push(arg);
-                if let Some(val) = iter.next() {
-                    global_prefix.push(val);
-                }
-            } else {
-                remainder.push(arg);
-                remainder.extend(iter);
-                break;
-            }
-        }
-
-        let mut new_args = vec![exe];
-        new_args.extend(global_prefix);
-        new_args.push(stem);
-        new_args.extend(remainder);
-        return new_args;
+    if stem.is_empty() || stem == "tui-launcher" {
+        return args;
     }
-    args
+    if args.iter().any(|a| a == "--check" || a == "--inspect") {
+        return args;
+    }
+
+    let mut global_prefix = Vec::new();
+    let mut remainder = Vec::new();
+    let mut iter = args.into_iter();
+    let exe = iter.next().unwrap();
+
+    while let Some(arg) = iter.next() {
+        if arg == "--config" || arg == "-c" || arg == "--theme" {
+            global_prefix.push(arg);
+            if let Some(val) = iter.next() {
+                global_prefix.push(val);
+            }
+        } else {
+            remainder.push(arg);
+            remainder.extend(iter);
+            break;
+        }
+    }
+
+    let mut new_args = vec![exe];
+    new_args.extend(global_prefix);
+    new_args.push(stem);
+    new_args.extend(remainder);
+    new_args
 }
 
 impl CompiledConfig {
@@ -304,32 +299,110 @@ pub(crate) fn run() -> Result<i32> {
     }
     drop(input);
     signal_guard.enter_final_output();
-    let signal = signal_guard.received().unwrap_or(0);
-    let exit_code = if signal != 0 {
-        result.stdout.clear();
-        result.stderr.clear();
-        128 + signal
-    } else {
-        result.exit_code
+    if let Some(signal) = signal_guard.received() {
+        return Ok(128 + signal);
+    }
+
+    let stderr = io::stderr().lock();
+    if !write_final_output(stderr.as_raw_fd(), &result.stderr, &signal_guard)
+        .context("could not write invocation stderr")?
+    {
+        return Ok(128 + signal_guard.received().unwrap_or(libc::SIGTERM));
+    }
+    if let Some(signal) = signal_guard.received() {
+        return Ok(128 + signal);
+    }
+    drop(stderr);
+
+    let stdout = io::stdout().lock();
+    if !write_final_output(stdout.as_raw_fd(), &result.stdout, &signal_guard)
+        .context("could not write invocation output")?
+    {
+        return Ok(128 + signal_guard.received().unwrap_or(libc::SIGTERM));
+    }
+    if let Some(signal) = signal_guard.received() {
+        return Ok(128 + signal);
+    }
+    Ok(result.exit_code)
+}
+
+fn write_final_output(
+    fd: libc::c_int,
+    bytes: &[u8],
+    signal_guard: &SignalGuard,
+) -> io::Result<bool> {
+    if bytes.is_empty() {
+        return Ok(true);
+    }
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut offset = 0;
+    let write_result = loop {
+        if signal_guard.received().is_some() {
+            break Ok(false);
+        }
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut poll, 1, 50) };
+        if poll_result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break Err(error);
+        }
+        if poll_result == 0 {
+            continue;
+        }
+        if poll.revents & libc::POLLNVAL != 0 {
+            break Err(io::Error::from_raw_os_error(libc::EBADF));
+        }
+        if poll.revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) == 0 {
+            continue;
+        }
+
+        let count =
+            unsafe { libc::write(fd, bytes[offset..].as_ptr().cast(), bytes.len() - offset) };
+        if count > 0 {
+            offset += count as usize;
+            if offset == bytes.len() {
+                break Ok(signal_guard.received().is_none());
+            }
+            continue;
+        }
+        if count == 0 {
+            break Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "final output write returned zero bytes",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(code)
+                if code == libc::EINTR
+                    || code == libc::EAGAIN
+                    || code == libc::EWOULDBLOCK
+        ) {
+            continue;
+        }
+        break Err(error);
     };
 
-    if signal == 0 {
-        let mut stderr = io::stderr().lock();
-        stderr
-            .write_all(&result.stderr)
-            .context("could not write invocation stderr")?;
-        stderr
-            .flush()
-            .context("could not flush invocation stderr")?;
-        let mut stdout = io::stdout().lock();
-        stdout
-            .write_all(&result.stdout)
-            .context("could not write invocation output")?;
-        stdout
-            .flush()
-            .context("could not flush invocation output")?;
+    let restore_result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+    if restore_result < 0 {
+        return Err(io::Error::last_os_error());
     }
-    Ok(exit_code)
+    write_result
 }
 
 fn default_config_path() -> PathBuf {
@@ -343,4 +416,27 @@ fn default_config_path() -> PathBuf {
         return PathBuf::from(home).join(".config/tui-launcher/config.toml");
     }
     PathBuf::from("config.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_cli_args_from;
+
+    #[test]
+    fn injects_the_entrypoint_stem_for_all_noncanonical_entrypoints() {
+        for stem in ["apps", "tui-launcher-app", "launcher-app"] {
+            assert_eq!(
+                effective_cli_args_from(vec![format!("/tmp/{stem}"), "--mode=full".into()]),
+                vec![
+                    format!("/tmp/{stem}"),
+                    stem.to_string(),
+                    "--mode=full".into()
+                ]
+            );
+        }
+        assert_eq!(
+            effective_cli_args_from(vec!["/tmp/tui-launcher".into(), "apps:main".into()]),
+            vec!["/tmp/tui-launcher", "apps:main"]
+        );
+    }
 }

@@ -15,14 +15,13 @@ items = [{ display = "Open shell" }]
 key = "enter"
 label = "Open shell"
 type = "navigate"
+producer = "declared"
 
-[views.menu.commands.open.payload]
+[views.menu.commands.open.handler]
 target = "shell:main"
-query = "exec sh"
 
 [views.main.engine]
 type = "embedded"
 
 [views.main.engine.config]
-command = ["sh", "-lc", "{{ view.input }}"]
-title = "{{ view.ref }}"
+command = ["sh"]

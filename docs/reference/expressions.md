@@ -1,43 +1,68 @@
 ---
-title: "Expression Syntax and Evaluation"
+title: "Static Values and Runtime Data"
 type: "reference"
 tags:
-  - expressions
-  - templates
-  - evaluation
-  - security
-description: "Reference for {{ namespace.path }} dynamic expressions, scopes, lifecycle stages, and safety limits."
+  - configuration
+  - literals
+  - producers
+  - protocol
+description: "Reference for literal configuration values and the explicit producer protocol that replaces embedded expressions."
 ---
 
-# Expression Syntax and Evaluation
+# Static Values and Runtime Data
 
-`tui-launcher` configurations and command arguments can embed dynamic values using `{{ namespace.path }}` expressions.
+`tui-launcher` has no configuration expression language. TOML values are deserialized once, validated against their declared schema, and retained as configuration. There is no `{{ namespace.path }}` expansion, runtime interpolation, or compatibility evaluator.
 
-## Syntax Rules
+## Literal Boundaries
 
-- **Whole Expression**: When an entire field is a single expression (e.g. `query = "{{ selection.value }}"`), the resolved value preserves its underlying JSON type (e.g., boolean, integer, or array).
-- **Mixed Expression**: When an expression is embedded alongside string literals (e.g. `args = ["--file={{ selection.value }}"]`), the expression is interpolated into a string.
-- **Safety**: Expressions are purely data-retrieval operations over in-memory namespaces. Expressions **never execute commands or access filesystem paths**.
+Strings are literal wherever the surrounding schema accepts strings. This includes:
 
-## Standard Namespaces
+- command labels, query values, metadata, and generated strings;
+- declared Picker item display, value, and metadata fields;
+- declared Capture output;
+- producer handler tables and inline producer script bodies.
 
-| Namespace | Availability | Description | Example Path |
-| :--- | :--- | :--- | :--- |
-| `selection` | Item-activated commands in `picker` | The currently selected item object. | `{{ selection.value }}`, `{{ selection.label }}` |
-| `page` | Active view scope | View-level query and state. | `{{ page.input }}` |
-| `query` | Route query scope | Parsed query schema parameters. | `{{ query.target }}` |
-| `env` | Global runtime scope | Environment variables. | `{{ env.HOME }}` |
+A template-looking string such as `{{ page.input }}` is ordinary text in a string field. Malformed or unknown namespace-looking text is treated the same way. A field with a stricter type still has to satisfy that type: an Embedded `command` must be an argv array, so a string containing template-looking text is invalid configuration rather than a deferred expression.
 
-## Evaluation Lifecycles
+Literal configuration is not recursively inspected after deserialization. A producer handler cannot alter the command, View, query schema, keymap, or Engine configuration around it.
 
-Values are resolved strictly at the lifecycle stage where their required namespaces exist:
-1. **Compilation Time**: Static configuration paths are verified.
-2. **Mount Time**: View and route queries are resolved.
-3. **Execution Time**: `selection` and dynamic command payloads are resolved upon keypress.
+## Supplying Runtime Data
 
-## Resource Limits and Safety Budgets
+Runtime-dependent behavior belongs in an explicit producer. The host sends one JSON request to a script and validates one version-1 JSON response:
 
-To prevent memory leaks or denial-of-service from cyclic or maliciously crafted templates, evaluation is strictly bounded:
-- **Maximum Output Budget**: 16 MiB shared memory budget per evaluation operation.
-- **Traversal Limits**: Depth, path segment count, and visited node counts are bounded.
-- **Cancellation**: Traversal operations respect cooperative cancellation signals.
+| Entry point | Request data | Response |
+| :--- | :--- | :--- |
+| Command | Owning View, bound parameters, invocation facts, and current Engine output | One operation matching the command's declared `type` |
+| Picker items | Provider View, bound parameters, invocation facts, and current input | Complete `items` array |
+| Capture output | View, bound parameters, and invocation facts | `output` string |
+| Return processor | Caller, bound parameters, invocation facts, and returned result | One operation matching the processor's declared `type` |
+
+Use a command producer when a selected item must determine navigation or a process invocation. Use an items producer when a list is computed at request time. Use a return processor when a successful call result must trigger another operation after the caller is restored.
+
+Example command producer:
+
+```toml
+[views.main.commands.open]
+key = "enter"
+label = "Open selected item"
+type = "navigate"
+producer = "script"
+
+[views.main.commands.open.handler]
+file = "scripts/open.sh"
+```
+
+The script reads JSON from stdin. Selection data is in the documented `engine_output` request field; it is not interpolated into the handler or argv configuration.
+
+## Rejected Forms
+
+The following are not configuration features:
+
+- embedded expressions in command, query, script, or navigation fields;
+- dynamic `args`, `payload`, `shell`, `exit`, or return-handler fields from the removed command model;
+- dynamic Picker or Capture source objects;
+- expression namespaces such as `input`, `view`, `page`, `selection`, `current`, `result`, or `session`.
+
+Unknown fields fail deserialization or entry-point validation. Values that need computation must be moved into a declared handler or a script producer with a documented request and response.
+
+For exact operation schemas and protocol rules, see [workflow.toml Specification](workflow-toml.md). For process, cancellation, and output bounds, see [Runtime Guarantees and Safety Limits](../explanation/runtime-guarantees.md).

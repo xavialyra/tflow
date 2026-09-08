@@ -33,30 +33,26 @@ impl ViewIdentity {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct EvaluatedEngineConfig {
+pub(crate) struct ProjectedEngineConfig {
     pub(crate) fields: BTreeMap<String, Value>,
-    pub(crate) field_errors: BTreeMap<String, String>,
     pub(crate) workflow_root: Option<PathBuf>,
+    pub(crate) invocation: Value,
 }
 
-impl EvaluatedEngineConfig {
+impl ProjectedEngineConfig {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
-    }
-
-    pub(crate) fn field_error(&self, name: &str) -> Option<&str> {
-        self.field_errors.get(name).map(String::as_str)
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct EvaluatedBindingConfig {
+pub(crate) struct ProjectedBindingConfig {
     pub(crate) defaults: Option<Value>,
     pub(crate) view_keymap: Option<Value>,
     pub(crate) engine_fields: BTreeMap<String, Value>,
 }
 
-impl EvaluatedBindingConfig {
+impl ProjectedBindingConfig {
     pub(crate) fn engine_field(&self, name: &str) -> Option<&Value> {
         self.engine_fields.get(name)
     }
@@ -64,7 +60,7 @@ impl EvaluatedBindingConfig {
 
 pub(crate) struct RuntimeFactoryContext {
     pub(crate) identity: ViewIdentity,
-    pub(crate) config: EvaluatedEngineConfig,
+    pub(crate) config: ProjectedEngineConfig,
     pub(crate) parameters: crate::workflow::parameter::ParameterSnapshot,
     pub(crate) cancellation: CancellationObserver,
 }
@@ -73,7 +69,7 @@ pub(crate) struct RendererFactoryContext;
 
 pub(crate) struct InputBindingFactoryContext {
     pub(crate) identity: ViewIdentity,
-    pub(crate) bindings: EvaluatedBindingConfig,
+    pub(crate) bindings: ProjectedBindingConfig,
 }
 
 pub(crate) struct EngineValidationContext<'a> {

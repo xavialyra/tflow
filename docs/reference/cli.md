@@ -39,6 +39,15 @@ The launcher resolves the active configuration file in the following order:
 3. `$XDG_CONFIG_HOME/tui-launcher/config.toml`.
 4. `$HOME/.config/tui-launcher/config.toml`.
 
+## Child Process Environment
+
+Child processes inherit the caller's environment. The launcher adds only these workflow-specific variables:
+
+- `WORKFLOW_DIR` for scripts, foreground `run` commands, and Embedded processes belonging to a directory workflow. It contains that workflow's root directory.
+- `LAUNCHER_INPUT` for Embedded processes only. It contains the current View input projection.
+
+Producer scripts receive query, selection, command, and return data as their documented JSON request on stdin. That data is not copied into launcher-specific environment variables. Ordinary caller variables such as `PATH`, `HOME`, `TERM`, and locale settings remain inherited, and the launcher does not proactively clear pre-existing variables with other names.
+
 ## Direct View Invocation
 
 You can open a specific view directly instead of the configured `default_view`:

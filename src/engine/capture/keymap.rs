@@ -88,16 +88,20 @@ mod tests {
     }
 
     #[test]
-    fn validation_accepts_dynamic_binding_paths() {
-        CaptureKeymap::validate_value(Some(&json!("{{ view.input }}"))).unwrap();
-        CaptureKeymap::validate_value(Some(&json!({
-            "copy": ["{{ view.input }}"]
-        })))
-        .unwrap();
-        CaptureKeymap::validate_keymap_value(Some(&json!({
-            "escape": false,
-            "ctrl+y": "{{ view.input }}"
-        })))
-        .unwrap();
+    fn validation_rejects_dynamic_binding_paths() {
+        assert!(CaptureKeymap::validate_value(Some(&json!("{{ view.input }}"))).is_err());
+        assert!(
+            CaptureKeymap::validate_value(Some(&json!({
+                "copy": ["{{ view.input }}"]
+            })))
+            .is_err()
+        );
+        assert!(
+            CaptureKeymap::validate_keymap_value(Some(&json!({
+                "escape": false,
+                "ctrl+y": "{{ view.input }}"
+            })))
+            .is_err()
+        );
     }
 }

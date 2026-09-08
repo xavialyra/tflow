@@ -1,6 +1,5 @@
 use super::api::EngineValidationContext;
 use crate::workflow::config::{CompiledConfig, Defaults, EngineConfigValidator, View};
-use crate::workflow::expression::validate_json_value;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -112,9 +111,8 @@ pub(crate) fn validate_fields(name: &str, view: &View, allowed: &[&str]) -> Resu
                 field
             );
         }
-        let value = serde_json::to_value(value).context("view field is not valid JSON")?;
-        validate_json_value(&value)
-            .with_context(|| format!("view {:?} field {:?}", name, field))?;
+        let _ = serde_json::to_value(value)
+            .with_context(|| format!("view {:?} field {:?} is not valid JSON", name, field))?;
     }
     Ok(())
 }
@@ -152,43 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn engine_definitions_declare_their_current_field_allowlists() {
-        let registry = EngineRegistry::new();
-        assert_eq!(
-            registry
-                .definition_for_engine(crate::workflow::config::ENGINE_PICKER)
-                .unwrap()
-                .current_fields,
-            [
-                "item",
-                "source",
-                "text",
-                "value",
-                "metadata",
-                "selected_index"
-            ]
-        );
-        assert_eq!(
-            registry
-                .definition_for_engine(crate::workflow::config::ENGINE_CAPTURE)
-                .unwrap()
-                .current_fields,
-            ["value"]
-        );
-        assert_eq!(
-            registry
-                .definition_for_engine(crate::workflow::config::ENGINE_EMBEDDED)
-                .unwrap()
-                .current_fields,
-            [] as [&str; 0]
-        );
-        assert_eq!(
-            crate::engine::EngineDefinition::new().current_fields,
-            [] as [&str; 0]
-        );
-    }
-
-    #[test]
     fn rejects_static_engine_field_shape_errors() {
         fn view(source: &str) -> View {
             toml::from_str(source).unwrap()
@@ -207,7 +168,7 @@ mod tests {
         );
 
         let bound_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\npassthrough = true\ntype = 'return'",
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\npassthrough = true\ntype = 'return'\nproducer = 'declared'\n[commands.cancel.handler]\nvalue = 'cancel'",
         );
         registry
             .validate_config("bound-embedded", &bound_embedded)
@@ -215,6 +176,15 @@ mod tests {
 
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());
+
+        let capture_with_title =
+            view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 'ok'\ntitle = 'ignored'");
+        assert!(
+            registry
+                .validate_config("capture-with-title", &capture_with_title)
+                .is_err(),
+            "Capture must not accept an Engine-controlled title"
+        );
 
         let capture_with_items =
             view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 'ok'\nitems = []");

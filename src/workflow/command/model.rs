@@ -1,6 +1,6 @@
 use crate::engine::ActionId;
 use crate::input::Key;
-use crate::workflow::config::{Command, CommandAction, ViewPresentation};
+use crate::workflow::config::{Command, ViewPresentation};
 use crate::workflow::parameter::ParameterSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,7 +30,6 @@ pub(crate) struct NavigationRequest {
     pub(crate) input: Option<InputSeed>,
     pub(crate) parameters: Option<Value>,
     pub(crate) presentation: ViewPresentation,
-    pub(crate) engine_options: Option<Value>,
 }
 
 impl NavigationRequest {
@@ -40,7 +39,6 @@ impl NavigationRequest {
             input: Some(InputSeed::new(input)),
             parameters: None,
             presentation: ViewPresentation::default(),
-            engine_options: None,
         }
     }
 
@@ -50,7 +48,6 @@ impl NavigationRequest {
             input: None,
             parameters: None,
             presentation: ViewPresentation::default(),
-            engine_options: None,
         }
     }
 
@@ -62,11 +59,6 @@ impl NavigationRequest {
 
     pub(crate) fn with_presentation(mut self, presentation: ViewPresentation) -> Self {
         self.presentation = presentation;
-        self
-    }
-
-    pub(crate) fn with_engine_options(mut self, engine_options: Value) -> Self {
-        self.engine_options = Some(engine_options);
         self
     }
 }
@@ -197,8 +189,6 @@ pub(crate) struct CommandContext {
     pub(crate) page: CommandOwnerContext,
     pub(crate) owner: CommandOwnerContext,
     pub(crate) current: Value,
-    pub(crate) current_fields: &'static [&'static str],
-    pub(crate) runtime: Value,
 }
 
 #[derive(Clone)]
@@ -211,20 +201,13 @@ pub(crate) struct CallRequest {
     pub(crate) request: NavigationRequest,
     pub(crate) origin: CommandOrigin,
     pub(crate) context: CommandContext,
-    pub(crate) then: Option<Box<CommandAction>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ReturnAdapter {
-    pub(crate) command: CommandRef,
-    pub(crate) context: CommandContext,
+    pub(crate) return_processor: Option<crate::workflow::config::ReturnProcessor>,
+    pub(crate) invoke_selected: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ViewReturn {
-    pub(crate) source_view: String,
     pub(crate) output: ViewOutput,
-    pub(crate) adapter: Option<ReturnAdapter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

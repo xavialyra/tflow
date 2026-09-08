@@ -120,7 +120,7 @@ impl PickerView {
             "selected_index".to_string(),
             serde_json::json!(frame.selection.selected),
         );
-        // Keep null so templates like selected_item resolve instead of missing.
+        // Keep an explicit null when no item is selected for a stable runtime shape.
         current.insert(
             "selected_item".to_string(),
             selected_item.unwrap_or(serde_json::Value::Null),

@@ -7,7 +7,7 @@ use super::{CaptureKeymap, create_input_bindings, create_renderer, create_view};
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
     EngineNavigationRequest, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
-    EvaluatedBindingConfig, EvaluatedEngineConfig, RendererFactoryContext, RuntimeFactoryContext,
+    ProjectedBindingConfig, ProjectedEngineConfig, RendererFactoryContext, RuntimeFactoryContext,
     ViewContext as EngineContext, ViewIdentity,
 };
 use crate::input::{EditorBuffer, InputEvent, InputSourceIdentity, ViewMountId};
@@ -28,12 +28,12 @@ use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
 
 /// Inputs required by the opt-in Capture adapter. Values must already be
-/// evaluated in the same host scope that produced the navigation request.
+/// projected from static configuration in the same host scope that produced the navigation request.
 pub(crate) struct CaptureProtocolConfig {
     pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
-    pub(crate) engine: EvaluatedEngineConfig,
-    pub(crate) bindings: EvaluatedBindingConfig,
+    pub(crate) engine: ProjectedEngineConfig,
+    pub(crate) bindings: ProjectedBindingConfig,
     pub(crate) cancellation: CancellationObserver,
     pub(crate) runtime_snapshot: Value,
     pub(crate) theme: ResolvedTheme,
@@ -44,8 +44,8 @@ impl CaptureProtocolConfig {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         view_ref: impl Into<String>,
-        engine: EvaluatedEngineConfig,
-        bindings: EvaluatedBindingConfig,
+        engine: ProjectedEngineConfig,
+        bindings: ProjectedBindingConfig,
         commands: crate::protocol::ViewCommandBindings,
         cancellation: CancellationObserver,
         runtime_snapshot: Value,
@@ -66,7 +66,7 @@ impl CaptureProtocolConfig {
 }
 
 /// Construct a protocol View without exposing the concrete Capture runtime to
-/// Router. The composition root supplies evaluated configuration and receives
+/// Router. The composition root supplies projected configuration and receives
 /// a boxed common-protocol View.
 pub(crate) fn create_protocol_view(
     config: CaptureProtocolConfig,
@@ -258,10 +258,7 @@ impl CaptureProtocolView {
         }
         let generation = self.task_generation.wrapping_add(1).max(1);
         let starter = self.starter.for_task(task, generation);
-        if !self
-            .runtime
-            .start_prepared_work(&starter, &self.runtime_snapshot)
-        {
+        if !self.runtime.start_prepared_work(&starter) {
             return;
         }
         self.task_generation = generation;
@@ -383,7 +380,6 @@ impl CaptureProtocolView {
                 Ok(ViewDecision::Return(ViewResult {
                     value: serde_json::to_value(output)
                         .context("could not serialize capture result")?,
-                    adapter: None,
                 }))
             }
             EngineDecision::Batch(decisions) => {
@@ -493,7 +489,6 @@ impl View for CaptureProtocolView {
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
-            title: None,
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
@@ -657,7 +652,6 @@ impl View for CaptureProtocolView {
                 visible: false,
             }),
             metadata: crate::view::ViewMetadata {
-                title: None,
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
                 bindings: Some(self.bindings(&ViewContext::new(ViewInstanceId(0), "capture"))),
@@ -679,7 +673,7 @@ impl Drop for CaptureProtocolView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{EvaluatedBindingConfig, EvaluatedEngineConfig};
+    use crate::engine::{ProjectedBindingConfig, ProjectedEngineConfig};
     use crate::view::{ParsedQuery, ViewContext};
     use ratatui::{Terminal, backend::TestBackend};
     use std::fs;
@@ -696,16 +690,15 @@ mod tests {
     fn config_with_tasks(output: Value, tasks: TaskRuntime) -> CaptureProtocolConfig {
         CaptureProtocolConfig::new(
             "capture",
-            EvaluatedEngineConfig {
+            ProjectedEngineConfig {
                 fields: [("output".to_string(), output)].into_iter().collect(),
-                ..EvaluatedEngineConfig::default()
+                ..ProjectedEngineConfig::default()
             },
-            EvaluatedBindingConfig::default(),
+            ProjectedBindingConfig::default(),
             crate::protocol::ViewCommandBindings::new(
                 &crate::workflow::config::load_test_fixture().unwrap(),
                 "capture",
                 crate::lifecycle::CancellationToken::new().observer(),
-                &[],
             )
             .unwrap(),
             crate::lifecycle::CancellationToken::new().observer(),
@@ -771,14 +764,28 @@ mod tests {
 
     #[test]
     fn mismatched_task_generation_or_revision_cannot_consume_capture_completion() {
-        let tasks = TaskRuntime::new();
-        let output = serde_json::json!({"source": "script", "file": "capture.sh"});
-        let mut view = create_protocol_view_state(
-            config_with_tasks(output, tasks.clone()),
-            &request(),
-            ViewInstanceId(1),
+        let root = std::env::temp_dir().join(format!(
+            "tui-launcher-capture-correlation-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("capture.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\ncat >/dev/null\nsleep 0.05\nprintf '{\\\"version\\\":1,\\\"output\\\":\\\"captured\\\"}\\n'\n",
         )
         .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let tasks = TaskRuntime::new();
+        let output = serde_json::json!({
+            "producer": "script",
+            "handler": {"file": "capture.sh"}
+        });
+        let mut capture_config = config_with_tasks(output, tasks.clone());
+        capture_config.engine.workflow_root = Some(root.clone());
+        let mut view =
+            create_protocol_view_state(capture_config, &request(), ViewInstanceId(1)).unwrap();
         let mut context = context();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
             .unwrap();
@@ -836,8 +843,12 @@ mod tests {
             view.event(ViewEvent::Task(event), &context).unwrap(),
             ViewDecision::Invalidate
         ));
-        assert!(view.error.is_some());
+        assert!(view.error.is_none());
         assert!(view.active_task.is_none());
+        assert_eq!(
+            view.command_snapshot().publication.unwrap().current,
+            serde_json::json!({"value": "captured"})
+        );
         assert!(matches!(
             view.event(
                 ViewEvent::Task(TaskEvent {
@@ -851,6 +862,8 @@ mod tests {
             .unwrap(),
             ViewDecision::Stay
         ));
+        tasks.shutdown_and_wait();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -865,7 +878,10 @@ mod tests {
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
         let tasks = TaskRuntime::new();
-        let output = serde_json::json!({"source": "script", "file": "capture.sh"});
+        let output = serde_json::json!({
+            "producer": "script",
+            "handler": {"file": "capture.sh"}
+        });
         let mut capture_config = config_with_tasks(output.clone(), tasks.clone());
         capture_config.engine.workflow_root = Some(root.clone());
         let mut view =
@@ -989,7 +1005,6 @@ mod tests {
                 );
             })
             .unwrap();
-        assert_eq!(rendered.unwrap().metadata.title.as_deref(), None);
         let text = terminal
             .backend()
             .buffer()
@@ -1011,7 +1026,10 @@ mod tests {
         std::fs::write(&script, "#!/bin/sh\necho failed >&2\nexit 3\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let output = serde_json::json!({"source":"script", "file":"fail.sh"});
+        let output = serde_json::json!({
+            "producer": "script",
+            "handler": {"file": "fail.sh"}
+        });
         let mut cfg = config(output);
         cfg.engine.workflow_root = Some(root.clone());
         let mut view = create_protocol_view(cfg, &request(), ViewInstanceId(1)).unwrap();

@@ -23,10 +23,9 @@ use super::{
 use crate::input::Key;
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
-    CommandBindingVisibility, CommandScope, CompiledConfig, Defaults, ENGINE_PICKER,
-    ScriptSourceSpec, View, normalize_key, toml_to_json,
+    CommandBindingVisibility, CommandScope, CompiledConfig, Defaults, ENGINE_PICKER, ProducerKind,
+    View, normalize_key, parse_producer_script_handler, toml_to_json,
 };
-use crate::workflow::expression::{Template, is_dynamic_string};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,10 +52,8 @@ impl PickerTaskServices {
         &self,
         starter: &MountTaskStarter,
         request: ItemsRequest,
-        runtime_snapshot: Value,
     ) -> items::ItemsTaskHandle {
-        self.scheduler
-            .submit_items(starter, &self.loader, request, runtime_snapshot)
+        self.scheduler.submit_items(starter, &self.loader, request)
     }
 }
 
@@ -76,12 +73,11 @@ impl PickerViewServices {
         &self,
         starter: &MountTaskStarter,
         request: ItemsRequest,
-        runtime_snapshot: Value,
     ) -> items::ItemsTaskHandle {
         self.task_services
             .as_ref()
             .expect("picker task services are not installed")
-            .start_items(starter, request, runtime_snapshot)
+            .start_items(starter, request)
     }
 }
 
@@ -255,7 +251,6 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
     fn load(
         &self,
         request: &ItemsRequest,
-        runtime: &Value,
         cancellation: &crate::lifecycle::CancellationToken,
     ) -> items::ItemsLoadOutcome {
         items::load_items_for_definitions_with_outcome(
@@ -263,7 +258,7 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
             &request.view,
             &request.identity.page_parameters,
             &request.identity.binding_raw,
-            runtime,
+            &request.identity.input,
             cancellation,
         )
     }
@@ -348,18 +343,9 @@ pub(crate) use items::Item;
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
-        .with_current_fields(&[
-            "item",
-            "source",
-            "text",
-            "value",
-            "metadata",
-            "selected_index",
-        ])
         .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["layout", "preview", "source_badge"],
-            binding: &["layout", "preview", "source_badge"],
-            deferred_runtime_errors: &[],
+            runtime: &["layout", "preview"],
+            binding: &["layout", "preview"],
             binding_defaults: Some(&["defaults", "picker", "bindings"]),
         })
         .with_actions([
@@ -377,10 +363,10 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(name, view, &["layout", "preview", "source_badge"])?;
-    validate_picker_bool(view.engine_field("source_badge"), "source_badge")?;
-    validate_picker_table(view.engine_field("layout"), "layout")?;
-    validate_picker_table(view.engine_field("preview"), "preview")?;
+    validate_fields(name, view, &["layout", "preview"])?;
+    let layout = view.engine_field("layout").map(toml_to_json).transpose()?;
+    let preview = view.engine_field("preview").map(toml_to_json).transpose()?;
+    self::preview::parse(layout, preview)?;
     if let Some(items) = view.selected_items() {
         validate_items_source_config(items, context.script_root)
             .with_context(|| format!("view {:?} has invalid items source configuration", name))?;
@@ -536,64 +522,47 @@ pub(crate) fn create_input_bindings(
         .collect())
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemsProducerConfig {
+    producer: ProducerKind,
+    handler: toml::Value,
+}
+
 fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Result<()> {
     match value {
-        toml::Value::Array(_) => Ok(()),
-        toml::Value::String(source) => {
-            let template = Template::parse(source)?;
-            if template.is_complete_path() {
-                Ok(())
-            } else {
-                bail!("items must be an array, complete dynamic path, or script source object")
+        toml::Value::Array(_) => {
+            let items = toml_to_json(value)?;
+            items::validate_item_array(&items)
+        }
+        toml::Value::Table(fields) if fields.contains_key("producer") => {
+            let provider: ItemsProducerConfig = value
+                .clone()
+                .try_into()
+                .context("items producer must define producer and handler")?;
+            match provider.producer {
+                ProducerKind::Declared => validate_declared_items_handler(&provider.handler),
+                ProducerKind::Script => parse_producer_script_handler(&provider.handler, root)
+                    .context("items script handler is invalid")
+                    .map(|_| ()),
             }
         }
-        toml::Value::Table(_) => {
-            let spec = ScriptSourceSpec::parse(value)
-                .context("items must be an array or a script source object")?;
-            spec.validate_picker_source()?;
-            if spec
-                .file_value()
-                .is_some_and(|file| !is_dynamic_string(file))
-            {
-                spec.validate_target(root)?;
-            }
-            Ok(())
-        }
-        _ => bail!("items must be an array, complete dynamic path, or script source object"),
+        _ => bail!("items must be an array or a producer object"),
     }
 }
 
-fn validate_picker_bool(value: Option<&toml::Value>, name: &str) -> Result<()> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if value.is_bool() || is_complete_dynamic_path(value)? {
-        return Ok(());
+fn validate_declared_items_handler(value: &toml::Value) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Handler {
+        items: toml::Value,
     }
-    bail!(
-        "picker field {:?} must be a boolean or complete dynamic path",
-        name
-    )
-}
-
-fn validate_picker_table(value: Option<&toml::Value>, name: &str) -> Result<()> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if value.is_table() || is_complete_dynamic_path(value)? {
-        return Ok(());
-    }
-    bail!(
-        "picker field {:?} must be a table or complete dynamic path",
-        name
-    )
-}
-
-fn is_complete_dynamic_path(value: &toml::Value) -> Result<bool> {
-    let Some(source) = value.as_str() else {
-        return Ok(false);
-    };
-    Ok(Template::parse(source)?.is_complete_path())
+    let handler: Handler = value
+        .clone()
+        .try_into()
+        .context("declared items handler must define items")?;
+    let items = toml_to_json(&handler.items)?;
+    items::validate_item_array(&items)
 }
 
 #[cfg(test)]
@@ -601,22 +570,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picker_runtime_fields_allow_dynamic_values_for_post_resolution_validation() {
-        let view: View = toml::from_str(
+    fn static_item_shapes_are_validated_during_engine_validation() {
+        let valid: View = toml::from_str(
             r#"
             [engine]
             type = "picker"
             [engine.config]
-            layout = "{{ page.query.layout }}"
-            preview = "{{ page.query.preview }}"
+            items = [{ display = "literal {{ page.input }}", value = "{{ selection.value }}" }]
             "#,
         )
         .unwrap();
         validate_config(EngineValidationContext {
-            view_ref: "core:dynamic",
-            view: &view,
+            view_ref: "core:static",
+            view: &valid,
             script_root: None,
         })
         .unwrap();
+
+        let invalid: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [engine.config]
+            items = [{ value = "missing-display" }]
+            "#,
+        )
+        .unwrap();
+        assert!(
+            validate_config(EngineValidationContext {
+                view_ref: "core:invalid",
+                view: &invalid,
+                script_root: None,
+            })
+            .is_err()
+        );
     }
 }

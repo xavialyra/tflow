@@ -10,9 +10,9 @@ type = "picker"
 
 [views.main.engine.config]
 [views.main.engine.config.items]
-source = "script"
+producer = "script"
+[views.main.engine.config.items.handler]
 file = "scripts/items.sh"
-args = ["{{ view.query }}"]
 
 [views.main.query]
 type = "object"

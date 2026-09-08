@@ -10,16 +10,15 @@ type = "picker"
 
 [views.main.engine.config]
 [views.main.engine.config.items]
-source = "script"
+producer = "script"
+[views.main.engine.config.items.handler]
 file = "scripts/items.sh"
-args = ["{{ view.query }}"]
 
 [views.main.commands.open]
 key = "enter"
 label = "Open"
 type = "run"
 
-[views.main.commands.open.payload]
-handler = { source = "script", file = "scripts/open.sh" }
-args = ["{{ selection.value }}"]
-exit = true
+producer = "script"
+[views.main.commands.open.handler]
+file = "scripts/open.sh"

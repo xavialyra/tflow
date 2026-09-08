@@ -10,7 +10,8 @@ type = "picker"
 
 [views.menu.engine.config]
 [views.menu.engine.config.items]
-source = "script"
+producer = "script"
+[views.menu.engine.config.items.handler]
 file = "scripts/items.sh"
 
 [views.menu.engine.config.layout]

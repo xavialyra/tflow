@@ -2,9 +2,21 @@
 
 This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
+## 2026-09-08
+
+- Implemented ADR 0002's initial producer scope: literal `producer = "declared" | "script"` / `handler` configuration, strict version-1 JSON stdin/stdout protocol, typed command operations, Picker item feeds, Capture output, and post-commit return processors.
+- Added producer integration coverage for command stdin, Picker request input, post-mount Capture output, and return processing after caller restoration. Enforced strict producer handler tables, literal handler boundaries, operation matching, output bounds, cancellation, and child reaping.
+- Added updated workflow reference, static-values reference, producer-oriented tutorials/how-to guides, and runtime guarantee documentation; ADR 0002 and the architecture convergence plan now identify implemented behavior and remaining deferred capabilities.
+- Added accepted ADR 0002, `docs/adr/0002-static-configuration-and-script-boundaries.md`: replace embedded expressions with literal TOML and unified `producer = "declared" | "script"` / `handler` configuration for commands, Picker items, Capture output, and return processors.
+- Refined ADR 0002 with typed operation matching, version-1 JSON request/response examples, feed-owner parameter semantics, host-assigned item provenance, and explicit `target`/`query` navigation binding.
+- Specified Capture provider execution after mount and return processor execution after restoring the caller, including cancellation, explicit null, absent processors, failures, and stale-result handling. Deferred a general View builder and dynamic Engine configuration; the initial `run` mode is foreground only. Complete schemas and execution-policy details remain implementation follow-up work.
+- Marked the decision as not implemented, documented its partial supersession of ADR 0001's expression requirements, and linked it from the ADR registry and root documentation index.
+- Completed the clean-break migration: removed the expression evaluator and legacy command, Picker, Capture, and return-handler paths; removed the unused Capture `title` configuration and Engine title control; narrowed Picker providers to explicit requests and cancellation; enforced global command precedence; corrected nested return ownership; and aligned the reference and how-to documentation with the static protocol implementation.
+- Removed the remaining theme field aliases and manifest field-discarding path, deleted no-op inline-workflow normalization, removed the top-level selected-item source fallback, and renamed static Engine configuration projection APIs away from expression-evaluation terminology. Documented the child-process environment contract in the CLI reference.
+
 ## 2026-09-07
 
-- Corrected the workflow manifest reference: capture views accept required `output` and optional `title`, and `[workflow].api` is optional with a default of `1`.
+- Corrected the workflow manifest reference: capture views accept required `output`, and `[workflow].api` is optional with a default of `1`.
 - Added the ignored Stage 5 scheduler evidence collector and recorded release artifact `target/stage5/scheduler-20260907-092158Z/`: five 40-iteration serialized-worker samples met the initial 250 ms pooled-p95 queue-wait and cancellation-to-reap objectives. The architecture plan retains the serialized worker based on this TaskRuntime/process baseline and explicitly records that private preview and full input/render workload evidence remain outstanding.
 - Added `docs/explanation/architecture-convergence.md` as an implementation plan based on commit `ff50f2c` plus the reviewed working tree.
 - Recorded current partial protocol foundations and six incremental work areas: foreground execution lifecycle, task correlation, configuration ownership, protocol placement, measured scheduling, and documentation alignment.

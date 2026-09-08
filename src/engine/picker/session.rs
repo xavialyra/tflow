@@ -784,7 +784,7 @@ impl PickerView {
         let selected_index = selected
             .map(|_| self.frame.selection.selected)
             .unwrap_or_default();
-        let (item, source, text, value, metadata) = match selected {
+        let (item, text, value, metadata) = match selected {
             Some(item) => (
                 serde_json::json!({
                     "text": item.text,
@@ -792,22 +792,14 @@ impl PickerView {
                     "metadata": item.metadata,
                     "owner_view": item.source_view,
                 }),
-                serde_json::json!(item.source_view),
                 serde_json::json!(item.text),
                 serde_json::json!(item.value),
                 item.metadata.clone(),
             ),
-            None => (
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ),
+            None => (Value::Null, Value::Null, Value::Null, Value::Null),
         };
         ViewContextPublication::new(serde_json::json!({
             "item": item,
-            "source": source,
             "text": text,
             "value": value,
             "metadata": metadata,
@@ -1340,18 +1332,12 @@ impl EngineRuntime for PickerView {
         Ok(Some(outcome))
     }
 
-    fn start_prepared_work(
-        &mut self,
-        starter: &crate::task::MountTaskStarter,
-        runtime_snapshot: &Value,
-    ) -> bool {
+    fn start_prepared_work(&mut self, starter: &crate::task::MountTaskStarter) -> bool {
         let prepared = std::mem::take(&mut self.items_task_state);
         let started = if let ItemsTaskState::Prepared(request) = prepared {
             self.items_completion = None;
             let identity = request.identity.clone();
-            let task = self
-                .services
-                .start_items(starter, request, runtime_snapshot.clone());
+            let task = self.services.start_items(starter, request);
             self.items_task_state = ItemsTaskState::running(identity);
             self.items_task = Some(task);
             true
@@ -1709,7 +1695,7 @@ mod tests {
                 &tasks,
                 crate::task::MountTaskLease::new(source.frame),
             );
-            assert!(picker.start_prepared_work(&starter, &Value::Null));
+            assert!(picker.start_prepared_work(&starter));
             assert!(picker.items_task.is_some());
             tasks.shutdown_and_wait();
         }
@@ -2600,11 +2586,10 @@ mod tests {
             &tasks,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(107)),
         );
-        let runtime_snapshot = serde_json::json!({});
-        picker.start_prepared_work(&starter, &runtime_snapshot);
+        picker.start_prepared_work(&starter);
         assert!(picker.preview.as_ref().unwrap().has_pending_task());
         picker.deactivate();
-        picker.start_prepared_work(&starter, &runtime_snapshot);
+        picker.start_prepared_work(&starter);
         assert!(!picker.preview.as_ref().unwrap().has_pending_task());
         tasks.shutdown_and_wait();
     }
@@ -2693,7 +2678,7 @@ mod tests {
             &tasks,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(114)),
         );
-        picker.start_prepared_work(&starter, &serde_json::json!({}));
+        picker.start_prepared_work(&starter);
 
         assert_eq!(picker.running_items_task_identity(), Some(identity));
         assert!(picker.items_task.is_some());

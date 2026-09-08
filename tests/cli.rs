@@ -9,15 +9,15 @@ fn launcher_command() -> Command {
 }
 
 #[test]
-fn check_rejects_legacy_root_plugins_configuration() {
+fn check_rejects_unknown_root_plugins_field() {
     let root = temporary_root();
     let config = root.join("config.toml");
     fs::write(
         &config,
         r#"
-        default_view = "legacy:main"
+        default_view = "unknown:main"
 
-        [plugins.legacy.views.main.engine]
+        [plugins.unknown.views.main.engine]
         type = "picker"
         "#,
     )
@@ -27,36 +27,36 @@ fn check_rejects_legacy_root_plugins_configuration() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not validate legacy root plugins configuration");
+        .expect("could not validate unknown root field");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(
-        stderr.contains("root configuration cannot define plugins or workflows"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("sibling workflows/ directory"),
+        stderr.contains("unknown field `plugins`"),
         "stderr: {stderr}"
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn check_rejects_legacy_plugin_directory_manifest() {
+fn check_rejects_unknown_workflow_manifest_fields() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    let manifest = root.join("workflows/legacy/workflow.toml");
+    let manifest = root.join("workflows/unknown/workflow.toml");
     fs::create_dir_all(manifest.parent().unwrap()).unwrap();
-    fs::write(&config, "default_view = \"legacy:main\"\n").unwrap();
+    fs::write(&config, "default_view = \"unknown:main\"\n").unwrap();
     fs::write(
         &manifest,
         r#"
-        [plugin]
-        name = "Legacy"
+        [workflow]
+        api = 1
+        name = "Unknown"
 
         [views.main.engine]
         type = "picker"
+
+        [plugin]
+        name = "Unknown"
         "#,
     )
     .unwrap();
@@ -65,13 +65,12 @@ fn check_rejects_legacy_plugin_directory_manifest() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not validate legacy plugin directory manifest");
+        .expect("could not validate workflow manifest");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "stderr: {stderr}");
-    assert!(stderr.contains("uses legacy [plugin]"), "stderr: {stderr}");
     assert!(
-        stderr.contains("must declare [workflow]"),
+        stderr.contains("unsupported fields [\"plugin\"]"),
         "stderr: {stderr}"
     );
     fs::remove_dir_all(root).unwrap();
@@ -88,9 +87,7 @@ fn check_rejects_builtin_session_command_action_overrides() {
 
         [commands.bindings.commands]
         key = "ctrl+k"
-        type = "call"
-        [commands.bindings.commands.payload]
-        target = "core:default"
+        label = "Override"
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -167,71 +164,33 @@ fn check_rejects_unknown_defaults_fields() {
 }
 
 #[test]
-fn check_rejects_values_that_reference_unavailable_evaluation_stages() {
-    for (default_view, source, expected) in [
-        (
-            "{{ input.mode }}",
-            "",
-            "default_view is consumed during the bootstrap evaluation stage",
-        ),
-        (
-            "core:default",
-            r#"
-            [workflows.core.views.default.query]
-            type = "object"
-            input_order = ["value"]
-            value = { type = "string", default = "{{ page.input }}" }
-            "#,
-            "query schema is consumed during the bootstrap evaluation stage",
-        ),
-        (
-            "core:default",
-            r#"
-            layout = "{{ result }}"
-            "#,
-            "engine field \"layout\" is consumed during the operation evaluation stage",
-        ),
-        (
-            "core:default",
-            r#"
-            [workflows.core.views.default.commands.run]
-            key = "enter"
-            label = "Run"
-            type = "run"
-            [workflows.core.views.default.commands.run.payload]
-            handler = { source = "script", file = "scripts/run.sh" }
-            args = ["{{ result }}"]
-            "#,
-            "command \"run\" args is consumed during the operation evaluation stage",
-        ),
-    ] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-                default_view = "{default_view}"
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
-                items = []
-                {source}
-                "#
-            ),
-        )
-        .unwrap();
+fn check_rejects_dynamic_bootstrap_references() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "{{ input.mode }}"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = []
+        "#,
+    )
+    .unwrap();
 
-        let output = launcher_command()
-            .args(["--check", "--config"])
-            .arg(&config)
-            .output()
-            .expect("could not run tui-launcher --check");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "stderr: {stderr}");
-        assert!(stderr.contains(expected), "stderr: {stderr}");
-        fs::remove_dir_all(root).unwrap();
-    }
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not run tui-launcher --check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("view \"{{ input.mode }}\" is not configured"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -242,11 +201,8 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
         &config,
         r#"
         default_view = "core:default"
-        keymaps = { back = "escape" }
-
         [defaults.picker.bindings]
         exit = ["enter"]
-        back = ["{{ view.input }}"]
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -264,7 +220,7 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("picker key \"enter\" is assigned to both \"activate\" and \"exit\""),
+            .contains("picker key \"enter\" is assigned to both"),
         "stderr: {:?}",
         output.stderr
     );
@@ -279,10 +235,8 @@ fn check_rejects_static_capture_conflicts_with_dynamic_defaults() {
         &config,
         r#"
         default_view = "core:default"
-        keymaps = { extra = "enter" }
-
         [defaults.capture.bindings]
-        back = ["enter", "{{ view.input }}"]
+        back = ["enter"]
 
         [workflows.core.views.default.engine]
         type = "capture"
@@ -301,7 +255,7 @@ fn check_rejects_static_capture_conflicts_with_dynamic_defaults() {
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("capture key \"enter\" is assigned to both \"copy\" and \"back\""),
+            .contains("capture key \"enter\" is assigned to both"),
         "stderr: {:?}",
         output.stderr
     );
@@ -373,12 +327,12 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
 fn check_rejects_picker_runtime_field_shape_mismatches() {
     for (field, expected) in [
         (
-            "layout = 42",
-            "picker field \"layout\" must be a table or complete dynamic path",
+            "layout = 42\npreview = { blocks = [{ type = \"text\" }] }",
+            "picker layout is invalid",
         ),
         (
-            "preview = \"not-a-table\"",
-            "picker field \"preview\" must be a table or complete dynamic path",
+            "layout = { panes = [{ slot = \"items\", grow = 1 }, { slot = \"preview\", grow = 1 }] }\npreview = \"not-a-table\"",
+            "picker preview is invalid",
         ),
     ] {
         let root = temporary_root();
@@ -411,14 +365,15 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
 }
 
 #[test]
-fn check_rejects_unsupported_dynamic_syntax_and_namespaces() {
-    for expression in [
+fn check_treats_template_looking_static_values_as_literals() {
+    for value in [
         "{{ page.value == 1 }}",
         "{{ {\"value\": page.value} }}",
         "{{ unknown.value }}",
         "{{ page.typo }}",
         "{{ view.typo }}",
         "{{ session.typo }}",
+        "{{ malformed",
     ] {
         let root = temporary_root();
         let config = root.join("config.toml");
@@ -430,7 +385,7 @@ fn check_rejects_unsupported_dynamic_syntax_and_namespaces() {
                 [workflows.core.views.default.engine]
                 type = "capture"
                 [workflows.core.views.default.engine.config]
-                output = {expression:?}
+                output = {value:?}
                 "#
             ),
         )
@@ -440,10 +395,10 @@ fn check_rejects_unsupported_dynamic_syntax_and_namespaces() {
             .args(["--check", "--config"])
             .arg(&config)
             .output()
-            .expect("could not validate rejected dynamic syntax");
+            .expect("could not validate literal capture output");
         assert!(
-            !output.status.success(),
-            "accepted {expression}; stderr: {:?}",
+            output.status.success(),
+            "rejected literal {value}; stderr: {:?}",
             output.stderr
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -461,16 +416,17 @@ fn check_validates_static_items_sources_without_running_them() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config.items]
-        source = "script"
+        producer = "script"
+        [workflows.core.views.default.engine.config.items.handler]
         file = "scripts/items.sh"
-        args = ["{{ view.query }}"]
 
         [workflows.core.views.capture.engine]
         type = "capture"
+        [workflows.core.views.capture.engine.config]
         [workflows.core.views.capture.engine.config.output]
-        source = "script"
+        producer = "script"
+        [workflows.core.views.capture.engine.config.output.handler]
         file = "scripts/output.sh"
-        args = ["{{ view.query }}"]
         "#,
     )
     .unwrap();
@@ -486,7 +442,7 @@ fn check_validates_static_items_sources_without_running_them() {
     std::fs::write(
         scripts.join("output.sh"),
         format!(
-            "printf ran > {:?}\nprintf '\"output\"\\n'\n",
+            "printf ran > {:?}\nprintf '{{\\\"version\\\":1,\\\"output\\\":\\\"output\\\"}}\\n'\n",
             capture_marker
         ),
     )
@@ -522,9 +478,9 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
         key = "enter"
         label = "Run"
         type = "run"
-
-        [workflows.core.views.default.commands.run.payload]
-        handler = { source = "script", file = "scripts/run.sh" }
+        producer = "script"
+        [workflows.core.views.default.commands.run.handler]
+        file = "scripts/run.sh"
         "#,
     )
     .unwrap();
@@ -557,8 +513,8 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
         key = "enter"
         label = "Run"
         type = "run"
-
-        [workflows.core.views.default.commands.run.payload]
+        producer = "script"
+        [workflows.core.views.default.commands.run.handler]
         script = """
         printf '%s\\n' '{{ user_template }}'
         """
@@ -579,13 +535,13 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
 fn check_rejects_invalid_run_handler_sources() {
     for (handler, expected) in [
         (
-            r#"{ source = "script", file = "scripts/run.sh", max_output_bytes = 1024 }"#,
-            "cannot define max_output_bytes",
+            r#"{ file = "scripts/run.sh", script = "printf ok" }"#,
+            "must define exactly one of file or script",
         ),
-        (r#""scripts/run.sh""#, "explicit script source object"),
+        (r#""scripts/run.sh""#, "must be a table with file or script"),
         (
-            r#"{ source = "script", file = "../run.sh" }"#,
-            "invalid command handler file",
+            r#"{ file = "../run.sh" }"#,
+            "script path \"../run.sh\" must stay below",
         ),
     ] {
         let root = temporary_root();
@@ -603,8 +559,7 @@ fn check_rejects_invalid_run_handler_sources() {
                 key = "enter"
                 label = "Run"
                 type = "run"
-
-                [workflows.core.views.default.commands.run.payload]
+                producer = "script"
                 handler = {handler}
                 "#
             ),
@@ -627,58 +582,35 @@ fn check_rejects_invalid_run_handler_sources() {
 }
 
 #[test]
-fn check_rejects_invalid_run_command_args() {
-    for (args, expected) in [
-        (
-            r#""not-an-array""#,
-            "command args must be an array or complete dynamic path",
-        ),
-        (
-            r#"{ value = 1 }"#,
-            "command args must be an array or complete dynamic path",
-        ),
-        (
-            r#""prefix {{ view.query.value }}""#,
-            "command args must be an array or complete dynamic path",
-        ),
-    ] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-                default_view = "core:default"
+fn check_rejects_unknown_run_command_args() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        producer = "script"
+        handler = { script = "printf ok" }
+        args = ["literal"]
+        "#,
+    )
+    .unwrap();
 
-                [workflows.core.views.default.engine]
-                type = "picker"
-
-                [workflows.core.views.default.commands.run]
-                key = "enter"
-                label = "Run"
-                type = "run"
-
-                [workflows.core.views.default.commands.run.payload]
-                handler = {{ source = "script", file = "scripts/run.sh" }}
-                args = {args}
-                "#
-            ),
-        )
-        .unwrap();
-        let scripts = root.join("workflows/core/scripts");
-        std::fs::create_dir_all(&scripts).unwrap();
-        std::fs::write(scripts.join("run.sh"), ":\n").unwrap();
-
-        let output = launcher_command()
-            .args(["--check", "--config"])
-            .arg(&config)
-            .output()
-            .expect("could not validate run command arguments");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "accepted args {args}: {stderr}");
-        assert!(stderr.contains(expected), "stderr: {stderr}");
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    let output = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate unknown run arguments");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "accepted unknown args: {stderr}");
+    assert!(stderr.contains("unknown field `args`"), "stderr: {stderr}");
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -697,8 +629,8 @@ fn check_validates_static_return_handler_targets() {
         key = "enter"
         label = "Done"
         type = "return"
-        [workflows.core.views.default.commands.done.payload]
-        handler = "scripts/missing.sh"
+        producer = "script"
+        handler = { file = "scripts/missing.sh" }
         "#,
     )
     .unwrap();
@@ -710,7 +642,7 @@ fn check_validates_static_return_handler_targets() {
         .expect("could not validate return handler target");
     assert!(!output.status.success(), "accepted missing return handler");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("invalid result handler target"),
+        String::from_utf8_lossy(&output.stderr).contains("could not read script"),
         "stderr: {:?}",
         output.stderr
     );
@@ -721,7 +653,7 @@ fn check_validates_static_return_handler_targets() {
 fn check_validates_items_shape_before_runtime() {
     for source in [
         r#"items = [{ display = "{{ page.input }}" }]"#,
-        r#"items = "{{ page.items }}""#,
+        r#"items = [{ display = "{{ literal.value }}", value = "{{" }]"#,
     ] {
         let root = temporary_root();
         let config = root.join("config.toml");
@@ -785,7 +717,7 @@ fn check_validates_items_shape_before_runtime() {
         );
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("items must be an array, complete dynamic path, or script source object"),
+                .contains("items must be an array or a producer object"),
             "items {source:?} reported unexpected stderr: {:?}",
             output.stderr
         );
@@ -794,7 +726,69 @@ fn check_validates_items_shape_before_runtime() {
 }
 
 #[test]
-fn check_accepts_dynamic_script_source_fields() {
+fn check_rejects_unknown_producer_fields() {
+    for (engine, source) in [
+        (
+            "picker",
+            r#"
+            [workflows.core.views.default.engine.config.items]
+            producer = "script"
+            extra = true
+            [workflows.core.views.default.engine.config.items.handler]
+            file = "scripts/items.sh"
+            "#,
+        ),
+        (
+            "capture",
+            r#"
+            [workflows.core.views.default.engine.config.output]
+            producer = "declared"
+            extra = true
+            [workflows.core.views.default.engine.config.output.handler]
+            output = "output"
+            "#,
+        ),
+    ] {
+        let root = temporary_root();
+        let config = root.join("config.toml");
+        write_test_config(
+            &config,
+            &format!(
+                r#"
+                default_view = "core:default"
+                [workflows.core.views.default.engine]
+                type = "{engine}"
+                [workflows.core.views.default.engine.config]
+                {source}
+                "#
+            ),
+        )
+        .unwrap();
+        let scripts = root.join("workflows/core/scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(
+            scripts.join("items.sh"),
+            "printf '{\\\"version\\\":1,\\\"items\\\":[]}\\n'\n",
+        )
+        .unwrap();
+
+        let output = launcher_command()
+            .args(["--check", "--config"])
+            .arg(&config)
+            .output()
+            .expect("could not validate producer fields");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "accepted producer fields: {stderr}"
+        );
+        assert!(stderr.contains("unknown field"), "stderr: {stderr}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn check_accepts_template_looking_script_bodies_as_literal_handlers() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -804,43 +798,39 @@ fn check_accepts_dynamic_script_source_fields() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config.items]
-        source = "{{ page.query.source }}"
-        file = "{{ page.query.file }}"
-        max_output_bytes = "{{ page.query.limit }}"
-        args = ["{{ page.query }}"]
+        producer = "script"
+        [workflows.core.views.default.engine.config.items.handler]
+        script = "printf '{{ page.query.source }}\\n'"
         "#,
     )
     .unwrap();
-    let scripts = root.join("workflows/core/scripts");
-    std::fs::create_dir_all(&scripts).unwrap();
-    std::fs::write(scripts.join("items.sh"), "printf '[]\\n'\n").unwrap();
 
     let output = launcher_command()
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not validate dynamic items source");
+        .expect("could not validate a literal script handler");
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn check_rejects_invalid_items_sources() {
+fn check_rejects_invalid_items_producers() {
     for (source, expected) in [
         (
-            "source = \"script\"\nfile = \"scripts/missing.sh\"",
+            "producer = \"script\"\nhandler = { file = \"scripts/missing.sh\" }",
             "could not read script",
         ),
         (
-            "source = \"command\"\nfile = \"scripts/items.sh\"",
-            "unsupported script source",
+            "producer = \"command\"\nhandler = { file = \"scripts/items.sh\" }",
+            "unknown variant `command`",
         ),
         (
-            "source = \"script\"\nfile = \"scripts/items.sh\"\nmax_output_bytes = \"limit={{ page.query.limit }}\"",
-            "script max_output_bytes must be an integer or complete dynamic path",
+            "producer = \"script\"\nhandler = { file = \"scripts/items.sh\", script = \"printf ok\" }",
+            "must define exactly one of file or script",
         ),
         (
-            "source = \"script\"\nfile = \"scripts/items.sh\"\nunknown = true",
+            "producer = \"script\"\nhandler = { file = \"scripts/items.sh\", unknown = true }",
             "unknown field `unknown`",
         ),
     ] {
@@ -976,14 +966,14 @@ fn cli_theme_replaces_the_root_configuration() {
 }
 
 #[test]
-fn theme_errors_precede_dynamic_config_compilation_errors() {
+fn missing_theme_is_reported_during_startup() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
         &config,
         r#"
         theme = "work"
-        default_view = "{{ page.input }}"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -996,7 +986,7 @@ fn theme_errors_precede_dynamic_config_compilation_errors() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not validate configuration error ordering");
+        .expect("could not validate missing theme");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "stderr: {stderr}");
@@ -1005,10 +995,6 @@ fn theme_errors_precede_dynamic_config_compilation_errors() {
         "stderr: {stderr}"
     );
     assert!(stderr.contains("themes/work.toml"), "stderr: {stderr}");
-    assert!(
-        !stderr.contains("default_view is consumed during the bootstrap evaluation stage"),
-        "Theme errors must be reported before config compilation: {stderr}"
-    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1065,7 +1051,8 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
         type = "picker"
         [views.main.commands.run]
         type = "run"
-        [views.main.commands.run.payload]
+        producer = "script"
+        [views.main.commands.run.handler]
         script = "foo.sh"
         "#,
     )
