@@ -260,7 +260,7 @@ producer = "script"
 file = "scripts/process-result.sh"
 ```
 
-The processor script receives a `return` request. Its `result` is protocol data, not an expression namespace:
+The processor script receives a `return` request. Its `result` is raw protocol data:
 
 ```json
 {
@@ -318,7 +318,7 @@ The default script policy is a 10-second timeout, 1 MiB stdout, and 64 KiB stder
 
 ## Static Boundaries
 
-Configuration without a producer is still static: its values are deserialized and validated at startup. Runtime data is available only through the documented request fields of a producer protocol. Producer handlers, request data, and generated strings are never recursively evaluated as expressions. JSON is UTF-8 text, so NUL-delimited or non-UTF-8 command protocols require a separate binary-safe interface and are outside this contract.
+Configuration without a producer is static: its values are deserialized and validated at startup. Runtime data is available through the documented request fields of a producer protocol. JSON is UTF-8 text, so NUL-delimited or non-UTF-8 command protocols require a separate binary-safe interface and are outside this contract.
 
 ## Multi-line Inline Scripts
 

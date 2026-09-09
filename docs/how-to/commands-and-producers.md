@@ -15,7 +15,7 @@ Use a command producer when a command's operation depends on runtime data. TOML 
 
 ## Problem
 
-You need a command to inspect the current View state, selected Picker item, or feed parameters without embedding runtime expressions in configuration.
+You need a command to inspect the current View state, selected Picker item, or feed parameters through an explicit producer request.
 
 ## Solution
 

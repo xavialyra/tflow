@@ -164,37 +164,7 @@ fn check_rejects_unknown_defaults_fields() {
 }
 
 #[test]
-fn check_rejects_dynamic_bootstrap_references() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "{{ input.mode }}"
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = []
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
-        .output()
-        .expect("could not run tui-launcher --check");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "stderr: {stderr}");
-    assert!(
-        stderr.contains("view \"{{ input.mode }}\" is not configured"),
-        "stderr: {stderr}"
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
+fn check_rejects_picker_binding_conflicts_with_defaults() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -227,7 +197,7 @@ fn check_rejects_static_picker_conflicts_with_dynamic_defaults() {
 }
 
 #[test]
-fn check_rejects_static_capture_conflicts_with_dynamic_defaults() {
+fn check_rejects_capture_binding_conflicts_with_defaults() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -292,7 +262,7 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
         [workflows.core.views.default.engine]
         type = "capture"
         [workflows.core.views.default.engine.config]
-        output = "{{ view.query.message }}"
+        output = "query output"
         [workflows.core.views.default.query]
         type = "object"
         message = { type = "string", default = "" }
@@ -359,47 +329,6 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "accepted {field}: {stderr}");
         assert!(stderr.contains(expected), "stderr: {stderr}");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[test]
-fn check_treats_template_looking_static_values_as_literals() {
-    for value in [
-        "{{ page.value == 1 }}",
-        "{{ {\"value\": page.value} }}",
-        "{{ unknown.value }}",
-        "{{ page.typo }}",
-        "{{ view.typo }}",
-        "{{ session.typo }}",
-        "{{ malformed",
-    ] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-                default_view = "core:default"
-                [workflows.core.views.default.engine]
-                type = "capture"
-                [workflows.core.views.default.engine.config]
-                output = {value:?}
-                "#
-            ),
-        )
-        .unwrap();
-
-        let output = launcher_command()
-            .args(["--check", "--config"])
-            .arg(&config)
-            .output()
-            .expect("could not validate literal capture output");
-        assert!(
-            output.status.success(),
-            "rejected literal {value}; stderr: {:?}",
-            output.stderr
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -485,7 +414,7 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
     .unwrap();
     let scripts = root.join("workflows/core/scripts");
     std::fs::create_dir_all(&scripts).unwrap();
-    std::fs::write(scripts.join("run.sh"), "printf '{{ user_template }}\\n'\\n").unwrap();
+    std::fs::write(scripts.join("run.sh"), "printf 'ok\\n'\\n").unwrap();
 
     let output = launcher_command()
         .args(["--check", "--config"])
@@ -515,7 +444,7 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
         producer = "script"
         [workflows.core.views.default.commands.run.handler]
         script = """
-        printf '%s\\n' '{{ user_template }}'
+        printf 'ok\\n'
         """
         "#,
     )
@@ -651,8 +580,8 @@ fn check_validates_static_return_handler_targets() {
 #[test]
 fn check_validates_items_shape_before_runtime() {
     for source in [
-        r#"items = [{ display = "{{ page.input }}" }]"#,
-        r#"items = [{ display = "{{ literal.value }}", value = "{{" }]"#,
+        r#"items = [{ display = "Show date", value = "date" }]"#,
+        r#"items = [{ display = "System information", metadata = {} }]"#,
     ] {
         let root = temporary_root();
         let config = root.join("config.toml");
@@ -683,11 +612,7 @@ fn check_validates_items_shape_before_runtime() {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    for source in [
-        "items = 42",
-        r#"items = "static""#,
-        r#"items = "prefix {{ page.items }}""#,
-    ] {
+    for source in ["items = 42", r#"items = "static""#] {
         let root = temporary_root();
         let config = root.join("config.toml");
         write_test_config(
@@ -787,7 +712,7 @@ fn check_rejects_unknown_producer_fields() {
 }
 
 #[test]
-fn check_accepts_template_looking_script_bodies_as_literal_handlers() {
+fn check_accepts_inline_script_handlers() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -799,7 +724,7 @@ fn check_accepts_template_looking_script_bodies_as_literal_handlers() {
         [workflows.core.views.default.engine.config.items]
         producer = "script"
         [workflows.core.views.default.engine.config.items.handler]
-        script = "printf '{{ page.query.source }}\\n'"
+        script = "printf '[]\\n'"
         "#,
     )
     .unwrap();

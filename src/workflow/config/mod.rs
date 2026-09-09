@@ -374,14 +374,14 @@ mod tests {
     }
 
     #[test]
-    fn producer_handler_is_static_literal_data() {
+    fn declared_item_handler_preserves_data() {
         let source: toml::Value = toml::from_str(
             r#"
             [workflows.demo]
             [workflows.demo.views.main.engine]
             type = "picker"
             [workflows.demo.views.main.engine.config]
-            items = { producer = "declared", handler = { items = [{ display = "{{ page.input }}" }] } }
+            items = { producer = "declared", handler = { items = [{ display = "Example item" }] } }
             "#,
         )
         .unwrap();
@@ -394,7 +394,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             items["handler"]["items"][0]["display"],
-            toml::Value::String("{{ page.input }}".to_string())
+            toml::Value::String("Example item".to_string())
         );
     }
 

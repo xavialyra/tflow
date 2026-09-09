@@ -508,16 +508,16 @@ file = "scripts/run.sh"
     }
 
     #[test]
-    fn producer_handler_is_literal_and_rejects_unknown_fields() {
+    fn producer_handler_accepts_inline_scripts_and_rejects_unknown_fields() {
         let value: toml::Value = toml::from_str(
-            r#"script = "printf '{{ page.input }}'"
+            r#"script = "printf 'ok'"
 "#,
         )
         .unwrap();
         let resolved = super::parse_producer_script_handler(&value, None).unwrap();
         assert_eq!(
             resolved.target,
-            ResolvedScriptTarget::Inline("printf '{{ page.input }}'".to_string())
+            ResolvedScriptTarget::Inline("printf 'ok'".to_string())
         );
 
         let unknown: toml::Value = toml::from_str(

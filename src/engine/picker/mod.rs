@@ -531,7 +531,7 @@ mod tests {
             [engine]
             type = "picker"
             [engine.config]
-            items = [{ display = "literal {{ page.input }}", value = "{{ selection.value }}" }]
+            items = [{ display = "Example item", value = "example-value" }]
             "#,
         )
         .unwrap();

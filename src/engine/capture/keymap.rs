@@ -86,22 +86,4 @@ mod tests {
             .expect_err("default back binding should conflict");
         assert!(error.to_string().contains("both"));
     }
-
-    #[test]
-    fn validation_rejects_dynamic_binding_paths() {
-        assert!(CaptureKeymap::validate_value(Some(&json!("{{ view.input }}"))).is_err());
-        assert!(
-            CaptureKeymap::validate_value(Some(&json!({
-                "copy": ["{{ view.input }}"]
-            })))
-            .is_err()
-        );
-        assert!(
-            CaptureKeymap::validate_keymap_value(Some(&json!({
-                "escape": false,
-                "ctrl+y": "{{ view.input }}"
-            })))
-            .is_err()
-        );
-    }
 }

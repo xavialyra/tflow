@@ -151,18 +151,6 @@ pub(crate) struct ActionBindings<A> {
 }
 
 impl<A: KeymapAction + 'static> ActionBindings<A> {
-    #[cfg(test)]
-    pub(crate) fn validate_value(value: Option<&Value>) -> Result<()> {
-        Self::validate_bindings(value)?;
-        Self::from_values(static_bindings(value), None)?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn validate_keymap_value(value: Option<&Value>) -> Result<()> {
-        validate_patch(value, A::LABEL, A::parse)
-    }
-
     pub(crate) fn validate_values(defaults: Option<&Value>, view: Option<&Value>) -> Result<()> {
         Self::validate_bindings(defaults)?;
         validate_patch(view, A::LABEL, A::parse)?;

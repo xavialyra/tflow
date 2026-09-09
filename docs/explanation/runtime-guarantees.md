@@ -27,7 +27,7 @@ Workflows operate under these boundaries:
 - **Path traversal prevention**: Relative traversal attempts and symlink escapes are rejected during `--check` and runtime preparation.
 - **Special file rejection**: Configuration and script files cannot be device nodes, sockets, or named pipes.
 
-All configuration is static and producer handlers are literal data. The host does not recursively evaluate template-looking text in handler tables, inline producer bodies, request data, or generated responses. Runtime data enters scripts only through their documented JSON request.
+All configuration is static and producer handlers are data. Runtime data enters scripts only through their documented JSON request.
 
 ## 2. Producer Protocol and Process Limits
 

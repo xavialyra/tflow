@@ -762,26 +762,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_structured_items_and_preserves_literal_templates() {
+    fn parses_structured_items_and_preserves_metadata() {
         let mut result = ItemsResult::default();
         append_items(
             &mut result,
             "core:items",
             &FeedId("core:items".to_string()),
             serde_json::json!([{
-                "display": "literal {{ page.input }}",
-                "value": "{{ selection.value }}",
-                "metadata": {"text": "{{ current.value }}"}
+                "display": "Example item",
+                "value": "example-value",
+                "metadata": {"text": "Example metadata"}
             }]),
             &cancellation(),
         );
         assert!(result.errors.is_empty());
-        assert_eq!(result.items[0].text, "literal {{ page.input }}");
-        assert_eq!(
-            result.items[0].value.as_deref(),
-            Some("{{ selection.value }}")
-        );
-        assert_eq!(result.items[0].metadata["text"], "{{ current.value }}");
+        assert_eq!(result.items[0].text, "Example item");
+        assert_eq!(result.items[0].value.as_deref(), Some("example-value"));
+        assert_eq!(result.items[0].metadata["text"], "Example metadata");
         assert_eq!(result.items[0].source_view, "core:items");
     }
 

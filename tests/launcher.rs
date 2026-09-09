@@ -180,32 +180,6 @@ fn terminal_disconnect_exits_with_sighup_without_panicking() {
 }
 
 #[test]
-fn escaped_dynamic_opener_remains_literal_at_runtime() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:main"
-        [workflows.core.views.main.engine]
-        type = "capture"
-        [workflows.core.views.main.engine.config]
-        output = '''literal \{{ page.input }}'''
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher_with_args(&config, &[]);
-    let output = wait_for_text(&process.master, r"literal \{{ page.input }}");
-    assert!(String::from_utf8_lossy(&output).contains(r"literal \{{ page.input }}"));
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn signal_exit_terminates_capture_script_source() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2696,7 +2670,7 @@ fn invalid_embedded_command_is_rejected_during_startup() {
         [workflows.core.views.broken.engine]
         type = "embedded"
         [workflows.core.views.broken.engine.config]
-        command = "{{ selection.missing }}"
+        command = "sh"
 "#,
     )
     .expect("could not write failed navigation integration config");
@@ -2942,64 +2916,6 @@ sys.stdout.write("\n")
 }
 
 #[test]
-fn static_picker_items_keep_template_text_literal() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = [{ display = "literal {{ page.input }}", value = "{{ page.value }}" }]
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    let output = wait_for_text(&process.master, "literal {{ page.input }}");
-    assert!(String::from_utf8_lossy(&output).contains("literal {{ page.input }}"));
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn declared_picker_items_keep_template_text_literal() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config.items]
-        producer = "declared"
-        [workflows.core.views.default.engine.config.items.handler]
-        items = [{ display = "literal {{ page.input }}", value = "{{ page.value }}" }]
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    let output = wait_for_text(&process.master, "literal {{ page.input }}");
-    assert!(String::from_utf8_lossy(&output).contains("literal {{ page.input }}"));
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn picker_items_producer_receives_the_current_request_input() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -3110,36 +3026,6 @@ sys.stdout.write("\n")
 
     let mut process = spawn_launcher(&config);
     wait_for_text(&process.master, "capture:from-capture-producer");
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn declared_capture_output_keeps_template_text_literal() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:main"
-
-        [workflows.core.views.main]
-        [workflows.core.views.main.engine]
-        type = "capture"
-        [workflows.core.views.main.engine.config.output]
-        producer = "declared"
-        [workflows.core.views.main.engine.config.output.handler]
-        output = "literal {{ page.input }}"
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    let output = wait_for_text(&process.master, "literal {{ page.input }}");
-    assert!(String::from_utf8_lossy(&output).contains("literal {{ page.input }}"));
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);

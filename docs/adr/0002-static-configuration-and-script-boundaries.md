@@ -7,29 +7,29 @@ tags:
   - configuration
   - scripts
   - navigation
-description: "Replace embedded expressions with declared or script producers, typed command operations, and bounded Picker and Capture data protocols."
+description: "Define static configuration, declared or script producers, typed command operations, and bounded Picker and Capture data protocols."
 ---
 
 # ADR 0002: Static Configuration and Script Boundaries
 
 - **Status**: Accepted
 - **Date**: 2026-09-08
-- **Implementation status**: Implemented in the current tree as a clean break; the expression evaluator and legacy command, Picker, Capture, and return-handler paths are removed.
+- **Implementation status**: Implemented in the current tree; producer-backed command, Picker, Capture, and return-handler paths are authoritative.
 - **Baseline**: `e58073c`
 - **Scope**: Configuration compilation, command preparation, Picker items, Capture output, navigation parameters, and call/return processing.
-- **Related decisions**: [ADR 0001](0001-decentralized-workflow-extensions.md). This decision supersedes its requirement to preserve embedded expression evaluation and the expression-based argument wiring in its examples. Its workflow packaging, interpreter support, caller CWD, and theme decisions remain applicable.
+- **Related decisions**: [ADR 0001](0001-decentralized-workflow-extensions.md). This decision supersedes its earlier dynamic configuration direction. Its workflow packaging, interpreter support, caller CWD, and theme decisions remain applicable.
 
 ## Context
 
-The former `{{ namespace.path }}` language coupled configuration to evaluator stages, runtime snapshots, and Engine-specific field allowlists. The same runtime value could be reached through several public paths, while malformed or unavailable paths failed only when a particular action ran.
+Earlier configuration coupled runtime snapshots to Engine-specific field allowlists and action stages. The same runtime value could be reached through several public paths, while malformed or unavailable data failed only when a particular action ran.
 
-More field contracts or explicit reference nodes would improve checks but retain context-dependent interpolation and add configuration complexity. The accepted design removes that language and makes all configuration literal. Runtime computation is concentrated in explicit producers with fixed inputs and complete, validated outputs. JSON producers are UTF-8 text protocols; byte-oriented NUL or non-UTF-8 behavior requires a separate protocol and is not part of this decision.
+More field contracts or additional configuration indirection would improve checks but add complexity. The accepted design keeps configuration static and concentrates runtime computation in explicit producers with fixed inputs and complete, validated outputs. JSON producers are UTF-8 text protocols; byte-oriented NUL or non-UTF-8 behavior requires a separate protocol and is not part of this decision.
 
 ## Decision
 
 ### 1. Literal configuration and a common producer structure
 
-Ordinary TOML strings are literals, including script bodies, metadata, and strings containing `{{ ... }}`. The host never recursively evaluates generated strings.
+Ordinary TOML values are configuration data, including script bodies, metadata, and generated strings. The host applies the schema for each declared field and producer response.
 
 All producer objects use:
 
@@ -42,7 +42,7 @@ producer = "declared" # or "script"
 
 - `declared`: the result is fully declared in TOML, validated and compiled at startup. The operation still executes at its trigger time.
 - `script`: run a JSON protocol script at the entry point's defined request time and validate its response before applying it.
-- `handler`: producer-specific configuration. Declared handlers use the corresponding payload schema; script handlers use a common script schema containing exactly one non-empty `file` or `script` field. Handler tables and script bodies are literal data; the host does not template-evaluate them.
+- `handler`: producer-specific configuration. Declared handlers use the corresponding payload schema; script handlers use a common script schema containing exactly one non-empty `file` or `script` field.
 
 Reject unknown and incompatible fields. A declared navigation handler cannot contain `file`; a script handler cannot contain `target`.
 
@@ -166,7 +166,7 @@ The context rules are fixed:
 - `context.engine` identifies the carrying Engine and exposes its public state projection. For Picker, selection is the normalized `state.item`; no selected item is represented as `null`.
 - Feed identity, workflow roots, task generations, cancellation handles, mounted View identity, and other scheduling/provenance data are not sent automatically. Scripts use the public item projection rather than an owner or feed identifier.
 
-Provider `display` remains the presentation input and may support rich display structures. Public selected-item text is normalized plain text. JSON fields are protocol data, not expression roots, and no internal runtime tree is published as ambient `selection`, `page`, `current`, or `result` namespaces.
+Provider `display` remains the presentation input and may support rich display structures. Public selected-item text is normalized plain text. JSON fields are protocol data, and internal runtime state is exposed only through the documented public projection.
 
 ### 5. Responses and navigation parameter transport
 
@@ -418,15 +418,15 @@ Capture command input at actual dispatch, after readiness checks; capture provid
 
 Keep one process, one crate, and the three built-in Engines. Router remains the sole navigation-stack owner. Reuse parameter binding and navigation contracts. `execution` owns process mechanics; `task` owns scheduling and cancellation; protocol adapters map validated operations to host decisions.
 
-Removing the expression language does not remove Picker selection, preview, provenance, readiness checks, or internal snapshots. Those remain implementation state and enter scripts only through the declared public protocol.
+The static producer boundary does not remove Picker selection, preview, provenance, readiness checks, or internal snapshots. Those remain implementation state and enter scripts only through the declared public protocol.
 
 ## Alternatives Considered
 
 | Alternative | Assessment |
 | :--- | :--- |
-| Document existing namespace and stage conventions | Leaves field-specific scope and snapshot dependencies intact. |
-| Add typed field contracts and more stages | Improves checks but retains context-dependent interpolation. |
-| Introduce typed reference nodes and action wiring | Adds configuration complexity without removing the underlying context model. |
+| Preserve field-specific runtime paths and stage conventions | Leaves scope and snapshot dependencies distributed across configuration. |
+| Add typed field contracts and more stages | Improves checks but adds more configuration stages. |
+| Introduce typed reference nodes and action wiring | Adds configuration complexity without simplifying the underlying context model. |
 | Embed a complete configuration language | Adds a language runtime and a larger migration than reusing workflow scripts. |
 | General View builder generating Engine configuration | Deferred; the initial model uses restricted data providers and static Engine configuration. |
 | Declared/script producers with typed outputs | Selected: explicit computation boundaries, literal configuration, and complete output validation. |
@@ -437,7 +437,7 @@ Users can see where runtime computation occurs. Declared operations remain conci
 
 The trade-offs are additional scripts for small dynamic mappings, process/JSON overhead, and runtime validation of external outputs. Static checking cannot predict arbitrary script output or external failures. Dynamic layouts and Embedded argv are outside the initial capability set; View labels remain host-owned.
 
-Existing template-based workflows require migration. The clean-break release boundary intentionally rejects the old expression-bearing schema; a string is not silently treated as a migrated expression merely because it can be parsed as a literal.
+Existing dynamic workflows require migration to declared values or producer handlers. The release boundary uses the producer schema directly; runtime values must be supplied through the documented request and response fields.
 
 ## Implementation Follow-Up and Acceptance Criteria
 
@@ -448,7 +448,7 @@ The producer structure, operation-type matching, ownership, and lifecycle rules 
 - Command and return-processor scripts are bounded by the standard script execution policy. Picker items use the larger 64 MiB stdout limit; Capture output uses the default 1 MiB limit.
 - Capture output scripts start after the Capture View is mounted. Return processors run after the child is closed and the recorded caller is active. A failed provider leaves Capture mounted with an error; a failed processor leaves the restored caller mounted with an error.
 - Missing and explicit `null` return values remain distinct. An explicit `null` is a successful return result and is delivered to a post-commit return processor; a close/cancel decision does not dispatch the processor.
-- No non-producer evaluator or legacy action path remains. Producer handler bodies and generated strings are never recursively evaluated. JSON protocol boundaries are UTF-8 and do not preserve NUL-delimited or non-UTF-8 output.
+- Runtime computation uses the producer paths described above. JSON protocol boundaries are UTF-8 and do not preserve NUL-delimited or non-UTF-8 output.
 
 Remaining work is migration of user configurations plus future decisions for capabilities intentionally outside this initial producer set such as dynamic layouts, preview producers, and Embedded process-configuration producers. Complete schemas and exhaustive optional/default/error behavior remain implementation follow-up only where the runtime has not yet exposed a dedicated producer contract.
 
@@ -460,8 +460,8 @@ The implementation checklist for the initial producer scope is:
 4. **Implemented**: declared and generated navigation use the existing target binding and Router path. Capture provider failures occur after the target has mounted.
 5. **Implemented**: command requests select feed-owner parameters and the host assigns item provenance before exposing Picker output.
 6. **Implemented**: return, cancellation/close, explicit null, absent processor, processor failure, and stale-result paths are covered by runtime logic and focused tests. Return transitions commit before new processors run.
-7. **Implemented**: fixtures and protocol tests cover replayable requests, complete-response validation, literal `{{ ... }}` data, and entry-point-labelled errors.
-8. **Implemented**: representative static navigation, selected-item navigation, feeds, Capture output, call/return, foreground run, and inline producer scripts are migrated in the test fixtures. The deleted expression and source-object paths are not accepted.
+7. **Implemented**: fixtures and protocol tests cover replayable requests, complete-response validation, literal configuration data, and entry-point-labelled errors.
+8. **Implemented**: representative static navigation, selected-item navigation, feeds, Capture output, call/return, foreground run, and inline producer scripts are covered in the test fixtures.
 9. **Implemented**: references, tutorials, CLI inspection, and runtime guarantees describe the static configuration and producer protocol. Dynamic layouts, preview producers, and Embedded process-configuration producers remain deferred; View labels are host-owned.
 
 [Producer Protocol](../reference/producer-protocol.md) records the literal boundary and the explicit request/response contract for runtime data. The [Architecture Convergence plan](../explanation/architecture-convergence.md) records the implemented Router, task, execution, configuration ownership, and documentation boundaries.

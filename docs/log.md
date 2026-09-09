@@ -6,19 +6,19 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
 - Clarified the version-1 producer context contract: aggregate Picker owner commands use the selected feed's independent parameter snapshot, while page commands use the aggregate View parameters; public selection remains under `context.engine.state.item` and feed provenance stays host-owned.
 - Reorganized task-oriented guides by Engine: Picker, Capture, and Embedded Views now have separate configuration guides; cross-Engine command and producer behavior is documented separately.
-- Renamed the current static-values/runtime-data reference to `producer-protocol.md`; legacy expression terminology is no longer a reference entry point and remains only where the static boundary or migration history identifies the removed capability.
+- Renamed the current static-values/runtime-data reference to `producer-protocol.md` and made the producer contract the sole reference entry point.
 
 ## 2026-09-08
 
 - Implemented ADR 0002's initial producer scope: literal `producer = "declared" | "script"` / `handler` configuration, strict version-1 JSON stdin/stdout protocol, typed command operations, Picker item feeds, Capture output, and post-commit return processors.
 - Added producer integration coverage for command stdin, Picker request input, post-mount Capture output, and return processing after caller restoration. Enforced strict producer handler tables, literal handler boundaries, operation matching, output bounds, cancellation, and child reaping.
 - Added updated workflow reference, static-values reference, producer-oriented tutorials/how-to guides, and runtime guarantee documentation; ADR 0002 and the architecture convergence plan now identify implemented behavior and remaining deferred capabilities.
-- Added accepted ADR 0002, `docs/adr/0002-static-configuration-and-script-boundaries.md`: replace embedded expressions with literal TOML and unified `producer = "declared" | "script"` / `handler` configuration for commands, Picker items, Capture output, and return processors.
+- Added accepted ADR 0002, `docs/adr/0002-static-configuration-and-script-boundaries.md`: define static TOML and unified `producer = "declared" | "script"` / `handler` configuration for commands, Picker items, Capture output, and return processors.
 - Refined ADR 0002 with typed operation matching, version-1 JSON request/response examples, feed-owner parameter semantics, host-assigned item provenance, and explicit `target`/`query` navigation binding.
 - Specified Capture provider execution after mount and return processor execution after restoring the caller, including cancellation, explicit null, absent processors, failures, and stale-result handling. Deferred a general View builder and dynamic Engine configuration; the initial `run` mode is foreground only. Complete schemas and execution-policy details remain implementation follow-up work.
-- Marked the decision as not implemented, documented its partial supersession of ADR 0001's expression requirements, and linked it from the ADR registry and root documentation index.
-- Completed the clean-break migration: removed the expression evaluator and legacy command, Picker, Capture, and return-handler paths; removed the unused Capture `title` configuration and Engine title control; narrowed Picker providers to explicit requests and cancellation; enforced global command precedence; corrected nested return ownership; and aligned the reference and how-to documentation with the static protocol implementation.
-- Removed the remaining theme field aliases and manifest field-discarding path, deleted no-op inline-workflow normalization, removed the top-level selected-item source fallback, and renamed static Engine configuration projection APIs away from expression-evaluation terminology. Documented the child-process environment contract in the CLI reference.
+- Marked the decision as not implemented, documented its partial supersession of ADR 0001's earlier configuration direction, and linked it from the ADR registry and root documentation index.
+- Completed the clean-break migration: removed legacy command, Picker, Capture, and return-handler paths; removed the unused Capture `title` configuration and Engine title control; narrowed Picker providers to explicit requests and cancellation; enforced global command precedence; corrected nested return ownership; and aligned the reference and how-to documentation with the static protocol implementation.
+- Removed the remaining theme field aliases and manifest field-discarding path, deleted no-op inline-workflow normalization, removed the top-level selected-item source fallback, and aligned static Engine configuration projection APIs with the producer architecture. Documented the child-process environment contract in the CLI reference.
 
 ## 2026-09-07
 
@@ -51,15 +51,15 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
   - Implemented multi-line inline script materialization with `0600` permissions, source attribution, and host-side shebang tokenization.
   - Added CLI `argv[0]` multiplexing and contract inspection (`inspect <view>` / `--inspect <view>`).
   - Renamed `docs/tutorials/first-plugin.md` -> `first-workflow.md` and `docs/reference/plugin-toml.md` -> `workflow-toml.md`.
-  - Updated `docs/index.md`, `docs/tutorials/index.md`, `docs/tutorials/getting-started.md`, `docs/reference/index.md`, `docs/reference/config-toml.md`, `docs/reference/cli.md`, `docs/how-to/index.md`, `docs/how-to/dynamic-picker-feeds.md`, `docs/explanation/architecture-overview.md`, `docs/explanation/input-and-navigation-model.md`, and `docs/explanation/runtime-guarantees.md` to reflect workflow terminology and contracts.
+  - Updated `docs/index.md`, `docs/tutorials/index.md`, `docs/tutorials/getting-started.md`, `docs/reference/index.md`, `docs/reference/config-toml.md`, `docs/reference/cli.md`, `docs/how-to/index.md`, `docs/how-to/picker-views.md`, `docs/explanation/architecture-overview.md`, `docs/explanation/input-and-navigation-model.md`, and `docs/explanation/runtime-guarantees.md` to reflect workflow terminology and contracts.
 
 ## 2026-09-05
 
 - Initialized OKF v0.2 knowledge bundle and restructured documentation under Diátaxis framework:
   - Created root `index.md` and reserved `log.md`.
   - Added Tutorials: `getting-started.md`, `first-plugin.md`.
-  - Added How-To Guides: `dynamic-picker-feeds.md`, `view-navigation-and-popups.md`, `custom-themes.md`, `embedded-pty-views.md`.
-  - Added Reference: `cli.md`, `config-toml.md`, `plugin-toml.md`, `expressions.md`.
+  - Added How-To Guides: `picker-views.md`, `view-navigation-and-popups.md`, `custom-themes.md`, `embedded-views.md`.
+  - Added Reference: `cli.md`, `config-toml.md`, `workflow-toml.md`, `producer-protocol.md`.
   - Added Explanation: `architecture-overview.md`, `input-and-navigation-model.md`, `runtime-guarantees.md`.
   - Replaced monolithic `architecture.md` and `input-navigation.md`.
   - Streamlined root `README.md` to lean quick-start and doc pointers.

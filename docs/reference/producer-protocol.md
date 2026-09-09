@@ -13,11 +13,11 @@ description: "Reference for literal TOML, version-1 producer requests and respon
 
 `tui-launcher` treats TOML as static configuration. Values are deserialized once, validated against their declared schema, and retained as configuration. Runtime-dependent behavior belongs in an explicit declared or script producer.
 
-## Static Configuration Boundary
+## Configuration Values
 
-Strings are literal wherever the surrounding schema accepts strings. This includes command labels, query values, metadata, declared Picker items, declared Capture output, producer handler tables, and inline producer script bodies.
+Configuration values are deserialized once, validated against their declared schema, and retained as View and workflow configuration. Strings remain data wherever the surrounding schema accepts strings, including command labels, query values, metadata, declared Picker items, declared Capture output, producer handler tables, and inline producer script bodies.
 
-A template-looking string such as `{{ page.input }}` is ordinary text in a string field. There is no configuration expression language, runtime interpolation, or compatibility evaluator. A producer handler cannot alter the command, View, query schema, keymap, or Engine configuration around it.
+A producer handler supplies data for its declared entry point. It cannot alter the command, View, query schema, keymap, or Engine configuration around it.
 
 ## Producer Context
 
@@ -52,18 +52,11 @@ producer = "script"
 file = "scripts/open.sh"
 ```
 
-The script reads selection data from `context.engine.state.item` and returns one operation. Runtime values are not interpolated into TOML, handler fields, or argv configuration.
+The script reads selection data from `context.engine.state.item` and returns one operation. Values that need computation belong in the producer request and response.
 
-## Unsupported Dynamic Configuration
+## Configuration Ownership
 
-The following are not configuration features:
-
-- embedded expressions in command, query, script, or navigation fields;
-- dynamic command arguments, payloads, shells, or return-handler fields from the removed command model;
-- dynamic Picker or Capture source objects;
-- ambient namespaces such as `input`, `view`, `page`, `selection`, `current`, `result`, or `session`.
-
-Values that need computation must move into a declared handler or a script producer with a documented request and response.
+Route definitions, query schemas, Engine types, layouts, previews, and keymaps remain host-owned configuration. A producer can supply only the data defined by its entry point and response schema.
 
 ## Protocol Rules and Limits
 

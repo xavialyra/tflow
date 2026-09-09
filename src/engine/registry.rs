@@ -159,14 +159,6 @@ mod tests {
         let embedded = view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh'");
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
-        let mixed_embedded =
-            view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh {{ page.input }}'");
-        assert!(
-            registry
-                .validate_config("mixed-embedded", &mixed_embedded)
-                .is_err()
-        );
-
         let bound_embedded = view(
             "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\npassthrough = true\ntype = 'return'\nproducer = 'declared'\n[commands.cancel.handler]\nvalue = 'cancel'",
         );

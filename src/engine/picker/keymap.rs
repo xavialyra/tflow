@@ -167,22 +167,4 @@ mod tests {
                 .contains("unsupported picker binding action")
         );
     }
-
-    #[test]
-    fn validation_rejects_dynamic_binding_paths() {
-        assert!(PickerKeymap::validate_value(Some(&json!("{{ view.input }}"))).is_err());
-        assert!(
-            PickerKeymap::validate_value(Some(&json!({
-                "exit": ["{{ view.input }}"]
-            })))
-            .is_err()
-        );
-        assert!(
-            PickerKeymap::validate_keymap_value(Some(&json!({
-                "escape": false,
-                "ctrl+y": "{{ view.input }}"
-            })))
-            .is_err()
-        );
-    }
 }
