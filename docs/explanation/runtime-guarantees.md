@@ -69,4 +69,4 @@ A restoration failure is a host-level failure, not a normal in-TUI producer diag
 
 The launcher does not sandbox workflow code, roll back script side effects, or limit what a trusted script can do with the user's permissions. Resource bounds constrain launcher-managed I/O and process lifetime; they are not security isolation.
 
-For the exact workflow and producer schema, see [workflow.toml Specification](../reference/workflow-toml.md). For literal values and runtime data boundaries, see [Static Values and Runtime Data](../reference/expressions.md).
+For the exact workflow and producer schema, see [workflow.toml Specification](../reference/workflow-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](../reference/producer-protocol.md).

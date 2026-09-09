@@ -13,5 +13,5 @@ The Reference section contains formal specifications, configuration schemas, com
 - **[workflow.toml Specification](workflow-toml.md)**
   Workflow manifest format, single-file workflows, static View declarations, query schemas, Engine configurations, producer handlers, and the version-1 JSON protocol.
 
-- **[Static Values and Runtime Data](expressions.md)**
-  Literal configuration values, rejected expression forms, and the explicit producer request/response boundary.
+- **[Producer Protocol](producer-protocol.md)**
+  Literal configuration values, public producer context, and the version-1 request/response boundary.

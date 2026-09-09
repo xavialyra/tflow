@@ -27,17 +27,23 @@ This documentation is organized into four core categories following the **Diáta
 
 ### 2. [How-To Guides](how-to/index.md)
 *Task-oriented recipes for solving specific practical problems.*
-- [Dynamic Picker Feeds](how-to/dynamic-picker-feeds.md) — Connect scripts to stream items and dynamic preview panes.
+
+*Engine-specific View configuration:*
+- [Picker Views](how-to/picker-views.md) — Configure static items, dynamic feeds, aggregation, and previews.
+- [Capture Views](how-to/capture-views.md) — Configure static or script-produced text output.
+- [Embedded Views](how-to/embedded-views.md) — Host interactive terminal programs through a PTY.
+
+*Cross-cutting workflow tasks:*
+- [Commands and Producer Scripts](how-to/commands-and-producers.md) — Configure commands and read the shared producer context.
 - [View Navigation & Popups](how-to/view-navigation-and-popups.md) — Configure popup modals, view stack transitions, and call/return flows.
 - [Custom Themes](how-to/custom-themes.md) — Define brand palettes, color schemes, and element bindings.
-- [Embedded PTY Views](how-to/embedded-pty-views.md) — Host interactive terminal programs and process PTY output.
 
 ### 3. [Reference](reference/index.md)
 *Authoritative, technical specifications and syntax references.*
 - [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
 - [config.toml Specification](reference/config-toml.md) — Root configuration format, theme selection, and session command overrides.
 - [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
-- [Static Values and Runtime Data](reference/expressions.md) — Literal configuration boundaries and the explicit producer protocol for runtime data.
+- [Producer Protocol](reference/producer-protocol.md) — Literal configuration boundaries and the version-1 producer request/response contract.
 
 ### 4. [Explanation](explanation/index.md)
 *Understanding-oriented deep dives into architectural designs and philosophy.*

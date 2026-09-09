@@ -125,5 +125,5 @@ The Picker displays the two literal items. Press `Enter` to run the producer ope
 ## Next Steps
 
 - Follow [Your First Workflow](first-workflow.md) to build a directory package with separate item and command scripts.
-- Read [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) for request-driven item generation.
+- Read [Picker Views](../how-to/picker-views.md) for request-driven item generation.
 - Use [workflow.toml Specification](../reference/workflow-toml.md) for the full operation and protocol reference.

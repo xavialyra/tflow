@@ -12,7 +12,7 @@ description: "Configure static and script-produced navigation, popup calls, retu
 
 # How to Configure View Navigation and Popups
 
-`tui-launcher` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation.
+`tui-launcher` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation. For the shared command request context and script response contract, see [Commands and Producer Scripts](commands-and-producers.md).
 
 ## Problem
 

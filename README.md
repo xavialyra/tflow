@@ -37,15 +37,17 @@ Full documentation is organized using the **Diátaxis** framework and structured
   - [Getting Started](docs/tutorials/getting-started.md)
   - [Building Your First Workflow](docs/tutorials/first-workflow.md)
 - **[How-To Guides](docs/how-to/index.md)**
-  - [Dynamic Picker Feeds & Previews](docs/how-to/dynamic-picker-feeds.md)
+  - [Picker Views](docs/how-to/picker-views.md)
+  - [Capture Views](docs/how-to/capture-views.md)
+  - [Embedded Views](docs/how-to/embedded-views.md)
+  - [Commands and Producer Scripts](docs/how-to/commands-and-producers.md)
   - [View Navigation & Popups](docs/how-to/view-navigation-and-popups.md)
   - [Custom Themes](docs/how-to/custom-themes.md)
-  - [Embedded PTY Views](docs/how-to/embedded-pty-views.md)
 - **[Technical Reference](docs/reference/index.md)**
   - [CLI Reference](docs/reference/cli.md)
   - [config.toml Specification](docs/reference/config-toml.md)
   - [workflow.toml Specification](docs/reference/workflow-toml.md)
-  - [Expression Syntax & Budgets](docs/reference/expressions.md)
+  - [Producer Protocol](docs/reference/producer-protocol.md)
 - **[Architecture & Concepts (Explanation)](docs/explanation/index.md)**
   - [Architecture Overview & Dependency Rules](docs/explanation/architecture-overview.md)
   - [Input & Navigation Model](docs/explanation/input-and-navigation-model.md)

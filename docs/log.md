@@ -5,7 +5,8 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
 ## 2026-09-09
 
 - Clarified the version-1 producer context contract: aggregate Picker owner commands use the selected feed's independent parameter snapshot, while page commands use the aggregate View parameters; public selection remains under `context.engine.state.item` and feed provenance stays host-owned.
-- Added a dynamic-feed how-to for projecting feed-owner commands into an aggregate Picker and reading their script context.
+- Reorganized task-oriented guides by Engine: Picker, Capture, and Embedded Views now have separate configuration guides; cross-Engine command and producer behavior is documented separately.
+- Renamed the current static-values/runtime-data reference to `producer-protocol.md`; legacy expression terminology is no longer a reference entry point and remains only where the static boundary or migration history identifies the removed capability.
 
 ## 2026-09-08
 

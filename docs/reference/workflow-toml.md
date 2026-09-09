@@ -324,4 +324,4 @@ Configuration without a producer is still static: its values are deserialized an
 
 Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (falling back to `$XDG_CACHE_HOME/tui-launcher/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
 
-For root configuration, see [config.toml Specification](config-toml.md). For literal values and runtime data boundaries, see [Static Values and Runtime Data](expressions.md).
+For root configuration, see [config.toml Specification](config-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).

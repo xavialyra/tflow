@@ -7,7 +7,7 @@ tags:
   - scripts
   - views
   - commands
-description: "Build a Picker workflow with literal items and a JSON command producer without embedded expressions."
+description: "Build a Picker workflow with literal items and a JSON command producer."
 ---
 
 # Building Your First Workflow
@@ -189,5 +189,6 @@ tui-launcher notes:main
 ## Next Steps
 
 - Read [workflow.toml Specification](../reference/workflow-toml.md) for all six operation types and strict protocol rules.
-- Follow [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) for request filtering and previews.
-- Read [Static Values and Runtime Data](../reference/expressions.md) when deciding whether runtime data belongs in a producer request.
+- Follow [Picker Views](../how-to/picker-views.md) for request filtering, feeds, and previews.
+- Read [Commands and Producer Scripts](../how-to/commands-and-producers.md) for script context and typed responses.
+- Read [Producer Protocol](../reference/producer-protocol.md) for the exact request and response contract.
