@@ -1,0 +1,75 @@
+[workflow]
+api = 1
+name = "Clipboard History"
+
+[styles.history_icon]
+foreground = "scheme:primary"
+bold = true
+
+[styles.history_icon.selected]
+foreground = "scheme:primary"
+bold = true
+
+[views.default]
+alias = "clipboard"
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config.items]
+producer = "script"
+
+[views.default.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.default.engine.config.layout]
+direction = "horizontal"
+gap = 1
+
+[[views.default.engine.config.layout.panes]]
+slot = "items"
+grow = 2
+min = 28
+
+[[views.default.engine.config.layout.panes]]
+slot = "preview"
+grow = 3
+min = 30
+
+[views.default.engine.config.preview]
+
+[[views.default.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/title"
+size = 1
+
+[[views.default.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/summary"
+size = 2
+
+[[views.default.engine.config.preview.blocks]]
+type = "separator"
+
+[[views.default.engine.config.preview.blocks]]
+type = "image"
+source = "/metadata/thumbnail"
+grow = 1
+
+[[views.default.engine.config.preview.blocks]]
+type = "text"
+source = "/metadata/content"
+grow = 1
+
+[views.default.commands.copy]
+key = "enter"
+label = "Restore"
+type = "run"
+producer = "script"
+
+[views.default.commands.copy.handler]
+file = "scripts/restore.py"
+
+[views.default.keymap]
+escape = "back"
+"ctrl+p" = "toggle_preview"

@@ -282,7 +282,7 @@ impl PickerPreviewRenderState {
         picker: Option<crate::terminal::ImagePicker>,
         protocols: &mut ImageProtocolCache,
     ) {
-        let areas = block_areas(area, &self.config.blocks);
+        let areas = populated_block_areas(area, &self.config.blocks, &self.blocks);
         let desired = picker
             .into_iter()
             .flat_map(|picker| {
@@ -657,6 +657,28 @@ fn item_value(item: &Item) -> Value {
     })
 }
 
+fn populated_block_areas(
+    area: Rect,
+    blocks: &[PreviewBlockConfig],
+    states: &[PreviewRenderBlockState],
+) -> Vec<Rect> {
+    let blocks = blocks
+        .iter()
+        .zip(states)
+        .map(|(block, state)| {
+            let mut block = block.clone();
+            if matches!(state, PreviewRenderBlockState::Empty)
+                && !matches!(block.kind, PreviewBlockKind::Separator)
+            {
+                block.size = Some(0);
+                block.grow = None;
+            }
+            block
+        })
+        .collect::<Vec<_>>();
+    block_areas(area, &blocks)
+}
+
 fn block_areas(area: Rect, blocks: &[PreviewBlockConfig]) -> Vec<Rect> {
     let total_grow = blocks
         .iter()
@@ -765,6 +787,51 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn missing_preview_content_does_not_reserve_space() {
+        let config = parse(
+            Some(json!({"panes": [
+                {"slot": "items", "grow": 1},
+                {"slot": "preview", "grow": 1}
+            ]})),
+            Some(json!({"blocks": [
+                {"type": "text", "source": "/title", "size": 1},
+                {"type": "separator"},
+                {"type": "image", "source": "/image", "grow": 1},
+                {"type": "text", "source": "/content", "grow": 1}
+            ]})),
+        )
+        .unwrap()
+        .unwrap();
+        use super::PreviewRenderBlockState::{Empty, Image, Text};
+        for (states, expected) in [
+            (
+                vec![Text("Title".into()), Empty, Empty, Text("Body".into())],
+                vec![1, 1, 0, 8],
+            ),
+            (
+                vec![
+                    Text("Title".into()),
+                    Empty,
+                    Image { image: None, error: None },
+                    Empty,
+                ],
+                vec![1, 1, 8, 0],
+            ),
+            (
+                vec![Empty, Empty, Empty, Text("Body".into())],
+                vec![0, 1, 0, 9],
+            ),
+        ] {
+            let areas =
+                super::populated_block_areas(Rect::new(0, 0, 40, 10), &config.blocks, &states);
+            assert_eq!(
+                areas.iter().map(|area| area.height).collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]
