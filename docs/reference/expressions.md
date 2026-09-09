@@ -54,6 +54,8 @@ file = "scripts/open.sh"
 
 The script reads JSON from stdin. Selection data is in the documented `context.engine.state` projection; it is not interpolated into the handler or argv configuration.
 
+For an aggregate Picker, the command owner is the View that declared the projected command. When the command belongs to the selected item's feed owner, `context.parameters` contains that feed's bound parameter snapshot. When it belongs to the aggregate Picker View, `context.parameters` contains the aggregate View's parameters. The public selected item remains under `context.engine.state.item`; feed identity and owner provenance are not exposed as additional request fields. See [Dynamic Picker Feeds](../how-to/dynamic-picker-feeds.md) for a complete owner-command example.
+
 ## Rejected Forms
 
 The following are not configuration features:

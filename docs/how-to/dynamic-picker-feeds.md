@@ -77,7 +77,53 @@ The request includes `entrypoint = "picker-items"` and a unified `context` objec
 
 The host normalizes display values and owns feed composition, selection state, and feed provenance. Feed identity and scheduling data are not sent automatically. A producer cannot return navigation or other View configuration. Item stdout is limited to 64 MiB so large feeds remain usable.
 
-### 3. Use a Declared List for Small Fixed Feeds
+### 3. Run a Command from the Selected Feed Owner
+
+An aggregate Picker can expose commands declared by the View that owns the currently selected feed item. Declare the command on the owner View, and give it a physical `key` so the host can project it into the aggregate command area:
+
+```toml
+# In the apps workflow, whose View is mounted as a feed.
+[views.main.commands.open]
+key = "ctrl+o"
+label = "Open application"
+type = "run"
+producer = "script"
+
+[views.main.commands.open.handler]
+file = "scripts/open.py"
+```
+
+The command script reads the selected item through the public Engine state:
+
+```python
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request["context"]
+parameters = context["parameters"]
+item = context["engine"]["state"].get("item")
+value = item.get("value") if isinstance(item, dict) else None
+if not isinstance(value, str):
+    raise SystemExit("select an application first")
+
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["printf", "parameters=%s selected=%s\\n" % (json.dumps(parameters), value)],
+        "exit": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\\n")
+```
+
+For a projected owner command, `context.parameters` is the independent parameter snapshot for the selected feed, not the aggregate Picker's page parameters. `context.engine.state.item` is still the aggregate Picker's public selected-item projection, and `context.input` remains the explicit launch input descriptor. Owner View names, feed IDs, mounted View identity, and scheduling data are not included in the request. The projection is recomputed as selection changes and is revalidated against the current result before dispatch.
+
+A command without a physical `key` cannot appear in the command area or be invoked through a projected key binding. Global bindings retain precedence when a physical key conflicts. The command's `scope` does not replace owner resolution; the selected item's feed provenance determines which owner context the script receives.
+
+### 4. Use a Declared List for Small Fixed Feeds
 
 No script is needed when the list is static:
 
@@ -97,7 +143,7 @@ items = [
 
 The plain `items = [...]` array is also supported as a declared shorthand.
 
-### 4. Configure a Preview
+### 5. Configure a Preview
 
 Preview layout and content sources are static Engine configuration. A preview block reads a JSON Pointer from the selected item's metadata; it does not execute a script or interpolate a selected value.
 
@@ -126,7 +172,7 @@ grow = 1
 
 The items producer should place preview data under `metadata`, for example `{"metadata":{"summary":"recent commits"}}`. Image blocks use a metadata JSON Pointer to an image path. Missing or invalid preview data is rendered as a preview diagnostic.
 
-### 5. Toggle the Preview Pane
+### 6. Toggle the Preview Pane
 
 You can bind a key to the built-in preview action:
 

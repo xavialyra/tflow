@@ -2,6 +2,11 @@
 
 This changelog tracks updates to the `tui-launcher` knowledge bundle.
 
+## 2026-09-09
+
+- Clarified the version-1 producer context contract: aggregate Picker owner commands use the selected feed's independent parameter snapshot, while page commands use the aggregate View parameters; public selection remains under `context.engine.state.item` and feed provenance stays host-owned.
+- Added a dynamic-feed how-to for projecting feed-owner commands into an aggregate Picker and reading their script context.
+
 ## 2026-09-08
 
 - Implemented ADR 0002's initial producer scope: literal `producer = "declared" | "script"` / `handler` configuration, strict version-1 JSON stdin/stdout protocol, typed command operations, Picker item feeds, Capture output, and post-commit return processors.

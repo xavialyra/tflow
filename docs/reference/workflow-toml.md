@@ -220,6 +220,8 @@ file = "scripts/open.sh"
 
 The request contains a `command` object and unified `context` fields: `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
 
+For an aggregate Picker, a command with a physical `key` from the View that owns the current selected feed item is projected into the aggregate command area. The projected command receives that feed owner's bound parameter snapshot in `context.parameters`; a command declared by the aggregate Picker View receives the aggregate View's parameters instead. The public `context.engine.state.item` remains the normalized selected item in both cases. Owner and feed identifiers are host-owned and are not added to the script request. The host revalidates the current result and provenance before dispatching a projected command.
+
 A script response must have this shape:
 
 ```json

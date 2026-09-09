@@ -161,10 +161,10 @@ A command script receives one request on stdin:
 The context rules are fixed:
 
 - `command.id` and `command.type` identify the host-selected command and its declared operation type.
-- `context.parameters` contains the command owner's bound parameters. When a Picker is mounted independently, its own parameters are used; feed parameters remain internal to aggregate scheduling.
+- `context.parameters` contains the command owner's bound parameters. For an independently mounted Picker command, this is the mounted View's parameter snapshot. For a command projected from the selected feed owner into an aggregate Picker, this is that feed's independent parameter snapshot.
 - `context.input` contains the explicitly published launch input descriptor.
 - `context.engine` identifies the carrying Engine and exposes its public state projection. For Picker, selection is the normalized `state.item`; no selected item is represented as `null`.
-- Feed identity, workflow roots, task generations, cancellation handles, mounted View identity, and other scheduling/provenance data are not sent automatically.
+- Feed identity, workflow roots, task generations, cancellation handles, mounted View identity, and other scheduling/provenance data are not sent automatically. Scripts use the public item projection rather than an owner or feed identifier.
 
 Provider `display` remains the presentation input and may support rich display structures. Public selected-item text is normalized plain text. JSON fields are protocol data, not expression roots, and no internal runtime tree is published as ambient `selection`, `page`, `current`, or `result` namespaces.
 

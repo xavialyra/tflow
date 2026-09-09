@@ -40,7 +40,7 @@ The target must be a configured View or alias. Popup width and height are termin
 
 ### 2. Produce Dynamic Navigation from a Selected Item
 
-When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation:
+When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation. If the command is declared by the selected item's feed owner and projected into an aggregate Picker, `context.parameters` is the feed owner's bound parameter snapshot; otherwise it is the command's mounted View parameters:
 
 ```toml
 [views.main.commands.open]
