@@ -1790,6 +1790,137 @@ fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref(
 }
 
 #[test]
+fn command_palette_opens_for_an_empty_aggregate_view() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [commands.bindings.commands]
+        key = "ctrl+k"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = []
+        [workflows.core.views.default.commands.aggregate]
+        label = "Aggregate command"
+        scope = "view"
+        type = "return"
+        producer = "declared"
+        handler = { value = "aggregate" }
+
+        [workflows.selectors.views.commands]
+        [workflows.selectors.views.commands.engine]
+        type = "picker"
+        [workflows.selectors.views.commands.engine.config.items]
+        producer = "script"
+        [workflows.selectors.views.commands.engine.config.items.handler]
+        file = "scripts/items.sh"
+        [workflows.selectors.views.commands.query]
+        type = "object"
+        input_order = ["search", "commands"]
+        search = { type = "string", default = "" }
+        commands = { type = "array<object>", default = [] }
+        "#,
+    )
+    .expect("could not write empty aggregate command config");
+    write_workflow_script(
+        &root,
+        "selectors",
+        "scripts/items.sh",
+        r#"#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+commands = request["context"]["parameters"].get("commands", [])
+items = [
+    {"display": command["label"], "value": command["label"]}
+    for command in commands
+]
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+"#,
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "(no matches)");
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Aggregate command");
+    assert!(
+        String::from_utf8_lossy(&output).contains("Aggregate command"),
+        "aggregate command did not reach the command palette: {output:?}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        [[workflows.core.views.default.engine.config.feeds]]
+        view = "apps:default"
+        [workflows.apps.views.default.engine]
+        type = "picker"
+        [workflows.apps.views.default.engine.config]
+        items = []
+        [workflows.core.views.default.commands.aggregate]
+        key = "ctrl+r"
+        label = "Aggregate command"
+        scope = "view"
+        type = "run"
+        producer = "declared"
+        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'aggregate-view-command\\n'"], exit = true }
+        "#,
+    )
+    .expect("could not write aggregate View command config");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    let initial = wait_for_text(&process.master, "Aggregate command");
+    assert!(
+        String::from_utf8_lossy(&initial).contains("Aggregate command"),
+        "aggregate View command did not reach the footer: {initial:?}"
+    );
+
+    process.master.write_all(b"query").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| {
+        visible.contains("query") && visible.contains("Aggregate command")
+    });
+    process.master.write_all(b"\x12").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output).contains("aggregate-view-command"),
+        "aggregate View command did not dispatch: {output:?}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn command_selector_does_not_expose_an_owner_from_stale_items() {
     let config = fixture_config();
     let mut process = spawn_launcher(&config);
@@ -1972,7 +2103,7 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
 }
 
 #[test]
-fn feed_owner_commands_are_not_projected_into_aggregate_picker() {
+fn feed_owner_commands_are_projected_into_aggregate_picker() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1995,13 +2126,19 @@ fn feed_owner_commands_are_not_projected_into_aggregate_picker() {
         [workflows.apps.views.default.engine.config]
         items = [{display = "Row", value = "row"}]
         [workflows.apps.views.default.commands.open]
-        key = "space"
-        label = "Open"
+        key = "ctrl+r"
+        label = "Owner selection"
         scope = "selection"
-        requires = "input"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'pending-owner-command:row\\n'"], exit = true }
+        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-selection-command:row\\n'"], exit = true }
+        [workflows.apps.views.default.commands.inspect]
+        key = "space"
+        label = "Owner view"
+        scope = "view"
+        type = "run"
+        producer = "declared"
+        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-view-command:row\\n'"], exit = true }
         "#,
     )
     .unwrap();
@@ -2014,14 +2151,25 @@ fn feed_owner_commands_are_not_projected_into_aggregate_picker() {
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    process.master.write_all(b" \x03").unwrap();
+    let footer = wait_for_text(&process.master, "Owner selection");
+    let footer = String::from_utf8_lossy(&footer);
+    assert!(
+        footer.contains("Owner selection"),
+        "owner selection command did not reach the footer: {footer:?}"
+    );
+    assert!(
+        footer.contains("Owner view"),
+        "owner View command did not reach the footer: {footer:?}"
+    );
+
+    process.master.write_all(b"\x12").unwrap();
     process.master.flush().unwrap();
     let (status, output) = wait_for_launcher_exit(&mut process);
 
     assert_eq!(status, 0);
     assert!(
-        !String::from_utf8_lossy(&output).contains("pending-owner-command:row"),
-        "output: {:?}",
+        String::from_utf8_lossy(&output).contains("owner-selection-command:row"),
+        "owner selection command did not dispatch: {:?}",
         output
     );
     fs::remove_dir_all(root).unwrap();

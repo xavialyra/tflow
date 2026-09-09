@@ -516,10 +516,18 @@ impl PickerProtocolView {
             })
     }
 
-    fn can_dispatch_command(&self, context: &ViewContext) -> bool {
+    fn can_dispatch_command(
+        &self,
+        context: &ViewContext,
+        invocation: &crate::workflow::command::CommandInvocation,
+    ) -> bool {
         self.publication_ready
             && self.publication.is_some()
-            && (self.has_command_output(context) || !self.editor.raw.is_empty())
+            && (matches!(
+                &invocation.command.action,
+                crate::workflow::config::CommandAction::OpenCommands
+            ) || self.has_command_output(context)
+                || !self.editor.raw.is_empty())
     }
 
     fn dispatch_command_key(
@@ -583,14 +591,6 @@ impl PickerProtocolView {
                 let invocation = self
                     .commands
                     .view_invocation(&binding.command.owner, &binding.command.id)?;
-                anyhow::ensure!(
-                    invocation.command.scope == crate::workflow::config::CommandScope::Selection
-                        || invocation.command.requires
-                            == crate::workflow::config::CommandRequirement::Items,
-                    "dynamic command {}/{} is not an Engine-owned item command",
-                    binding.command.owner,
-                    binding.command.id
-                );
                 (invocation, Some(binding.command.owner))
             }
         } else {
@@ -607,7 +607,7 @@ impl PickerProtocolView {
             editor_generation: self.editor.revision,
             projected_command,
         };
-        if defer_until_ready && !self.can_dispatch_command(context) {
+        if defer_until_ready && !self.can_dispatch_command(context, &pending.invocation) {
             self.pending_command = Some(pending);
             return Ok(Some(ViewDecision::Stay));
         }
@@ -645,7 +645,7 @@ impl PickerProtocolView {
             self.pending_command = None;
             return Ok(Some(ViewDecision::Stay));
         }
-        if !self.can_dispatch_command(context) {
+        if !self.can_dispatch_command(context, &pending.invocation) {
             return Ok(None);
         }
         if let Some((owner, id)) = &pending.projected_command {

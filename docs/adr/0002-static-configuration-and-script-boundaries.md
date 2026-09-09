@@ -412,7 +412,7 @@ All requests use `version: 1`, an `entrypoint`, and a unified `context` containi
 - Protocol producers run as managed work. Foreground business programs and Embedded PTY programs keep their distinct terminal policies.
 - Script code is trusted code running with the user's permissions. The host cannot roll back side effects performed inside a protocol script.
 
-Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View. Picker feeds retain independent parameters, workflow roots, generations, cancellation, and stale-result identity internally; only aggregate View commands are projected into an aggregate Picker.
+Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View. Picker feeds retain independent parameters, workflow roots, generations, cancellation, and stale-result identity internally. A Picker explicitly projects the commands of the currently selected feed owner into its aggregate footer, while dispatch still uses that feed's owner context and current-result provenance.
 
 ### 10. Preserve host ownership
 

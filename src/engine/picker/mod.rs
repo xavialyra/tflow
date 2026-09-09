@@ -61,6 +61,7 @@ impl PickerTaskServices {
 pub(crate) struct PickerViewServices {
     page_commands: BTreeMap<String, BTreeMap<String, Value>>,
     page_item_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
+    owner_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
     non_selection_commands: BTreeSet<(String, String)>,
     workflow_roots: BTreeMap<String, PathBuf>,
     task_services: Option<Arc<PickerTaskServices>>,
@@ -113,6 +114,13 @@ fn collect_page_item_commands(
         .collect()
 }
 
+fn collect_owner_commands(
+    config: &CompiledConfig,
+    view_ref: &str,
+) -> Result<Vec<PickerSelectionCommand>> {
+    collect_page_item_commands(config, view_ref)
+}
+
 impl PickerViewServices {
     pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
@@ -140,6 +148,9 @@ impl PickerViewServices {
             .map(|(view_ref, _)| view_ref)
             .collect::<BTreeSet<_>>();
         for view_ref in view_refs {
+            services
+                .owner_commands
+                .insert(view_ref.clone(), collect_owner_commands(config, &view_ref)?);
             if let Some(root) = config.workflow_root(&view_ref) {
                 let package = view_ref
                     .split_once(':')
@@ -170,6 +181,13 @@ impl PickerViewServices {
     pub(crate) fn is_non_selection_command(&self, view_ref: &str, command_id: &str) -> bool {
         self.non_selection_commands
             .contains(&(view_ref.to_string(), command_id.to_string()))
+    }
+
+    pub(crate) fn owner_commands(&self, owner: &str) -> &[PickerSelectionCommand] {
+        self.owner_commands
+            .get(owner)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
