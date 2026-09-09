@@ -324,7 +324,12 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(name, view, &["layout", "preview"])?;
+    validate_fields(name, view, &["layout", "preview", "source_badge"])?;
+    if let Some(source_badge) = view.engine_field("source_badge")
+        && !matches!(source_badge, toml::Value::Boolean(_))
+    {
+        bail!("view {:?} picker source_badge must be a boolean", name);
+    }
     let layout = view.engine_field("layout").map(toml_to_json).transpose()?;
     let preview = view.engine_field("preview").map(toml_to_json).transpose()?;
     self::preview::parse(layout, preview)?;
@@ -523,6 +528,43 @@ fn validate_declared_items_handler(value: &toml::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_badge_must_be_boolean() {
+        let valid: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [engine.config]
+            source_badge = true
+            "#,
+        )
+        .unwrap();
+        validate_config(EngineValidationContext {
+            view_ref: "core:aggregate",
+            view: &valid,
+            script_root: None,
+        })
+        .unwrap();
+
+        let invalid: View = toml::from_str(
+            r#"
+            [engine]
+            type = "picker"
+            [engine.config]
+            source_badge = "yes"
+            "#,
+        )
+        .unwrap();
+        assert!(
+            validate_config(EngineValidationContext {
+                view_ref: "core:aggregate",
+                view: &invalid,
+                script_root: None,
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn static_item_shapes_are_validated_during_engine_validation() {

@@ -99,7 +99,7 @@ view = "apps:main"
 view = "sys:main"
 ```
 
-Each feed keeps its own parameter binding and producer request. The host assigns item provenance internally and exposes only the normalized public item under `context.engine.state.item` to command producers. Commands declared by a selected feed owner can be projected into the aggregate footer when they have a physical key; their parameter context remains the selected feed's independent snapshot.
+Each feed keeps its own parameter binding and producer request. The host assigns item provenance internally and exposes only the normalized public item under `context.engine.state.item` to command producers. Aggregate pages automatically add the feed alias as a right-aligned `badge` on the first row of items from external feeds; when no alias is configured, the workflow ID is used. Set `source_badge = false` in the aggregate View's engine config to disable this behavior. Commands declared by a selected feed owner can be projected into the aggregate footer when they have a physical key; their parameter context remains the selected feed's independent snapshot.
 
 ### 4. Use a Declared List for Small Fixed Feeds
 

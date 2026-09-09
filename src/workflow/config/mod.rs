@@ -50,6 +50,7 @@ pub(crate) struct PickerItemsView {
     pub(crate) feeds: Vec<ViewRef>,
     pub(crate) items: Option<toml::Value>,
     pub(crate) binding: ParameterBinding,
+    pub(crate) source_badge: bool,
 }
 
 #[derive(Clone)]
@@ -89,6 +90,10 @@ impl PickerItemsProjection {
             if let Some(root) = config.workflow_root(&view_ref) {
                 workflow_roots.insert(package_id(&view_ref).to_string(), root.to_path_buf());
             }
+            let source_badge = match view.engine_field("source_badge") {
+                Some(toml::Value::Boolean(enabled)) => *enabled,
+                _ => !view.selected_feeds().is_empty(),
+            };
             views.insert(
                 view_ref.clone(),
                 PickerItemsView {
@@ -100,6 +105,7 @@ impl PickerItemsProjection {
                         .collect(),
                     items: view.selected_items().cloned(),
                     binding: config.parameter_registry.parameter_binding(&view_ref)?,
+                    source_badge,
                 },
             );
         }
@@ -133,6 +139,12 @@ impl PickerItemsProjection {
 
     pub(crate) fn input_value(&self) -> &Value {
         &self.input
+    }
+
+    pub(crate) fn source_badge(&self, view_ref: &str) -> bool {
+        self.views
+            .get(view_ref)
+            .is_some_and(|view| view.source_badge)
     }
 
     pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {

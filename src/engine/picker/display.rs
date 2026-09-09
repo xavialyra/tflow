@@ -1,5 +1,6 @@
 use ratatui::layout::{Alignment, Constraint};
 use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthStr;
 
 /// Semantic visual role for text rendering.
 /// Raw styles (colors, modifiers) are prohibited in item data; they must be resolved
@@ -112,6 +113,37 @@ impl NormalizedItemDisplay {
     #[allow(dead_code)]
     pub fn row_count(&self) -> usize {
         self.rows.len().max(1)
+    }
+
+    /// Add a source badge to the top row without changing secondary rows.
+    pub fn inject_badge(&mut self, badge_text: &str, slot: SlotToken) {
+        if badge_text.is_empty() {
+            return;
+        }
+        if self.rows.is_empty() {
+            self.rows.push(NormalizedRow {
+                constraints: Vec::new(),
+                cells: Vec::new(),
+            });
+        }
+
+        let row = &mut self.rows[0];
+        if row.constraints.len() < row.cells.len() {
+            row.constraints.resize(row.cells.len(), Constraint::Fill(1));
+        }
+        let badge_width = UnicodeWidthStr::width(badge_text)
+            .min(u16::MAX as usize)
+            .try_into()
+            .unwrap_or(u16::MAX);
+        row.constraints
+            .push(Constraint::Length(badge_width.saturating_add(1)));
+        row.cells.push(NormalizedCell {
+            align: Alignment::Right,
+            spans: vec![NormalizedSpan {
+                text: badge_text.to_string(),
+                slot,
+            }],
+        });
     }
 }
 
@@ -384,6 +416,25 @@ mod tests {
         assert_eq!(normalized.rows[0].cells[0].spans[0].text, "Title");
         assert_eq!(normalized.rows[1].cells[0].spans[0].text, "Description");
         assert_eq!(normalized.rows[1].cells[0].spans[0].slot, SlotToken::Muted);
+    }
+
+    #[test]
+    fn test_inject_badge_adds_a_right_aligned_badge_to_the_first_row() {
+        let mut display =
+            NormalizedItemDisplay::from(ItemDisplayInput::Plain("Termius".to_string()));
+
+        display.inject_badge("app", SlotToken::Badge);
+
+        let row = &display.rows[0];
+        assert_eq!(row.cells.len(), 2);
+        assert_eq!(row.cells[0].spans[0].text, "Termius");
+        assert_eq!(row.cells[1].spans[0].text, "app");
+        assert_eq!(row.cells[1].align, Alignment::Right);
+        assert_eq!(row.cells[1].spans[0].slot, SlotToken::Badge);
+        assert_eq!(
+            row.constraints,
+            vec![Constraint::Fill(1), Constraint::Length(4)]
+        );
     }
 
     #[test]

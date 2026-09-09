@@ -338,6 +338,7 @@ pub(crate) trait PickerItemsLoader: Send + Sync {
 struct FeedLoadOutput {
     feed_id: FeedId,
     owner_view: String,
+    badge: Option<String>,
     context: Option<(FeedId, FeedInstance)>,
     value: std::result::Result<Option<Value>, String>,
     managed_child_reaped: bool,
@@ -349,6 +350,7 @@ fn load_single_feed(
     page_parameters: &ParameterSnapshot,
     binding_raw: &str,
     engine_state: &Value,
+    show_source_badge: bool,
     cancellation: &CancellationToken,
 ) -> Option<FeedLoadOutput> {
     if cancellation.is_cancelled() || !definition.has_items() {
@@ -356,6 +358,23 @@ fn load_single_feed(
     }
     let feed_id = definition.feed_id.clone();
     let owner_view = definition.owner_view.clone();
+    let badge = if show_source_badge && definition.owner_view != page_view {
+        Some(
+            definition
+                .alias
+                .as_deref()
+                .unwrap_or_else(|| {
+                    definition
+                        .owner_view
+                        .split_once(':')
+                        .map(|(package, _)| package)
+                        .unwrap_or(&definition.owner_view)
+                })
+                .to_string(),
+        )
+    } else {
+        None
+    };
     let instance = match FeedInstance::resolve(
         Arc::clone(definition),
         page_view,
@@ -367,6 +386,7 @@ fn load_single_feed(
             return Some(FeedLoadOutput {
                 feed_id,
                 owner_view: owner_view.clone(),
+                badge,
                 context: None,
                 value: Err(format!("{}: {}", owner_view, error)),
                 managed_child_reaped: false,
@@ -388,6 +408,7 @@ fn load_single_feed(
     Some(FeedLoadOutput {
         feed_id,
         owner_view,
+        badge,
         context,
         value,
         managed_child_reaped,
@@ -422,6 +443,9 @@ pub(crate) fn load_items_for_definitions_with_outcome(
     cancellation: &CancellationToken,
 ) -> ItemsLoadOutcome {
     let mut result = ItemsResult::default();
+    let show_source_badge = definitions
+        .first()
+        .is_some_and(|definition| definition.source.source_badge(page_view));
     let outputs: Vec<Option<FeedLoadOutput>> = if definitions.len() <= 1 {
         definitions
             .iter()
@@ -432,6 +456,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
                     page_parameters,
                     binding_raw,
                     engine_state,
+                    show_source_badge,
                     cancellation,
                 )
             })
@@ -448,6 +473,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
                             page_parameters,
                             binding_raw,
                             engine_state,
+                            show_source_badge,
                             cancellation,
                         )
                     })
@@ -484,6 +510,7 @@ pub(crate) fn load_items_for_definitions_with_outcome(
                     &mut result,
                     &output.owner_view,
                     &output.feed_id,
+                    output.badge.as_deref(),
                     value,
                     cancellation,
                 );
@@ -541,6 +568,7 @@ fn append_items_value(
     result: &mut ItemsResult,
     source_ref: &str,
     feed_id: &FeedId,
+    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -552,13 +580,14 @@ fn append_items_value(
         ));
         return;
     }
-    append_items_array(result, source_ref, feed_id, value, cancellation);
+    append_items_array(result, source_ref, feed_id, badge, value, cancellation);
 }
 
 fn append_items_array(
     result: &mut ItemsResult,
     source_ref: &str,
     _feed_id: &FeedId,
+    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -592,7 +621,7 @@ fn append_items_array(
                 return;
             }
         };
-        let display: super::display::NormalizedItemDisplay = parsed.display.into();
+        let mut display: super::display::NormalizedItemDisplay = parsed.display.into();
         let text = sanitize_text(&display.plain_text());
         if text.is_empty() && !parsed.allow_empty {
             result.errors.push(format!(
@@ -600,6 +629,9 @@ fn append_items_array(
                 source_ref, index
             ));
             return;
+        }
+        if let Some(badge_text) = badge {
+            display.inject_badge(badge_text, super::display::SlotToken::Badge);
         }
         parsed_items.push(Item {
             text,
@@ -620,7 +652,7 @@ fn append_items(
     value: Value,
     cancellation: &CancellationToken,
 ) {
-    append_items_array(result, source_ref, feed_id, value, cancellation);
+    append_items_array(result, source_ref, feed_id, None, value, cancellation);
 }
 
 struct ItemsScriptOutcome {
@@ -780,6 +812,28 @@ mod tests {
         assert_eq!(result.items[0].value.as_deref(), Some("example-value"));
         assert_eq!(result.items[0].metadata["text"], "Example metadata");
         assert_eq!(result.items[0].source_view, "core:items");
+    }
+
+    #[test]
+    fn source_badge_is_injected_into_aggregated_items() {
+        let mut result = ItemsResult::default();
+        append_items_array(
+            &mut result,
+            "apps:main",
+            &FeedId("apps:main".to_string()),
+            Some("app"),
+            serde_json::json!([{"display": "Termius"}]),
+            &cancellation(),
+        );
+
+        assert_eq!(result.items[0].text, "Termius");
+        let row = &result.items[0].display.rows[0];
+        assert_eq!(row.cells[1].spans[0].text, "app");
+        assert_eq!(row.cells[1].align, ratatui::layout::Alignment::Right);
+        assert_eq!(
+            row.cells[1].spans[0].slot,
+            crate::engine::picker::SlotToken::Badge
+        );
     }
 
     #[test]

@@ -97,7 +97,7 @@ The Picker items script receives a `picker-items` request on stdin and writes on
 {"version":1,"items":[{"display":"Show date","value":"date","metadata":{}}]}
 ```
 
-The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and feed provenance. Feed identity and scheduling data are not sent automatically. Picker item stdout is bounded at 64 MiB to support large candidate sets.
+The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and feed provenance. Aggregate picker pages automatically render the source feed alias as a right-aligned `badge` on the first row of each external feed item. Set `source_badge = false` on the aggregate View to disable this decoration. Feed identity and scheduling data are not sent automatically. Picker item stdout is bounded at 64 MiB to support large candidate sets.
 
 Preview configuration is static. Preview blocks use JSON Pointer sources into the selected item's metadata; image paths are resolved from that metadata and text blocks render the referenced string. Preview configuration cannot execute scripts or change the View definition.
 
