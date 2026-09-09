@@ -6,7 +6,7 @@ import time
 
 def get_cache_file():
     cache_dir = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_dir, "tui-launcher", "desktop-apps-v3.list")
+    return os.path.join(cache_dir, "tlaunch", "desktop-apps-v3.list")
 
 def scan_desktop_files():
     data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")

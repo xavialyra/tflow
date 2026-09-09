@@ -22,7 +22,7 @@ else
 fi
 
 # Preserve the user's btop settings while changing only the visible resource box.
-tmp_config=$(mktemp "${TMPDIR:-/tmp}/tui-launcher-btop.XXXXXX")
+tmp_config=$(mktemp "${TMPDIR:-/tmp}/tlaunch-btop.XXXXXX")
 cleanup() {
     rm -f "$tmp_config"
 }

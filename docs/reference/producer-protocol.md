@@ -11,7 +11,7 @@ description: "Reference for literal TOML, version-1 producer requests and respon
 
 # Static Configuration and Producer Protocol
 
-`tui-launcher` treats TOML as static configuration. Values are deserialized once, validated against their declared schema, and retained as configuration. Runtime-dependent behavior belongs in an explicit declared or script producer.
+`tlaunch` treats TOML as static configuration. Values are deserialized once, validated against their declared schema, and retained as configuration. Runtime-dependent behavior belongs in an explicit declared or script producer.
 
 ## Configuration Values
 

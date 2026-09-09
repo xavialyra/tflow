@@ -67,7 +67,7 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
         .unwrap_or("")
         .to_string();
 
-    if stem.is_empty() || stem == "tui-launcher" {
+    if stem.is_empty() || stem == "tlaunch" {
         return args;
     }
     if args.iter().any(|a| a == "--check" || a == "--inspect") {
@@ -168,7 +168,7 @@ pub(crate) fn run() -> Result<i32> {
         let target = args
             .view_options
             .first()
-            .context("inspect requires a view argument, e.g. `tui-launcher inspect <view>`")?;
+            .context("inspect requires a view argument, e.g. `tlaunch inspect <view>`")?;
         Some(target.as_str())
     } else {
         None
@@ -406,14 +406,14 @@ fn write_final_output(
 }
 
 fn default_config_path() -> PathBuf {
-    if let Some(path) = env::var_os("TUI_LAUNCHER_CONFIG") {
+    if let Some(path) = env::var_os("TLAUNCH_CONFIG") {
         return PathBuf::from(path);
     }
     if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("tui-launcher/config.toml");
+        return PathBuf::from(path).join("tlaunch/config.toml");
     }
     if let Some(home) = env::var_os("HOME") {
-        return PathBuf::from(home).join(".config/tui-launcher/config.toml");
+        return PathBuf::from(home).join(".config/tlaunch/config.toml");
     }
     PathBuf::from("config.toml")
 }
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn injects_the_entrypoint_stem_for_all_noncanonical_entrypoints() {
-        for stem in ["apps", "tui-launcher-app", "launcher-app"] {
+        for stem in ["apps", "tlaunch-app", "launcher-app"] {
             assert_eq!(
                 effective_cli_args_from(vec![format!("/tmp/{stem}"), "--mode=full".into()]),
                 vec![
@@ -435,8 +435,8 @@ mod tests {
             );
         }
         assert_eq!(
-            effective_cli_args_from(vec!["/tmp/tui-launcher".into(), "apps:main".into()]),
-            vec!["/tmp/tui-launcher", "apps:main"]
+            effective_cli_args_from(vec!["/tmp/tlaunch".into(), "apps:main".into()]),
+            vec!["/tmp/tlaunch", "apps:main"]
         );
     }
 }

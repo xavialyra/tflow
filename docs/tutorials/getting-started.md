@@ -1,5 +1,5 @@
 ---
-title: "Getting Started with tui-launcher"
+title: "Getting Started with tlaunch"
 type: "tutorial"
 tags:
   - onboarding
@@ -9,7 +9,7 @@ tags:
 description: "Build, configure, validate, and launch a minimal workflow using literal items and a JSON command producer."
 ---
 
-# Getting Started with tui-launcher
+# Getting Started with tlaunch
 
 This tutorial builds the binary, creates a minimal single-file workflow, and launches a Picker whose command is backed by a version-1 producer script.
 
@@ -18,19 +18,19 @@ This tutorial builds the binary, creates a minimal single-file workflow, and lau
 Ensure Rust and Cargo are installed, then build the binary:
 
 ```bash
-git clone https://github.com/example/tui-launcher.git
-cd tui-launcher
+git clone https://github.com/example/tlaunch.git
+cd tlaunch
 cargo build --release
 ```
 
-The binary is `target/release/tui-launcher`. Add it to your `$PATH` or invoke it by its path.
+The binary is `target/release/tlaunch`. Add it to your `$PATH` or invoke it by its path.
 
 ## 2. Create the Configuration Directory
 
-`tui-launcher` discovers configuration using the XDG Base Directory layout:
+`tlaunch` discovers configuration using the XDG Base Directory layout:
 
 ```text
-$XDG_CONFIG_HOME/tui-launcher/
+$XDG_CONFIG_HOME/tlaunch/
 ├── config.toml
 └── workflows/
     ├── hello.toml
@@ -42,12 +42,12 @@ $XDG_CONFIG_HOME/tui-launcher/
 If `$XDG_CONFIG_HOME` is unset, the default is `$HOME/.config`. Create the workflow directory:
 
 ```bash
-mkdir -p ~/.config/tui-launcher/workflows
+mkdir -p ~/.config/tlaunch/workflows
 ```
 
 ## 3. Create a Minimal Workflow
 
-Create `~/.config/tui-launcher/workflows/hello.toml`:
+Create `~/.config/tlaunch/workflows/hello.toml`:
 
 ```toml
 [workflow]
@@ -100,7 +100,7 @@ The handler reads the selected item from `context.engine.state` and emits one `r
 
 ## 4. Set the Default View
 
-Create `~/.config/tui-launcher/config.toml`:
+Create `~/.config/tlaunch/config.toml`:
 
 ```toml
 default_view = "hello:main"
@@ -111,13 +111,13 @@ default_view = "hello:main"
 Run validation before opening the TUI:
 
 ```bash
-tui-launcher --check
+tlaunch --check
 ```
 
 Then launch it:
 
 ```bash
-tui-launcher
+tlaunch
 ```
 
 The Picker displays the two literal items. Press `Enter` to run the producer operation. The foreground command inherits the caller's working directory and the launcher exits because the operation sets `exit = true`.

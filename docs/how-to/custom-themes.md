@@ -11,7 +11,7 @@ description: "How to configure color palettes, semantic schemes, and structured 
 
 # How to Create and Apply Custom Themes
 
-`tui-launcher` provides a declarative styling system composed of **Palettes**, **Semantic Schemes**, and **Component Styles**.
+`tlaunch` provides a declarative styling system composed of **Palettes**, **Semantic Schemes**, and **Component Styles**.
 
 ## Problem
 
@@ -21,7 +21,7 @@ You want to customize the look and feel of the launcher to match your terminal e
 
 ### 1. Create a Theme File
 
-Themes are placed in `$XDG_CONFIG_HOME/tui-launcher/themes/<name>.toml`. For example, create `~/.config/tui-launcher/themes/nord.toml`:
+Themes are placed in `$XDG_CONFIG_HOME/tlaunch/themes/<name>.toml`. For example, create `~/.config/tlaunch/themes/nord.toml`:
 
 ```toml
 # themes/nord.toml
@@ -132,7 +132,7 @@ bold = true
 
 ### 2. Activate the Theme in `config.toml`
 
-In your `~/.config/tui-launcher/config.toml`, set the `theme` field:
+In your `~/.config/tlaunch/config.toml`, set the `theme` field:
 
 ```toml
 theme = "nord"
@@ -141,7 +141,7 @@ theme = "nord"
 You can also test a theme directly from the command line:
 
 ```bash
-tui-launcher --theme nord
+tlaunch --theme nord
 ```
 
 ### 3. Component Slot Reference

@@ -296,7 +296,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "tui-launcher-script-{}-{timestamp}-{sequence}",
+            "tlaunch-script-{}-{timestamp}-{sequence}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -492,10 +492,10 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let root = test_root();
-        let outside = root.parent().unwrap().join(format!(
-            "tui-launcher-script-outside-{}",
-            std::process::id()
-        ));
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("tlaunch-script-outside-{}", std::process::id()));
         fs::write(&outside, "printf 'null'\n").unwrap();
         symlink(&outside, root.join("outside.sh")).unwrap();
         assert!(validate_script_target(&root, "outside.sh").is_err());

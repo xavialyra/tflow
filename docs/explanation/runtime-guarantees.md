@@ -12,7 +12,7 @@ description: "Explanation of workflow trust boundaries, producer resource budget
 
 # Runtime Guarantees and Safety Limits
 
-`tui-launcher` applies execution limits and process-cleanup policies to protect terminal integrity, responsiveness, and bounded resource consumption. These controls do not sandbox workflow code.
+`tlaunch` applies execution limits and process-cleanup policies to protect terminal integrity, responsiveness, and bounded resource consumption. These controls do not sandbox workflow code.
 
 ## 1. Filesystem Boundaries and Trusted Workflows
 
@@ -23,7 +23,7 @@ Workflows operate under these boundaries:
 - **Directory workflow confinement**: In `workflows/<workflow-id>/workflow.toml`, producer `handler.file` paths are resolved and validated within the workflow root.
 - **Single-file isolation**: A single-file workflow cannot reference a relative external script file. Use a producer `handler.script` or an absolute host binary/file path.
 - **Caller working directory**: Host process invocations preserve the caller's `$PWD`. Directory workflows receive `$WORKFLOW_DIR` for companion resources.
-- **Inline materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (with cache fallback) using `0600` permissions and source attribution comments. The host interprets shebang arguments and can invoke scripts from a `noexec` filesystem.
+- **Inline materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tlaunch/scripts/` (with cache fallback) using `0600` permissions and source attribution comments. The host interprets shebang arguments and can invoke scripts from a `noexec` filesystem.
 - **Path traversal prevention**: Relative traversal attempts and symlink escapes are rejected during `--check` and runtime preparation.
 - **Special file rejection**: Configuration and script files cannot be device nodes, sockets, or named pipes.
 

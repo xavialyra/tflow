@@ -2704,7 +2704,7 @@ fn failed_view_creation_returns_to_the_current_view() {
         [workflows.core.views.broken.engine]
         type = "embedded"
         [workflows.core.views.broken.engine.config]
-        command = ["/definitely/missing/tui-launcher-test"]
+        command = ["/definitely/missing/tlaunch-test"]
 "#,
     )
     .expect("could not write failed navigation integration config");

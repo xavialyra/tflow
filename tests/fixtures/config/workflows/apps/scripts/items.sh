@@ -9,7 +9,7 @@ fi
 
 command -v fzf >/dev/null 2>&1 || { printf '%s\n' '{"version":1,"items":[]}'; exit 0; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' '{"version":1,"items":[]}'; exit 0; }
-cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tui-launcher"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tlaunch"
 cache_file="$cache_dir/desktop-apps-v3.list"
 refresh=true
 if [ -s "$cache_file" ]; then

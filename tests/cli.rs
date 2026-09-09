@@ -151,7 +151,7 @@ fn check_rejects_unknown_defaults_fields() {
             .args(["--check", "--config"])
             .arg(&config)
             .output()
-            .expect("could not run tui-launcher --check");
+            .expect("could not run tlaunch --check");
 
         assert!(!output.status.success(), "stderr: {:?}", output.stderr);
         assert!(
@@ -185,7 +185,7 @@ fn check_rejects_picker_binding_conflicts_with_defaults() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not run tui-launcher --check");
+        .expect("could not run tlaunch --check");
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
@@ -219,7 +219,7 @@ fn check_rejects_capture_binding_conflicts_with_defaults() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not run tui-launcher --check");
+        .expect("could not run tlaunch --check");
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
@@ -237,13 +237,13 @@ fn cli_theme_selection_does_not_require_an_existing_current_directory() {
         let current_dir = temporary_root();
         let output = Command::new("sh")
             .current_dir(&current_dir)
-            .args(["-c", "rmdir \"$PWD\" && exec \"$@\"", "tui-launcher"])
+            .args(["-c", "rmdir \"$PWD\" && exec \"$@\"", "tlaunch"])
             .arg(binary_path())
             .args(["--check", "--config"])
             .arg(fixture_config())
             .args(["--theme", theme])
             .output()
-            .expect("could not run tui-launcher from a missing current directory");
+            .expect("could not run tlaunch from a missing current directory");
 
         assert!(output.status.success(), "stderr: {:?}", output.stderr);
     }

@@ -5,7 +5,7 @@ Tutorials are learning-oriented guides designed to take you by the hand through 
 ## Available Tutorials
 
 1. **[Getting Started](getting-started.md)**
-   Learn how to build `tui-launcher`, initialize your configuration directory, and launch your first interactive view.
+   Learn how to build `tlaunch`, initialize your configuration directory, and launch your first interactive view.
 
 2. **[Your First Workflow](first-workflow.md)**
    Learn how to build a self-contained workflow with literal Picker items, producer scripts, and typed command operations.

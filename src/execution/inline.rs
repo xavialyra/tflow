@@ -74,18 +74,18 @@ fn is_executable_file(path: &Path) -> bool {
 
 pub(crate) fn scripts_cache_dir() -> PathBuf {
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR") {
-        let path = PathBuf::from(runtime_dir).join("tui-launcher/scripts");
+        let path = PathBuf::from(runtime_dir).join("tlaunch/scripts");
         if path.exists() || fs::create_dir_all(&path).is_ok() {
             return path;
         }
     }
     if let Some(cache_home) = env::var_os("XDG_CACHE_HOME") {
-        return PathBuf::from(cache_home).join("tui-launcher/scripts");
+        return PathBuf::from(cache_home).join("tlaunch/scripts");
     }
     if let Some(home) = env::var_os("HOME") {
-        return PathBuf::from(home).join(".cache/tui-launcher/scripts");
+        return PathBuf::from(home).join(".cache/tlaunch/scripts");
     }
-    env::temp_dir().join("tui-launcher/scripts")
+    env::temp_dir().join("tlaunch/scripts")
 }
 
 fn sanitize_identifier(id: &str) -> String {
@@ -112,7 +112,7 @@ pub(crate) fn format_attributed_script(
     script_body: &str,
 ) -> String {
     let attribution =
-        format!("# [tui-launcher] source: workflows/{workflow_id}.toml -> [{source_label}]");
+        format!("# [tlaunch] source: workflows/{workflow_id}.toml -> [{source_label}]");
     let mut lines = script_body.lines();
     if let Some(first_line) = lines.next() {
         if first_line.starts_with("#!") {
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(lines.next(), Some("#!/usr/bin/env bash"));
         assert_eq!(
             lines.next(),
-            Some("# [tui-launcher] source: workflows/git.toml -> [views.main.commands.commit]")
+            Some("# [tlaunch] source: workflows/git.toml -> [views.main.commands.commit]")
         );
         assert_eq!(lines.next(), Some("echo 123"));
     }
@@ -241,6 +241,6 @@ mod tests {
         let meta = fs::metadata(&path).unwrap();
         assert_eq!(meta.mode() & 0o777, 0o600);
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[tui-launcher] source: workflows/demo.toml"));
+        assert!(content.contains("[tlaunch] source: workflows/demo.toml"));
     }
 }

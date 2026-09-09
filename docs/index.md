@@ -1,20 +1,20 @@
 ---
 okf_version: "0.2"
-title: "tui-launcher Knowledge Bundle"
-description: "Architecture, developer guides, and configuration references for tui-launcher"
+title: "tlaunch Knowledge Bundle"
+description: "Architecture, developer guides, and configuration references for tlaunch"
 generated:
   by: "maintainers"
   at: "2026-09-05"
 tags:
-  - tui-launcher
+  - tlaunch
   - terminal
   - workflow
   - rust
 ---
 
-# tui-launcher Documentation
+# tlaunch Documentation
 
-Welcome to the `tui-launcher` knowledge base. `tui-launcher` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, or embedded PTY engines.
+Welcome to the `tlaunch` knowledge base. `tlaunch` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, or embedded PTY engines.
 
 This documentation is organized into four core categories following the **Diátaxis** framework, packaged as an **Open Knowledge Format (OKF v0.2)** bundle for both human developers and autonomous AI agents.
 
@@ -22,7 +22,7 @@ This documentation is organized into four core categories following the **Diáta
 
 ### 1. [Tutorials](tutorials/index.md)
 *Learning-oriented paths for beginners and new contributors.*
-- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tui-launcher`.
+- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tlaunch`.
 - [Your First Workflow](tutorials/first-workflow.md) — Create a complete workflow with custom views and items.
 
 ### 2. [How-To Guides](how-to/index.md)

@@ -1,9 +1,10 @@
 # Documentation Changelog
 
-This changelog tracks updates to the `tui-launcher` knowledge bundle.
+This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 ## 2026-09-09
 
+- Renamed the product, crate, binary, configuration paths, runtime prefixes, and CLI environment variable to `tlaunch` / `TLAUNCH_CONFIG`.
 - Clarified the version-1 producer context contract: aggregate Picker owner commands use the selected feed's independent parameter snapshot, while page commands use the aggregate View parameters; public selection remains under `context.engine.state.item` and feed provenance stays host-owned.
 - Reorganized task-oriented guides by Engine: Picker, Capture, and Embedded Views now have separate configuration guides; cross-Engine command and producer behavior is documented separately.
 - Renamed the current static-values/runtime-data reference to `producer-protocol.md` and made the producer contract the sole reference entry point.
@@ -34,7 +35,7 @@ This changelog tracks updates to the `tui-launcher` knowledge bundle.
 - Initialized Architecture Decision Records (ADRs) under `docs/adr/`:
   - Created `docs/adr/index.md` registry.
   - Added `docs/adr/0001-decentralized-workflow-extensions.md` (ADR 0001).
-  - Established decentralized workflow layout under `$XDG_CONFIG_HOME/tui-launcher/workflows/`.
+  - Established decentralized workflow layout under `$XDG_CONFIG_HOME/tlaunch/workflows/`.
   - Defined dual-mode coexistence (single-file `.toml` and directory packages) and inline script execution.
   - Formulated CLI entry multiplexing (`argv[0]`) and inspection.
   - Linked ADR registry to root `docs/index.md` under Architecture Governance.

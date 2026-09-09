@@ -8,7 +8,7 @@ rust = { version = "1.97.1", profile = "default" }
 tokei = "latest"
 
 [env]
-TUI_LAUNCHER_CONFIG = "{{config_root}}/tests/fixtures/config/config.toml"
+TLAUNCH_CONFIG = "{{config_root}}/tests/fixtures/config/config.toml"
 _.path = [
   "{{config_root}}/target/debug",
   "{{config_root}}/target/release",

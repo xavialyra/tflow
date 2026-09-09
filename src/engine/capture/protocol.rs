@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn mismatched_task_generation_or_revision_cannot_consume_capture_completion() {
         let root = std::env::temp_dir().join(format!(
-            "tui-launcher-capture-correlation-{}",
+            "tlaunch-capture-correlation-{}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -862,10 +862,8 @@ mod tests {
 
     #[test]
     fn cancelled_capture_task_is_consumed_and_a_later_activation_can_start_work() {
-        let root = std::env::temp_dir().join(format!(
-            "tui-launcher-capture-cancel-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tlaunch-capture-cancel-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let script = root.join("capture.sh");
         fs::write(&script, "#!/bin/sh\nwhile :; do sleep 0.01; done\n").unwrap();
@@ -1011,10 +1009,8 @@ mod tests {
 
     #[test]
     fn invalid_async_capture_reports_error_without_panicking() {
-        let root = std::env::temp_dir().join(format!(
-            "tui-launcher-protocol-capture-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tlaunch-protocol-capture-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let script = root.join("fail.sh");
         std::fs::write(&script, "#!/bin/sh\necho failed >&2\nexit 3\n").unwrap();

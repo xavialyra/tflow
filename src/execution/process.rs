@@ -381,10 +381,8 @@ mod tests {
 
     #[test]
     fn normal_completion_kills_background_processes_in_the_group() {
-        let pid_file = std::env::temp_dir().join(format!(
-            "tui-launcher-normal-descendant-{}",
-            std::process::id()
-        ));
+        let pid_file =
+            std::env::temp_dir().join(format!("tlaunch-normal-descendant-{}", std::process::id()));
         fs::remove_file(&pid_file).ok();
         let script = format!("sleep 30 & echo $! > {}; exit 0", pid_file.display());
         let prepared = PreparedProcess {
@@ -413,7 +411,7 @@ mod tests {
     #[test]
     fn cancellation_kills_a_signal_resistant_descendant() {
         let pid_file = std::env::temp_dir().join(format!(
-            "tui-launcher-foreground-descendant-{}",
+            "tlaunch-foreground-descendant-{}",
             std::process::id()
         ));
         fs::remove_file(&pid_file).ok();

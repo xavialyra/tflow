@@ -247,7 +247,7 @@ pub(super) fn run() {
     let ended_utc = utc();
     let summaries = summaries(&pooled, &measurements_by_run);
     let raw = json!({
-        "schema": "tui-launcher.stage5.scheduler-evidence.v1",
+        "schema": "tlaunch.stage5.scheduler-evidence.v1",
         "collector": {
             "test": "stage_5_scheduler_evidence",
             "profile": profile,
@@ -514,7 +514,7 @@ fn markdown(raw: &Value, summaries: &BTreeMap<&str, Value>) -> String {
     let collector = &raw["collector"];
     let threshold = 250_000_000_u64;
     let mut text = format!(
-        "# Stage 5 Scheduler Evidence\n\n- Schema: `tui-launcher.stage5.scheduler-evidence.v1`\n- UTC start: `{}`\n- UTC end: `{}`\n- Build profile: `{}`\n- Invoke: `{}`\n- Slow managed command: `{SLOW_COMMAND}`\n- Workload: {RUNS} independent runs x {ITERATIONS} iterations x {TERMINALS_PER_ITERATION} terminal records = {}; each run retains {} records below the {}-record limit.\n\n## Environment\n\n- Git commit: `{}`\n- Git dirty: `{}`\n- Rust: `{}`\n- OS/kernel: `{}`\n- Architecture: `{}`\n- CPU count: `{}`\n- Cargo.lock SHA-256: `{}`\n\n## Pooled And Median-Of-Run Results\n\n| Metric | Pooled p50 | Pooled p95 | Pooled max | Median run p50 | Median run p95 | Median run max |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "# Stage 5 Scheduler Evidence\n\n- Schema: `tlaunch.stage5.scheduler-evidence.v1`\n- UTC start: `{}`\n- UTC end: `{}`\n- Build profile: `{}`\n- Invoke: `{}`\n- Slow managed command: `{SLOW_COMMAND}`\n- Workload: {RUNS} independent runs x {ITERATIONS} iterations x {TERMINALS_PER_ITERATION} terminal records = {}; each run retains {} records below the {}-record limit.\n\n## Environment\n\n- Git commit: `{}`\n- Git dirty: `{}`\n- Rust: `{}`\n- OS/kernel: `{}`\n- Architecture: `{}`\n- CPU count: `{}`\n- Cargo.lock SHA-256: `{}`\n\n## Pooled And Median-Of-Run Results\n\n| Metric | Pooled p50 | Pooled p95 | Pooled max | Median run p50 | Median run p95 | Median run max |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
         collector["utc_started"],
         collector["utc_ended"],
         collector["profile"],

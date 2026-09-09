@@ -1944,6 +1944,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
 
 [[package]]
+name = "tlaunch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "avt",
+ "base64",
+ "clap",
+ "image",
+ "libc",
+ "ratatui",
+ "ratatui-image",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "signal-hook",
+ "toml",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "toml"
 version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1981,27 +2002,6 @@ name = "toml_writer"
 version = "1.1.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d282ade6016312faf3e41e57ebbba0c073e4056dab1232ab1cb624199648f8ed"
-
-[[package]]
-name = "tui-launcher"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "avt",
- "base64",
- "clap",
- "image",
- "libc",
- "ratatui",
- "ratatui-image",
- "serde",
- "serde_json",
- "shell-words",
- "signal-hook",
- "toml",
- "unicode-segmentation",
- "unicode-width 0.2.2",
-]
 
 [[package]]
 name = "typenum"

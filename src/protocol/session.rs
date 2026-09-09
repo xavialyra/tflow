@@ -953,10 +953,8 @@ mod tests {
         let ViewDecision::RequestCommand(request) = adapter.request(binding, None) else {
             panic!("binding must produce a command request");
         };
-        let stdin_path = std::env::temp_dir().join(format!(
-            "tui-launcher-protocol-session-{}",
-            std::process::id()
-        ));
+        let stdin_path =
+            std::env::temp_dir().join(format!("tlaunch-protocol-session-{}", std::process::id()));
         std::fs::write(&stdin_path, b"first\n").unwrap();
         let invocation = Arc::new(
             crate::workflow::InvocationContext::new(

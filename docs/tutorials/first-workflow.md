@@ -23,7 +23,7 @@ In this tutorial, you will create a workflow called `notes` with a Picker list a
 
 ## Option A: Single-file Workflow
 
-Create `~/.config/tui-launcher/workflows/notes.toml`:
+Create `~/.config/tlaunch/workflows/notes.toml`:
 
 ```toml
 [workflow]
@@ -78,21 +78,21 @@ sys.stdout.write("\n")
 Run validation and launch it:
 
 ```bash
-tui-launcher --check
-tui-launcher notes
+tlaunch --check
+tlaunch notes
 ```
 
-The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tui-launcher`.
+The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tlaunch`.
 
 ## Option B: Directory Package Workflow
 
 Use a package when the workflow has multiple scripts or assets:
 
 ```bash
-mkdir -p ~/.config/tui-launcher/workflows/notes/scripts
+mkdir -p ~/.config/tlaunch/workflows/notes/scripts
 ```
 
-Create `~/.config/tui-launcher/workflows/notes/scripts/list_notes.py`:
+Create `~/.config/tlaunch/workflows/notes/scripts/list_notes.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -116,7 +116,7 @@ json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 ```
 
-Create `~/.config/tui-launcher/workflows/notes/scripts/open_note.py`:
+Create `~/.config/tlaunch/workflows/notes/scripts/open_note.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -146,11 +146,11 @@ sys.stdout.write("\n")
 Make both scripts executable:
 
 ```bash
-chmod +x ~/.config/tui-launcher/workflows/notes/scripts/list_notes.py
-chmod +x ~/.config/tui-launcher/workflows/notes/scripts/open_note.py
+chmod +x ~/.config/tlaunch/workflows/notes/scripts/list_notes.py
+chmod +x ~/.config/tlaunch/workflows/notes/scripts/open_note.py
 ```
 
-Create `~/.config/tui-launcher/workflows/notes/workflow.toml`:
+Create `~/.config/tlaunch/workflows/notes/workflow.toml`:
 
 ```toml
 [workflow]
@@ -182,8 +182,8 @@ file = "scripts/open_note.py"
 Validate and run:
 
 ```bash
-tui-launcher --check
-tui-launcher notes:main
+tlaunch --check
+tlaunch notes:main
 ```
 
 ## Next Steps

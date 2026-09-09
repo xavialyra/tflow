@@ -248,7 +248,7 @@ fn default_log_path(xdg_state_home: Option<&Path>, home: Option<&Path>) -> io::R
                 "neither XDG_STATE_HOME nor HOME is set to an absolute path",
             )
         })?;
-    Ok(state_home.join("tui-launcher/runtime.jsonl"))
+    Ok(state_home.join("tlaunch/runtime.jsonl"))
 }
 
 fn timestamp() -> (String, String) {
@@ -277,7 +277,7 @@ mod tests {
     use super::*;
 
     fn temporary_root(name: &str) -> PathBuf {
-        let root = env::temp_dir().join(format!("tui-launcher-log-{name}-{}", std::process::id()));
+        let root = env::temp_dir().join(format!("tlaunch-log-{name}-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(&root).unwrap();
         root
@@ -287,7 +287,7 @@ mod tests {
     fn default_log_path_prefers_xdg_state_home() {
         assert_eq!(
             default_log_path(Some(Path::new("/tmp/state")), Some(Path::new("/tmp/home"))).unwrap(),
-            PathBuf::from("/tmp/state/tui-launcher/runtime.jsonl")
+            PathBuf::from("/tmp/state/tlaunch/runtime.jsonl")
         );
     }
 
@@ -295,7 +295,7 @@ mod tests {
     fn default_log_path_falls_back_to_home_state_directory() {
         assert_eq!(
             default_log_path(None, Some(Path::new("/tmp/home"))).unwrap(),
-            PathBuf::from("/tmp/home/.local/state/tui-launcher/runtime.jsonl")
+            PathBuf::from("/tmp/home/.local/state/tlaunch/runtime.jsonl")
         );
     }
 

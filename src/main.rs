@@ -2,7 +2,7 @@ use anyhow::Error;
 use std::io::{self, Write};
 
 fn main() {
-    let exit_code = match tui_launcher::run() {
+    let exit_code = match tlaunch::run() {
         Ok(exit_code) => exit_code,
         Err(error) => {
             report_error(&error);

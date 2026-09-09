@@ -13,7 +13,7 @@ description: "Authoritative reference for workflow manifests, static View config
 
 # workflow.toml Specification
 
-Workflows define custom Views, keybindings, actions, and Engines. They reside under `$XDG_CONFIG_HOME/tui-launcher/workflows/` and support two physical layouts:
+Workflows define custom Views, keybindings, actions, and Engines. They reside under `$XDG_CONFIG_HOME/tlaunch/workflows/` and support two physical layouts:
 
 1. **Single-file workflow**: `workflows/<id>.toml`. The workflow ID is the file stem. Relative external script files are not allowed; use inline producer scripts or absolute host binaries.
 2. **Directory workflow**: `workflows/<id>/workflow.toml`. The directory is the workflow root. Relative script files are confined to that root, and `$WORKFLOW_DIR` is provided to child processes.
@@ -322,6 +322,6 @@ Configuration without a producer is static: its values are deserialized and vali
 
 ## Multi-line Inline Scripts
 
-Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tui-launcher/scripts/` (falling back to `$XDG_CACHE_HOME/tui-launcher/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
+Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tlaunch/scripts/` (falling back to `$XDG_CACHE_HOME/tlaunch/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
 
 For root configuration, see [config.toml Specification](config-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).

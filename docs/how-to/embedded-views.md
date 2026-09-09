@@ -61,5 +61,5 @@ Embedded processes inherit the caller's environment. Directory workflows receive
 
 - Use `escape-cancels = false` for programs that require Escape input.
 - Keep `command` as a non-empty argv array; dynamic Embedded argv is outside the producer protocol.
-- Use `tui-launcher --check` to validate the command and result descriptor.
+- Use `tlaunch --check` to validate the command and result descriptor.
 - For one-shot text output, use [Capture Views](capture-views.md) instead.

@@ -228,7 +228,7 @@ fn prepare_exec(arguments: Vec<String>, overrides: &[(&str, &str)]) -> PreparedE
     argv.push(std::ptr::null());
 
     let state_home = std::env::temp_dir().join(format!(
-        "tui-launcher-test-state-{}-{}",
+        "tlaunch-test-state-{}-{}",
         std::process::id(),
         TEST_STATE_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -1185,7 +1185,7 @@ fn close_fd(fd: RawFd) {
 }
 
 pub fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tui-launcher"))
+    PathBuf::from(env!("CARGO_BIN_EXE_tlaunch"))
 }
 
 pub fn fixture_config() -> PathBuf {
@@ -1198,7 +1198,7 @@ pub fn temporary_root() -> PathBuf {
         .expect("system clock is before the Unix epoch")
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "tui-launcher-cli-test-{}-{}",
+        "tlaunch-cli-test-{}-{}",
         std::process::id(),
         timestamp
     ));

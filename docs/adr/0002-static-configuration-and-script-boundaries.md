@@ -227,7 +227,7 @@ Request:
     "parameters": {"initial": "sec"},
     "input": {
       "stdin": {
-        "path": "/tmp/tui-launcher-input-123",
+        "path": "/tmp/tlaunch-input-123",
         "length": 13,
         "is_tty": false
       }

@@ -12,7 +12,7 @@ description: "Configure static and script-produced navigation, popup calls, retu
 
 # How to Configure View Navigation and Popups
 
-`tui-launcher` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation. For the shared command request context and script response contract, see [Commands and Producer Scripts](commands-and-producers.md).
+`tlaunch` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation. For the shared command request context and script response contract, see [Commands and Producer Scripts](commands-and-producers.md).
 
 ## Problem
 
@@ -151,5 +151,5 @@ With `replace = false` or an omitted field, the operation pushes a new stack ent
 
 - Put script diagnostics on stderr; stdout must contain one JSON response object.
 - Use an actual newline after JSON. Writing the literal characters `\\n` produces invalid protocol output.
-- Check the workflow with `tui-launcher --check` before testing transitions.
+- Check the workflow with `tlaunch --check` before testing transitions.
 - A successful call return with no processor restores the caller and discards the unconsumed result.

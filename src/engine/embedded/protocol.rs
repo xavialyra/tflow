@@ -912,10 +912,8 @@ mod tests {
 
     #[test]
     fn external_completion_keeps_final_screen_then_returns_result() {
-        let root = std::env::temp_dir().join(format!(
-            "tui-launcher-protocol-embedded-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tlaunch-protocol-embedded-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let script = root.join("embedded.sh");
         fs::write(&script, "#!/bin/sh\nprintf 'done'; sleep 0.01\n").unwrap();

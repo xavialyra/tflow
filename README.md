@@ -1,6 +1,6 @@
-# tui-launcher
+# tlaunch
 
-`tui-launcher` is an extensible terminal workflow host. It coordinates workflow-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
+`tlaunch` is an extensible terminal workflow host. It coordinates workflow-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
 
 ## Quick Start
 
@@ -8,23 +8,23 @@
 
 ```bash
 cargo build --release
-# The binary is available at ./target/release/tui-launcher
+# The binary is available at ./target/release/tlaunch
 ```
 
 ### Usage
 
 ```bash
 # Validate your configuration without opening the TUI
-tui-launcher --check
+tlaunch --check
 
 # Start the launcher using the configured default view
-tui-launcher
+tlaunch
 
 # Open a specific view directly
-tui-launcher apps:main
+tlaunch apps:main
 
 # Invoke a view with structured query arguments
-tui-launcher dmenu:main --index=true --prompt="Select:"
+tlaunch dmenu:main --index=true --prompt="Select:"
 ```
 
 ---

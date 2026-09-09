@@ -6,7 +6,7 @@ tags:
   - toml
   - specification
   - session
-description: "Authoritative reference for tui-launcher root configuration, defaults, themes, and session bindings."
+description: "Authoritative reference for tlaunch root configuration, defaults, themes, and session bindings."
 ---
 
 # config.toml Specification
@@ -36,12 +36,12 @@ key = "ctrl+k"
 
 ### `default_view`
 - **Type**: `string` (Format: `<workflow-id>:<view-name>` or `<alias>`)
-- **Description**: The default view presented when `tui-launcher` is started without explicit arguments.
+- **Description**: The default view presented when `tlaunch` is started without explicit arguments.
 - **Example**: `default_view = "core:default"`
 
 ### `theme`
 - **Type**: `string` (Optional)
-- **Description**: Name of the theme to load from `$XDG_CONFIG_HOME/tui-launcher/themes/<name>.toml`. Defaults to `terminal`.
+- **Description**: Name of the theme to load from `$XDG_CONFIG_HOME/tlaunch/themes/<name>.toml`. Defaults to `terminal`.
 
 ## Engine Defaults (`[defaults.<engine>.bindings]`)
 
