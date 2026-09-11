@@ -29,6 +29,10 @@ name = "Applications"
 - `api` is an optional integer and defaults to `1`.
 - `name` is the required human-readable workflow name.
 
+## Style Slots
+
+`[styles.<slot>]` declares a workflow custom style, with an optional `[styles.<slot>.selected]` table. Color fields accept `ansi:NAME`, `#RRGGBB`, or `scheme:NAME`; for example, `foreground = "scheme:accent"`. The active theme merges `[workflows.<workflow-id>.styles.<slot>]` over these defaults field by field before resolving colors. Omitted selected fields inherit, and explicit `false` or `ansi:reset` values override defaults. See the [theme specification](theme-toml.md) for fields and selection background rules.
+
 ## Views
 
 A workflow defines one or more Views referenced as `<workflow-id>:<name>`:
@@ -46,7 +50,7 @@ mode = { type = "string", default = "normal" }
 
 ## Engine Configuration
 
-Every View has one of the three built-in Engines. Route definitions, query schemas, Engine types, layouts, and keymaps are host-owned static configuration. The initial producer protocol cannot redefine them. There is no workflow `title` configuration; the footer uses the host-owned View alias or canonical reference.
+Every View has one of the three built-in Engines. Route definitions, query schemas, Engine types, Picker pane sizing, and keymaps are host-owned static configuration. The initial producer protocol cannot redefine them. There is no workflow `title` configuration; the footer uses the host-owned View alias or canonical reference.
 
 ### Picker
 
@@ -99,7 +103,9 @@ The Picker items script receives a `picker-items` request on stdin and writes on
 
 The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and feed provenance. Aggregate picker pages automatically render the source feed alias as a right-aligned `badge` on the first row of each external feed item. Set `source_badge = false` on the aggregate View to disable this decoration. Feed identity and scheduling data are not sent automatically. Picker item stdout is bounded at 64 MiB to support large candidate sets.
 
-Preview configuration is static. Preview blocks use JSON Pointer sources into the selected item's metadata; image paths are resolved from that metadata and text blocks render the referenced string. Preview configuration cannot execute scripts or change the View definition.
+Every Picker provides a preview pane, initially collapsed and toggled with `Ctrl+P` by default. Without a custom provider it displays the selected item's plain-text display and value. Metadata remains available to custom preview providers. Preview data sources are configured independently from document rendering. `preview = { producer = "script", handler = { file = "scripts/preview.py" } }` receives a `picker-preview` request and returns `{"version":1,"preview":...}`. `preview = { producer = "declared", document = "Fixed text" }` supplies a static document. An aggregate page may use `preview = { inherit = true }` to select the source feed’s provider.
+
+`preview_ratio` and `preview_min_width` control the automatic outer items/preview split. `preview_default_open` controls initial visibility and defaults to false. There is no user-defined outer layout. Omitting `preview` is equivalent to `preview = { inherit = true }`: aggregate pages use the selected feed's provider when present, otherwise the host displays built-in details. Non-aggregate pages can also use omission or explicit inheritance for built-in details. An explicit page provider overrides the feed and built-in details; null responses stay empty and errors stay visible. Parameters, relative script/image paths, and custom styles resolve in the provider owner's workflow. Documents support strings, item displays, wrapped rich paragraphs, images, separators, and nested internal layouts. See [Picker Preview Documents and Producers](picker-preview.md) for exact fields, validation, ownership, and resource limits.
 
 ### Capture
 
@@ -185,7 +191,7 @@ The following fields are supported in declared handlers:
 - `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, and optional `replace` boolean.
 - `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
 - `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
-- `run`: `mode = "foreground"`, non-empty `argv`, and optional `exit` boolean.
+- `run`: `mode = "foreground"`, non-empty `argv`, optional `exit` boolean, and optional `success_message` string. After successful execution, the host records this message at `INFO` level and displays it in the source View's footer (or popup bottom border) if that View remains active. Failed or cancelled execution does not emit the success message. With `exit = true`, the message is logged before exit; the UI does not pause to display it. Errors take display priority. Informational messages expire after 3 seconds; the next input or a change of active View clears them earlier. Each new informational message replaces the previous one and restarts the timeout. Expiration only clears the display; recorded logs are retained.
 - `edit-input`: `value` string and optional non-negative `cursor` byte offset at a UTF-8 boundary.
 - `invoke`: `command` object containing the opaque command reference `{ view = "...", id = "..." }`.
 

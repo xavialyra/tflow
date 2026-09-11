@@ -36,13 +36,15 @@ This documentation is organized into four core categories following the **Diáta
 *Cross-cutting workflow tasks:*
 - [Commands and Producer Scripts](how-to/commands-and-producers.md) — Configure commands and read the shared producer context.
 - [View Navigation & Popups](how-to/view-navigation-and-popups.md) — Configure popup modals, view stack transitions, and call/return flows.
-- [Custom Themes](how-to/custom-themes.md) — Define brand palettes, color schemes, and element bindings.
+- [Custom Themes](how-to/custom-themes.md) — Define flat color schemes and component style overrides.
 
 ### 3. [Reference](reference/index.md)
 *Authoritative, technical specifications and syntax references.*
 - [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
 - [config.toml Specification](reference/config-toml.md) — Root configuration format, theme selection, and session command overrides.
+- [Theme TOML Specification](reference/theme-toml.md) — Flat scheme colors, built-in defaults, and style merge rules.
 - [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
+- [Picker Preview](reference/picker-preview.md) — Preview sources, feed ownership, nested documents, scrolling, and limits.
 - [Producer Protocol](reference/producer-protocol.md) — Literal configuration boundaries and the version-1 producer request/response contract.
 
 ### 4. [Explanation](explanation/index.md)

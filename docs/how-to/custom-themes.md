@@ -5,170 +5,93 @@ tags:
   - themes
   - styling
   - colors
-  - palette
-description: "How to configure color palettes, semantic schemes, and structured component styles for custom launcher aesthetics."
+description: "Create a flat color scheme, override component styles, and apply a custom launcher theme."
 ---
 
 # How to Create and Apply Custom Themes
 
-`tlaunch` provides a declarative styling system composed of **Palettes**, **Semantic Schemes**, and **Component Styles**.
-
 ## Problem
 
-You want to customize the look and feel of the launcher to match your terminal emulator or desktop color scheme.
+You want the launcher to match your terminal or desktop colors, with specific styles for selected items and workflow metadata.
 
 ## Solution
 
 ### 1. Create a Theme File
 
-Themes are placed in `$XDG_CONFIG_HOME/tlaunch/themes/<name>.toml`. For example, create `~/.config/tlaunch/themes/nord.toml`:
+Create `themes/nord.toml` beside your `config.toml` (normally under `~/.config/tlaunch/`):
 
 ```toml
 # themes/nord.toml
-
-# 1. Custom Color Palette (Hex RGB or basic ANSI)
-[palette]
-nord0 = "#2E3440"
-nord1 = "#3B4252"
-nord2 = "#434C5E"
-nord3 = "#4C566A"
-nord4 = "#D8DEE9"
-nord8 = "#88C0D0"
-nord11 = "#BF616A"
-nord14 = "#A3BE8C"
-
-# 2. Semantic Color Scheme Roles
 [scheme]
-primary = "palette:nord8"
-on-primary = "palette:nord0"
-primary-container = "palette:nord2"
-on-primary-container = "palette:nord8"
-surface = "palette:nord0"
-surface-container = "palette:nord1"
-on-surface = "palette:nord4"
-on-surface-variant = "palette:nord3"
-outline = "palette:nord3"
-error = "palette:nord11"
-on-error = "palette:nord4"
-
-# 3. Picker Component Styles (Query Editor, Candidate List, and Preview)
-[picker.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
-
-[picker.muted]
-foreground = "scheme:on-surface-variant"
-
-[picker.input_prefix]
-foreground = "scheme:primary"
-bold = true
-
-[picker.selected]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
-bold = true
-
-[picker.selected_muted]
-foreground = "scheme:on-surface-variant"
-background = "scheme:primary-container"
+background = "#2E3440"
+foreground = "#D8DEE9"
+muted = "#4C566A"
+accent = "#88C0D0"
+border = "#4C566A"
+selection = "#434C5E"
+on-selection = "#88C0D0"
+error = "#BF616A"
+on-error = "#D8DEE9"
+branch = "#A3BE8C"
 
 [picker.marker]
-foreground = "scheme:primary"
-bold = true
+bold = false
 
-[picker.scrollbar]
-foreground = "scheme:primary"
-bold = true
+[picker.cursor]
+foreground = "scheme:accent"
+underline = true
 
-[picker.preview.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
+[picker.badge]
+foreground = "scheme:background"
 
-[picker.preview.border]
-foreground = "scheme:outline"
-
-[picker.preview.error]
-foreground = "scheme:on-error"
-background = "scheme:error"
-
-# 4. Chrome / Host Styles (Framing, Popups, and Footer)
-[chrome.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
-
-[chrome.muted_text]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface"
-
-[chrome.divider]
-foreground = "scheme:outline"
-
-[chrome.border]
-foreground = "scheme:outline"
-
-[chrome.footer]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface-container"
-
-[chrome.footer_title]
-foreground = "scheme:primary"
-background = "scheme:surface-container"
-bold = true
-
-[chrome.footer_status]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface-container"
+[picker.badge.selected]
+foreground = "scheme:branch"
+bold = false
 
 [chrome.footer_key]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
-bold = true
+foreground = "scheme:background"
 
-[chrome.error]
-foreground = "scheme:on-error"
-background = "scheme:error"
-bold = true
+[workflows.git.styles.branch]
+foreground = "scheme:branch"
+
+[workflows.git.styles.branch.selected]
+italic = true
 ```
 
-### 2. Activate the Theme in `config.toml`
+Each scheme entry contains an `ansi:NAME` or `#RRGGBB` color. Add any names you need, such as `branch`, and refer to them as `scheme:branch` in styles. Styles also accept literal colors directly.
 
-In your `~/.config/tlaunch/config.toml`, set the `theme` field:
+You can start with just `[scheme]` and one entry. The launcher merges your file with the complete built-in theme by scheme key and style field, then resolves references. For example, changing `accent` recolors the inherited marker, cursor, and shortcut foregrounds. `surface` controls the input-prefix and shortcut backgrounds; `selection` controls selected-row and selected-badge backgrounds, which default to the terminal background. Omitted fields inherit; `bold = false` turns off inherited bold, and `background = "ansi:reset"` explicitly restores the terminal background.
+
+### 2. Activate and Check the Theme
+
+Set the theme name in `config.toml`:
 
 ```toml
 theme = "nord"
 ```
 
-You can also test a theme directly from the command line:
+Validate the configuration and try the theme:
 
 ```bash
+tlaunch --check --theme nord
 tlaunch --theme nord
 ```
 
-### 3. Component Slot Reference
+Use `tlaunch --theme terminal` to select the built-in theme. Omitting `theme` from the configuration also uses it. Each user theme extends this single baseline; themes cannot load other themes.
 
-| Section | Slot | Description |
-| :--- | :--- | :--- |
-| `[picker]` | `text` | Normal candidate text & unstyled editor input. |
-| `[picker]` | `muted` | Secondary description text in candidate items. |
-| `[picker]` | `input_prefix` | Highlight for recognized route prefixes and aliases in query input. |
-| `[picker]` | `selected` | Active selected row background and text. |
-| `[picker]` | `selected_muted` | Secondary description text on the active selected row. |
-| `[picker]` | `badge` / `badge_selected` | Metadata badge pill styles. |
-| `[picker]` | `marker` | Selection indicator symbol (`▌`). |
-| `[picker]` | `scrollbar` | Scrollbar thumb indicator. |
-| `[picker.preview]` | `text`, `border`, `error` | Preview panel contents, border, and error state. |
-| `[chrome]` | `text` / `muted_text` | Application frame background and fallback text styles. |
-| `[chrome]` | `divider` | General frame divider lines. |
-| `[chrome]` | `border` | Modal popup dialog borders. |
-| `[chrome]` | `footer` | Bottom status bar base background and text. |
-| `[chrome]` | `footer_title` | Active view title label on the left of footer and popup header. |
-| `[chrome]` | `footer_status` | Active status text on the footer (e.g. `2 items`). |
-| `[chrome]` | `footer_key` | Keyboard shortcut badges (e.g. `Enter`, `Ctrl+K`). |
-| `[chrome]` | `error` | Global error notification banner. |
-| `[capture]` | `text` | Captured subprocess output text. |
+### 3. Customize Workflow Slots
 
-### 4. Theme Fallbacks and Invariants
+Declare a default slot in the workflow's `workflow.toml`:
 
-- **Default Theme**: If `theme` is omitted, the built-in `terminal` theme is used, honoring your terminal's ANSI palette.
-- **Selective Override**: Any section or slot not explicitly specified in your custom theme will automatically inherit its sensible fallback default from `terminal.toml`.
-- **Pure Styling Contract**: Themes can only define visual presentation (`foreground`, `background`, modifiers like `bold`, `italic`, `underline`); they cannot change keybindings or runtime application behavior.
+```toml
+[styles.branch]
+foreground = "scheme:accent"
+bold = true
+
+[styles.branch.selected]
+underline = true
+```
+
+Use the slot name in structured item or preview displays. The `[workflows.git.styles.branch]` example above overrides that workflow's default foreground while retaining its bold setting. Its selected style also keeps the workflow's underline and adds italic. The selected background defaults to the picker's selection background unless explicitly set.
+
+See the [theme reference](../reference/theme-toml.md) for the built-in scheme, all component slots, accepted colors, and selected-style rules. The [built-in theme](../../src/ui/theme/builtin/terminal.toml) is a complete template.

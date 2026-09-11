@@ -5,7 +5,7 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 ## Engine Guides
 
 - **[Picker Views](picker-views.md)**
-  Configure static items, dynamic feeds, aggregate feeds, and metadata-backed previews.
+  Configure static items, dynamic feeds, aggregate feeds, and declared, script-produced, or inherited preview documents.
 
 - **[Capture Views](capture-views.md)**
   Configure static or script-produced Capture output and lifecycle behavior.
@@ -22,4 +22,4 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
   Configure declared or script-produced navigation, popup calls, return values, and post-commit processors.
 
 - **[Custom Themes](custom-themes.md)**
-  Create custom color palettes, brand color schemes, and UI element styling.
+  Create flat color schemes and override component and workflow styles.

@@ -26,6 +26,7 @@ exit = ["ctrl+c", "ctrl+d"]
 back = ["escape"]
 select_previous = ["up"]
 select_next = ["down"]
+toggle_preview = ["ctrl+p"]
 
 # Session-wide commands
 [commands.bindings.commands]
@@ -41,7 +42,7 @@ key = "ctrl+k"
 
 ### `theme`
 - **Type**: `string` (Optional)
-- **Description**: Name of the theme to load from `$XDG_CONFIG_HOME/tlaunch/themes/<name>.toml`. Defaults to `terminal`.
+- **Description**: Name of the theme to load from `themes/<name>.toml` beside the selected configuration file. Omission uses the built-in `terminal` theme. The CLI `--theme` option overrides this setting; `--theme terminal` selects the built-in theme. See the [theme specification](theme-toml.md) for flat scheme colors and field-level style overrides.
 
 ## Engine Defaults (`[defaults.<engine>.bindings]`)
 
@@ -50,9 +51,12 @@ Global keybindings for engines can be adjusted at the root level.
 ### `[defaults.picker.bindings]`
 Available configurable actions for the `picker` engine:
 - `exit`: Array of key combinations to immediately exit the launcher.
-- `back`: Clear input or return to the parent view.
+- `back`: Return to the parent view without changing the input.
+- `clear_input`: Clear the current input. The default key is `ctrl+u`.
 - `select_previous`: Move selection up.
 - `select_next`: Move selection down.
+- `toggle_preview`: Toggle the initially collapsed preview in any Picker. The default key is `ctrl+p`.
+- `preview_scroll_up`, `preview_scroll_down`: Scroll the preview by three rows. No default keys are assigned.
 
 Picker Enter behavior is configured by the View's explicit command bindings. The Picker engine has no implicit primary-selection action.
 

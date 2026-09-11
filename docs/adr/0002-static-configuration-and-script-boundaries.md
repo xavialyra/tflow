@@ -54,12 +54,13 @@ Literal Picker items arrays and Capture output strings remain concise declared-p
 | :--- | :--- | :--- |
 | Command | One operation matching the declared command type | Actual command dispatch |
 | Picker items | Complete items array | Each explicit items request |
+| Picker preview | Data-only document or null | Debounced current selection, after host commit |
 | Capture output | Output string | After the Capture View is committed and mounted |
 | Return processor | One operation matching the declared processor type | After a successful call return restores the caller |
 
-There is **no general View builder in the initial design**. Route definitions, query schemas, Engine type, layout, preview configuration, and keymap remain static. Providers cannot redefine those fields or create undeclared routes. View labels remain host-owned aliases or canonical references; there is no workflow `title` field.
+There is **no general View builder in the initial design**. Route definitions, query schemas, Engine type, preview pane sizing (`preview_ratio`, `preview_min_width`, and `preview_default_open`), preview provider configuration, and keymap remain static. The dedicated Picker preview producer may return nested internal document layouts. The host validates and renders that data; the producer cannot change the View definition or emit operations. Providers cannot redefine those fields or create undeclared routes. View labels remain host-owned aliases or canonical references; there is no workflow `title` field.
 
-This narrows the earlier builder direction: dynamic layout and parameterized Embedded argv are not provided by this initial model. A future dedicated process-configuration producer requires a separate decision; do not restore arbitrary interpolation to fill that gap.
+This narrows the earlier builder direction: dynamic outer View layout and parameterized Embedded argv are not provided by this model. A future dedicated process-configuration producer requires a separate decision; do not restore arbitrary interpolation to fill that gap.
 
 ### 3. Commands declare their operation type
 
@@ -435,7 +436,7 @@ The static producer boundary does not remove Picker selection, preview, provenan
 
 Users can see where runtime computation occurs. Declared operations remain concise, protocol requests can be captured and replayed, and generated navigation follows one parameter-validation path. Script data cannot redefine unrelated View configuration through a provider response.
 
-The trade-offs are additional scripts for small dynamic mappings, process/JSON overhead, and runtime validation of external outputs. Static checking cannot predict arbitrary script output or external failures. Dynamic layouts and Embedded argv are outside the initial capability set; View labels remain host-owned.
+The trade-offs are additional scripts for small dynamic mappings, process/JSON overhead, and runtime validation of external outputs. Static checking cannot predict arbitrary script output or external failures. User-defined dynamic outer layouts and Embedded argv are outside the initial capability set; View labels remain host-owned.
 
 Existing dynamic workflows require migration to declared values or producer handlers. The release boundary uses the producer schema directly; runtime values must be supplied through the documented request and response fields.
 
@@ -450,7 +451,7 @@ The producer structure, operation-type matching, ownership, and lifecycle rules 
 - Missing and explicit `null` return values remain distinct. An explicit `null` is a successful return result and is delivered to a post-commit return processor; a close/cancel decision does not dispatch the processor.
 - Runtime computation uses the producer paths described above. JSON protocol boundaries are UTF-8 and do not preserve NUL-delimited or non-UTF-8 output.
 
-Remaining work is migration of user configurations plus future decisions for capabilities intentionally outside this initial producer set such as dynamic layouts, preview producers, and Embedded process-configuration producers. Complete schemas and exhaustive optional/default/error behavior remain implementation follow-up only where the runtime has not yet exposed a dedicated producer contract.
+Remaining work is migration of user configurations plus future decisions for capabilities intentionally outside this initial producer set such as user-defined dynamic outer layouts and Embedded process-configuration producers. Complete schemas and exhaustive optional/default/error behavior remain implementation follow-up only where the runtime has not yet exposed a dedicated producer contract.
 
 The implementation checklist for the initial producer scope is:
 
@@ -462,6 +463,15 @@ The implementation checklist for the initial producer scope is:
 6. **Implemented**: return, cancellation/close, explicit null, absent processor, processor failure, and stale-result paths are covered by runtime logic and focused tests. Return transitions commit before new processors run.
 7. **Implemented**: fixtures and protocol tests cover replayable requests, complete-response validation, literal configuration data, and entry-point-labelled errors.
 8. **Implemented**: representative static navigation, selected-item navigation, feeds, Capture output, call/return, foreground run, and inline producer scripts are covered in the test fixtures.
-9. **Implemented**: references, tutorials, CLI inspection, and runtime guarantees describe the static configuration and producer protocol. Dynamic layouts, preview producers, and Embedded process-configuration producers remain deferred; View labels are host-owned.
+9. **Implemented**: references, tutorials, CLI inspection, and runtime guarantees describe the static configuration and producer protocol. User-defined dynamic outer layouts and Embedded process-configuration producers remain deferred; Picker preview sizing uses its dedicated static fields and View labels are host-owned.
 
 [Producer Protocol](../reference/producer-protocol.md) records the literal boundary and the explicit request/response contract for runtime data. The [Architecture Convergence plan](../explanation/architecture-convergence.md) records the implemented Router, task, execution, configuration ownership, and documentation boundaries.
+
+
+### Picker preview extension
+
+Every Picker provides an initially collapsed preview with built-in item details containing display and value. Metadata is available to custom providers but is omitted from the built-in renderer. Custom sources are scripts, declared documents, or inherited feed providers. Specialized metadata projection belongs to producer code; the host has no JSON Pointer block source or parallel block renderer. Preview source ownership is independent of document rendering. An aggregate page uses the selected feed's provider by default, falling back to built-in details, and may declare a page-owned override. Dedicated preview sizing fields control the outer split without enabling or expanding the pane. Parameters, relative paths, and workflow styles follow the provider owner; the outer items/preview layout follows the page. This preserves feed ownership without allowing a feed producer to restructure the carrying View.
+
+Preview scripts begin only through the committed mount's task starter. A bounded runtime-owned preview worker isolates slow preview requests from the default serialized item/task worker. Both workers share correlation delivery, managed execution, cancellation, and shutdown ownership. Preview task IDs and generations cannot replace item registrations. Replacing selection, hiding, covering, and closing discard old preview state; late completions cannot publish into a new selection.
+
+Documents share the item display schema and semantic theme slots, with explicit bounds on structure, text, constraints, and image count. Image decode and terminal encoding remain asynchronous and bounded. See [Picker Preview Documents and Producers](../reference/picker-preview.md).

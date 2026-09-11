@@ -88,6 +88,14 @@ This prints formatted details including:
 - Declared query parameters and types
 - Configured commands and keybindings
 
+To inspect every configured View, use:
+
+```bash
+tlaunch inspect --all
+```
+
+The result has a top-level `views` array. Entries are ordered by canonical View reference and use the same contract fields as a single-View inspection. The list includes every configured Engine type; producer scripts are not executed.
+
 ## CLI Symlink Multiplexing (`argv[0]`)
 
 `tlaunch` supports direct entry point multiplexing based on `argv[0]`:

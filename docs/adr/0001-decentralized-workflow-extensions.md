@@ -12,7 +12,7 @@ description: "Architecture Decision Record establishing decentralized workflow p
 
 # ADR 0001: Decentralized Workflow Extensions Architecture
 
-* **Status**: Accepted
+* **Status**: Accepted; the M3 theming contract in section 6 was superseded on 2026-09-11 by the [flat scheme specification](../reference/theme-toml.md).
 * **Date**: 2026-09-06
 * **Scope**: `workflow/config`, `app/cli`, `ui/theme`
 
@@ -108,9 +108,11 @@ printf '%s\n' "checkout producer"
 - **CLI Flag to Query Mapping**: Trailing CLI arguments are passed as explicit CLI flags matching fields in `[views.<name>.query]`. Undeclared flags are rejected with a validation error. Note that `input_order` is purely an internal picker UI query parsing contract and does not govern CLI flag mapping.
 - **Contract Inspection**: A dedicated CLI mode (`tlaunch inspect <view>`) outputs the view's query schema, command bindings, and return types, enabling automatic shell completion generation.
 
-### 6. Alignment with M3 Theming
+### 6. Alignment with M3 Theming (Historical Contract)
 
-- **M3 Scheme Primacy**: Workflows continue to consume Material Design 3 semantic color tokens (`scheme:primary`, `scheme:on-surface-variant`, etc.) in style slot declarations (`[styles.<slot>]`), ensuring out-of-the-box harmony across all user themes without per-workflow styling patches.
+The M3 contract below records the original decision. It was superseded on 2026-09-11: the active theme now uses an extensible flat scheme with built-in names such as `accent` and `muted`, literal scheme values, and field-level style merging. See the [current theme specification](../reference/theme-toml.md). The workflow style table nomenclature remains current.
+
+- **M3 Scheme Primacy (superseded)**: Workflows continue to consume Material Design 3 semantic color tokens (`scheme:primary`, `scheme:on-surface-variant`, etc.) in style slot declarations (`[styles.<slot>]`), ensuring out-of-the-box harmony across all user themes without per-workflow styling patches.
 - **Theme Table Nomenclature**: Themes directly configure workflow styles under `[workflows.<id>.styles]`.
 
 ---

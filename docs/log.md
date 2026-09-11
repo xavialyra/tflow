@@ -2,6 +2,32 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-11
+
+- Preserved the terminal theme's unhighlighted selected-row background and yellow-on-black input prefixes and shortcuts. Separated their black `surface` from `selection` / `on-selection`, which now default to terminal reset, and synchronized theme reference and guide descriptions.
+
+- Made preview available in every Picker, initially collapsed with a default `Ctrl+P` toggle and no visibility setting. Documented built-in display/value details, optional page and feed content overrides, absent-provider fallback, empty/error behavior, and suspended script/image work while collapsed.
+
+- Removed the legacy `[picker.badge_selected]` theme table and its override precedence. Selected badges now use only `[picker.badge.selected]`; documented rejection of the old entry and retained field-level selected-style merging.
+
+- Removed legacy Picker `preview.blocks` configuration, JSON Pointer metadata projection, the parallel block renderer, and source-feed path exceptions. Preview sources are scripts, declared documents, or inherited providers; relative paths consistently follow the provider owner. Updated the preview reference, Picker guide, workflow/producer specifications, indexes, and ADR 0002.
+
+- Marked ADR 0001's original M3 theming contract as historical and superseded by the flat scheme specification, preserving the original decision and updating the ADR registry.
+
+- Clarified that theme color literals and references preserve outer whitespace trimming, while scheme map keys remain exact. Added regression coverage for non-ASCII hex rejection and black accent text on light backgrounds.
+
+- Simplified themes to a flat, extensible scheme of ANSI or RGB literals and field-level component overrides. Removed palette configuration and fixed role names; documented baseline merging before color resolution, explicit false/reset overrides, selected workflow slot inheritance, and invalid-reference errors. Added the theme specification, migrated the custom theme guide and workflow references, and updated the documentation indexes.
+
+## 2026-09-10
+
+- Added Picker preview source/document reference, script protocol, inherited feed ownership and page overrides, nested styled content, host scrolling, runtime worker isolation, validation limits, and a runnable mixed image/text fixture. Updated the Picker how-to and ADR 0002 to distinguish static outer panes from producer-supplied internal documents.
+
+- Documented the 3-second automatic expiration of INFO feedback in the footer and popup bottom border, including idle refresh, replacement timing, early input/navigation dismissal, and retained logs.
+
+- Documented optional `run.success_message` for host-generated INFO feedback after successful external commands, including clipboard workflows and immediate-exit logging.
+
+- Added `tlaunch inspect --all` to export stable JSON contracts for every configured View, including alias, Engine, query, and command metadata.
+
 ## 2026-09-09
 
 - Renamed the product, crate, binary, configuration paths, runtime prefixes, and CLI environment variable to `tlaunch` / `TLAUNCH_CONFIG`.

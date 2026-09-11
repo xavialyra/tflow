@@ -6,7 +6,7 @@ tags:
   - views
   - feeds
   - preview
-description: "Configure Picker Views with static items, dynamic feeds, aggregate feeds, and metadata-backed previews."
+description: "Configure Picker Views with static items, dynamic feeds, aggregate feeds, and script-produced preview documents."
 ---
 
 # How to Configure Picker Views
@@ -121,43 +121,65 @@ items = [
 
 The plain `items = [...]` array is also supported as a declared shorthand.
 
-### 5. Configure a Preview
+### 5. Customize a Preview
 
-Preview layout and content sources are static Engine configuration. A preview block reads a JSON Pointer from the selected item's metadata; it does not execute a script or interpolate a selected value.
+Press `Ctrl+P` in any Picker to view the selected item's display and value. Every Picker starts with its preview collapsed; no preview configuration is needed for these built-in details. Metadata remains available to custom preview providers.
+
+To customize the content, declare a preview provider. The following example sets the automatic preview sizing and uses a script to turn selected-item metadata into a document:
 
 ```toml
-[views.branches.engine.config.layout]
-direction = "horizontal"
-gap = 1
-
-[[views.branches.engine.config.layout.panes]]
-slot = "items"
-grow = 1
-min = 28
-
-[[views.branches.engine.config.layout.panes]]
-slot = "preview"
-size = 36
-min = 24
+[views.branches.engine.config]
+preview_ratio = 0.35
+preview_min_width = 24
 
 [views.branches.engine.config.preview]
-
-[[views.branches.engine.config.preview.blocks]]
-type = "text"
-source = "/metadata/summary"
-grow = 1
+producer = "script"
+[views.branches.engine.config.preview.handler]
+file = "scripts/preview.py"
 ```
 
-The items producer should place preview data under `metadata`, for example `{"metadata":{"summary":"recent commits"}}`. Image blocks use a metadata JSON Pointer to an image path. Missing or invalid preview data is rendered as a preview diagnostic.
+Create `scripts/preview.py`:
 
-### 6. Toggle the Preview Pane
+```python
+#!/usr/bin/env python3
+import json
+import sys
 
-Bind a key to the built-in preview action:
+request = json.load(sys.stdin)
+item = request["context"]["engine"]["state"]["item"]
+json.dump({"version": 1, "preview": {
+    "type": "paragraph",
+    "spans": [{"text": item["text"] + "\n", "slot": "accent"},
+              item["metadata"].get("summary", "No summary")],
+}}, sys.stdout)
+sys.stdout.write("\n")
+```
+
+For fixed content, replace the preview source with `preview = { producer = "declared", document = "About this list" }` under `engine.config`.
+
+For an aggregate page, omit its `preview` field to use the selected feed's provider, falling back to built-in details when the feed has no provider. Preview sizing is controlled by `preview_ratio` and `preview_min_width`; the pane starts collapsed unless `preview_default_open = true`. Add an explicit page provider to override the content. For scripts and declared documents, the selected provider's workflow supplies its parameters, relative script/image paths, and custom styles. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for declared documents and nested layouts.
+
+Run the complete mixed text/image fixture from the repository root:
+
+```sh
+cargo run -- --config tests/fixtures/preview/config.toml --check
+cargo run -- --config tests/fixtures/preview/config.toml
+```
+
+Press `Ctrl+P` and select **Mixed preview** to see display rows, rich wrapped text, an image, and scrollable content. Select **Empty preview** to exercise a null response. The fixture's `browser:override` View demonstrates a page-owned provider and `browser:declared` demonstrates a static document.
+
+### 6. Toggle and Scroll the Preview Pane
+
+`Ctrl+P` toggles the preview by default. Use the View keymap to customize the toggle binding or add scrolling keys:
 
 ```toml
 [views.branches.keymap]
 "ctrl+p" = "toggle_preview"
+"alt+k" = "preview_scroll_up"
+"alt+j" = "preview_scroll_down"
 ```
+
+Scroll actions move three rows and clamp the stored offset immediately, including after resize. Query, divider, and completion rows reduce the available preview body; an empty body or unmet pane minimum cancels preview work. Preview scripts share one pending slot: the same mount can replace its pending request, while overflow from another mount fails in that incoming preview pane.
 
 ## Troubleshooting
 
