@@ -121,3 +121,20 @@ background = "scheme:error"
 [capture.text]
 foreground = "scheme:foreground"
 background = "scheme:background"
+
+[form.label]
+foreground = "scheme:accent"
+background = "scheme:background"
+bold = true
+
+[form.input]
+foreground = "scheme:foreground"
+background = "scheme:background"
+
+[form.focused]
+foreground = "scheme:foreground"
+background = "scheme:selection"
+
+[form.error]
+foreground = "scheme:on-error"
+background = "scheme:error"

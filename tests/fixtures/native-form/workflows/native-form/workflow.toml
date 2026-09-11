@@ -1,0 +1,101 @@
+[workflow]
+api = 1
+name = "Native form fixture"
+
+[views.main]
+alias = "native-form"
+
+[views.main.engine]
+type = "form"
+
+[views.main.engine.config.content]
+producer = "declared"
+[views.main.engine.config.content.handler]
+fields = [
+    { name = "name", label = "Project name", required = true },
+    { name = "count", label = "Count", type = "integer", value = 2 },
+    { name = "enabled", label = "Enabled", type = "boolean", value = false },
+    { name = "options", label = "Options", type = "json", value = { tags = [] } },
+]
+
+[views.main.commands.submit]
+key = "enter"
+label = "Submit"
+scope = "view"
+requires = "input"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.dynamic.query]
+type = "object"
+spec = { type = "object", default = { fields = [{ name = "message", label = "Dynamic message", value = "From query", required = true }, { name = "data", type = "json", value = { count = 1 } }] } }
+
+[views.dynamic.engine]
+type = "form"
+[views.dynamic.engine.config.content]
+producer = "script"
+handler = { file = "scripts/content.py" }
+
+[views.dynamic.commands.submit]
+key = "enter"
+label = "Submit"
+scope = "view"
+requires = "input"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.main.commands.details]
+key = "ctrl+l"
+label = "Edit details"
+scope = "view"
+requires = "input"
+type = "call"
+producer = "declared"
+handler = { target = "native-form:dynamic" }
+
+[views.main.commands.details.return_processor]
+type = "return"
+producer = "script"
+handler = { file = "scripts/returned.py" }
+
+[views.main.commands.string_form]
+key = "ctrl+t"
+label = "String form"
+scope = "view"
+requires = "input"
+type = "call"
+producer = "declared"
+handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
+
+[views.main.commands.string_form.return_processor]
+type = "return"
+producer = "script"
+handler = { file = "scripts/returned.py" }
+
+[views.string.query]
+type = "string"
+
+[views.string.engine]
+type = "form"
+[views.string.engine.config.content]
+producer = "script"
+handler = { file = "scripts/string-content.py" }
+
+[views.string.commands.submit]
+label = "Submit string values"
+scope = "view"
+requires = "input"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.failed.engine]
+type = "form"
+[views.failed.engine.config.content]
+producer = "script"
+[views.failed.engine.config.content.handler]
+script = '''#!/bin/sh
+printf '%s' '{"version":2,"content":{"fields":[]}}'
+'''

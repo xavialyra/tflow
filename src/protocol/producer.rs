@@ -372,6 +372,52 @@ pub(crate) fn run_script_capture_response(
     }
 }
 
+pub(crate) fn form_request(parameters: &Value, input: &Value, state: &Value) -> Value {
+    json!({"version": PROTOCOL_VERSION, "entrypoint": "form-content",
+        "context": producer_context(parameters, input, "form", state)})
+}
+
+pub(crate) fn run_script_form_response(
+    owner: &str,
+    root: Option<&std::path::Path>,
+    source: &ResolvedScriptSource,
+    request: &Value,
+    cancellation: &dyn CancellationStatus,
+) -> ScriptResponseOutcome<Value> {
+    let output = run_script_output(
+        owner,
+        "form-content",
+        root,
+        source,
+        request,
+        Some(1024 * 1024),
+        cancellation,
+    );
+    ScriptResponseOutcome {
+        managed_child_reaped: output.managed_child_reaped,
+        result: output
+            .result
+            .and_then(|output| parse_form_response(&output.stdout)),
+    }
+}
+
+fn parse_form_response(stdout: &[u8]) -> Result<Value> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Response {
+        version: u64,
+        content: Value,
+    }
+    let response: Response = serde_json::from_slice(stdout)
+        .context("form-content producer must write exactly one JSON response")?;
+    anyhow::ensure!(
+        response.version == PROTOCOL_VERSION,
+        "unsupported form-content protocol version {}; expected 1",
+        response.version
+    );
+    Ok(response.content)
+}
+
 pub(crate) fn parse_preview_response(stdout: &[u8]) -> Result<Value> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]

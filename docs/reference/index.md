@@ -19,5 +19,8 @@ The Reference section contains formal specifications, configuration schemas, com
 - **[Picker Preview Documents and Producers](picker-preview.md)**
   Initially collapsed built-in item details, default toggle binding, script/declared/inherited overrides, source ownership, nested documents, scrolling, and resource bounds.
 
+- **[Form Content and State](form.md)**
+  Native editable fields, declared/script content producers, validation, command state, and keyboard behavior.
+
 - **[Theme TOML Specification](theme-toml.md)**
   Flat scheme color syntax and whitespace handling, built-in defaults, component fields, and workflow selected-style merging.

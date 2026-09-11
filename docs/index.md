@@ -14,7 +14,7 @@ tags:
 
 # tlaunch Documentation
 
-Welcome to the `tlaunch` knowledge base. `tlaunch` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, or embedded PTY engines.
+Welcome to the `tlaunch` knowledge base. `tlaunch` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, native form, or embedded PTY engines.
 
 This documentation is organized into four core categories following the **Diátaxis** framework, packaged as an **Open Knowledge Format (OKF v0.2)** bundle for both human developers and autonomous AI agents.
 
@@ -31,6 +31,7 @@ This documentation is organized into four core categories following the **Diáta
 *Engine-specific View configuration:*
 - [Picker Views](how-to/picker-views.md) — Configure static items, dynamic feeds, aggregation, and previews.
 - [Capture Views](how-to/capture-views.md) — Configure static or script-produced text output.
+- [Form Views](how-to/form-views.md) — Generate editable fields from query parameters and use commands to submit values.
 - [Embedded Views](how-to/embedded-views.md) — Host interactive terminal programs through a PTY.
 
 *Cross-cutting workflow tasks:*
@@ -61,3 +62,4 @@ This documentation is organized into four core categories following the **Diáta
 - **[Architecture Decision Records (ADRs)](adr/index.md)** — Chronological log of formal design and architectural choices.
   - [ADR 0001: Decentralized Workflow Extensions](adr/0001-decentralized-workflow-extensions.md) — Decentralized workflow package layout, dual-mode storage, inline scripts, and CLI multiplexing.
   - [ADR 0002: Static Configuration and Script Boundaries](adr/0002-static-configuration-and-script-boundaries.md) — Static configuration, typed operations, restricted data providers, and explicit navigation and return protocols.
+  - [ADR 0003: Unified Action Registration and Host-Owned Command Folding](adr/0003-unified-action-registration-and-host-folding.md) — One dispatch registry for View and Engine actions, View-only business-command presentation, and host-owned folding across normal and popup views.

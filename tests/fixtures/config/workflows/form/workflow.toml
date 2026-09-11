@@ -1,0 +1,72 @@
+[workflow]
+api = 1
+name = "Native form example"
+
+[views.main]
+alias = "form-demo"
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+show_input = false
+items = [{ display = "Collect parameters", value = "create" }]
+
+[views.main.commands.open]
+key = "enter"
+label = "Open form"
+type = "call"
+producer = "declared"
+
+[views.main.commands.open.handler]
+target = "form:input"
+query = { name = "demo", environment = "dev", enabled = true }
+presentation = { mode = "popup", width = 72, height = 20 }
+
+[views.main.commands.open.return_processor]
+type = "navigate"
+producer = "script"
+
+[views.main.commands.open.return_processor.handler]
+file = "scripts/received.py"
+
+[views.input]
+cancel_exit_code = 1
+alias = "form"
+
+[views.input.query]
+type = "object"
+input_order = ["name", "environment", "enabled"]
+name = { type = "string", default = "" }
+environment = { type = "string", default = "dev" }
+enabled = { type = "boolean", default = true }
+spec = { type = "object", default = { fields = [{ name = "name", required = true }, { name = "environment", label = "Environment (dev/prod)", value = "dev" }, { name = "enabled", label = "Enabled (true/false)", type = "boolean", value = true }] } }
+
+[views.input.engine]
+type = "form"
+
+[views.input.engine.config.content]
+producer = "script"
+handler = { file = "scripts/content.py" }
+
+[views.input.commands.submit]
+key = "enter"
+label = "Submit"
+scope = "view"
+requires = "input"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.result.query]
+type = "object"
+result = { type = "object" }
+
+[views.result.engine]
+type = "capture"
+
+[views.result.engine.config.output]
+producer = "script"
+
+[views.result.engine.config.output.handler]
+file = "scripts/received.py"

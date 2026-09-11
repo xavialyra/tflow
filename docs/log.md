@@ -2,7 +2,19 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-12
+
+- Simplified the native Form Engine by removing field help text, the form help theme slot, and the native-form help popup fixture. Validation errors remain inline; updated the form and theme references and native form guide.
+
+- Added accepted ADR 0003, `docs/adr/0003-unified-action-registration-and-host-folding.md`: register View and Engine actions through one dispatch model, keep Engine actions out of business-command presentation, and make command folding and the Ctrl-K opener host-owned and shared by normal and popup rendering.
+
 ## 2026-09-11
+
+- Added the native Form Engine reference and guide: fixed query inputs, declared/script content producers, editable drafts and typed state, command-controlled submission, keyboard behavior, theme slots, and runnable object/string convention examples. Updated workflow, producer, theme, and documentation indexes.
+
+- Fixed the Embedded form example's handling of empty and partial routed input, documented the distinction between raw route text and rendered CLI/call parameters, and added default-page route regression coverage.
+
+- Added a runnable Embedded form workflow and guide covering initial scalar parameters, validation, JSON submission, Esc cancellation, and caller return processing. Clarified the separate stdout result pipe and PTY display streams in the Embedded guide; added PTY integration coverage for direct and nested invocation.
 
 - Preserved the terminal theme's unhighlighted selected-row background and yellow-on-black input prefixes and shortcuts. Separated their black `surface` from `selection` / `on-selection`, which now default to terminal reset, and synchronized theme reference and guide descriptions.
 

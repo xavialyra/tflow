@@ -12,7 +12,7 @@ description: "Flat scheme colors, component style fields, built-in defaults, and
 
 A user theme is `themes/<name>.toml` relative to the selected configuration file. Root `theme = "<name>"` selects that file; the CLI `--theme` option takes precedence. Omitting the root setting uses the built-in `terminal` theme. `--theme terminal` explicitly selects the built-in theme.
 
-The only top-level tables are `scheme`, `picker`, `chrome`, `capture`, and `workflows`. Unknown fields, including a `palette` table or theme inheritance configuration, are errors. There is no inheritance chain between user themes.
+The only top-level tables are `scheme`, `picker`, `chrome`, `capture`, `form`, and `workflows`. Unknown fields, including a `palette` table or theme inheritance configuration, are errors. There is no inheritance chain between user themes.
 
 ## Color Values
 
@@ -79,6 +79,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[chrome]` | `footer_key` | Keyboard shortcut badges (e.g. `Enter`, `Ctrl+K`). |
 | `[chrome]` | `error` | Global error notification banner. |
 | `[capture]` | `text` | Captured subprocess output text. |
+| `[form]` | `label`, `input`, `focused`, `error` | Field labels, normal and focused editors, and validation errors. |
 
 The picker cursor is a styled cell in the render buffer. Cursor blink is not a theme field. Themes control presentation only; they do not configure keys or application behavior.
 

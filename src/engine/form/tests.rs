@@ -1,0 +1,462 @@
+use super::*;
+use crate::view::{ParsedQuery, RenderContext, TerminalSize};
+use ratatui::{Terminal, backend::TestBackend};
+use serde_json::json;
+
+fn config(content: Value, tasks: TaskRuntime) -> FormProtocolConfig {
+    FormProtocolConfig {
+        engine: ProjectedEngineConfig {
+            fields: [("content".into(), content)].into_iter().collect(),
+            ..Default::default()
+        },
+        commands: ViewCommandBindings::new(
+            &crate::workflow::config::load_test_fixture().unwrap(),
+            "form",
+            crate::lifecycle::CancellationToken::new().observer(),
+        )
+        .unwrap(),
+        runtime_snapshot: Value::Null,
+        raw_input: "immutable query".into(),
+        theme: ResolvedTheme::terminal(),
+        tasks,
+    }
+}
+
+fn request() -> NavigationRequest {
+    NavigationRequest::new(
+        "form",
+        ParsedQuery::new("form", "query", json!({"schema": {"anything": true}})),
+    )
+}
+
+fn declared(fields: Value) -> FormView {
+    let mut form = FormView::new(
+        config(
+            json!({"producer":"declared", "handler":{"fields":fields}}),
+            TaskRuntime::new(),
+        ),
+        &request(),
+        ViewInstanceId(1),
+    )
+    .unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    form
+}
+
+fn context() -> ViewContext {
+    ViewContext::new(ViewInstanceId(1), "form")
+}
+fn key(form: &mut FormView, key: Key) -> ViewDecision {
+    form.event(
+        ViewEvent::Input(InputEvent::Key {
+            key,
+            raw: Vec::new(),
+        }),
+        &context(),
+    )
+    .unwrap()
+}
+fn paste(form: &mut FormView, text: &str) {
+    form.event(
+        ViewEvent::Input(InputEvent::Paste {
+            text: Some(text.into()),
+            raw: text.as_bytes().to_vec(),
+        }),
+        &context(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn drafts_validate_typed_values_without_mutating_query_or_submitting() {
+    let mut form = declared(json!([
+        {"name":"name", "required":true},
+        {"name":"age", "type":"integer", "value":3},
+        {"name":"enabled", "type":"boolean"},
+        {"name":"options", "type":"json"}
+    ]));
+    assert_eq!(form.publication.current["valid"], false);
+    assert_eq!(form.publication.current["errors"]["name"], "Required");
+    assert_eq!(form.publication.current["dirty"], false);
+    paste(&mut form, "é界");
+    key(&mut form, Key::Left);
+    key(&mut form, Key::Backspace);
+    assert_eq!(form.publication.current["values"]["name"], "界");
+    key(&mut form, Key::Tab);
+    paste(&mut form, "x");
+    assert_eq!(form.publication.current["drafts"]["age"], "3x");
+    assert_eq!(form.publication.current["values"]["age"], Value::Null);
+    assert_eq!(
+        form.publication.current["errors"]["age"],
+        "Enter an integer"
+    );
+    key(&mut form, Key::Backspace);
+    key(&mut form, Key::Tab);
+    key(&mut form, Key::Char(' '));
+    key(&mut form, Key::Tab);
+    paste(&mut form, "{\n\"tags\":[1,true]}");
+    let state = &form.publication.current;
+    assert_eq!(
+        state["values"],
+        json!({"name":"界", "age":3,"enabled":true,"options":{"tags":[1,true]}})
+    );
+    assert_eq!(state["valid"], true);
+    assert_eq!(state["dirty"], true);
+    assert_eq!(key(&mut form, Key::Enter), ViewDecision::Stay);
+    assert_eq!(form.command_snapshot().parameters, request().query.values);
+    assert_eq!(form.command_snapshot().raw_input, "immutable query");
+    assert_eq!(
+        form.command_snapshot().publication.unwrap().current,
+        form.publication.current
+    );
+}
+
+#[test]
+fn content_rejects_structural_errors_but_allows_incomplete_required_fields() {
+    for fields in [
+        json!([{"name":"x"},{"name":"x"}]),
+        json!([{"name":" "}]),
+        json!([{"name":"x", "type":"secret"}]),
+        json!([{"name":"x", "type":"integer", "value":"2"}]),
+        json!([{"name":"x", "help":"Removed field help"}]),
+        json!([{"name":"x", "unknown":true}]),
+    ] {
+        assert!(parse_content(json!({"fields":fields})).is_err());
+    }
+    assert!(parse_content(json!({"fields":[{"name":"x","required":true}]})).is_ok());
+    assert!(parse_content(json!({"fields":[],"query":{}})).is_err());
+}
+
+#[test]
+fn focus_wraps_and_covered_views_preserve_drafts_and_ignore_input() {
+    let mut form = declared(json!([{"name":"a","value":"initial"},{"name":"b"}]));
+    paste(&mut form, " edit");
+    key(&mut form, Key::BackTab);
+    assert_eq!(form.publication.current["focused"], "b");
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context())
+        .unwrap();
+    paste(&mut form, "ignored");
+    key(&mut form, Key::Char('x'));
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    key(&mut form, Key::Tab);
+    assert_eq!(
+        form.publication.current["values"],
+        json!({"a":"initial edit","b":""})
+    );
+    key(&mut form, Key::Ctrl('u'));
+    paste(&mut form, "initial");
+    assert_eq!(form.publication.current["dirty"], false);
+}
+
+#[test]
+fn required_and_optional_scalar_validation_is_explicit() {
+    let mut form = declared(json!([
+        {"name":"number","type":"number","required":true},
+        {"name":"json","type":"json","required":true},
+        {"name":"bool","type":"boolean","value":false,"required":true},
+        {"name":"optional","type":"integer"}
+    ]));
+    paste(&mut form, "1.25");
+    key(&mut form, Key::Tab);
+    paste(&mut form, "null");
+    assert_eq!(form.publication.current["errors"]["json"], "Required");
+    key(&mut form, Key::Ctrl('u'));
+    paste(&mut form, "[]");
+    assert_eq!(form.publication.current["valid"], true);
+    assert_eq!(form.publication.current["values"]["number"], 1.25);
+    assert_eq!(form.publication.current["values"]["optional"], Value::Null);
+}
+
+#[test]
+fn rendering_keeps_focused_unicode_editor_visible_in_small_areas() {
+    let mut form = declared(json!(
+        (0..12)
+            .map(|n| json!({"name":format!("field{n}"),"value":"界界界é"}))
+            .collect::<Vec<_>>()
+    ));
+    for _ in 0..11 {
+        key(&mut form, Key::Tab);
+    }
+    for (width, height) in [(12, 6), (3, 3), (1, 1), (20, 2)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let result = form
+                    .render(
+                        frame,
+                        frame.area(),
+                        &RenderContext::for_terminal(TerminalSize { width, height }),
+                    )
+                    .unwrap();
+                let cursor = result.cursor.unwrap();
+                assert!(cursor.visible && cursor.x < width && cursor.y < height);
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn required_fields_use_the_inline_marker_without_an_additional_row() {
+    let form = declared(json!([{"name":"name", "label":"Name", "required":true}]));
+    let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    terminal
+        .draw(|frame| {
+            form.render(
+                frame,
+                frame.area(),
+                &RenderContext::for_terminal(TerminalSize {
+                    width: 80,
+                    height: 8,
+                }),
+            )
+            .unwrap();
+        })
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(screen.contains("Name *"));
+    assert!(!screen.contains("Required"));
+}
+
+#[test]
+fn form_column_uses_the_compact_default_maximum_width() {
+    let form = declared(json!([{"name":"name", "value":"value"}]));
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            form.render(
+                frame,
+                frame.area(),
+                &RenderContext::for_terminal(TerminalSize {
+                    width: 80,
+                    height: 10,
+                }),
+            )
+            .unwrap();
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer.cell((16, 3)).unwrap().symbol(), "╭");
+    assert_eq!(buffer.cell((63, 3)).unwrap().symbol(), "╮");
+    assert_eq!(buffer.cell((64, 3)).unwrap().symbol(), " ");
+}
+
+#[test]
+fn async_content_starts_on_activation_and_accepts_only_its_task() {
+    let tasks = TaskRuntime::new();
+    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"ok\"}]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    assert!(form.task.is_none());
+    assert!(!form.publication.ready);
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    let stale = crate::protocol::contracts::TaskEvent {
+        instance: ViewInstanceId(1),
+        task: TaskId(1),
+        generation: 2,
+        outcome: crate::protocol::contracts::TaskOutcome::Completed(Value::Null),
+    };
+    assert_eq!(
+        form.event(ViewEvent::Task(stale), &context()).unwrap(),
+        ViewDecision::Stay
+    );
+    assert!(!form.publication.ready);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !form.publication.ready && form.error.is_none() && std::time::Instant::now() < deadline {
+        for event in tasks.drain_events() {
+            assert_eq!(event.instance, ViewInstanceId(1));
+            assert_eq!(event.task, TaskId(1));
+            assert_eq!(event.generation, 1);
+            assert_eq!(
+                form.event(ViewEvent::Task(event), &context()).unwrap(),
+                ViewDecision::Invalidate
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(form.publication.ready, "{:?}", form.error);
+    assert_eq!(form.publication.current["values"]["loaded"], "ok");
+    assert!(
+        tasks
+            .metrics_snapshot()
+            .recent_terminal
+            .last()
+            .unwrap()
+            .process_reaped_at
+            .is_some()
+    );
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context())
+        .unwrap();
+    assert!(form.task.is_none());
+    tasks.shutdown_and_wait();
+}
+
+#[test]
+fn failed_content_never_publishes_a_ready_or_valid_form() {
+    for response in [
+        "not json",
+        r#"{"version":2,"content":{"fields":[]}}"#,
+        r#"{"version":1,"content":{"fields":[]},"query":{}}"#,
+        r#"{"version":1,"content":{"fields":[{"name":"x"},{"name":"x"}]}}"#,
+    ] {
+        let tasks = TaskRuntime::new();
+        let script = format!("#!/bin/sh\nprintf '%s' '{response}'");
+        let mut form = FormView::new(
+            config(
+                json!({"producer":"script","handler":{"script":script}}),
+                tasks.clone(),
+            ),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while form.error.is_none() && std::time::Instant::now() < deadline {
+            for event in tasks.drain_events() {
+                form.event(ViewEvent::Task(event), &context()).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(form.error.is_some());
+        assert!(!form.publication.ready);
+        assert_eq!(form.publication.current["valid"], false);
+        assert!(form.fields.is_empty());
+        tasks.shutdown_and_wait();
+    }
+}
+
+#[test]
+fn closing_cancels_content_work_and_rejects_late_completions() {
+    let tasks = TaskRuntime::new();
+    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nsleep 30\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context())
+        .unwrap();
+    let state = form.publication.clone();
+    tasks.shutdown_and_wait();
+    let event = crate::protocol::contracts::TaskEvent {
+        instance: ViewInstanceId(1),
+        task: TaskId(1),
+        generation: 1,
+        outcome: crate::protocol::contracts::TaskOutcome::Completed(json!({"fields":[]})),
+    };
+    assert_eq!(
+        form.event(ViewEvent::Task(event), &context()).unwrap(),
+        ViewDecision::Stay
+    );
+    assert_eq!(form.publication, state);
+    assert!(form.task.is_none());
+}
+
+#[test]
+fn registry_accepts_form_and_rejects_picker_sources_or_custom_keymaps() {
+    let registry = crate::engine::EngineRegistry::new();
+    assert_eq!(
+        registry
+            .definition_for_engine("form")
+            .unwrap()
+            .factory_fields
+            .runtime,
+        &["content"]
+    );
+    let valid = "[engine]\ntype = 'form'\n[engine.config.content]\nproducer = 'declared'\nhandler = { fields = [{ name = 'title' }] }\n";
+    registry
+        .validate_config("form", &toml::from_str(valid).unwrap())
+        .unwrap();
+    for extra in ["[keymap]\nnext = ['tab']", "[engine.config]\nitems = []"] {
+        assert!(
+            registry
+                .validate_config("form", &toml::from_str(&format!("{valid}{extra}")).unwrap())
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn closing_rollback_restores_drafts_and_only_closed_is_final() {
+    let mut form = declared(json!([{"name":"title","value":"initial"}]));
+    paste(&mut form, " edited");
+    let state = form.publication.clone();
+    assert_eq!(
+        form.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context())
+            .unwrap(),
+        ViewDecision::Stay
+    );
+    assert!(!form.closed);
+    assert_eq!(
+        form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+            .unwrap(),
+        ViewDecision::Invalidate
+    );
+    assert_eq!(form.publication, state);
+    paste(&mut form, " restored");
+    assert_eq!(
+        form.publication.current["values"]["title"],
+        "initial edited restored"
+    );
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context())
+        .unwrap();
+    let final_state = form.publication.clone();
+    assert_eq!(
+        form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+            .unwrap(),
+        ViewDecision::Stay
+    );
+    paste(&mut form, "ignored");
+    assert_eq!(form.publication, final_state);
+}
+
+#[test]
+fn closing_rollback_restarts_incomplete_content_with_new_task_generation() {
+    let tasks = TaskRuntime::new();
+    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"restored\"}]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    assert_eq!(
+        form.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context())
+            .unwrap(),
+        ViewDecision::Stay
+    );
+    assert!(form.task.is_none());
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    assert_eq!(form.task_generation, 1);
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context())
+        .unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    assert_eq!(form.task_generation, 2);
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context())
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !form.publication.ready && std::time::Instant::now() < deadline {
+        for event in tasks.drain_events() {
+            let current = event.generation == 2;
+            assert_eq!(
+                form.event(ViewEvent::Task(event), &context()).unwrap(),
+                if current {
+                    ViewDecision::Invalidate
+                } else {
+                    ViewDecision::Stay
+                }
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(form.publication.ready, "{:?}", form.error);
+    assert!(!form.active, "covered completion must remain local");
+    assert_eq!(form.publication.current["values"]["loaded"], "restored");
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+    assert_eq!(form.task_generation, 2, "completed content must not reload");
+    tasks.shutdown_and_wait();
+}

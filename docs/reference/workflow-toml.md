@@ -50,7 +50,7 @@ mode = { type = "string", default = "normal" }
 
 ## Engine Configuration
 
-Every View has one of the three built-in Engines. Route definitions, query schemas, Engine types, Picker pane sizing, and keymaps are host-owned static configuration. The initial producer protocol cannot redefine them. There is no workflow `title` configuration; the footer uses the host-owned View alias or canonical reference.
+Every View has one of the four built-in Engines. Route definitions, query schemas, Engine types, Picker pane sizing, and keymaps are host-owned static configuration. The initial producer protocol cannot redefine them. There is no workflow `title` configuration; the footer uses the host-owned View alias or canonical reference.
 
 ### Picker
 
@@ -140,6 +140,10 @@ The script runs after the Capture View has mounted. It receives a `capture-outpu
 ```
 
 A provider can change only the displayed output. On provider failure, the Capture View remains mounted and displays the diagnostic.
+
+### Form
+
+Form renders editable fields from a required `content` producer. Declared content uses `producer = "declared"` and `handler.fields`; script content uses a standard script handler and returns `{"version":1,"content":{"fields":[...]}}` for the `form-content` entry point. The View query remains fixed launch input. Edited values, raw drafts, validity, and errors are exposed under `context.engine.state` for ordinary commands. There is no implicit submit operation or dynamic query schema. See [Form Content and State](form.md) for the complete contract and [Form Views](../how-to/form-views.md) for runnable examples.
 
 ### Embedded
 

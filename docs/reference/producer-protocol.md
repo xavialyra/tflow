@@ -29,6 +29,7 @@ The host sends one JSON request to a producer and validates one complete version
 | Picker items | `context.parameters`, `context.input`, and `context.engine` | Complete `items` array |
 | Picker preview | `context.parameters`, `context.input`, and Picker `context.engine.state.input/item` | `preview` document or null |
 | Capture output | `context.parameters`, `context.input`, and `context.engine` | `output` string |
+| Form content | `context.parameters`, `context.input`, and `context.engine` | `content` object with an ordered `fields` array |
 | Return processor | `context.parameters`, `context.input`, `context.engine`, and raw `result` | One operation matching the processor's declared `type` |
 
 The public context fields are:
@@ -36,7 +37,7 @@ The public context fields are:
 - `context.parameters`: bound parameters for the command owner or provider feed;
 - `context.input`: the explicit launch input descriptor;
 - `context.engine.type`: the carrying Engine type;
-- `context.engine.state`: the Engine's public state projection. Picker exposes the current query as `state.input` and the normalized selected item as `state.item`.
+- `context.engine.state`: the Engine's public state projection. Picker exposes the current query as `state.input` and the normalized selected item as `state.item`. Form exposes edited `values`, raw `drafts`, `valid`, `errors`, `dirty`, and `focused`; its launch parameters remain unchanged. See [Form Content and State](form.md).
 
 When an aggregate Picker projects a command from the selected feed owner, `context.parameters` is that feed's independent parameter snapshot. A command declared by the aggregate Picker View receives the aggregate View's parameters. Feed IDs, owner View names, mounted instance identity, task generations, cancellation handles, and scheduling data remain host-owned.
 

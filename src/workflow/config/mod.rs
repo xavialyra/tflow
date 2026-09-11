@@ -22,6 +22,7 @@ pub(crate) use validation::EngineConfigValidator;
 pub type ViewRef = String;
 
 pub const ENGINE_PICKER: &str = "picker";
+pub const ENGINE_FORM: &str = "form";
 pub const ENGINE_CAPTURE: &str = "capture";
 pub const ENGINE_EMBEDDED: &str = "embedded";
 

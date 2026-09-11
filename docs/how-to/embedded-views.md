@@ -49,7 +49,11 @@ command = ["my-cli-wizard"]
 result = { format = "json", required = true, max_bytes = 1048576 }
 ```
 
-The launcher captures up to `max_bytes`, parses `format` as `json` or `text`, and passes a successful result through the existing command or return boundary.
+With `result` configured, the child's stdout is redirected to a separate result pipe; stdin and stderr remain attached to the PTY. Write the interactive display to stderr or `/dev/tty`, and reserve stdout for the result. On exit status 0, the launcher captures up to `max_bytes`, parses `format` as `json` or `text`, and returns the raw value through the View return boundary. A caller consumes it through a `return_processor`; a direct CLI invocation writes it to launcher stdout.
+
+With `required = true`, empty stdout is an error. Malformed JSON, oversized output, and nonzero process exits are also failures. Host Esc cancellation closes the View without a value and skips the return processor. A JSON `null` is a successful return value, not cancellation.
+
+For a runnable parameter form with initial values, validation, and caller processing, see [Collect Form Parameters and Return JSON](embedded-forms.md).
 
 ### 3. Use Commands and Overlays
 

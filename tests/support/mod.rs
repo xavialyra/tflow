@@ -600,12 +600,20 @@ pub fn spawn_launcher_with_args_and_env(
 }
 
 pub fn spawn_launcher_with_redirected_stdout(config: &Path) -> LauncherProcess {
+    spawn_launcher_with_args_and_redirected_stdout(config, &[])
+}
+
+pub fn spawn_launcher_with_args_and_redirected_stdout(
+    config: &Path,
+    extra_args: &[&str],
+) -> LauncherProcess {
     let binary = binary_path();
-    let arguments = vec![
+    let mut arguments = vec![
         binary.to_string_lossy().into_owned(),
         "--config".to_string(),
         config.to_string_lossy().into_owned(),
     ];
+    arguments.extend(extra_args.iter().map(|argument| (*argument).to_string()));
     let prepared = prepare_exec(arguments, &[]);
     let state_home = prepared.state_home.clone();
     let output_pipe = create_cloexec_pipe();

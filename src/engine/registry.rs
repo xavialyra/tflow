@@ -40,6 +40,7 @@ impl EngineRegistry {
     ) -> Option<crate::engine::EngineDefinition> {
         match engine_type {
             crate::workflow::config::ENGINE_PICKER => Some(super::picker::definition()),
+            crate::workflow::config::ENGINE_FORM => Some(super::form::definition()),
             crate::workflow::config::ENGINE_CAPTURE => Some(super::capture::definition()),
             crate::workflow::config::ENGINE_EMBEDDED => Some(super::embedded::definition()),
             _ => None,
@@ -80,6 +81,10 @@ impl EngineRegistry {
             crate::workflow::config::ENGINE_EMBEDDED => {
                 super::embedded::validate_config(context)?;
                 default_validate_keymap(crate::workflow::config::ENGINE_EMBEDDED, name, view)
+            }
+            crate::workflow::config::ENGINE_FORM => {
+                super::form::validate_config(context)?;
+                default_validate_keymap(crate::workflow::config::ENGINE_FORM, name, view)
             }
             engine_type => bail!("view {:?} uses unsupported engine {:?}", name, engine_type),
         }

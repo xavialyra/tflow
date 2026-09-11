@@ -1,6 +1,7 @@
 mod api;
 mod capture;
 mod embedded;
+pub(crate) mod form;
 mod picker;
 mod projection;
 mod registry;

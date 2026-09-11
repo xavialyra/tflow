@@ -68,6 +68,7 @@ pub(crate) struct ResolvedTheme {
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
     pub(crate) capture: CaptureTheme,
+    pub(crate) form: FormTheme,
     pub(super) scheme: ResolvedScheme,
     pub(super) raw_theme_overrides: Arc<BTreeMap<(String, String), RawStyleBinding>>,
     pub(super) custom_styles: Arc<BTreeMap<(String, String), ResolvedCustomStyle>>,
@@ -109,6 +110,14 @@ pub(crate) struct PreviewTheme {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CaptureTheme {
     pub(crate) text: Style,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FormTheme {
+    pub(crate) label: Style,
+    pub(crate) input: Style,
+    pub(crate) focused: Style,
+    pub(crate) error: Style,
 }
 
 pub(crate) type Theme = ResolvedTheme;
@@ -355,6 +364,32 @@ impl ResolvedTheme {
                 },
             },
             capture: CaptureTheme { text: capture_text },
+            form: FormTheme {
+                label: resolve_component(
+                    raw.form.label.as_ref(),
+                    default_raw.form.label.as_ref().unwrap(),
+                    "form.label",
+                )?
+                .normal,
+                input: resolve_component(
+                    raw.form.input.as_ref(),
+                    default_raw.form.input.as_ref().unwrap(),
+                    "form.input",
+                )?
+                .normal,
+                focused: resolve_component(
+                    raw.form.focused.as_ref(),
+                    default_raw.form.focused.as_ref().unwrap(),
+                    "form.focused",
+                )?
+                .normal,
+                error: resolve_component(
+                    raw.form.error.as_ref(),
+                    default_raw.form.error.as_ref().unwrap(),
+                    "form.error",
+                )?
+                .normal,
+            },
             scheme,
             raw_theme_overrides: Arc::new(raw_theme_overrides),
             custom_styles: Arc::new(custom_styles),
@@ -576,6 +611,8 @@ pub(super) struct RawTheme {
     #[serde(default)]
     pub(super) capture: RawCaptureTheme,
     #[serde(default)]
+    pub(super) form: RawFormTheme,
+    #[serde(default)]
     pub(super) workflows: BTreeMap<String, RawWorkflowThemeOverride>,
 }
 
@@ -641,4 +678,41 @@ pub(super) struct RawPreviewTheme {
 pub(super) struct RawCaptureTheme {
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawFormTheme {
+    pub(super) label: Option<RawStyleBinding>,
+    pub(super) input: Option<RawStyleBinding>,
+    pub(super) focused: Option<RawStyleBinding>,
+    pub(super) error: Option<RawStyleBinding>,
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    #[test]
+    fn form_theme_inherits_scheme_and_resolves_component_overrides() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [scheme]
+            accent = "#123456"
+            [form.focused]
+            background = "#654321"
+        "##,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "form theme").unwrap();
+        assert_eq!(
+            theme.form.label.fg,
+            Some(ratatui::style::Color::Rgb(0x12, 0x34, 0x56))
+        );
+        assert_eq!(
+            theme.form.focused.bg,
+            Some(ratatui::style::Color::Rgb(0x65, 0x43, 0x21))
+        );
+        assert_eq!(theme.form.input.fg, ResolvedTheme::terminal().form.input.fg);
+    }
 }

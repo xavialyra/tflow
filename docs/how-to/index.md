@@ -10,8 +10,14 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 - **[Capture Views](capture-views.md)**
   Configure static or script-produced Capture output and lifecycle behavior.
 
+- **[Form Views](form-views.md)**
+  Generate native editable fields from fixed query parameters and submit results through commands.
+
 - **[Embedded Views](embedded-views.md)**
   Run interactive terminal programs through the Embedded PTY Engine.
+
+- **[Collect Form Parameters and Return JSON](embedded-forms.md)**
+  Run an Embedded Python form, pass initial values, and return JSON to a caller or shell.
 
 ## Cross-Cutting Guides
 
