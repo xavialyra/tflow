@@ -4,15 +4,14 @@
 # reference template for authoring custom themes in `themes/<name>.toml`.
 
 [scheme]
-primary = "ansi:cyan"
-on-primary = "ansi:black"
-primary-container = "ansi:reset"
-on-primary-container = "ansi:cyan"
-surface = "ansi:reset"
-surface-container = "ansi:reset"
-on-surface = "ansi:reset"
-on-surface-variant = "ansi:reset"
-outline = "ansi:reset"
+background = "ansi:reset"
+foreground = "ansi:reset"
+muted = "ansi:bright-black"
+accent = "ansi:yellow"
+surface = "ansi:black"
+border = "ansi:yellow"
+selection = "ansi:reset"
+on-selection = "ansi:reset"
 error = "ansi:red"
 on-error = "ansi:white"
 
@@ -20,37 +19,33 @@ on-error = "ansi:white"
 # Chrome / Outer Framing Component Styles
 # -----------------------------------------------------------------------------
 [chrome.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
-
-[chrome.muted_text]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface"
+foreground = "scheme:foreground"
+background = "scheme:background"
 
 [chrome.divider]
-foreground = "scheme:outline"
-background = "scheme:surface"
+foreground = "scheme:border"
+background = "scheme:background"
 
 [chrome.border]
-foreground = "scheme:outline"
-background = "scheme:surface"
+foreground = "scheme:border"
+background = "scheme:background"
 
 [chrome.footer]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface-container"
+foreground = "scheme:muted"
+background = "scheme:background"
 
 [chrome.footer_title]
-foreground = "scheme:primary"
-background = "scheme:surface-container"
+foreground = "scheme:accent"
+background = "scheme:background"
 bold = true
 
 [chrome.footer_status]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface-container"
+foreground = "scheme:muted"
+background = "scheme:background"
 
 [chrome.footer_key]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
+foreground = "scheme:accent"
+background = "scheme:surface"
 bold = true
 
 [chrome.error]
@@ -62,52 +57,59 @@ bold = true
 # Picker List & Preview Component Styles
 # -----------------------------------------------------------------------------
 [picker.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
+foreground = "scheme:foreground"
+background = "scheme:background"
 
 [picker.muted]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface"
+foreground = "scheme:muted"
+background = "scheme:background"
 
 [picker.selected]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
+foreground = "scheme:on-selection"
+background = "scheme:selection"
 bold = true
 
 [picker.selected_muted]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
+foreground = "scheme:muted"
+background = "scheme:selection"
+bold = true
 
 [picker.badge]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface"
+foreground = "scheme:muted"
+background = "scheme:background"
 
 [picker.badge.selected]
-foreground = "scheme:on-primary-container"
+foreground = "scheme:muted"
+background = "scheme:selection"
 bold = true
 
 [picker.marker]
-foreground = "scheme:primary"
-background = "scheme:surface"
+foreground = "scheme:accent"
+background = "scheme:background"
 bold = true
 
 [picker.scrollbar]
-foreground = "scheme:primary"
-background = "scheme:surface"
+foreground = "scheme:border"
+background = "scheme:border"
 bold = true
 
 [picker.input_prefix]
-foreground = "scheme:on-primary-container"
-background = "scheme:primary-container"
+foreground = "scheme:accent"
+background = "scheme:surface"
+bold = true
+
+[picker.cursor]
+foreground = "scheme:accent"
+background = "scheme:background"
 bold = true
 
 [picker.preview.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
+foreground = "scheme:foreground"
+background = "scheme:background"
 
 [picker.preview.border]
-foreground = "scheme:outline"
-background = "scheme:surface"
+foreground = "scheme:border"
+background = "scheme:background"
 
 [picker.preview.error]
 foreground = "scheme:on-error"
@@ -117,5 +119,5 @@ background = "scheme:error"
 # Capture Component Styles
 # -----------------------------------------------------------------------------
 [capture.text]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
+foreground = "scheme:foreground"
+background = "scheme:background"

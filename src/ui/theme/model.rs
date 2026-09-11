@@ -1,6 +1,6 @@
-use super::color::{ResolvedScheme, resolve_palette};
+use super::color::{ResolvedScheme, resolve_scheme};
 use anyhow::Result;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -65,23 +65,16 @@ pub(crate) struct ResolvedCustomStyle {
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTheme {
     pub(crate) text: Style,
-    #[cfg(test)]
-    pub(crate) muted_text: Style,
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
     pub(crate) capture: CaptureTheme,
     pub(super) scheme: ResolvedScheme,
-    pub(super) palette: Arc<BTreeMap<String, Color>>,
     pub(super) raw_theme_overrides: Arc<BTreeMap<(String, String), RawStyleBinding>>,
     pub(super) custom_styles: Arc<BTreeMap<(String, String), ResolvedCustomStyle>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChromeTheme {
-    #[cfg(test)]
-    pub(crate) text: Style,
-    #[cfg(test)]
-    pub(crate) muted_text: Style,
     pub(crate) divider: Style,
     pub(crate) border: Style,
     pub(crate) footer: Style,
@@ -96,6 +89,7 @@ pub(crate) struct PickerTheme {
     pub(crate) text: Style,
     pub(crate) muted: Style,
     pub(crate) input_prefix: Style,
+    pub(crate) cursor: Style,
     pub(crate) selected: Style,
     pub(crate) selected_muted: Style,
     pub(crate) badge: Style,
@@ -142,8 +136,10 @@ impl ResolvedTheme {
 
     pub(super) fn from_raw(raw: &RawTheme, source: &str) -> Result<Self> {
         let default_raw = default_raw_theme();
-        let palette = Arc::new(resolve_palette(&raw.palette, source)?);
-        let scheme = ResolvedScheme::resolve(&palette, &raw.scheme, source)?;
+        // Merge raw values first: inherited bindings must see the user's scheme.
+        let mut raw_scheme = default_raw.scheme.clone();
+        raw_scheme.extend(raw.scheme.clone());
+        let scheme = resolve_scheme(&raw_scheme, source)?;
 
         let resolve_component = |configured: Option<&RawStyleBinding>,
                                  default: &RawStyleBinding,
@@ -153,7 +149,7 @@ impl ResolvedTheme {
             if let Some(conf) = configured {
                 merged = conf.merge_with(&merged);
             }
-            resolve_raw_style_binding(&merged, &scheme, &palette, source, desc)
+            resolve_raw_style_binding(&merged, &scheme, source, desc)
         };
 
         let picker_text = resolve_component(
@@ -205,28 +201,18 @@ impl ResolvedTheme {
         )?
         .normal;
 
-        let badge_default = default_raw.picker.badge.as_ref().unwrap();
-        let badge_merged = if let Some(conf) = raw.picker.badge.as_ref() {
-            let mut m = conf.merge_with(badge_default);
-            if let Some(conf_sel) = raw.picker.badge_selected.as_ref() {
-                m.selected = Some(Box::new(match m.selected {
-                    Some(existing) => conf_sel.merge_with(&existing),
-                    None => conf_sel.clone(),
-                }));
-            }
-            m
-        } else if let Some(conf_sel) = raw.picker.badge_selected.as_ref() {
-            let mut m = badge_default.clone();
-            m.selected = Some(Box::new(match m.selected {
-                Some(existing) => conf_sel.merge_with(&existing),
-                None => conf_sel.clone(),
-            }));
-            m
-        } else {
-            badge_default.clone()
-        };
-        let resolved_badge =
-            resolve_raw_style_binding(&badge_merged, &scheme, &palette, source, "picker.badge")?;
+        let picker_cursor = resolve_component(
+            raw.picker.cursor.as_ref(),
+            default_raw.picker.cursor.as_ref().unwrap(),
+            "picker.cursor",
+        )?
+        .normal;
+
+        let resolved_badge = resolve_component(
+            raw.picker.badge.as_ref(),
+            default_raw.picker.badge.as_ref().unwrap(),
+            "picker.badge",
+        )?;
         let picker_badge = resolved_badge.normal;
         let picker_badge_selected = if let Some(sel) = resolved_badge.selected {
             let mut s = sel;
@@ -248,14 +234,6 @@ impl ResolvedTheme {
             raw.chrome.text.as_ref(),
             default_raw.chrome.text.as_ref().unwrap(),
             "chrome.text",
-        )?
-        .normal;
-
-        #[cfg(test)]
-        let chrome_muted_text = resolve_component(
-            raw.chrome.muted_text.as_ref(),
-            default_raw.chrome.muted_text.as_ref().unwrap(),
-            "chrome.muted_text",
         )?
         .normal;
 
@@ -342,8 +320,7 @@ impl ResolvedTheme {
             for (slot_name, style_binding) in &workflow_override.styles {
                 let key = (workflow_id.clone(), slot_name.clone());
                 let context = format!("workflows.{workflow_id}.styles.{slot_name}");
-                let resolved =
-                    resolve_raw_style_binding(style_binding, &scheme, &palette, source, &context)?;
+                let resolved = resolve_raw_style_binding(style_binding, &scheme, source, &context)?;
                 custom_styles.insert(key.clone(), resolved);
                 raw_theme_overrides.insert(key, style_binding.clone());
             }
@@ -351,13 +328,7 @@ impl ResolvedTheme {
 
         Ok(Self {
             text: chrome_text,
-            #[cfg(test)]
-            muted_text: chrome_muted_text,
             chrome: ChromeTheme {
-                #[cfg(test)]
-                text: chrome_text,
-                #[cfg(test)]
-                muted_text: chrome_muted_text,
                 divider: chrome_divider,
                 border: chrome_border,
                 footer: chrome_footer,
@@ -370,6 +341,7 @@ impl ResolvedTheme {
                 text: picker_text,
                 muted: picker_muted,
                 input_prefix: picker_input_prefix,
+                cursor: picker_cursor,
                 selected: picker_selected,
                 selected_muted: picker_selected_muted,
                 badge: picker_badge,
@@ -384,7 +356,6 @@ impl ResolvedTheme {
             },
             capture: CaptureTheme { text: capture_text },
             scheme,
-            palette,
             raw_theme_overrides: Arc::new(raw_theme_overrides),
             custom_styles: Arc::new(custom_styles),
         })
@@ -403,7 +374,6 @@ impl ResolvedTheme {
                 resolve_raw_style_binding(
                     &merged,
                     &self.scheme,
-                    &self.palette,
                     &format!("theme override [workflows.{workflow_id}.styles.{slot_name}]"),
                     &format!("workflows.{workflow_id}.styles.{slot_name}"),
                 )?
@@ -411,7 +381,6 @@ impl ResolvedTheme {
                 resolve_raw_style_binding(
                     default_binding,
                     &self.scheme,
-                    &self.palette,
                     &format!("workflow {:?} [styles.{slot_name}]", workflow_id),
                     &format!("styles.{slot_name}"),
                 )?
@@ -519,7 +488,6 @@ impl ResolvedTheme {
 fn resolve_raw_style_binding(
     raw: &RawStyleBinding,
     scheme: &ResolvedScheme,
-    palette: &BTreeMap<String, Color>,
     source: &str,
     context_desc: &str,
 ) -> Result<ResolvedCustomStyle> {
@@ -528,7 +496,6 @@ fn resolve_raw_style_binding(
         normal = normal.fg(super::color::resolve_color_reference(
             fg,
             scheme,
-            palette,
             source,
             &format!("{context_desc}.foreground"),
         )?);
@@ -537,7 +504,6 @@ fn resolve_raw_style_binding(
         normal = normal.bg(super::color::resolve_color_reference(
             bg,
             scheme,
-            palette,
             source,
             &format!("{context_desc}.background"),
         )?);
@@ -563,7 +529,6 @@ fn resolve_raw_style_binding(
             sel = sel.bg(super::color::resolve_color_reference(
                 bg,
                 scheme,
-                palette,
                 source,
                 &format!("{context_desc}.selected.background"),
             )?);
@@ -574,7 +539,6 @@ fn resolve_raw_style_binding(
             sel = sel.fg(super::color::resolve_color_reference(
                 fg,
                 scheme,
-                palette,
                 source,
                 &format!("{context_desc}.selected.foreground"),
             )?);
@@ -604,9 +568,7 @@ pub(crate) enum ThemeRef {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawTheme {
     #[serde(default)]
-    pub(super) palette: BTreeMap<String, String>,
-    #[serde(default)]
-    pub(super) scheme: RawScheme,
+    pub(super) scheme: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) picker: RawPickerTheme,
     #[serde(default)]
@@ -627,13 +589,13 @@ pub(super) struct RawPickerTheme {
     #[serde(default)]
     pub(super) input_prefix: Option<RawStyleBinding>,
     #[serde(default)]
+    pub(super) cursor: Option<RawStyleBinding>,
+    #[serde(default)]
     pub(super) selected: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) selected_muted: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) badge: Option<RawStyleBinding>,
-    #[serde(default)]
-    pub(super) badge_selected: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) marker: Option<RawStyleBinding>,
     #[serde(default)]
@@ -647,9 +609,6 @@ pub(super) struct RawPickerTheme {
 pub(super) struct RawChromeTheme {
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(super) muted_text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) divider: Option<RawStyleBinding>,
     #[serde(default)]
@@ -682,73 +641,4 @@ pub(super) struct RawPreviewTheme {
 pub(super) struct RawCaptureTheme {
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RawScheme {
-    #[serde(default)]
-    pub(super) primary: Option<String>,
-    #[serde(default, rename = "on-primary")]
-    pub(super) on_primary: Option<String>,
-    #[serde(default, rename = "primary-container")]
-    pub(super) primary_container: Option<String>,
-    #[serde(default, rename = "on-primary-container")]
-    pub(super) on_primary_container: Option<String>,
-    #[serde(default)]
-    pub(super) surface: Option<String>,
-    #[serde(default, rename = "surface-container")]
-    pub(super) surface_container: Option<String>,
-    #[serde(default, rename = "on-surface")]
-    pub(super) on_surface: Option<String>,
-    #[serde(default, rename = "on-surface-variant")]
-    pub(super) on_surface_variant: Option<String>,
-    #[serde(default)]
-    pub(super) outline: Option<String>,
-    #[serde(default)]
-    pub(super) error: Option<String>,
-    #[serde(default, rename = "on-error")]
-    pub(super) on_error: Option<String>,
-}
-
-impl RawScheme {
-    pub(super) fn role_value(&self, role: super::color::SchemeRole) -> &str {
-        use super::color::SchemeRole;
-        let val = match role {
-            SchemeRole::Primary => self.primary.as_deref(),
-            SchemeRole::OnPrimary => self.on_primary.as_deref(),
-            SchemeRole::PrimaryContainer => self.primary_container.as_deref(),
-            SchemeRole::OnPrimaryContainer => self.on_primary_container.as_deref(),
-            SchemeRole::Surface => self.surface.as_deref(),
-            SchemeRole::SurfaceContainer => self.surface_container.as_deref(),
-            SchemeRole::OnSurface => self.on_surface.as_deref(),
-            SchemeRole::OnSurfaceVariant => self.on_surface_variant.as_deref(),
-            SchemeRole::Outline => self.outline.as_deref(),
-            SchemeRole::Error => self.error.as_deref(),
-            SchemeRole::OnError => self.on_error.as_deref(),
-        };
-        val.unwrap_or_else(|| {
-            default_raw_theme()
-                .scheme
-                .role_value_no_fallback(role)
-                .expect("builtin terminal scheme must specify all roles")
-        })
-    }
-
-    fn role_value_no_fallback(&self, role: super::color::SchemeRole) -> Option<&str> {
-        use super::color::SchemeRole;
-        match role {
-            SchemeRole::Primary => self.primary.as_deref(),
-            SchemeRole::OnPrimary => self.on_primary.as_deref(),
-            SchemeRole::PrimaryContainer => self.primary_container.as_deref(),
-            SchemeRole::OnPrimaryContainer => self.on_primary_container.as_deref(),
-            SchemeRole::Surface => self.surface.as_deref(),
-            SchemeRole::SurfaceContainer => self.surface_container.as_deref(),
-            SchemeRole::OnSurface => self.on_surface.as_deref(),
-            SchemeRole::OnSurfaceVariant => self.on_surface_variant.as_deref(),
-            SchemeRole::Outline => self.outline.as_deref(),
-            SchemeRole::Error => self.error.as_deref(),
-            SchemeRole::OnError => self.on_error.as_deref(),
-        }
-    }
 }

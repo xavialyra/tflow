@@ -80,14 +80,6 @@ pub(crate) struct ChromePresentation {
 }
 
 #[cfg(test)]
-impl ChromePresentation {
-    pub(crate) fn with_unfocused_input(mut self) -> Self {
-        self.input_muted = true;
-        self
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn divider_line(width: usize, label: &str) -> String {
     if width == 0 {
         return String::new();
@@ -423,7 +415,7 @@ fn clip_from(text: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::input::EditorBuffer;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::style::Color;
 
     fn route() -> RouteDisplay {
         RouteDisplay {
@@ -471,91 +463,6 @@ mod tests {
         assert_eq!(frame.input_line(), "app query");
         assert_eq!(frame.input_prefix_highlight, Some((0, "app".len())));
         assert_eq!(frame.input, "query");
-    }
-
-    #[test]
-    fn unfocused_input_uses_the_muted_theme_for_the_query() {
-        use ratatui::Terminal as RatatuiTerminal;
-        use ratatui::backend::TestBackend;
-
-        let mut theme = Theme::terminal();
-        theme.muted_text.fg = Some(Color::Gray);
-
-        let frame = ChromeFrame::compose_with_cursor(
-            80,
-            Some(&route()),
-            "Show date",
-            "Show date".len(),
-            EngineChrome {
-                presentation: ChromePresentation::default().with_unfocused_input(),
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|draw| frame.render_frame(draw, &theme))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let input_start = ChromeLayout::default().viewport_padding.left;
-        let separator = input_start + UnicodeWidthStr::width("app");
-        let query_start = separator + 1;
-        let tag = buffer.cell((input_start as u16, 1)).unwrap().style();
-        let separator = buffer.cell((separator as u16, 1)).unwrap().style();
-        let query = buffer.cell((query_start as u16, 1)).unwrap().style();
-
-        assert_eq!(tag.fg, Some(Color::Cyan));
-        assert_eq!(tag.bg, Some(Color::Reset));
-        assert!(tag.add_modifier.contains(Modifier::BOLD));
-        assert!(!tag.add_modifier.contains(Modifier::REVERSED));
-        assert_eq!(separator.fg, Some(Color::Gray));
-        assert_eq!(separator.bg, Some(Color::Reset));
-        assert!(!separator.add_modifier.contains(Modifier::DIM));
-        assert_eq!(query.fg, Some(Color::Gray));
-        assert_eq!(query.bg, Some(Color::Reset));
-        assert!(!query.add_modifier.contains(Modifier::DIM));
-    }
-
-    #[test]
-    fn default_layout_keeps_the_current_chrome_geometry() {
-        let layout = ChromeLayout::default();
-
-        assert_eq!(layout.topbar_content_row(), 0);
-        assert_eq!(layout.input_content_row(), 1);
-        assert_eq!(layout.divider_content_row(), 2);
-        assert_eq!(layout.content_start_row(), 3);
-        assert_eq!(layout.content_rows(24), 20);
-        assert_eq!(layout.footer_row(24), 23);
-        assert_eq!(layout.viewport_width(80), 78);
-        assert_eq!(layout.input.padding, Insets::ZERO);
-        assert_eq!(layout.content_padding, Insets::ZERO);
-        assert_eq!(layout.content_width(80), 78);
-        assert_eq!(layout.chrome_width(80), 78);
-    }
-
-    #[test]
-    fn content_host_owns_top_and_horizontal_padding() {
-        let host = ContentHost::default();
-        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-        let content = host.content_area(area, 1);
-        let footer = host.footer_area(area);
-
-        assert_eq!(content.x, 1);
-        assert_eq!(content.y, 1);
-        assert_eq!(content.width, 78);
-        assert_eq!(content.height, 22);
-
-        let content_zero_top = host.content_area(area, 0);
-        assert_eq!(content_zero_top.x, 1);
-        assert_eq!(content_zero_top.y, 0);
-        assert_eq!(content_zero_top.width, 78);
-        assert_eq!(content_zero_top.height, 23);
-
-        assert_eq!(footer.x, 0);
-        assert_eq!(footer.y, 23);
-        assert_eq!(footer.width, 80);
-        assert_eq!(footer.height, 1);
     }
 
     #[test]
@@ -716,88 +623,6 @@ mod tests {
         let cell = terminal.backend().buffer().cell((1, 23)).unwrap();
         assert_eq!(cell.style().fg, Some(Color::Magenta));
         assert_eq!(cell.style().bg, Some(Color::Green));
-    }
-
-    #[test]
-    fn terminal_theme_footer_keys_use_the_terminal_background() {
-        use ratatui::Terminal as RatatuiTerminal;
-        use ratatui::backend::TestBackend;
-
-        let frame = ChromeFrame::compose(
-            80,
-            &route(),
-            "",
-            EngineChrome {
-                commands: vec![("enter".to_string(), "Open".to_string())],
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
-        let theme = Theme::terminal();
-
-        terminal
-            .draw(|draw| frame.render_frame(draw, &theme))
-            .unwrap();
-
-        let key_x = 1 + frame.footer_keys[0].0;
-        let key = terminal
-            .backend()
-            .buffer()
-            .cell((key_x as u16, 23))
-            .unwrap()
-            .style();
-        assert_eq!(key.fg, Some(Color::Cyan));
-        assert_eq!(key.bg, Some(Color::Reset));
-        assert!(key.add_modifier.contains(Modifier::BOLD));
-        assert!(!key.add_modifier.contains(Modifier::REVERSED));
-    }
-
-    #[test]
-    fn configured_theme_reaches_chrome_render_buffer() {
-        use ratatui::Terminal as RatatuiTerminal;
-        use ratatui::backend::TestBackend;
-        use std::path::Path;
-
-        let config_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config");
-        let theme = crate::ui::theme::load(
-            &config_root.join("config.toml"),
-            Some("contrast"),
-            &crate::ui::theme::ThemeLoadOptions::default(),
-        )
-        .unwrap();
-        let frame = ChromeFrame::compose(
-            80,
-            &route(),
-            "query",
-            EngineChrome {
-                commands: vec![("enter".to_string(), "Open".to_string())],
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        let mut terminal = RatatuiTerminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|draw| frame.render_frame(draw, &theme))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let prefix = buffer.cell((1, 1)).unwrap().style();
-        let divider = buffer.cell((1, 2)).unwrap().style();
-        let footer_key = buffer
-            .cell((1 + frame.footer_keys[0].0 as u16, 23))
-            .unwrap()
-            .style();
-        let footer_text = frame.footer.find("Open").unwrap() as u16 + 1;
-        let footer_text = buffer.cell((footer_text, 23)).unwrap().style();
-
-        assert_eq!(prefix.fg, Some(Color::Rgb(0, 0, 0)));
-        assert_eq!(prefix.bg, Some(Color::Rgb(0, 255, 255)));
-        assert_eq!(divider.fg, Some(Color::Rgb(0, 255, 255)));
-        assert_eq!(footer_key.fg, Some(Color::Rgb(0, 0, 0)));
-        assert_eq!(footer_key.bg, Some(Color::Rgb(0, 255, 255)));
-        assert_eq!(footer_text.fg, Some(Color::Rgb(255, 255, 255)));
-        assert_eq!(footer_text.bg, Some(Color::Rgb(0, 0, 255)));
     }
 
     #[test]

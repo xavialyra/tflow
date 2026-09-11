@@ -1,27 +1,22 @@
 # Development and integration-test theme.
-[palette]
-primary = "#BC7588"
-muted = "#696969"
-paper = "#F2E9E1"
-
 [scheme]
-primary = "palette:primary"
-primary-container = "palette:paper"
-on-primary-container = "palette:muted"
-on-surface-variant = "palette:muted"
-outline = "ansi:magenta"
+accent = "#BC7588"
+selection = "#F2E9E1"
+on-selection = "#696969"
+muted = "#696969"
+border = "ansi:magenta"
 
 [chrome.footer_key]
-foreground = "scheme:primary"
-background = "scheme:primary-container"
+foreground = "scheme:accent"
+background = "scheme:selection"
 bold = true
 
 [picker.selected]
-foreground = "scheme:on-surface"
-background = "scheme:surface"
+foreground = "scheme:foreground"
+background = "scheme:background"
 bold = true
 
 [picker.selected_muted]
-foreground = "scheme:on-surface-variant"
-background = "scheme:surface"
+foreground = "scheme:muted"
+background = "scheme:background"
 bold = true

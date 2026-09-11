@@ -1,221 +1,57 @@
-use super::model::RawScheme;
 use anyhow::{Result, bail};
 use ratatui::style::Color;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ResolvedScheme {
-    primary: Color,
-    on_primary: Color,
-    primary_container: Color,
-    on_primary_container: Color,
-    surface: Color,
-    surface_container: Color,
-    on_surface: Color,
-    on_surface_variant: Color,
-    outline: Color,
-    error: Color,
-    on_error: Color,
-}
+pub(super) type ResolvedScheme = BTreeMap<String, Color>;
 
-impl ResolvedScheme {
-    pub(super) fn resolve(
-        palette: &BTreeMap<String, Color>,
-        raw: &RawScheme,
-        source: &str,
-    ) -> Result<Self> {
-        let resolve = |role: SchemeRole| {
-            let value = raw.role_value(role);
-            resolve_scheme_reference(value, palette, source, role)
-        };
-
-        Ok(Self {
-            primary: resolve(SchemeRole::Primary)?,
-            on_primary: resolve(SchemeRole::OnPrimary)?,
-            primary_container: resolve(SchemeRole::PrimaryContainer)?,
-            on_primary_container: resolve(SchemeRole::OnPrimaryContainer)?,
-            surface: resolve(SchemeRole::Surface)?,
-            surface_container: resolve(SchemeRole::SurfaceContainer)?,
-            on_surface: resolve(SchemeRole::OnSurface)?,
-            on_surface_variant: resolve(SchemeRole::OnSurfaceVariant)?,
-            outline: resolve(SchemeRole::Outline)?,
-            error: resolve(SchemeRole::Error)?,
-            on_error: resolve(SchemeRole::OnError)?,
-        })
-    }
-
-    pub(super) fn color(self, role: SchemeRole) -> Color {
-        match role {
-            SchemeRole::Primary => self.primary,
-            SchemeRole::OnPrimary => self.on_primary,
-            SchemeRole::PrimaryContainer => self.primary_container,
-            SchemeRole::OnPrimaryContainer => self.on_primary_container,
-            SchemeRole::Surface => self.surface,
-            SchemeRole::SurfaceContainer => self.surface_container,
-            SchemeRole::OnSurface => self.on_surface,
-            SchemeRole::OnSurfaceVariant => self.on_surface_variant,
-            SchemeRole::Outline => self.outline,
-            SchemeRole::Error => self.error,
-            SchemeRole::OnError => self.on_error,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SchemeRole {
-    Primary,
-    OnPrimary,
-    PrimaryContainer,
-    OnPrimaryContainer,
-    Surface,
-    SurfaceContainer,
-    OnSurface,
-    OnSurfaceVariant,
-    Outline,
-    Error,
-    OnError,
-}
-
-impl SchemeRole {
-    pub(super) const ALL: &'static [Self] = &[
-        Self::Primary,
-        Self::OnPrimary,
-        Self::PrimaryContainer,
-        Self::OnPrimaryContainer,
-        Self::Surface,
-        Self::SurfaceContainer,
-        Self::OnSurface,
-        Self::OnSurfaceVariant,
-        Self::Outline,
-        Self::Error,
-        Self::OnError,
-    ];
-
-    pub(super) fn parse(value: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|role| role.name() == value)
-    }
-
-    pub(super) fn all_names() -> String {
-        Self::ALL
-            .iter()
-            .map(|role| role.name())
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::OnPrimary => "on-primary",
-            Self::PrimaryContainer => "primary-container",
-            Self::OnPrimaryContainer => "on-primary-container",
-            Self::Surface => "surface",
-            Self::SurfaceContainer => "surface-container",
-            Self::OnSurface => "on-surface",
-            Self::OnSurfaceVariant => "on-surface-variant",
-            Self::Outline => "outline",
-            Self::Error => "error",
-            Self::OnError => "on-error",
-        }
-    }
-}
-
-impl std::fmt::Display for SchemeRole {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.name())
-    }
-}
-
-fn resolve_scheme_reference(
-    value: &str,
-    palette: &BTreeMap<String, Color>,
+pub(super) fn resolve_scheme(
+    raw: &BTreeMap<String, String>,
     source: &str,
-    role: SchemeRole,
-) -> Result<Color> {
-    let value = value.trim();
-    if let Some(palette_name) = value.strip_prefix("palette:") {
-        let Some(color) = palette.get(palette_name) else {
-            bail!(
-                "{source} scheme.{role} references unknown palette color {:?}",
-                palette_name
-            );
-        };
-        return Ok(*color);
-    }
-    if let Some(ansi_name) = value.strip_prefix("ansi:") {
-        return parse_ansi_color(ansi_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{source} scheme.{role} references unsupported ANSI color {:?}; expected {}",
-                ansi_name,
-                ansi_color_names()
-            )
-        });
-    }
-    bail!("{source} scheme.{role} must reference a color as palette:NAME or ansi:COLOR")
+) -> Result<ResolvedScheme> {
+    raw.iter()
+        .map(|(name, value)| {
+            if name.trim().is_empty() {
+                bail!("{source} scheme names must not be empty");
+            }
+            let color = resolve_color_literal(value, source, &format!("scheme.{name}"))?;
+            Ok((name.clone(), color))
+        })
+        .collect()
 }
 
-pub(crate) fn resolve_color_reference(
+pub(super) fn resolve_color_reference(
     value: &str,
     scheme: &ResolvedScheme,
-    palette: &BTreeMap<String, Color>,
     source: &str,
     context_desc: &str,
 ) -> Result<Color> {
     let value = value.trim();
-    if let Some(role_name) = value.strip_prefix("scheme:") {
-        let Some(role) = SchemeRole::parse(role_name) else {
-            bail!(
-                "{source} {context_desc} references unsupported scheme role {:?}; expected {}",
-                role_name,
-                SchemeRole::all_names()
-            );
-        };
-        return Ok(scheme.color(role));
+    if let Some(name) = value.strip_prefix("scheme:") {
+        return scheme.get(name).copied().ok_or_else(|| {
+            anyhow::anyhow!("{source} {context_desc} references unknown scheme color {name:?}")
+        });
     }
-    if let Some(palette_name) = value.strip_prefix("palette:") {
-        let Some(color) = palette.get(palette_name) else {
-            bail!(
-                "{source} {context_desc} references unknown palette color {:?}",
-                palette_name
-            );
-        };
-        return Ok(*color);
-    }
-    if let Some(ansi_name) = value.strip_prefix("ansi:") {
-        return parse_ansi_color(ansi_name).ok_or_else(|| {
+    resolve_color_literal(value, source, context_desc)
+}
+
+fn resolve_color_literal(value: &str, source: &str, context_desc: &str) -> Result<Color> {
+    let value = value.trim();
+    if let Some(name) = value.strip_prefix("ansi:") {
+        return parse_ansi_color(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "{source} {context_desc} references unsupported ANSI color {:?}; expected {}",
-                ansi_name,
+                "{source} {context_desc} has unsupported ANSI color {name:?}; expected {}",
                 ansi_color_names()
             )
         });
     }
-    bail!(
-        "{source} {context_desc} must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
-    )
-}
-
-pub(super) fn resolve_palette(
-    overrides: &BTreeMap<String, String>,
-    source: &str,
-) -> Result<BTreeMap<String, Color>> {
-    let mut palette = BTreeMap::new();
-    for (name, value) in overrides {
-        if name.trim().is_empty() {
-            bail!("{source} palette names must not be empty");
-        }
-        let color = parse_color_value(value).map_err(|error| {
-            anyhow::anyhow!(
-                "{source} palette.{name} has {error}; expected a basic ANSI color or #RRGGBB"
-            )
-        })?;
-        palette.insert(name.clone(), color);
+    if let Some(color) = parse_hex_color(value) {
+        return Ok(color);
     }
-    Ok(palette)
+    bail!("{source} {context_desc} has invalid color {value:?}; expected ansi:NAME or #RRGGBB")
 }
 
 pub(super) fn ansi_color_names() -> &'static str {
-    "black, red, green, yellow, blue, magenta, cyan, gray, white, or reset"
+    "black, red, green, yellow, blue, magenta, cyan, gray, white, bright-black, bright-red, bright-green, bright-yellow, bright-blue, bright-magenta, bright-cyan, bright-white, or reset"
 }
 
 pub(super) fn parse_ansi_color(value: &str) -> Option<Color> {
@@ -229,16 +65,53 @@ pub(super) fn parse_ansi_color(value: &str) -> Option<Color> {
         "cyan" => Some(Color::Cyan),
         "gray" => Some(Color::Gray),
         "white" => Some(Color::White),
+        "bright-black" => Some(Color::DarkGray),
+        "bright-red" => Some(Color::LightRed),
+        "bright-green" => Some(Color::LightGreen),
+        "bright-yellow" => Some(Color::LightYellow),
+        "bright-blue" => Some(Color::LightBlue),
+        "bright-magenta" => Some(Color::LightMagenta),
+        "bright-cyan" => Some(Color::LightCyan),
+        "bright-white" => Some(Color::White),
         "reset" => Some(Color::Reset),
         _ => None,
     }
 }
 
-fn parse_color_value(value: &str) -> Result<Color, String> {
-    let value = value.trim();
-    parse_ansi_color(value)
-        .or_else(|| parse_hex_color(value))
-        .ok_or_else(|| format!("unsupported color {value:?}"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_ansi_foreground_colors() {
+        let colors = [
+            ("black", Color::Black),
+            ("red", Color::Red),
+            ("green", Color::Green),
+            ("yellow", Color::Yellow),
+            ("blue", Color::Blue),
+            ("magenta", Color::Magenta),
+            ("cyan", Color::Cyan),
+            ("gray", Color::Gray),
+            ("bright-black", Color::DarkGray),
+            ("bright-red", Color::LightRed),
+            ("bright-green", Color::LightGreen),
+            ("bright-yellow", Color::LightYellow),
+            ("bright-blue", Color::LightBlue),
+            ("bright-magenta", Color::LightMagenta),
+            ("bright-cyan", Color::LightCyan),
+            ("bright-white", Color::White),
+        ];
+
+        for (name, expected) in colors {
+            assert_eq!(parse_ansi_color(name), Some(expected), "ANSI color {name}");
+            assert_eq!(
+                parse_ansi_color(&name.to_ascii_uppercase()),
+                Some(expected),
+                "ANSI color {name} should be case-insensitive"
+            );
+        }
+    }
 }
 
 fn parse_hex_color(value: &str) -> Option<Color> {

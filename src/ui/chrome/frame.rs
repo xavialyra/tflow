@@ -409,7 +409,7 @@ fn input_spans(
     input_muted: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let input_style = input_muted.then_some(theme.muted_text);
+    let input_style = input_muted.then_some(theme.picker.muted);
     let span = |text: String| match input_style {
         Some(style) => Span::styled(text, style),
         None => Span::raw(text),

@@ -6,8 +6,6 @@ pub(crate) use load::{ThemeLoadOptions, cli_named_theme, load};
 pub(crate) use model::{RawStyleBinding, ResolvedTheme, Theme};
 
 #[cfg(test)]
-use color::{ResolvedScheme, SchemeRole};
-#[cfg(test)]
 use model::RawTheme;
 #[cfg(test)]
 use ratatui::style::{Color, Modifier};
@@ -37,21 +35,226 @@ mod tests {
     }
 
     #[test]
-    fn scheme_role_names_cover_raw_and_resolved_fields() {
-        let mut names = Vec::new();
-        for &role in SchemeRole::ALL {
-            let name = role.name();
-            assert!(names.iter().all(|known| *known != name));
-            names.push(name);
-            assert_eq!(SchemeRole::parse(name), Some(role));
+    fn dynamic_scheme_names_and_merged_references() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [scheme]
+            "brand.link" = "#12aBcD"
+            accent = "#345678"
+            selection = "ansi:green"
 
-            let raw: RawTheme =
-                toml::from_str(&format!("[scheme]\n{name} = \"ansi:magenta\"\n")).unwrap();
-            let resolved =
-                ResolvedScheme::resolve(&BTreeMap::new(), &raw.scheme, "test theme").unwrap();
-            assert_eq!(resolved.color(role), Color::Magenta, "scheme role {name}");
+            [chrome.footer_title]
+            bold = false
+
+            [picker.text]
+            foreground = "scheme:brand.link"
+
+            [capture.text]
+            foreground = "scheme:on-selection"
+            background = "#abcdef"
+            "##,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "dynamic theme").unwrap();
+        assert_eq!(theme.picker.text.fg, Some(Color::Rgb(18, 171, 205)));
+        assert_eq!(theme.picker.text.bg, Some(Color::Reset));
+        // Inherited component references resolve against the merged scheme.
+        assert_eq!(theme.picker.marker.fg, Some(Color::Rgb(52, 86, 120)));
+        assert_eq!(theme.chrome.footer_title.fg, theme.picker.marker.fg);
+        assert!(
+            theme
+                .chrome
+                .footer_title
+                .sub_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(theme.picker.selected.bg, Some(Color::Green));
+        // User bindings can refer to omitted, inherited scheme names too.
+        assert_eq!(
+            theme.capture.text.fg,
+            theme.scheme.get("on-selection").copied()
+        );
+        assert_eq!(theme.capture.text.bg, Some(Color::Rgb(171, 205, 239)));
+    }
+
+    #[test]
+    fn color_values_trim_outer_whitespace_without_changing_scheme_keys() {
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [scheme]
+            accent = " \t#123456\n "
+            background = " ansi:white "
+            " accent " = " ansi:red "
+            "brand link" = " ansi:green "
+
+            [picker.text]
+            foreground = " \tscheme:accent\n "
+
+            [picker.badge.selected]
+            background = " ansi:reset "
+
+            [chrome.footer_title]
+            foreground = " scheme:brand link "
+
+            [capture.text]
+            foreground = " #abcdef "
+            background = " ansi:black "
+            "##,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "whitespace theme").unwrap();
+        assert_eq!(theme.scheme.get(" accent "), Some(&Color::Red));
+        assert_eq!(theme.scheme.get("accent"), Some(&Color::Rgb(18, 52, 86)));
+        assert_eq!(theme.picker.text.fg, Some(Color::Rgb(18, 52, 86)));
+        assert_eq!(theme.picker.text.bg, Some(Color::White));
+        assert_eq!(theme.chrome.footer_title.fg, Some(Color::Green));
+        assert_eq!(theme.picker.badge_selected.bg, Some(Color::Reset));
+        assert_eq!(theme.capture.text.fg, Some(Color::Rgb(171, 205, 239)));
+        assert_eq!(theme.capture.text.bg, Some(Color::Black));
+    }
+
+    #[test]
+    fn selected_component_fields_inherit_and_false_and_reset_override() {
+        let raw: RawTheme = toml::from_str(
+            r#"
+            [scheme]
+            selection = "ansi:green"
+
+            [picker.selected]
+            foreground = "ansi:reset"
+            bold = false
+
+            [picker.badge]
+            italic = true
+
+            [picker.badge.selected]
+            bold = false
+            background = "ansi:reset"
+            "#,
+        )
+        .unwrap();
+        let theme = ResolvedTheme::from_raw(&raw, "partial theme").unwrap();
+        assert_eq!(theme.picker.selected.fg, Some(Color::Reset));
+        assert_eq!(theme.picker.selected.bg, Some(Color::Green));
+        assert!(theme.picker.selected.sub_modifier.contains(Modifier::BOLD));
+        let selected = theme.picker.badge_selected;
+        assert_eq!(selected.bg, Some(Color::Reset));
+        assert!(selected.add_modifier.contains(Modifier::ITALIC));
+        assert!(selected.sub_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn workflow_selected_defaults_merge_before_resolving() {
+        use crate::engine::SlotToken;
+        let raw: RawTheme = toml::from_str(
+            r##"
+            [scheme]
+            branch = "#123456"
+
+            [workflows.git.styles.branch]
+            bold = false
+
+            [workflows.git.styles.branch.selected]
+            italic = false
+            background = "ansi:reset"
+            "##,
+        )
+        .unwrap();
+        let defaults: BTreeMap<String, RawStyleBinding> = toml::from_str(
+            r#"
+            [branch]
+            foreground = "scheme:branch"
+            bold = true
+            underline = true
+
+            [branch.selected]
+            foreground = "scheme:accent"
+            italic = true
+            strikethrough = true
+            "#,
+        )
+        .unwrap();
+        let mut theme = ResolvedTheme::from_raw(&raw, "workflow theme").unwrap();
+        theme.register_workflow_defaults("git", &defaults).unwrap();
+        let normal = theme.resolve_slot("git", &SlotToken::from("branch"), false);
+        assert_eq!(normal.fg, Some(Color::Rgb(18, 52, 86)));
+        assert!(normal.sub_modifier.contains(Modifier::BOLD));
+        let selected = theme.resolve_slot("git", &SlotToken::from("branch"), true);
+        assert_eq!(selected.fg, theme.scheme.get("accent").copied());
+        assert_eq!(selected.bg, Some(Color::Reset));
+        assert!(
+            selected
+                .sub_modifier
+                .contains(Modifier::BOLD | Modifier::ITALIC)
+        );
+        assert!(
+            selected
+                .add_modifier
+                .contains(Modifier::UNDERLINED | Modifier::CROSSED_OUT)
+        );
+    }
+
+    #[test]
+    fn invalid_colors_and_unknown_references_report_source_and_field() {
+        for value in [
+            "red",
+            "reset",
+            "#123",
+            "#12345678",
+            "#gg1234",
+            // Six bytes after '#', with a UTF-8 character crossing a pair boundary.
+            "#aé123",
+            "#abcé1",
+            "ansi:neon-blue",
+            "ansi:",
+            "",
+            "ansi: red",
+            "#12 456",
+        ] {
+            for field in [
+                "scheme",
+                "picker.text",
+                "picker.badge.selected",
+                "workflows.git.styles.branch",
+            ] {
+                let key = if field == "scheme" {
+                    "unused"
+                } else {
+                    "foreground"
+                };
+                let raw: RawTheme =
+                    toml::from_str(&format!("[{field}]\n{key} = {value:?}\n")).unwrap();
+                let error = ResolvedTheme::from_raw(&raw, "invalid theme")
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("invalid theme"), "{error}");
+                assert!(error.contains(&format!("{field}.{key}")), "{error}");
+            }
         }
-        assert_eq!(SchemeRole::all_names(), names.join(", "));
+        for field in [
+            "picker.text",
+            "picker.badge.selected",
+            "workflows.git.styles.branch.selected",
+        ] {
+            let raw: RawTheme =
+                toml::from_str(&format!("[{field}]\nforeground = \"scheme:missing\"\n")).unwrap();
+            let error = ResolvedTheme::from_raw(&raw, "unknown theme")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unknown scheme color"), "{error}");
+            assert!(error.contains(&format!("{field}.foreground")), "{error}");
+            assert!(error.contains("missing"), "{error}");
+        }
+        // Even unused scheme aliases are invalid; scheme values are literals only.
+        let raw: RawTheme = toml::from_str("[scheme]\nunused = \"scheme:accent\"\n").unwrap();
+        assert!(
+            ResolvedTheme::from_raw(&raw, "alias theme")
+                .unwrap_err()
+                .to_string()
+                .contains("scheme.unused")
+        );
+        let raw: RawTheme = toml::from_str("[scheme]\n\"\" = \"ansi:red\"\n").unwrap();
+        assert!(ResolvedTheme::from_raw(&raw, "empty theme").is_err());
     }
 
     #[test]
@@ -73,85 +276,45 @@ mod tests {
     }
 
     #[test]
-    fn terminal_theme_contains_default_bindings() {
-        let theme = ResolvedTheme::terminal();
-
-        assert_eq!(theme.text.fg, Some(Color::Reset));
-        assert_eq!(theme.text.bg, Some(Color::Reset));
-        assert_eq!(theme.chrome.text.fg, Some(Color::Reset));
-        assert_eq!(theme.chrome.muted_text.fg, Some(Color::Reset));
-        assert_eq!(theme.chrome.border.fg, Some(Color::Reset));
-        assert_eq!(theme.chrome.footer_title.fg, Some(Color::Cyan));
-        assert!(
-            theme
-                .chrome
-                .footer_title
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        assert_eq!(theme.picker.input_prefix.fg, Some(Color::Cyan));
-        assert_eq!(theme.picker.input_prefix.bg, Some(Color::Reset));
-        assert!(
-            theme
-                .picker
-                .input_prefix
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        assert_eq!(theme.picker.selected.fg, Some(Color::Cyan));
-        assert_eq!(theme.picker.selected.bg, Some(Color::Reset));
-        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
-        assert_eq!(theme.chrome.error.fg, Some(Color::White));
-        assert_eq!(theme.chrome.error.bg, Some(Color::Red));
-        assert_eq!(theme.picker.preview.text.fg, Some(Color::Reset));
-        assert_eq!(theme.picker.preview.error.fg, Some(Color::White));
-        assert_eq!(theme.picker.preview.error.bg, Some(Color::Red));
-        assert_eq!(theme.picker.preview.border.fg, Some(Color::Reset));
-        assert_eq!(theme.capture.text.fg, Some(Color::Reset));
-    }
-
-    #[test]
-    fn palette_scheme_and_binding_references_resolve() {
+    fn scheme_and_binding_references_resolve() {
         let raw: RawTheme = toml::from_str(
             r##"
-            [palette]
+            [scheme]
             brand = "#102030"
             paper = "#F2E9E1"
             ink = "#204060"
-
-            [scheme]
-            primary = "palette:brand"
-            primary-container = "palette:paper"
-            on-primary-container = "palette:ink"
-            surface = "palette:paper"
-            on-surface = "palette:ink"
-            on-surface-variant = "palette:brand"
-            outline = "palette:brand"
+            accent = "#102030"
+            selection = "#F2E9E1"
+            on-selection = "#204060"
+            background = "#F2E9E1"
+            foreground = "#204060"
+            muted = "#102030"
+            border = "#102030"
 
             [picker.selected]
-            foreground = "scheme:on-primary-container"
-            background = "scheme:primary-container"
+            foreground = "scheme:on-selection"
+            background = "scheme:selection"
             bold = true
             italic = true
             underline = true
             strikethrough = true
 
             [chrome.divider]
-            foreground = "scheme:outline"
+            foreground = "scheme:border"
 
             [chrome.error]
             foreground = "scheme:on-error"
             background = "scheme:error"
 
             [picker.preview.text]
-            foreground = "scheme:on-surface-variant"
+            foreground = "scheme:muted"
 
             [picker.preview.error]
             foreground = "scheme:on-error"
             background = "scheme:error"
 
             [capture.text]
-            foreground = "scheme:primary"
+            foreground = "scheme:accent"
             "##,
         )
         .unwrap();
@@ -194,27 +357,23 @@ mod tests {
     }
 
     #[test]
-    fn user_palette_names_do_not_shadow_ansi_or_builtin_scheme_colors() {
+    fn user_scheme_names_do_not_shadow_ansi_literals() {
         let raw: RawTheme = toml::from_str(
             r##"
-            [palette]
+            [scheme]
             cyan = "#102030"
             black = "#203040"
             red = "#304050"
             white = "#F0E0D0"
-
-            [scheme]
-            outline = "ansi:cyan"
+            border = "ansi:cyan"
 
             [chrome.text]
-            foreground = "scheme:on-primary"
+            foreground = "ansi:black"
             "##,
         )
         .unwrap();
         let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
 
-        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
-        assert_eq!(theme.picker.selected.fg, Some(Color::Cyan));
         assert_eq!(theme.text.fg, Some(Color::Black));
         assert_eq!(theme.chrome.error.bg, Some(Color::Red));
         assert_eq!(theme.chrome.error.fg, Some(Color::White));
@@ -225,11 +384,9 @@ mod tests {
     fn omitted_bindings_use_defaults_and_partial_bindings_are_supported() {
         let raw: RawTheme = toml::from_str(
             r##"
-            [palette]
-            quiet = "#696969"
-
             [scheme]
-            on-surface-variant = "palette:quiet"
+            quiet = "#696969"
+            muted = "#696969"
 
             [picker.marker]
             bold = false
@@ -238,23 +395,16 @@ mod tests {
         .unwrap();
         let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
 
-        assert_eq!(theme.picker.marker.fg, Some(Color::Cyan));
-        assert_eq!(theme.picker.marker.bg, Some(Color::Reset));
+        let baseline = ResolvedTheme::terminal();
+        assert_eq!(theme.picker.marker.fg, baseline.picker.marker.fg);
+        assert_eq!(theme.picker.marker.bg, baseline.picker.marker.bg);
         assert!(!theme.picker.marker.add_modifier.contains(Modifier::BOLD));
         assert_eq!(theme.picker.muted.fg, Some(Color::Rgb(105, 105, 105)));
-        assert!(
-            !theme
-                .picker
-                .selected_muted
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        assert_eq!(theme.chrome.footer_key.fg, Some(Color::Cyan));
+        assert_eq!(theme.chrome.footer_key, baseline.chrome.footer_key);
     }
 
     #[test]
     fn theme_tables_reject_unknown_fields() {
-        assert!(toml::from_str::<RawTheme>("[scheme]\nprimaryy = \"palette:cyan\"\n").is_err());
         assert!(toml::from_str::<RawTheme>("[chrome]\nunknown = {}\n").is_err());
         assert!(toml::from_str::<RawTheme>("[picker]\nunknown = {}\n").is_err());
     }
@@ -266,51 +416,9 @@ mod tests {
         assert!(ref_error.to_string().contains("mystery"));
 
         let field_error =
-            toml::from_str::<RawTheme>("[chrome.text]\nforegroundd = \"scheme:primary\"\n")
+            toml::from_str::<RawTheme>("[chrome.text]\nforegroundd = \"scheme:accent\"\n")
                 .unwrap_err();
         assert!(field_error.to_string().contains("foregroundd"));
-    }
-
-    #[test]
-    fn palette_values_must_be_supported_colors() {
-        for color in [
-            "bright-blue",
-            "light-blue",
-            "dark-gray",
-            "grey",
-            "silver",
-            "42",
-            "default",
-            "terminal",
-        ] {
-            let raw: RawTheme =
-                toml::from_str(&format!("[palette]\nprimary = {color:?}\n")).unwrap();
-            let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-            assert!(error.to_string().contains("unsupported color"));
-        }
-    }
-
-    #[test]
-    fn scheme_values_must_reference_known_palette_or_ansi_colors() {
-        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"palette:missing\"\n").unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("unknown palette color"));
-
-        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"#102030\"\n").unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("palette:NAME or ansi:COLOR"));
-
-        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"palette:terminal\"\n").unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("unknown palette color"));
-
-        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"ansi:bright-blue\"\n").unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains("unsupported ANSI color"));
-
-        let raw: RawTheme = toml::from_str("[scheme]\nprimary = \"ansi:magenta\"\n").unwrap();
-        let theme = ResolvedTheme::from_raw(&raw, "test theme").unwrap();
-        assert_eq!(theme.picker.marker.fg, Some(Color::Magenta));
     }
 
     #[test]
@@ -319,7 +427,7 @@ mod tests {
         fs::create_dir_all(root.join("themes")).unwrap();
         fs::write(
             root.join("themes/work.toml"),
-            "[palette]\nbrand = \"blue\"\n\n[scheme]\nprimary = \"palette:brand\"\n",
+            "[scheme]\naccent = \"ansi:blue\"\n",
         )
         .unwrap();
 
@@ -341,7 +449,7 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("work.toml"),
-            "[palette]\nbrand = \"yellow\"\nquiet = \"gray\"\n\n[scheme]\nprimary = \"palette:brand\"\non-surface-variant = \"palette:quiet\"\n",
+            "[scheme]\naccent = \"ansi:yellow\"\nmuted = \"ansi:gray\"\n",
         )
         .unwrap();
         let theme = load(
@@ -357,55 +465,26 @@ mod tests {
     }
 
     #[test]
-    fn raw_colors_in_styles_are_rejected() {
-        let raw: RawTheme = toml::from_str(
-            r##"
-            [workflows.git.styles.branch]
-            foreground = "#ff0000"
-            "##,
-        )
-        .unwrap();
-        let error = ResolvedTheme::from_raw(&raw, "test theme").unwrap_err();
-        assert!(error.to_string().contains(
-            "must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
-        ));
-
-        let raw2: RawTheme = toml::from_str(
-            r#"
-            [workflows.git.styles.branch]
-            foreground = "red"
-            "#,
-        )
-        .unwrap();
-        let error2 = ResolvedTheme::from_raw(&raw2, "test theme").unwrap_err();
-        assert!(error2.to_string().contains(
-            "must reference a scheme role (scheme:ROLE) or palette color (palette:NAME)"
-        ));
-    }
-
-    #[test]
     fn workflow_styles_and_theme_overrides_with_selected_state() {
         use crate::engine::SlotToken;
 
         let raw_theme: RawTheme = toml::from_str(
             r#"
-            [palette]
-            accent-blue = "blue"
-            selection-bg = "green"
-            highlight-gold = "yellow"
-
             [scheme]
-            primary = "palette:accent-blue"
-            primary-container = "palette:selection-bg"
+            accent-blue = "ansi:blue"
+            selection-bg = "ansi:green"
+            highlight-gold = "ansi:yellow"
+            accent = "ansi:blue"
+            selection = "ansi:green"
 
             [workflows.git.styles.branch]
             bold = false
 
             [workflows.git.styles.branch.selected]
-            foreground = "palette:highlight-gold"
+            foreground = "scheme:highlight-gold"
 
             [workflows.git.styles.hash]
-            foreground = "palette:highlight-gold"
+            foreground = "scheme:highlight-gold"
             "#,
         )
         .unwrap();
@@ -415,7 +494,7 @@ mod tests {
         workflow_styles.insert(
             "branch".to_string(),
             RawStyleBinding {
-                foreground: Some("scheme:primary".to_string()),
+                foreground: Some("scheme:accent".to_string()),
                 bold: Some(true),
                 ..Default::default()
             },
@@ -423,7 +502,7 @@ mod tests {
         workflow_styles.insert(
             "tag".to_string(),
             RawStyleBinding {
-                foreground: Some("palette:accent-blue".to_string()),
+                foreground: Some("scheme:accent-blue".to_string()),
                 reversed: Some(true),
                 ..Default::default()
             },
@@ -432,7 +511,7 @@ mod tests {
             .register_workflow_defaults("git", &workflow_styles)
             .unwrap();
 
-        // 1. Normal slot: branch should have foreground = Blue (scheme:primary), and bold = false (overridden by theme)
+        // 1. Normal slot: branch should have foreground = Blue (scheme:accent), and bold = false (overridden by theme)
         let branch_normal = theme.resolve_slot("git", &SlotToken::from("branch"), false);
         assert_eq!(branch_normal.fg, Some(Color::Blue));
         assert!(!branch_normal.add_modifier.contains(Modifier::BOLD));
@@ -469,33 +548,31 @@ mod tests {
 
         let raw_theme: RawTheme = toml::from_str(
             r#"
-            [palette]
-            brand = "blue"
-            badge-fg = "white"
-            badge-bg = "red"
-            sel-bg = "green"
-            sel-fg = "yellow"
-
             [scheme]
-            primary = "palette:brand"
-            primary-container = "palette:sel-bg"
+            brand = "ansi:blue"
+            badge-fg = "ansi:white"
+            badge-bg = "ansi:red"
+            sel-bg = "ansi:green"
+            sel-fg = "ansi:yellow"
+            accent = "ansi:blue"
+            selection = "ansi:green"
 
             # Structured TOML table hierarchy
             [picker.text]
-            foreground = "scheme:primary"
+            foreground = "scheme:accent"
 
             [picker.badge]
-            foreground = "palette:badge-fg"
-            background = "palette:badge-bg"
+            foreground = "scheme:badge-fg"
+            background = "scheme:badge-bg"
             bold = true
 
             [picker.badge.selected]
-            foreground = "palette:sel-fg"
-            background = "palette:sel-bg"
+            foreground = "scheme:sel-fg"
+            background = "scheme:sel-bg"
             underline = true
 
             [chrome.divider]
-            foreground = "palette:brand"
+            foreground = "scheme:brand"
             "#,
         )
         .unwrap();
@@ -540,44 +617,34 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_badge_is_not_reversed() {
-        let theme = ResolvedTheme::terminal();
-        assert!(!theme.picker.badge.add_modifier.contains(Modifier::REVERSED));
-        assert!(
-            !theme
-                .picker
-                .badge_selected
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
-    }
-
-    #[test]
     fn picker_input_prefix_and_chrome_footer_title_resolve() {
         let raw_theme: RawTheme = toml::from_str(
             r#"
-            [palette]
-            accent = "yellow"
-            border_col = "green"
-            title_col = "magenta"
-            status_col = "gray"
-
             [scheme]
-            primary = "palette:accent"
+            brand = "ansi:yellow"
+            border_col = "ansi:green"
+            title_col = "ansi:magenta"
+            status_col = "ansi:gray"
+            accent = "ansi:yellow"
 
             [picker.input_prefix]
-            foreground = "palette:accent"
+            foreground = "scheme:accent"
             bold = true
 
+            [picker.cursor]
+            foreground = "scheme:accent"
+            background = "scheme:border_col"
+            underline = true
+
             [chrome.border]
-            foreground = "palette:border_col"
+            foreground = "scheme:border_col"
 
             [chrome.footer_title]
-            foreground = "palette:title_col"
+            foreground = "scheme:title_col"
             bold = true
 
             [chrome.footer_status]
-            foreground = "palette:status_col"
+            foreground = "scheme:status_col"
             dim = true
             "#,
         )
@@ -591,6 +658,15 @@ mod tests {
                 .input_prefix
                 .add_modifier
                 .contains(Modifier::BOLD)
+        );
+        assert_eq!(theme.picker.cursor.fg, Some(Color::Yellow));
+        assert_eq!(theme.picker.cursor.bg, Some(Color::Green));
+        assert!(
+            theme
+                .picker
+                .cursor
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
         );
 
         assert_eq!(theme.chrome.border.fg, Some(Color::Green));

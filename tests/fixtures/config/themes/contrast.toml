@@ -1,19 +1,20 @@
 # High-contrast scheme used by integration tests.
-[palette]
-cyan = "#00ffff"
-black = "#000000"
-blue = "#0000ff"
-white = "#ffffff"
-
 [scheme]
-primary = "palette:cyan"
-on-primary = "palette:black"
-primary-container = "palette:cyan"
-on-primary-container = "palette:black"
-surface = "palette:blue"
-surface-container = "palette:blue"
-on-surface = "palette:white"
-on-surface-variant = "palette:white"
-outline = "palette:cyan"
-error = "palette:cyan"
-on-error = "palette:black"
+background = "#0000ff"
+foreground = "#ffffff"
+muted = "#ffffff"
+accent = "#00ffff"
+border = "#00ffff"
+selection = "#00ffff"
+on-selection = "#000000"
+error = "#00ffff"
+on-error = "#000000"
+
+[picker.input_prefix]
+foreground = "scheme:on-selection"
+
+[picker.badge]
+foreground = "scheme:on-selection"
+
+[chrome.footer_key]
+foreground = "scheme:on-selection"
