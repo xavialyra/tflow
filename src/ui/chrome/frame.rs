@@ -188,7 +188,6 @@ impl ChromeFrame {
         let EngineChrome {
             status,
             commands,
-            overflow_command,
             presentation,
         } = engine;
         let ChromePresentation {
@@ -211,8 +210,6 @@ impl ChromeFrame {
                 None,
                 status.as_deref().unwrap_or(""),
                 &commands,
-                overflow_command.as_ref(),
-                false,
             )
         };
         let left_padding = " ".repeat(layout.input.padding.left);

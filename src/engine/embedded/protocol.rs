@@ -355,6 +355,10 @@ impl View for EmbeddedProtocolView {
         )
     }
 
+    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
+        Some(&self.commands)
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
@@ -367,8 +371,6 @@ impl View for EmbeddedProtocolView {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: Some(self.bindings(context)),
-            overflow_command: self.commands.overflow_command(),
-            has_unbound: self.commands.has_unbound(),
         })
     }
 
@@ -423,23 +425,7 @@ impl View for EmbeddedProtocolView {
             ),
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
                 if let Some(binding) = self.commands.binding(key) {
-                    let is_overflow = self
-                        .commands
-                        .overflow_binding
-                        .as_ref()
-                        .is_some_and(|b| b.key.binding_identity() == key.binding_identity());
-                    if is_overflow {
-                        let model = self.runtime.render_model();
-                        let chrome = self.renderer.chrome(&model);
-                        let is_active = self.commands.is_palette_active(
-                            self.content_size.0 as usize,
-                            None,
-                            self.status.as_deref().or(chrome.status.as_deref()),
-                        );
-                        if is_active {
-                            return Ok(self.commands.request(binding, None));
-                        }
-                    } else if binding.invocation.view_reference().is_none()
+                    if binding.invocation.view_reference().is_none()
                         || binding.invocation.command.passthrough
                     {
                         return Ok(self.commands.request(binding, None));

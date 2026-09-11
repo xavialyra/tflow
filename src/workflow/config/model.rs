@@ -238,6 +238,16 @@ pub enum CommandRequirement {
     Items,
 }
 
+/// Visibility of Engine-owned selection controls. This is not used for
+/// configured business-command presentation.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CommandBindingVisibility {
+    #[default]
+    Always,
+    Hidden,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
@@ -297,15 +307,6 @@ impl CommandAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum CommandBindingVisibility {
-    #[default]
-    Always,
-    Overflow,
-    Hidden,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CommandConfig {
@@ -317,7 +318,6 @@ pub(crate) struct CommandConfig {
 pub(crate) struct CommandBinding {
     pub(crate) key: Option<String>,
     pub(crate) label: Option<String>,
-    pub(crate) visibility: Option<CommandBindingVisibility>,
     pub(crate) action: Option<CommandAction>,
 }
 
@@ -339,14 +339,6 @@ impl<'de> Deserialize<'de> for CommandBinding {
             .remove("label")
             .map(|value| value.try_into::<String>().map_err(serde::de::Error::custom))
             .transpose()?;
-        let visibility = table
-            .remove("visibility")
-            .map(|value| {
-                value
-                    .try_into::<CommandBindingVisibility>()
-                    .map_err(serde::de::Error::custom)
-            })
-            .transpose()?;
         let action = if table.is_empty() {
             None
         } else {
@@ -356,12 +348,7 @@ impl<'de> Deserialize<'de> for CommandBinding {
                     .map_err(serde::de::Error::custom)?,
             )
         };
-        Ok(Self {
-            key,
-            label,
-            visibility,
-            action,
-        })
+        Ok(Self { key, label, action })
     }
 }
 
@@ -370,7 +357,6 @@ impl CommandBinding {
         Self {
             key: None,
             label: None,
-            visibility: None,
             action: None,
         }
     }
@@ -385,14 +371,6 @@ impl CommandBinding {
         self.label
             .as_deref()
             .or_else(|| (id == "commands").then_some("Commands"))
-    }
-
-    pub(crate) fn visibility(&self, id: &str) -> Option<CommandBindingVisibility> {
-        Some(self.visibility.unwrap_or(if id == "commands" {
-            CommandBindingVisibility::Overflow
-        } else {
-            CommandBindingVisibility::Always
-        }))
     }
 
     pub(crate) fn command_action(&self, id: &str) -> Option<CommandAction> {
@@ -477,8 +455,8 @@ pub(super) struct WorkflowHeader {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandAction, CommandBinding, CommandBindingVisibility, CommandConfig, ProducerKind,
-        ResolvedScriptSource, ResolvedScriptTarget, View,
+        CommandAction, CommandBinding, CommandConfig, ProducerKind, ResolvedScriptSource,
+        ResolvedScriptTarget, View,
     };
 
     #[test]
@@ -584,7 +562,6 @@ args = []
             [bindings.help]
             key = "ctrl+h"
             label = "Help"
-            visibility = "always"
             type = "return"
             producer = "declared"
             [bindings.help.handler]
@@ -595,7 +572,6 @@ args = []
         let binding = &config.bindings["help"];
         assert_eq!(binding.key.as_deref(), Some("ctrl+h"));
         assert_eq!(binding.label.as_deref(), Some("Help"));
-        assert_eq!(binding.visibility, Some(CommandBindingVisibility::Always));
         assert!(matches!(
             binding.action,
             Some(CommandAction::Return {

@@ -20,8 +20,6 @@ pub(crate) struct FooterModel {
     pub(crate) error: Option<String>,
     pub(crate) info: Option<String>,
     pub(crate) bindings: BindingSet,
-    pub(crate) overflow_command: Option<(String, String)>,
-    pub(crate) has_unbound: bool,
 }
 
 impl FooterModel {
@@ -119,11 +117,7 @@ impl FooterRenderer {
         let footer = if let Some((message, _)) = notification {
             FooterContent::plain(message)
         } else {
-            let mut commands = model.commands();
-            if let Some((overflow_key, _)) = &model.overflow_command {
-                commands.retain(|(key, _)| key != overflow_key);
-            }
-
+            let commands = model.commands();
             let status = model.status.as_deref().unwrap_or("");
 
             footer_line(
@@ -131,8 +125,6 @@ impl FooterRenderer {
                 Some(model.location.label()),
                 status,
                 &commands,
-                model.overflow_command.as_ref(),
-                model.has_unbound,
             )
         };
 

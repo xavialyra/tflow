@@ -65,6 +65,5 @@ Picker Enter behavior is configured by the View's explicit command bindings. The
 Session commands are high-priority actions handled by the host above all individual views and engines.
 
 ### `[commands.bindings.commands]`
-- **`key`**: Key chord that triggers the global command palette (opens `selectors:commands`).
-- **Default**: `"ctrl+k"`
-- **Behavior**: This action cannot be replaced; only the triggering key binding can be customized.
+- The command palette is opened by the host with `Ctrl-K` when command folding is active.
+- This is a built-in host action and is not configurable; `selectors:commands` remains the palette view.

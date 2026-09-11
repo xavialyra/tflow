@@ -610,24 +610,6 @@ impl PickerProtocolView {
         if projected.is_none() && static_binding.is_none() {
             return Ok(None);
         }
-        let is_overflow = self
-            .commands
-            .overflow_binding
-            .as_ref()
-            .is_some_and(|b| b.key.binding_identity() == key.binding_identity());
-        if is_overflow {
-            let is_active = self.commands.is_palette_active(
-                self.content_size.0 as usize,
-                None,
-                self.renderer
-                    .chrome(&self.runtime.render_model())
-                    .status
-                    .as_deref(),
-            );
-            if !is_active {
-                return Ok(None);
-            }
-        }
         let projected_enabled = projected.as_ref().map(|binding| binding.enabled);
         let projected_command = projected
             .as_ref()
@@ -1088,6 +1070,44 @@ impl View for PickerProtocolView {
         BindingSet::new(entries)
     }
 
+    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
+        Some(&self.commands)
+    }
+
+    fn business_bindings(&self, _context: &ViewContext) -> BindingSet {
+        let mut entries = self
+            .commands
+            .business
+            .iter()
+            .filter_map(|(key, label)| {
+                key.map(|key| Binding {
+                    key,
+                    label: Some(label.clone()),
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Ok(projection) = self.runtime.command_projection(&self.engine_context) {
+            for command in projection
+                .bindings
+                .into_iter()
+                .filter(|binding| binding.enabled)
+            {
+                if let Some(label) = command.label {
+                    entries.push(Binding {
+                        key: command.key,
+                        label: Some(label),
+                    });
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        BindingSet::new(
+            entries
+                .into_iter()
+                .filter(|binding| seen.insert(binding.key.binding_identity())),
+        )
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
@@ -1107,8 +1127,6 @@ impl View for PickerProtocolView {
             status,
             error: self.diagnostic.clone(),
             bindings: Some(self.bindings(context)),
-            overflow_command: self.commands.overflow_command(),
-            has_unbound: self.commands.has_unbound(),
         })
     }
 

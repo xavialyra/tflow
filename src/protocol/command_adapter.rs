@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 #[derive(Clone)]
 pub(crate) struct ViewCommandBindings {
     pub(crate) bindings: Vec<ProtocolCommandBinding>,
-    pub(crate) overflow_binding: Option<ProtocolCommandBinding>,
+    pub(crate) business: Vec<(Option<crate::input::Key>, String)>,
+    pub(crate) palette_binding: Option<ProtocolCommandBinding>,
     pub(crate) has_unbound: bool,
     view_invocations:
         std::collections::BTreeMap<(String, String), crate::workflow::command::CommandInvocation>,
@@ -20,8 +21,6 @@ pub(crate) struct ViewCommandBindings {
 pub(crate) struct ProtocolCommandBinding {
     pub(crate) key: crate::input::Key,
     pub(crate) label: Option<String>,
-    #[allow(dead_code)]
-    pub(crate) visibility: crate::workflow::config::CommandBindingVisibility,
     pub(crate) invocation: crate::workflow::command::CommandInvocation,
 }
 
@@ -32,29 +31,30 @@ impl ViewCommandBindings {
         _cancellation: crate::lifecycle::CancellationObserver,
     ) -> anyhow::Result<Self> {
         let mut bindings = Vec::new();
-        let mut overflow_binding = None;
+        let mut palette_binding = None;
+        let mut business = Vec::new();
         let mut add = |id: String,
                        binding: &crate::workflow::config::CommandBinding,
                        invocation|
          -> anyhow::Result<()> {
-            let Some(key) = binding.key(&id) else {
-                return Ok(());
-            };
-            let visibility = binding
-                .visibility(&id)
-                .unwrap_or(crate::workflow::config::CommandBindingVisibility::Always);
-            let key =
-                crate::input::Key::parse_binding(&crate::workflow::config::normalize_key(key)?)?;
+            let key = binding
+                .key(&id)
+                .map(crate::workflow::config::normalize_key)
+                .transpose()?
+                .map(|key| crate::input::Key::parse_binding(&key))
+                .transpose()?;
             let entry = ProtocolCommandBinding {
-                key,
+                key: key.unwrap_or(crate::input::Key::Escape),
                 label: binding.label(&id).map(str::to_string),
-                visibility,
                 invocation,
             };
-            if visibility == crate::workflow::config::CommandBindingVisibility::Overflow {
-                overflow_binding = Some(entry);
+            if id == "commands" {
+                palette_binding = Some(entry);
             } else {
-                bindings.push(entry);
+                business.push((key, entry.label.clone().unwrap_or_else(|| id.clone())));
+                if key.is_some() {
+                    bindings.push(entry);
+                }
             }
             Ok(())
         };
@@ -82,7 +82,6 @@ impl ViewCommandBindings {
                     &crate::workflow::config::CommandBinding {
                         key: command.key.clone(),
                         label: Some(command.label.clone()),
-                        visibility: None,
                         action: Some(command.action.clone()),
                     },
                     crate::workflow::command::CommandInvocation::view(
@@ -112,65 +111,24 @@ impl ViewCommandBindings {
                 })
             })
             .collect();
-        let has_unbound = config
-            .view(view_ref)
-            .is_some_and(|view| view.commands.values().any(|command| command.key.is_none()))
-            || config
-                .session_commands()
-                .values()
-                .any(|command| command.key.is_none());
+        let has_unbound = business.iter().any(|(key, _)| key.is_none());
         Ok(Self {
             bindings,
-            overflow_binding,
+            business,
+            palette_binding,
             has_unbound,
             view_invocations,
         })
-    }
-
-    pub(crate) fn overflow_command(&self) -> Option<(String, String)> {
-        let b = self.overflow_binding.as_ref()?;
-        Some((b.key.binding_name()?, b.label.as_ref()?.clone()))
     }
 
     pub(crate) fn has_unbound(&self) -> bool {
         self.has_unbound
     }
 
-    pub(crate) fn is_palette_active(
-        &self,
-        width: usize,
-        title: Option<&str>,
-        status: Option<&str>,
-    ) -> bool {
-        if self.overflow_binding.is_none() {
-            return false;
-        }
-        if self.has_unbound {
-            return true;
-        }
-        let regular_commands = self
-            .bindings
-            .iter()
-            .filter_map(|b| Some((b.key.binding_name()?, b.label.as_ref()?.clone())))
-            .collect::<Vec<_>>();
-        crate::ui::chrome::is_palette_active(
-            width,
-            title,
-            status,
-            &regular_commands,
-            self.has_unbound,
-        )
-    }
-
     pub(crate) fn binding(&self, key: crate::input::Key) -> Option<&ProtocolCommandBinding> {
         self.bindings
             .iter()
             .find(|binding| binding.key.binding_identity() == key.binding_identity())
-            .or_else(|| {
-                self.overflow_binding
-                    .as_ref()
-                    .filter(|binding| binding.key.binding_identity() == key.binding_identity())
-            })
     }
 
     pub(crate) fn view_bindings(&self) -> crate::view::BindingSet {

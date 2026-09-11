@@ -20,3 +20,4 @@ Each record captures the context, considered options, decision outcome, and cons
 | :--- | :--- | :--- | :--- |
 | **[0001](0001-decentralized-workflow-extensions.md)** | [Decentralized Workflow Extensions Architecture](0001-decentralized-workflow-extensions.md) | **Accepted**; configuration direction superseded by ADR 0002; M3 theming superseded by the [flat scheme specification](../reference/theme-toml.md) | 2026-09-06 |
 | **[0002](0002-static-configuration-and-script-boundaries.md)** | [Static Configuration and Script Boundaries](0002-static-configuration-and-script-boundaries.md) | **Accepted**; implemented as a clean break | 2026-09-08 |
+| **[0003](0003-unified-action-registration-and-host-folding.md)** | [Unified Action Registration and Host-Owned Command Folding](0003-unified-action-registration-and-host-folding.md) | **Accepted**; implementation planned | 2026-09-12 |

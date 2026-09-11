@@ -30,8 +30,6 @@ pub(crate) struct EngineChrome {
     #[cfg(test)]
     pub(crate) commands: Vec<(String, String)>,
     #[cfg(test)]
-    pub(crate) overflow_command: Option<(String, String)>,
-    #[cfg(test)]
     pub(crate) presentation: ChromePresentation,
 }
 
@@ -96,99 +94,17 @@ pub(crate) fn divider_line(width: usize, label: &str) -> String {
     format!("{} {}", label, "─".repeat(width - label_width - 1))
 }
 
-pub(crate) fn is_palette_active(
-    width: usize,
-    title: Option<&str>,
-    status: Option<&str>,
-    commands: &[(String, String)],
-    has_unbound: bool,
-) -> bool {
-    if has_unbound {
-        return true;
-    }
-    if width == 0 {
-        return false;
-    }
-    let left = footer_label(title, status.unwrap_or(""));
-    let complete = command_footer(commands);
-    let separator_width = if !left.is_empty() && !complete.text.is_empty() {
-        2
-    } else {
-        0
-    };
-    let complete_width = UnicodeWidthStr::width(left.as_str())
-        + separator_width
-        + UnicodeWidthStr::width(complete.text.as_str());
-    complete_width > width
-}
-
 pub(super) fn footer_line(
     width: usize,
     title: Option<&str>,
     status: &str,
     commands: &[(String, String)],
-    overflow_command: Option<&(String, String)>,
-    has_unbound: bool,
 ) -> FooterContent {
     if width == 0 {
         return FooterContent::default();
     }
     let (left, title_span, status_span) = footer_label_spans(title, status);
-    let mut visible_commands = commands.to_vec();
-    let complete = command_footer(commands);
-    let separator_width = 2;
-    let complete_separator = if !left.is_empty() && !complete.text.is_empty() {
-        separator_width
-    } else {
-        0
-    };
-    let complete_width = UnicodeWidthStr::width(left.as_str())
-        + complete_separator
-        + UnicodeWidthStr::width(complete.text.as_str());
-    if let Some(overflow_command) = overflow_command {
-        if complete_width > width {
-            visible_commands.clear();
-            visible_commands.push(overflow_command.clone());
-            for command in commands {
-                let mut candidate = visible_commands.clone();
-                candidate.insert(candidate.len() - 1, command.clone());
-                let right = command_footer(&candidate);
-                let candidate_separator = if left.is_empty() { 0 } else { separator_width };
-                let needed = UnicodeWidthStr::width(left.as_str())
-                    + candidate_separator
-                    + UnicodeWidthStr::width(right.text.as_str());
-                if needed > width {
-                    break;
-                }
-                visible_commands = candidate;
-            }
-        } else if has_unbound {
-            visible_commands.push(overflow_command.clone());
-            let right = command_footer(&visible_commands);
-            let candidate_separator = if left.is_empty() { 0 } else { separator_width };
-            let needed = UnicodeWidthStr::width(left.as_str())
-                + candidate_separator
-                + UnicodeWidthStr::width(right.text.as_str());
-            if needed > width {
-                visible_commands.clear();
-                visible_commands.push(overflow_command.clone());
-                for command in commands {
-                    let mut candidate = visible_commands.clone();
-                    candidate.insert(candidate.len() - 1, command.clone());
-                    let right = command_footer(&candidate);
-                    let candidate_separator = if left.is_empty() { 0 } else { separator_width };
-                    let needed = UnicodeWidthStr::width(left.as_str())
-                        + candidate_separator
-                        + UnicodeWidthStr::width(right.text.as_str());
-                    if needed > width {
-                        break;
-                    }
-                    visible_commands = candidate;
-                }
-            }
-        }
-    }
-    let right = command_footer(&visible_commands);
+    let right = command_footer(commands);
     if right.text.is_empty() {
         let text = clip(&left, width);
         let visible_end = text.len();
@@ -281,10 +197,6 @@ fn footer_label_spans(
     }
 
     (text, title_span, status_span)
-}
-
-fn footer_label(title: Option<&str>, status: &str) -> String {
-    footer_label_spans(title, status).0
 }
 
 pub(crate) fn command_footer(commands: &[(String, String)]) -> FooterContent {
@@ -539,40 +451,6 @@ mod tests {
         input.move_home();
         input.delete_forward();
         assert_eq!(input.raw, "c");
-    }
-
-    #[test]
-    fn footer_only_shows_the_overflow_binding_when_commands_do_not_fit() {
-        let wide = ChromeFrame::compose(
-            80,
-            &route(),
-            "",
-            EngineChrome {
-                status: Some("1 result".to_string()),
-                commands: vec![("enter".to_string(), "Open".to_string())],
-                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        assert!(!wide.footer.contains("Ctrl-K"));
-
-        let narrow = ChromeFrame::compose(
-            32,
-            &route(),
-            "",
-            EngineChrome {
-                status: Some("1 result".to_string()),
-                commands: vec![
-                    ("enter".to_string(), "Open".to_string()),
-                    ("ctrl+p".to_string(), "Preview".to_string()),
-                ],
-                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        assert!(narrow.footer.contains("Ctrl-K"));
     }
 
     #[test]

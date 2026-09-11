@@ -23,6 +23,41 @@ struct InfoMessage {
     expires_at: Instant,
 }
 
+#[derive(Clone)]
+struct CommandPresentation {
+    bindings: crate::view::BindingSet,
+    palette: Option<crate::protocol::ProtocolCommandBinding>,
+}
+
+fn command_presentation(
+    view: &dyn crate::view::View,
+    context: &crate::view::ViewContext,
+) -> CommandPresentation {
+    let Some(commands) = view.command_bindings() else {
+        return CommandPresentation {
+            bindings: view.bindings(context),
+            palette: None,
+        };
+    };
+    let business = view.business_bindings(context);
+    let folded = business.entries().len() > 2 || commands.has_unbound();
+    if folded {
+        let mut bindings = business.entries().to_vec();
+        bindings.push(crate::view::Binding {
+            key: crate::input::Key::Ctrl('k'),
+            label: Some("Commands".to_string()),
+        });
+        return CommandPresentation {
+            bindings: crate::view::BindingSet::new(bindings),
+            palette: commands.palette_binding.clone(),
+        };
+    }
+    CommandPresentation {
+        bindings: business,
+        palette: None,
+    }
+}
+
 fn command_request(decision: &ViewDecision) -> Option<&crate::view::CommandRequest> {
     match decision {
         ViewDecision::RequestCommand(request) => Some(request),
@@ -239,6 +274,27 @@ impl ProtocolSession {
             self.last_diagnostic = None;
         }
         let active = self.router.active().map(|entry| entry.id);
+        if let ViewEvent::Input(InputEvent::Key {
+            key: crate::input::Key::Ctrl('k'),
+            ..
+        }) = &event
+            && let Some(entry) = self.router.active()
+            && let Some(binding) = command_presentation(&*entry.view, &entry.context).palette
+        {
+            let source = entry.id;
+            let context = entry.context.clone();
+            let snapshot = entry.view.command_snapshot();
+            let request = crate::view::CommandRequest {
+                invocation: binding.invocation,
+                owner: None,
+            };
+            let next = self
+                .commands
+                .execute(request.clone(), &context, &snapshot)?;
+            self.router.process_with_effects(next, source, effects)?;
+            self.resize_new_active_view(active, effects)?;
+            return Ok(ViewDecision::RequestCommand(request));
+        }
         let decision = self.router.dispatch_with_effects(event, effects)?;
         if let Some(request) = command_request(&decision).cloned() {
             let source = active.context("command request has no source View")?;
@@ -331,12 +387,12 @@ impl ProtocolSession {
             let entry = &self.router.stack()[active_index];
             entry.view.chrome(&entry.context)?
         };
-        let (chrome_instance, chrome_location, fallback_bindings) = {
+        let (chrome_instance, chrome_location, presentation) = {
             let entry = &self.router.stack()[active_index];
             (
                 entry.id,
                 entry.context.location.clone(),
-                entry.view.bindings(&entry.context),
+                command_presentation(&*entry.view, &entry.context),
             )
         };
         let footer_location = self.router.stack()[active_index].context.location.clone();
@@ -345,11 +401,7 @@ impl ProtocolSession {
             &chrome_location.target,
             chrome_snapshot.error.as_deref(),
         );
-        let local_bindings = chrome_snapshot
-            .bindings
-            .clone()
-            .unwrap_or(fallback_bindings);
-        let bindings = merge_bindings(self.router.global_bindings(), &local_bindings);
+        let bindings = merge_bindings(self.router.global_bindings(), &presentation.bindings);
 
         let content_host = ContentHost::default();
         let footer_renderer = FooterRenderer::default();
@@ -398,8 +450,6 @@ impl ProtocolSession {
             error: self.active_error.clone().or(chrome_snapshot.error),
             info: self.active_info.as_ref().map(|info| info.label.clone()),
             bindings,
-            overflow_command: chrome_snapshot.overflow_command,
-            has_unbound: chrome_snapshot.has_unbound,
         };
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect {
@@ -1148,14 +1198,8 @@ mod tests {
         let adapter =
             ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer()).unwrap();
         let binding = adapter
-            .overflow_binding
+            .palette_binding
             .as_ref()
-            .or_else(|| {
-                adapter
-                    .bindings
-                    .iter()
-                    .find(|binding| binding.invocation.id() == "commands")
-            })
             .expect("fixture exposes the built-in commands binding");
         let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
         let parameters = config.instantiate_parameters("dmenu:main").unwrap();

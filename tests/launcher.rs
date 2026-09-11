@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::{
     discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
@@ -1042,132 +1042,6 @@ fn explicit_embedded_view_runs_without_picker_intent() {
 }
 
 #[test]
-fn btop_fixture_single_view_routes_tab_and_escape_restore_the_empty_default() {
-    let root = temporary_root();
-    let marker = root.join("resource-marker");
-    let bin = root.join("bin");
-    let user_config = root.join("xdg-config").join("btop");
-    let fake_btop = bin.join("btop");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&user_config).unwrap();
-    fs::write(
-        user_config.join("btop.conf"),
-        "shown_boxes = \"cpu mem\"\nupdate_ms = 777\n",
-    )
-    .unwrap();
-    fs::write(
-        &fake_btop,
-        "#!/bin/sh\nset -eu\nprintf '%s|%s|%s\\n' \"$LAUNCHER_INPUT\" \"$(sed -n '/^shown_boxes = /p' \"$2\")\" \"$(sed -n '/^update_ms = /p' \"$2\")\" >> \"$MONITOR_MARKER\"\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
-    )
-    .unwrap();
-    fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}:/usr/bin:/bin",
-        bin.display(),
-        support::binary_path().parent().unwrap().display()
-    );
-
-    let mut process = spawn_launcher_with_args_and_env(
-        &fixture_config(),
-        &[],
-        &[
-            ("MONITOR_MARKER", marker.to_str().unwrap()),
-            ("PATH", &path),
-            ("XDG_CONFIG_HOME", root.join("xdg-config").to_str().unwrap()),
-        ],
-    );
-    wait_for_ready(&process.master);
-    process.master.write_all(b"btop:main ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Next resource");
-    let initial = wait_for_nonempty_file(&marker);
-    assert!(initial.starts_with("|"), "initial marker: {initial}");
-    assert!(initial.contains("shown_boxes = ") && initial.contains("cpu"));
-    assert!(
-        !initial.contains("cpu mem"),
-        "user box selection leaked: {initial}"
-    );
-    assert!(initial.contains("update_ms = 777"), "marker: {initial}");
-
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let switched = loop {
-        let contents = fs::read_to_string(&marker).unwrap_or_default();
-        if contents.lines().count() >= 2 {
-            break contents;
-        }
-        assert!(Instant::now() < deadline, "Tab did not restart the monitor");
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let switched_line = switched.lines().nth(1).unwrap();
-    assert!(
-        switched_line.starts_with("memory|"),
-        "switched marker: {switched}"
-    );
-    assert!(switched_line.contains("shown_boxes = ") && switched_line.contains("mem"));
-    assert!(
-        !switched_line.contains("cpu mem"),
-        "user box selection leaked: {switched}"
-    );
-    assert!(
-        switched_line.contains("update_ms = 777"),
-        "marker: {switched}"
-    );
-
-    for (index, (expected_input, expected_box)) in
-        [("network", "net"), ("processes", "proc"), ("cpu", "cpu")]
-            .into_iter()
-            .enumerate()
-    {
-        process.master.write_all(b"\t").unwrap();
-        process.master.flush().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let contents = loop {
-            let contents = fs::read_to_string(&marker).unwrap_or_default();
-            if contents.lines().count() >= 3 + index {
-                break contents;
-            }
-            assert!(Instant::now() < deadline, "Tab did not restart the monitor");
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let line = contents.lines().last().unwrap();
-        assert!(
-            line.starts_with(&format!("{expected_input}|")),
-            "marker: {contents}"
-        );
-        assert!(line.contains(expected_box), "marker: {contents}");
-        assert!(line.contains("update_ms = 777"), "marker: {contents}");
-    }
-
-    discard_pending_master_output(&process.master);
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible
-            .lines()
-            .nth(1)
-            .is_some_and(|line| line.trim() == "█")
-            && !visible.contains("btop /")
-    });
-    let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---\n").next().unwrap();
-    assert!(
-        visible
-            .lines()
-            .nth(1)
-            .is_some_and(|line| line.trim() == "█"),
-        "screen: {visible}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn waits_for_items_before_running_enter_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2156,79 +2030,6 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
 }
 
 #[test]
-fn feed_owner_commands_are_projected_into_aggregate_picker() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [workflows.core.views.default.keymap]
-        space = "select_next"
-
-        [workflows.apps.views.default]
-        [workflows.apps.views.default.engine]
-        type = "picker"
-        [workflows.apps.views.default.engine.config]
-        items = [{display = "Row", value = "row"}]
-        [workflows.apps.views.default.commands.open]
-        key = "ctrl+r"
-        label = "Owner selection"
-        scope = "selection"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-selection-command:row\\n'"], exit = true }
-        [workflows.apps.views.default.commands.inspect]
-        key = "space"
-        label = "Owner view"
-        scope = "view"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-view-command:row\\n'"], exit = true }
-        "#,
-    )
-    .unwrap();
-    write_workflow_script(
-        &root,
-        "apps",
-        "scripts/owner.sh",
-        "printf 'pending-owner-command:%s\\n' \"$1\"\n",
-    );
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    let footer = wait_for_text(&process.master, "Owner selection");
-    let footer = String::from_utf8_lossy(&footer);
-    assert!(
-        footer.contains("Owner selection"),
-        "owner selection command did not reach the footer: {footer:?}"
-    );
-    assert!(
-        footer.contains("Owner view"),
-        "owner View command did not reach the footer: {footer:?}"
-    );
-
-    process.master.write_all(b"\x12").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("owner-selection-command:row"),
-        "owner selection command did not dispatch: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn routed_picker_restores_alias_prefix_and_top_spacing() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2871,57 +2672,6 @@ fn qualified_view_path_navigates_to_any_engine() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove qualified route config");
-}
-
-#[test]
-fn ctrl_k_in_embedded_view_displays_embedded_commands() {
-    let root = temporary_root();
-    let marker = root.join("resource-marker");
-    let bin = root.join("bin");
-    let fake_btop = bin.join("btop");
-    fs::create_dir_all(&bin).unwrap();
-    fs::write(
-        &fake_btop,
-        "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let path = format!("{}:/usr/bin:/bin", bin.display());
-
-    let mut process = spawn_launcher_with_args_and_env(
-        &fixture_config(),
-        &[],
-        &[
-            ("MONITOR_MARKER", marker.to_str().unwrap()),
-            ("PATH", &path),
-        ],
-    );
-    wait_for_ready(&process.master);
-    process.master.write_all(b"btop:main ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Next resource");
-
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Reset monitor");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Next resource");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "core:default");
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

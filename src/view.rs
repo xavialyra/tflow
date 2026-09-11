@@ -219,8 +219,6 @@ pub(crate) struct ViewChrome {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: Option<BindingSet>,
-    pub(crate) overflow_command: Option<(String, String)>,
-    pub(crate) has_unbound: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -503,6 +501,24 @@ pub(crate) trait View {
     }
 
     fn bindings(&self, context: &ViewContext) -> BindingSet;
+
+    /// Configured business commands are projected separately from Engine input
+    /// actions so the host can own command presentation and palette folding.
+    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
+        None
+    }
+
+    fn business_bindings(&self, _context: &ViewContext) -> BindingSet {
+        let Some(commands) = self.command_bindings() else {
+            return BindingSet::default();
+        };
+        BindingSet::new(commands.business.iter().filter_map(|(key, label)| {
+            key.map(|key| Binding {
+                key,
+                label: Some(label.clone()),
+            })
+        }))
+    }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
