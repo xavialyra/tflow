@@ -1,0 +1,35 @@
+[workflow]
+api = 1
+name = "pass"
+
+[views.main]
+alias = "pass"
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config.items]
+producer = "script"
+
+[views.main.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.main.commands.copy]
+key = "enter"
+label = "Copy password"
+requires = "items"
+type = "run"
+producer = "script"
+
+[views.main.commands.copy.handler]
+file = "scripts/copy.py"
+
+[views.main.commands.otp]
+key = "ctrl+o"
+label = "Copy OTP"
+requires = "items"
+type = "run"
+producer = "script"
+
+[views.main.commands.otp.handler]
+file = "scripts/otp.py"

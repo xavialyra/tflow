@@ -9,10 +9,19 @@ alias = "app"
 type = "picker"
 
 [views.main.engine.config]
+preview_ratio = 0.35
+preview_min_width = 24
+preview_default_open = false
+
 [views.main.engine.config.items]
 producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.sh"
+
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
 
 [views.main.commands.open]
 key = "enter"
@@ -22,3 +31,31 @@ type = "run"
 producer = "script"
 [views.main.commands.open.handler]
 file = "scripts/open.sh"
+
+[views.main.commands.weight]
+key = "ctrl+w"
+label = "Set weight"
+type = "call"
+producer = "script"
+[views.main.commands.weight.handler]
+file = "scripts/weight-popup.sh"
+
+[views.weight]
+[views.weight.query]
+type = "object"
+input_order = ["app"]
+app = { type = "string", default = "" }
+
+[views.weight.engine]
+type = "picker"
+[views.weight.engine.config]
+show_input = false
+items = [{display = "Pin / unpin selected application", value = "toggle"}]
+
+[views.weight.commands.save]
+key = "enter"
+label = "Save"
+type = "return"
+producer = "script"
+[views.weight.commands.save.handler]
+file = "scripts/set-weight.sh"

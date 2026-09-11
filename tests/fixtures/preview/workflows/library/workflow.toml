@@ -1,0 +1,26 @@
+[workflow]
+api = 1
+name = "Preview library"
+
+[views.main]
+alias = "library"
+[views.main.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+owner = { type = "string", default = "library" }
+[views.main.engine]
+type = "picker"
+[views.main.engine.config]
+items = [
+  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout. Scroll down to read the complete document.", image = "art.png" } },
+  { display = "Empty preview", value = "empty", metadata = {} },
+]
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
+[views.main.keymap]
+"ctrl+p" = "toggle_preview"
+"alt+k" = "preview_scroll_up"
+"alt+j" = "preview_scroll_down"

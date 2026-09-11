@@ -9,6 +9,8 @@ alias = "commands"
 type = "picker"
 
 [views.commands.engine.config]
+show_input = false
+show_divider = false
 
 [views.commands.engine.config.items]
 producer = "script"
@@ -30,3 +32,24 @@ type = "return"
 producer = "script"
 [views.commands.commands.accept.handler]
 file = "scripts/result.sh"
+
+[views.views]
+alias = "view"
+
+[views.views.engine]
+type = "picker"
+
+[views.views.engine.config.items]
+producer = "script"
+
+[views.views.engine.config.items.handler]
+file = "scripts/views.sh"
+
+[views.views.commands.open]
+key = "enter"
+label = "Open View"
+type = "navigate"
+producer = "script"
+
+[views.views.commands.open.handler]
+file = "scripts/open-view.sh"

@@ -293,15 +293,19 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
 }
 
 #[test]
-fn check_rejects_picker_runtime_field_shape_mismatches() {
+fn check_rejects_picker_preview_field_shape_mismatches() {
     for (field, expected) in [
         (
-            "layout = 42\npreview = { blocks = [{ type = \"text\" }] }",
-            "picker layout is invalid",
+            "preview_ratio = \"not-a-number\"",
+            "picker preview_ratio must be a number",
         ),
         (
-            "layout = { panes = [{ slot = \"items\", grow = 1 }, { slot = \"preview\", grow = 1 }] }\npreview = \"not-a-table\"",
-            "picker preview is invalid",
+            "preview_min_width = -1",
+            "picker preview_min_width must be an unsigned 16-bit integer",
+        ),
+        (
+            "preview_default_open = \"yes\"",
+            "picker preview_default_open must be a boolean",
         ),
     ] {
         let root = temporary_root();
@@ -325,7 +329,7 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
             .args(["--check", "--config"])
             .arg(&config)
             .output()
-            .expect("could not validate picker runtime field shape");
+            .expect("could not validate picker preview field shape");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "accepted {field}: {stderr}");
         assert!(stderr.contains(expected), "stderr: {stderr}");
@@ -334,7 +338,7 @@ fn check_rejects_picker_runtime_field_shape_mismatches() {
 }
 
 #[test]
-fn check_validates_static_items_sources_without_running_them() {
+fn check_validates_static_producer_sources_without_running_them() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -347,6 +351,9 @@ fn check_validates_static_items_sources_without_running_them() {
         producer = "script"
         [workflows.core.views.default.engine.config.items.handler]
         file = "scripts/items.sh"
+        [workflows.core.views.default.engine.config.preview]
+        producer = "script"
+        handler = { file = "scripts/preview.sh" }
 
         [workflows.core.views.capture.engine]
         type = "capture"
@@ -360,8 +367,14 @@ fn check_validates_static_items_sources_without_running_them() {
     .unwrap();
     let items_marker = root.join("items-script-ran");
     let capture_marker = root.join("capture-script-ran");
+    let preview_marker = root.join("preview-script-ran");
     let scripts = root.join("workflows/core/scripts");
     std::fs::create_dir_all(&scripts).unwrap();
+    std::fs::write(
+        scripts.join("preview.sh"),
+        format!("#!/bin/sh\nprintf ran > {:?}\n", preview_marker),
+    )
+    .unwrap();
     std::fs::write(
         scripts.join("items.sh"),
         format!("printf ran > {:?}\nprintf '[]\\n'\n", items_marker),
@@ -380,9 +393,13 @@ fn check_validates_static_items_sources_without_running_them() {
         .args(["--check", "--config"])
         .arg(&config)
         .output()
-        .expect("could not validate static items source");
+        .expect("could not validate static producer sources");
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
     assert!(!items_marker.exists(), "--check executed the items script");
+    assert!(
+        !preview_marker.exists(),
+        "--check executed the preview script"
+    );
     assert!(
         !capture_marker.exists(),
         "--check executed the capture script"
@@ -814,7 +831,7 @@ fn check_loads_a_named_theme_from_the_config_directory() {
     std::fs::create_dir_all(root.join("themes")).unwrap();
     std::fs::write(
         root.join("themes/work.toml"),
-        "[palette]\nbrand = \"magenta\"\nquiet = \"gray\"\n\n[scheme]\nprimary = \"palette:brand\"\non-surface-variant = \"palette:quiet\"\n",
+        "[scheme]\naccent = \"ansi:magenta\"\nmuted = \"ansi:gray\"\n",
     )
     .unwrap();
 
@@ -825,6 +842,43 @@ fn check_loads_a_named_theme_from_the_config_directory() {
         .expect("could not validate a named theme");
 
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_rejects_invalid_theme_colors_and_references() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        theme = "work"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("themes")).unwrap();
+    for (source, expected) in [
+        ("[scheme]\nunused = \"scheme:accent\"\n", "scheme.unused"),
+        (
+            "[picker.badge.selected]\nbackground = \"#bad\"\n",
+            "picker.badge.selected.background has invalid color",
+        ),
+    ] {
+        std::fs::write(root.join("themes/work.toml"), source).unwrap();
+        let output = launcher_command()
+            .args(["--check", "--config"])
+            .arg(&config)
+            .output()
+            .expect("could not validate theme");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "accepted theme: {source}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("themes/work.toml"), "{stderr}");
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1010,4 +1064,81 @@ fn single_file_workflow_fixture_inspect_and_query_mapping() {
     assert_eq!(json["alias"], "echo");
     assert_eq!(json["engine"], "capture");
     assert!(json["query"]["message"].is_object());
+}
+
+#[test]
+fn fixture_inspect_all_returns_sorted_view_contracts() {
+    let inspect = launcher_command()
+        .args(["--config"])
+        .arg(fixture_config())
+        .args(["inspect", "--all"])
+        .output()
+        .expect("could not inspect all fixture views");
+
+    assert!(
+        inspect.status.success(),
+        "stderr: {:?}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let views = json["views"].as_array().expect("views must be an array");
+    let view_refs = views
+        .iter()
+        .map(|view| view["view"].as_str().expect("view ref must be a string"))
+        .collect::<Vec<_>>();
+    let mut sorted = view_refs.clone();
+    sorted.sort_unstable();
+
+    assert!(!views.is_empty());
+    assert_eq!(view_refs, sorted);
+    assert!(view_refs.contains(&"apps:main"));
+    assert!(view_refs.contains(&"sys:main"));
+    assert!(view_refs.contains(&"sys:output"));
+    assert!(view_refs.contains(&"echo:main"));
+
+    let sys = views
+        .iter()
+        .find(|view| view["view"] == "sys:main")
+        .expect("sys:main must be inspectable");
+    assert_eq!(sys["alias"], "sys");
+    assert_eq!(sys["engine"], "picker");
+    assert!(sys["commands"].as_array().unwrap().iter().any(|command| {
+        command["id"] == "run" && command["key"] == "enter" && command["label"] == "Run"
+    }));
+
+    let output_view = views
+        .iter()
+        .find(|view| view["view"] == "sys:output")
+        .expect("sys:output must be inspectable");
+    assert_eq!(output_view["alias"], serde_json::Value::Null);
+    assert_eq!(output_view["engine"], "capture");
+}
+
+#[test]
+fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
+    let with_view = launcher_command()
+        .args(["--config"])
+        .arg(fixture_config())
+        .args(["inspect", "--all", "echo"])
+        .output()
+        .expect("could not run invalid inspect command");
+    assert!(!with_view.status.success());
+    assert!(String::from_utf8_lossy(&with_view.stderr).contains("View argument"));
+
+    let without_inspect = launcher_command()
+        .args(["--config"])
+        .arg(fixture_config())
+        .args(["--all"])
+        .output()
+        .expect("could not run invalid all command");
+    assert!(!without_inspect.status.success());
+    assert!(String::from_utf8_lossy(&without_inspect.stderr).contains("requires `inspect`"));
+
+    let with_check = launcher_command()
+        .args(["--check", "--all", "--config"])
+        .arg(fixture_config())
+        .output()
+        .expect("could not run invalid check command");
+    assert!(!with_check.status.success());
+    assert!(String::from_utf8_lossy(&with_check.stderr).contains("inspection options"));
 }

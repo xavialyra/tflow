@@ -88,6 +88,24 @@ fn returns_an_unmatched_query() {
 }
 
 #[test]
+fn backspace_at_an_empty_cli_root_keeps_the_picker_open() {
+    for keys in [b"\x7f\r".as_slice(), b"\x08\r", b"x\x7f\x7f\r"] {
+        let result = run_dmenu(&[], b"first\nsecond\n", keys);
+
+        assert_eq!(result.status, 0);
+        assert_eq!(result.stdout, b"first\n");
+    }
+}
+
+#[test]
+fn backspace_at_the_start_of_a_query_preserves_the_query() {
+    let result = run_dmenu(&[], b"first\nsecond\n", b"second\x1b[H\x7f\r");
+
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"second\n");
+}
+
+#[test]
 fn route_like_input_remains_a_dmenu_query() {
     let result = run_dmenu_steps(&[], b"first\n", &[&b"app terminal"[..], &b"\r"[..]]);
 

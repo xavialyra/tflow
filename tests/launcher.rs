@@ -640,6 +640,58 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
 }
 
 #[test]
+fn external_copy_feedback_requires_success_and_is_logged_on_exit() {
+    for (code, exit) in [(0, false), (0, true), (7, false)] {
+        let root = temporary_root();
+        let config = root.join("config.toml");
+        write_test_config(&config, &format!(r#"
+            default_view = "core:default"
+            log_file = "runtime.jsonl"
+            [workflows.core.views.default.engine]
+            type = "picker"
+            [workflows.core.views.default.engine.config]
+            items = [{{display = "Item", value = "value"}}]
+            [workflows.core.views.default.commands.copy]
+            key = "enter"
+            type = "run"
+            producer = "declared"
+            handler = {{mode = "foreground", argv = ["sh", "-c", "exit {code}"], exit = {exit}, success_message = "Copied to clipboard"}}
+        "#)).unwrap();
+        let mut process = spawn_launcher(&config);
+        wait_for_ready(&process.master);
+        process.master.write_all(b"\r").unwrap();
+        process.master.flush().unwrap();
+        if !exit {
+            wait_for_text(
+                &process.master,
+                if code == 0 {
+                    "Copied to clipboard"
+                } else {
+                    "ERROR"
+                },
+            );
+            process.master.write_all(b"\x03").unwrap();
+            process.master.flush().unwrap();
+        }
+        let (status, _) = wait_for_launcher_exit(&mut process);
+        assert_eq!(status, 0);
+        let log = fs::read_to_string(root.join("runtime.jsonl")).unwrap();
+        let records: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0]["metadata"]["level"],
+            if code == 0 { "info" } else { "error" }
+        );
+        assert_eq!(records[0]["metadata"]["view"], "core:default");
+        assert_eq!(log.contains("Copied to clipboard"), code == 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn loads_items_and_runs_a_view_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1009,7 +1061,11 @@ fn btop_fixture_single_view_routes_tab_and_escape_restore_the_empty_default() {
     )
     .unwrap();
     fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let path = format!(
+        "{}:{}:/usr/bin:/bin",
+        bin.display(),
+        support::binary_path().parent().unwrap().display()
+    );
 
     let mut process = spawn_launcher_with_args_and_env(
         &fixture_config(),
@@ -1091,16 +1147,16 @@ fn btop_fixture_single_view_routes_tab_and_escape_restore_the_empty_default() {
         visible
             .lines()
             .nth(1)
-            .is_some_and(|line| line.trim().is_empty())
+            .is_some_and(|line| line.trim() == "█")
             && !visible.contains("btop /")
     });
     let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---").next().unwrap();
+    let visible = output.rsplit("--- visible screen ---\n").next().unwrap();
     assert!(
         visible
             .lines()
             .nth(1)
-            .is_some_and(|line| line.trim().is_empty()),
+            .is_some_and(|line| line.trim() == "█"),
         "screen: {visible}"
     );
 
@@ -1304,7 +1360,7 @@ fn edit_input_command_updates_the_picker_owned_editor() {
     process.master.write_all(b"draft").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "draft")
+        visible.lines().any(|line| line.trim() == "draft█")
     });
     process.master.write_all(b"\x12").unwrap();
     process.master.flush().unwrap();
@@ -1421,7 +1477,7 @@ fn queued_keys_observe_dynamic_picker_bindings() {
 }
 
 #[test]
-fn unavailable_toggle_preview_consumes_an_unbound_key() {
+fn toggle_preview_without_configuration_consumes_its_bound_key() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1448,7 +1504,7 @@ fn unavailable_toggle_preview_consumes_an_unbound_key() {
         handler = { mode = "foreground", argv = ["sh", "-c", "printf 'toggle-query::end\\n'"], exit = true }
         "#,
     )
-    .expect("could not write unavailable preview config");
+    .expect("could not write default preview config");
     write_workflow_script(
         &root,
         "core",
@@ -1735,6 +1791,29 @@ fi
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).expect("could not remove cancellation integration config");
+}
+
+#[test]
+fn view_selector_discovers_views_and_navigates_to_the_selected_view() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["selectors:views"]);
+    wait_for_ready(&process.master);
+
+    process.master.write_all(b"sys").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "sys (sys:main)");
+
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show system information");
+
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "sys (sys:main)");
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {output:?}");
 }
 
 #[test]
@@ -2179,7 +2258,7 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
     process.master.write_all(b"app needle").unwrap();
     process.master.flush().unwrap();
     let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "app needle")
+        visible.lines().any(|line| line.trim() == "app needle█")
             && visible
                 .lines()
                 .last()
@@ -2189,7 +2268,7 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
     let visible = output.rsplit("--- visible screen ---").next().unwrap();
     let mut lines = visible.lines().filter(|line| !line.is_empty());
     assert!(lines.next().is_some_and(|line| line.trim().is_empty()));
-    assert!(visible.lines().any(|line| line.trim() == "app needle"));
+    assert!(visible.lines().any(|line| line.trim() == "app needle█"));
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -2199,7 +2278,7 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
 }
 
 #[test]
-fn picker_back_clears_routed_query_before_returning_to_default() {
+fn picker_back_returns_to_parent_without_clearing_routed_query() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2246,16 +2325,6 @@ fn picker_back_clears_routed_query_before_returning_to_default() {
         .expect("could not write app query");
     process.master.flush().expect("could not flush app query");
     let _ = wait_for_text(&process.master, "aa");
-
-    process
-        .master
-        .write_all(b"\x1b")
-        .expect("could not clear the routed query");
-    process
-        .master
-        .flush()
-        .expect("could not flush the routed query clear");
-    wait_for_ready(&process.master);
 
     process
         .master
@@ -2448,6 +2517,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         &config,
         r#"
         default_view = "core:default"
+        log_file = "runtime.jsonl"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -2495,10 +2565,18 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         .master
         .flush()
         .expect("could not flush capture copy key");
-    let copied = wait_for_output(
-        &process.master,
-        b"\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07",
+    let copied = wait_for_text(&process.master, "Copied to clipboard");
+    let sequence = b"\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07";
+    assert!(
+        copied
+            .windows(sequence.len())
+            .any(|bytes| bytes == sequence)
     );
+    let log = fs::read_to_string(root.join("runtime.jsonl")).unwrap();
+    let record: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(record["metadata"]["level"], "info");
+    assert_eq!(record["metadata"]["view"], "core:capture");
+    assert_eq!(record["metadata"]["message"], "Copied to clipboard");
     process
         .master
         .write_all(b"\x1b")

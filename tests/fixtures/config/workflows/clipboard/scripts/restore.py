@@ -38,13 +38,14 @@ def main():
                     'trap \'rm -f "$tmp"\' EXIT; '
                     'cliphist decode "$1" > "$tmp" || exit; '
                     'if [ -n "$2" ]; then '
-                    'setsid --fork wl-copy --type "$2" < "$tmp"; '
-                    'else setsid --fork wl-copy < "$tmp"; fi',
+                    'setsid --fork --wait wl-copy --type "$2" < "$tmp"; '
+                    'else setsid --fork --wait wl-copy < "$tmp"; fi',
                     "clipboard-history",
                     entry_id,
                     mime,
                 ],
                 "exit": True,
+                "success_message": "Copied to clipboard",
             },
         },
         sys.stdout,

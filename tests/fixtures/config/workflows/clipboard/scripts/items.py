@@ -105,7 +105,7 @@ def make_item(entry_id, label, data):
             kind = "TEXT"
             summary = compact(content, 120) or "(empty text)"
             lines = len(content.splitlines()) or 1
-            details = f"{lines} {'line' if lines == 1 else 'lines'} · {len(content):,} characters"
+            details = f"{lines} {'line' if lines == 1 else 'lines'}"
             metadata["content"] = content[:MAX_PREVIEW_CHARS]
             if len(content) > MAX_PREVIEW_CHARS:
                 metadata["content"] += "\n… (preview truncated)"
@@ -172,7 +172,7 @@ def search_history(tokens):
     source = history_source()
     # Serialize refreshes so a cancelled/older query cannot overwrite a newer
     # history snapshot. Committed entries survive producer cancellation.
-    lock_path = directory / f"index-v1-{source}.lock"
+    lock_path = directory / f"index-v3-{source}.lock"
     with os.fdopen(os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         result = run(["cliphist", "list"])
@@ -185,7 +185,7 @@ def search_history(tokens):
             if separator and entry_id.isascii() and entry_id.isdecimal():
                 entries[entry_id] = label
 
-        path = directory / f"index-v1-{source}.sqlite3"
+        path = directory / f"index-v3-{source}.sqlite3"
         path.touch(mode=0o600, exist_ok=True)
         connection = sqlite3.connect(path, isolation_level=None)
         try:

@@ -8,4 +8,10 @@ type = "picker"
 [views.default.engine.config]
 
 [[views.default.engine.config.feeds]]
-view = "*:main"
+view = "calculator:main"
+
+[[views.default.engine.config.feeds]]
+view = "apps:main"
+
+[[views.default.engine.config.feeds]]
+view = "selectors:views"

@@ -1,0 +1,24 @@
+[workflow]
+api = 1
+name = "calculator"
+
+[views.main]
+alias = "calculator"
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.main.commands.copy]
+key = "enter"
+label = "Copy result"
+requires = "items"
+type = "run"
+producer = "script"
+
+[views.main.commands.copy.handler]
+file = "scripts/copy.py"

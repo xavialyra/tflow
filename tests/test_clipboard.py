@@ -43,6 +43,8 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(item["metadata"]["mime"], "image/png")
+        self.assertEqual(len(item["display"]["rows"]), 2)
+        self.assertIn("1x1", item["display"]["rows"][1]["cells"][1]["text"])
         self.assertNotIn("content", item["metadata"])
         self.assertEqual(items.cache_image(PNG, "png"), str(path))
 
@@ -51,6 +53,15 @@ class ClipboardTests(unittest.TestCase):
         item = items.make_item("1", "第一行", text.encode())
         self.assertEqual(item["metadata"]["content"], text)
         self.assertIn("2 lines", item["metadata"]["summary"])
+        self.assertEqual(len(item["display"]["rows"]), 2)
+        self.assertIn(
+            "2 lines",
+            item["display"]["rows"][1]["cells"][1]["text"],
+        )
+        self.assertNotIn(
+            "characters",
+            item["display"]["rows"][1]["cells"][1]["text"],
+        )
         self.assertNotIn("thumbnail", item["metadata"])
         binary = items.make_item("2", "binary", b"\x00\xff")
         self.assertIn("Preview unavailable", binary["metadata"]["content"])
@@ -70,7 +81,10 @@ class ClipboardTests(unittest.TestCase):
             request = {"entrypoint": "picker-items", "context": {"engine": {"state": {"input": query}}}}
             with patch.object(items, "run", run), patch.object(items.shutil, "which", return_value="mock"), patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", output):
                 items.main()
-            self.assertEqual([item["value"] for item in json.loads(output.getvalue())["items"]], expected)
+            result = json.loads(output.getvalue())["items"]
+            self.assertEqual([item["value"] for item in result], expected)
+            if query == "image png":
+                self.assertIn("1x1", result[0]["display"]["rows"][1]["cells"][1]["text"])
 
     def test_warm_search_and_incremental_refresh(self):
         history = {"3": ("image", PNG), "2": ("short label", b"hidden body needle"), "1": ("old", b"old")}
@@ -104,7 +118,7 @@ class ClipboardTests(unittest.TestCase):
             self.assertEqual(items.search_history(["needle"]), [])
             self.assertEqual(items.search_history(["%"]), [])
             self.assertEqual(items.search_history(["_"]), [])
-            index = next(self.root.glob("*/index-*.sqlite3"))
+            index = next(self.root.glob("*/index-v3-*.sqlite3"))
             self.assertEqual(index.stat().st_mode & 0o777, 0o600)
 
     def test_missing_thumbnail_is_regenerated_only_when_matched(self):
@@ -142,7 +156,7 @@ class ClipboardTests(unittest.TestCase):
     def test_restore_binary_and_decode_failure(self):
         for name, body in {
             "cliphist": '#!/bin/sh\n[ "$2" != fail ] || exit 7\ncat "$PAYLOAD"\n',
-            "setsid": '#!/bin/sh\nshift\nexec "$@"\n',
+            "setsid": '#!/bin/sh\nshift 2\nexec "$@"\n',
             "wl-copy": '#!/bin/sh\nprintf "%s\\n" "$@" > "$COPY_ARGS"\ncat > "$COPIED"\n',
         }.items():
             script = self.root / name
@@ -156,7 +170,9 @@ class ClipboardTests(unittest.TestCase):
             output = io.StringIO()
             with patch.dict(os.environ, env), patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", output):
                 restore.main()
-            result = subprocess.run(json.loads(output.getvalue())["operation"]["argv"], env=env)
+            operation = json.loads(output.getvalue())["operation"]
+            self.assertEqual(operation["success_message"], "Copied to clipboard")
+            result = subprocess.run(operation["argv"], env=env)
             if entry_id == "42":
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual(copied.read_bytes(), PNG)
