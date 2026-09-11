@@ -39,6 +39,10 @@ struct Args {
     #[arg(long, value_name = "VIEW")]
     inspect: Option<String>,
 
+    /// Inspect every configured View; use as `tlaunch inspect --all`.
+    #[arg(long)]
+    all: bool,
+
     /// View to start directly; defaults to the configured root view.
     #[arg(value_name = "VIEW")]
     view: Option<String>,
@@ -158,41 +162,50 @@ pub(crate) fn run() -> Result<i32> {
         if args.view.is_some() || !args.view_options.is_empty() {
             bail!("--check cannot be combined with a target View or View options");
         }
+        if args.inspect.is_some() || args.all {
+            bail!("--check cannot be combined with inspection options");
+        }
         println!("configuration is valid: {}", config_path.display());
         return Ok(0);
     }
 
     let inspect_target = if let Some(target) = &args.inspect {
+        if args.all {
+            bail!("--all cannot be combined with --inspect <VIEW>");
+        }
         Some(target.as_str())
     } else if args.view.as_deref() == Some("inspect") {
+        if args.all {
+            if !args.view_options.is_empty() {
+                bail!("inspect --all cannot be combined with a View argument");
+            }
+            let views = config
+                .iter_views()
+                .map(|(view_ref, view)| view_contract(view_ref, view))
+                .collect::<Vec<_>>();
+            let output = serde_json::json!({ "views": views });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            return Ok(0);
+        }
         let target = args
             .view_options
             .first()
             .context("inspect requires a view argument, e.g. `tlaunch inspect <view>`")?;
         Some(target.as_str())
     } else {
+        if args.all {
+            bail!("--all requires `inspect`; use `tlaunch inspect --all`");
+        }
         None
     };
 
     if let Some(target) = inspect_target {
         let view_ref = config.resolve_view(target)?;
         let view = config.view(&view_ref).context("view disappeared")?;
-        let output = serde_json::json!({
-            "view": view_ref,
-            "alias": view.alias,
-            "engine": view.selected_engine_type(),
-            "query": view.query,
-            "commands": view.commands.iter().map(|(id, cmd)| {
-                serde_json::json!({
-                    "id": id,
-                    "key": cmd.key,
-                    "label": cmd.label,
-                    "scope": cmd.scope,
-                    "requires": cmd.requires,
-                })
-            }).collect::<Vec<_>>(),
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&view_contract(&view_ref, view))?
+        );
         return Ok(0);
     }
 
@@ -324,6 +337,24 @@ pub(crate) fn run() -> Result<i32> {
         return Ok(128 + signal);
     }
     Ok(result.exit_code)
+}
+
+fn view_contract(view_ref: &str, view: &crate::workflow::config::View) -> serde_json::Value {
+    serde_json::json!({
+        "view": view_ref,
+        "alias": view.alias,
+        "engine": view.selected_engine_type(),
+        "query": view.query,
+        "commands": view.commands.iter().map(|(id, cmd)| {
+            serde_json::json!({
+                "id": id,
+                "key": cmd.key,
+                "label": cmd.label,
+                "scope": cmd.scope,
+                "requires": cmd.requires,
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn write_final_output(

@@ -11,10 +11,12 @@ pub(super) enum PickerAction {
     ClearInput,
     DeleteWord,
     TogglePreview,
+    PreviewScrollUp,
+    PreviewScrollDown,
 }
 
 impl PickerAction {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::Exit,
         Self::Back,
         Self::SelectPrevious,
@@ -23,6 +25,8 @@ impl PickerAction {
         Self::ClearInput,
         Self::DeleteWord,
         Self::TogglePreview,
+        Self::PreviewScrollUp,
+        Self::PreviewScrollDown,
     ];
 }
 
@@ -39,6 +43,8 @@ impl KeymapAction for PickerAction {
             Self::ClearInput => "clear_input",
             Self::DeleteWord => "delete_word",
             Self::TogglePreview => "toggle_preview",
+            Self::PreviewScrollUp => "preview_scroll_up",
+            Self::PreviewScrollDown => "preview_scroll_down",
         }
     }
 
@@ -56,6 +62,7 @@ impl KeymapAction for PickerAction {
             (Key::Backspace, Self::DeleteBackward),
             (Key::Ctrl('u'), Self::ClearInput),
             (Key::Ctrl('w'), Self::DeleteWord),
+            (Key::Ctrl('p'), Self::TogglePreview),
         ]
     }
 }
@@ -66,6 +73,20 @@ pub(super) type PickerKeymap = ActionBindings<PickerAction>;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn defaults_back_on_escape_and_clear_input_on_ctrl_u() {
+        let keymap = PickerKeymap::from_value(None).unwrap();
+        assert_eq!(keymap.action(Key::Escape), Some(PickerAction::Back));
+        assert_eq!(
+            keymap.action(Key::Ctrl('u')),
+            Some(PickerAction::ClearInput)
+        );
+        assert_eq!(
+            keymap.action(Key::Ctrl('p')),
+            Some(PickerAction::TogglePreview)
+        );
+    }
 
     #[test]
     fn partial_overrides_replace_one_action_and_keep_other_defaults() {

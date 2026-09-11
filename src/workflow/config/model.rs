@@ -90,6 +90,16 @@ pub(crate) fn parse_producer_script_handler(
     value: &toml::Value,
     script_root: Option<&Path>,
 ) -> Result<ResolvedScriptSource> {
+    let source = parse_producer_script_handler_shape(value)?;
+    source.validate_target(script_root)?;
+    Ok(source)
+}
+
+/// Parse inert handler data when a projection does not carry its workflow root.
+/// Configuration validation and mount preparation still validate the target.
+pub(crate) fn parse_producer_script_handler_shape(
+    value: &toml::Value,
+) -> Result<ResolvedScriptSource> {
     let handler: ProducerScriptHandler = value
         .clone()
         .try_into()
@@ -104,9 +114,7 @@ pub(crate) fn parse_producer_script_handler(
         (None, Some(_)) => bail!("script producer handler script must be non-empty"),
         (None, None) => bail!("script producer handler must define exactly one of file or script"),
     };
-    let source = ResolvedScriptSource { target };
-    source.validate_target(script_root)?;
-    Ok(source)
+    Ok(ResolvedScriptSource { target })
 }
 
 impl ResolvedScriptSource {

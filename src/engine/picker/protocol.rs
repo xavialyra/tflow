@@ -75,21 +75,32 @@ pub(crate) fn create_protocol_view(
     );
     let mount_id = ViewMountId(instance.0);
     let options = PickerOptions {
-        preview_enabled: config.engine.field("preview").is_some(),
-        show_input: true,
-        show_divider: true,
+        show_input: config
+            .engine
+            .field("show_input")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        show_divider: config
+            .engine
+            .field("show_divider")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
     };
+    let (preview_ratio, preview_min_width, preview_visible) = super::preview_options(
+        config.engine.field("preview_ratio"),
+        config.engine.field("preview_min_width"),
+        config.engine.field("preview_default_open"),
+    )?;
     let preview = super::preview::parse(
-        config.engine.field("layout").cloned(),
+        preview_ratio,
+        preview_min_width,
         config.engine.field("preview").cloned(),
     )?;
-    let runtime_services = config.services.clone();
-    let runtime = PickerView::new_with_preview(
-        &config.identity.view_ref,
-        runtime_services,
-        options.clone(),
-        preview,
-    );
+    let mut runtime_services = config.services.clone();
+    runtime_services.launch_input = config.engine.launch_input.clone();
+    let mut runtime =
+        PickerView::new_with_preview(&config.identity.view_ref, runtime_services, preview);
+    runtime.set_preview_visible(preview_visible);
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
     let route_candidates = routes.complete("");
     let mut completion_prefixes = BTreeMap::from([(String::new(), route_candidates.clone())]);
@@ -428,12 +439,55 @@ impl PickerProtocolView {
         Ok(ready)
     }
 
+    fn body_layout(&self, area: Rect) -> [Rect; 4] {
+        let query_height = if self.options.show_input {
+            area.height.min(1)
+        } else {
+            0
+        };
+        let divider_height = if self.options.show_divider && query_height > 0 {
+            area.height.saturating_sub(query_height).min(1)
+        } else {
+            0
+        };
+        let completion_available = area
+            .height
+            .saturating_sub(query_height)
+            .saturating_sub(divider_height);
+        let completion_height = self
+            .completion
+            .as_ref()
+            .map(|_| completion_available)
+            .unwrap_or(0);
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(query_height),
+                Constraint::Length(divider_height),
+                Constraint::Length(completion_height),
+                Constraint::Min(0),
+            ])
+            .split(area);
+
+        std::array::from_fn(|i| layout[i])
+    }
+
+    fn sync_auxiliary_size(&mut self) {
+        let body = self.body_layout(Rect::new(0, 0, self.content_size.0, self.content_size.1))[3];
+        self.runtime
+            .set_auxiliary_content_size((body.width, body.height));
+    }
+
     fn start_prepared_work(&mut self) {
+        self.sync_auxiliary_size();
         let task = TaskId(1);
         let generation = self.task_generation.wrapping_add(1).max(1);
         let starter = self.starter.for_task(task, generation);
         if self.runtime.start_prepared_work(&starter) {
             self.task_generation = generation;
+            self.task_registry.register(task, generation);
+        }
+        for (task, generation) in self.runtime.start_prepared_auxiliary_work(&self.starter) {
             self.task_registry.register(task, generation);
         }
     }
@@ -894,7 +948,7 @@ impl PickerProtocolView {
     fn apply_key(&mut self, context: &ViewContext, key: Key) -> Result<ViewDecision> {
         if !self.options.show_input {
             return match key {
-                Key::Backspace => self.action(context, "picker.back"),
+                Key::Backspace if context.has_parent => self.action(context, "picker.back"),
                 _ => Ok(ViewDecision::Stay),
             };
         }
@@ -929,10 +983,10 @@ impl PickerProtocolView {
             Key::Backspace => {
                 if self.editor.delete_backward() {
                     self.edit_changed(context)
-                } else if self.route_entry {
-                    Ok(ViewDecision::Invalidate)
+                } else if self.editor.raw.is_empty() && context.has_parent && !self.route_entry {
+                    Ok(ViewDecision::CloseToRoot)
                 } else {
-                    self.action(context, "picker.back")
+                    Ok(ViewDecision::Invalidate)
                 }
             }
             Key::Delete => {
@@ -956,6 +1010,8 @@ impl PickerProtocolView {
             super::keymap::PickerAction::SelectPrevious => "picker.select_previous",
             super::keymap::PickerAction::SelectNext => "picker.select_next",
             super::keymap::PickerAction::TogglePreview => "picker.toggle_preview",
+            super::keymap::PickerAction::PreviewScrollUp => "picker.preview_scroll_up",
+            super::keymap::PickerAction::PreviewScrollDown => "picker.preview_scroll_down",
             super::keymap::PickerAction::DeleteBackward => {
                 return Ok(Some(self.apply_key(context, Key::Backspace)?));
             }
@@ -968,10 +1024,6 @@ impl PickerProtocolView {
                 return Ok(Some(self.edit_changed(context)?));
             }
         };
-        if id == "picker.back" && !self.editor.raw.is_empty() {
-            self.editor.clear();
-            return Ok(Some(self.edit_changed(context)?));
-        }
         Ok(Some(match id {
             "picker.select_previous" => {
                 if self.completion_move(-1) {
@@ -1077,7 +1129,7 @@ impl View for PickerProtocolView {
             "picker protocol context belongs to a different instance"
         );
         self.rebuild_context(context);
-        match event {
+        let result = (|| match event {
             ViewEvent::Lifecycle(LifecycleEvent::Mounted) => Ok(ViewDecision::Stay),
             ViewEvent::Lifecycle(LifecycleEvent::Activated) => {
                 self.active = true;
@@ -1097,6 +1149,8 @@ impl View for PickerProtocolView {
             }
             ViewEvent::Lifecycle(LifecycleEvent::Covered) => {
                 self.active = false;
+                self.runtime.suspend_auxiliary_work();
+                self.task_registry.invalidate(TaskId(2));
                 self.pending_command = None;
                 self.defer_work_poll = false;
                 self.task_completion_pending = false;
@@ -1194,6 +1248,13 @@ impl View for PickerProtocolView {
                 if !self.task_registry.accepts(&task) {
                     return Ok(ViewDecision::Stay);
                 }
+                if task.task == TaskId(2) {
+                    self.task_registry.invalidate(task.task);
+                    if self.active {
+                        self.start_prepared_work();
+                    }
+                    return Ok(ViewDecision::Invalidate);
+                }
                 if self.active {
                     if let Some(emission) = self.runtime.poll_work()? {
                         self.task_registry.invalidate(task.task);
@@ -1234,7 +1295,9 @@ impl View for PickerProtocolView {
                 self.content_size = (size.width, size.height);
                 Ok(ViewDecision::Invalidate)
             }
-        }
+        })();
+        self.sync_auxiliary_size();
+        result
     }
 
     fn render(
@@ -1243,34 +1306,10 @@ impl View for PickerProtocolView {
         area: Rect,
         context: &RenderContext,
     ) -> Result<RenderResult> {
-        let query_height = if self.options.show_input {
-            area.height.min(1)
-        } else {
-            0
-        };
-        let divider_height = if self.options.show_divider && query_height > 0 {
-            area.height.saturating_sub(query_height).min(1)
-        } else {
-            0
-        };
-        let completion_available = area
-            .height
-            .saturating_sub(query_height)
-            .saturating_sub(divider_height);
-        let completion_height = self
-            .completion
-            .as_ref()
-            .map(|_| completion_available)
-            .unwrap_or(0);
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(query_height),
-                Constraint::Length(divider_height),
-                Constraint::Length(completion_height),
-                Constraint::Min(0),
-            ])
-            .split(area);
+        let layout = self.body_layout(area);
+        let query_height = layout[0].height;
+        let divider_height = layout[1].height;
+        let completion_height = layout[2].height;
         let query = visible_editor_query(
             self.query_prefix.as_deref(),
             self.recognized_editor_prefix_end(),
@@ -1279,6 +1318,13 @@ impl View for PickerProtocolView {
             layout[0].width as usize,
         );
         if query_height > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    " ".repeat(layout[0].width as usize),
+                    self.theme.picker.text,
+                )),
+                layout[0],
+            );
             let mut spans = Vec::new();
             let mut offset = 0;
             if let Some(highlight) = query.highlight.clone() {
@@ -1301,6 +1347,7 @@ impl View for PickerProtocolView {
                 ));
             }
             frame.render_widget(Paragraph::new(Line::from(spans)), layout[0]);
+            render_pseudo_cursor(frame, layout[0], query.cursor, self.theme.picker.cursor);
         }
         if divider_height > 0 {
             frame.render_widget(
@@ -1362,13 +1409,7 @@ impl View for PickerProtocolView {
             layout[3],
         );
         Ok(RenderResult {
-            cursor: (query_height > 0 && layout[0].width > 0).then_some(
-                crate::view::RelativeCursor {
-                    x: query.cursor.min(layout[0].width.saturating_sub(1)),
-                    y: 0,
-                    visible: true,
-                },
-            ),
+            cursor: None,
             metadata: crate::view::ViewMetadata {
                 status: self.renderer.chrome(&model).status,
                 error: self.diagnostic.clone(),
@@ -1430,6 +1471,62 @@ fn explicitly_disabled_keys(
         }
     }
     disabled
+}
+
+const PSEUDO_CURSOR_SYMBOL: &str = "█";
+
+fn render_pseudo_cursor(frame: &mut Frame, area: Rect, column: u16, style: ratatui::style::Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let target_x = area
+        .x
+        .saturating_add(column.min(area.width.saturating_sub(1)));
+    let target_y = area.y;
+    let buffer = frame.buffer_mut();
+    let Some(target) = buffer.cell((target_x, target_y)) else {
+        return;
+    };
+    let wide_cursor_start = (area.x..target_x).rev().find(|&x| {
+        buffer.cell((x, target_y)).is_some_and(|cell| {
+            let width = UnicodeWidthStr::width(cell.symbol());
+            width > 1 && x.saturating_add(width as u16) > target_x
+        })
+    });
+    let cursor_x = wide_cursor_start.unwrap_or_else(|| {
+        if target.symbol().is_empty() {
+            let mut x = target_x;
+            while x > area.x
+                && buffer
+                    .cell((x, target_y))
+                    .is_some_and(|cell| cell.symbol().is_empty())
+            {
+                x = x.saturating_sub(1);
+            }
+            x
+        } else {
+            target_x
+        }
+    });
+    let Some(cell) = buffer.cell((cursor_x, target_y)) else {
+        return;
+    };
+    let symbol = cell.symbol().to_string();
+    let symbol_width = UnicodeWidthStr::width(symbol.as_str());
+    let blank = symbol.trim().is_empty();
+
+    if let Some(cell) = buffer.cell_mut((cursor_x, target_y)) {
+        cell.set_style(style);
+        if blank {
+            cell.set_symbol(PSEUDO_CURSOR_SYMBOL);
+        }
+    }
+    for offset in 1..symbol_width {
+        if let Some(cell) = buffer.cell_mut((cursor_x.saturating_add(offset as u16), target_y)) {
+            cell.set_style(style);
+        }
+    }
 }
 
 struct VisibleEditorQuery {
@@ -1561,7 +1658,8 @@ mod tests {
     use super::*;
     use crate::engine::ProjectedBindingConfig;
     use crate::view::{MapRouteCatalog, RouteCatalog, ViewContext};
-    use ratatui::{Terminal, backend::TestBackend, layout::Position};
+    use ratatui::style::{Color, Style};
+    use ratatui::{Terminal, backend::TestBackend};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1872,6 +1970,87 @@ mod tests {
     }
 
     #[test]
+    fn preview_body_size_tracks_resize_completion_and_committed_starts() {
+        struct SizedRuntime {
+            size: (u16, u16),
+            seen: Arc<std::sync::Mutex<Vec<(&'static str, (u16, u16))>>>,
+        }
+        impl EngineRuntime for SizedRuntime {
+            fn set_auxiliary_content_size(&mut self, size: (u16, u16)) {
+                self.size = size;
+                self.seen.lock().unwrap().push(("size", size));
+            }
+            fn start_prepared_work(&mut self, _: &MountTaskStarter) -> bool {
+                self.seen.lock().unwrap().push(("main", self.size));
+                false
+            }
+            fn start_prepared_auxiliary_work(
+                &mut self,
+                _: &MountTaskStarter,
+            ) -> Vec<(TaskId, u64)> {
+                self.seen.lock().unwrap().push(("auxiliary", self.size));
+                Vec::new()
+            }
+            fn action(&mut self, _: EngineActionInput) -> Result<EngineEmission> {
+                self.seen.lock().unwrap().push(("action", self.size));
+                Ok(EngineEmission::decision(EngineDecision::Continue))
+            }
+            fn render_model(&self) -> crate::engine::RenderModel {
+                crate::engine::RenderModel::new("picker", ())
+            }
+        }
+        let tasks = TaskRuntime::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runtime = SizedRuntime {
+            size: (99, 99),
+            seen: seen.clone(),
+        };
+        let mut view =
+            view_with_stale_aware_runtime(Box::new(runtime), invalid_integer_binding(), &tasks);
+        view.options.show_input = true;
+        view.options.show_divider = true;
+        view.route_entry = true;
+        let context = ViewContext::new(ViewInstanceId(1), "core:default");
+        let resize = |height| ViewEvent::Resize(crate::view::TerminalSize { width: 40, height });
+        view.event(resize(8), &context).unwrap();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 6))));
+        view.start_prepared_work();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 6))));
+        view.event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Tab,
+                raw: Vec::new(),
+            }),
+            &context,
+        )
+        .unwrap();
+        assert!(view.completion.is_some());
+        assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 0))));
+        view.start_prepared_work();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 0))));
+        view.event(resize(12), &context).unwrap();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 0))));
+        view.event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Escape,
+                raw: Vec::new(),
+            }),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
+        view.action(&context, "picker.toggle_preview").unwrap();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("action", (40, 10))));
+        view.event(resize(1), &context).unwrap();
+        view.start_prepared_work();
+        assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 0))));
+        for height in 0..12 {
+            let body = view.body_layout(Rect::new(0, 0, 40, height))[3];
+            assert_eq!(body.height, height.saturating_sub(2));
+        }
+    }
+
+    #[test]
     fn explicit_enter_action_precedes_route_submission() {
         let tasks = TaskRuntime::new();
         let binding = invalid_integer_binding();
@@ -1958,6 +2137,181 @@ mod tests {
     }
 
     #[test]
+    fn static_display_options_reach_picker_rendering_and_input() {
+        let root = std::env::temp_dir().join(format!(
+            "tlaunch-picker-display-options-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("workflows")).unwrap();
+        std::fs::write(
+            root.join("config.toml"),
+            "default_view = \"core:default\"\n",
+        )
+        .unwrap();
+        for (fields, show_input, show_divider) in [
+            ("", true, true),
+            ("show_input = true\nshow_divider = true", true, true),
+            ("show_input = true\nshow_divider = false", true, false),
+            ("show_input = false\nshow_divider = true", false, true),
+            ("show_input = false\nshow_divider = false", false, false),
+        ] {
+            std::fs::write(
+                root.join("workflows/core.toml"),
+                format!(
+                    "[workflow]\napi = 1\nname = \"Display options test\"\n[views.default.engine]\ntype = \"picker\"\n[views.default.engine.config]\nitems = []\n{fields}\n"
+                ),
+            )
+            .unwrap();
+            let fixture = Arc::new(
+                crate::workflow::config::CompiledConfig::load_unvalidated(
+                    &root.join("config.toml"),
+                )
+                .unwrap()
+                .compile()
+                .unwrap(),
+            );
+            let engines = crate::engine::EngineRegistry::new();
+            fixture.validate_with_engines(&engines).unwrap();
+            let tasks = TaskRuntime::new();
+            let services = crate::engine::picker::PickerRuntimeServices::new(
+                Arc::clone(&fixture),
+                MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
+                "core:default",
+            )
+            .view_services();
+            let mut picker_config = config_with_tasks(services, tasks.clone());
+            picker_config.parameter_binding = fixture.parameter_binding("core:default").unwrap();
+            picker_config.engine = crate::engine::project_engine_config(
+                &fixture,
+                "core:default",
+                &engines.definition(&fixture, "core:default").unwrap(),
+                Value::Null,
+            )
+            .unwrap();
+            let mut view = create_protocol_view(
+                picker_config,
+                &request("core:default").with_input("seed", 4).unwrap(),
+                ViewInstanceId(1),
+                &MapRouteCatalog::default(),
+            )
+            .unwrap();
+            let context = ViewContext::new(ViewInstanceId(1), "core:default");
+            let decision = view
+                .event(
+                    ViewEvent::Input(InputEvent::Key {
+                        key: Key::Char('x'),
+                        raw: Vec::new(),
+                    }),
+                    &context,
+                )
+                .unwrap();
+            if !show_input {
+                assert!(matches!(decision, ViewDecision::Stay));
+            }
+            let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let rendered = view
+                        .render(
+                            frame,
+                            frame.area(),
+                            &RenderContext::for_terminal(crate::view::TerminalSize {
+                                width: 20,
+                                height: 5,
+                            }),
+                        )
+                        .unwrap();
+                    assert!(rendered.cursor.is_none(), "{fields}");
+                })
+                .unwrap();
+            let rows = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(20)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>();
+            assert_eq!(rows[0].starts_with("seedx"), show_input, "{fields}");
+            assert_eq!(
+                rows.iter().any(|row| row.chars().all(|ch| ch == '─')),
+                show_input && show_divider,
+                "{fields}"
+            );
+            if !show_input {
+                assert!(matches!(
+                    view.event(
+                        ViewEvent::Input(InputEvent::Key {
+                            key: Key::Backspace,
+                            raw: Vec::new(),
+                        }),
+                        &context,
+                    )
+                    .unwrap(),
+                    ViewDecision::Stay
+                ));
+                let mut context = context.clone();
+                context.has_parent = true;
+                assert!(matches!(
+                    view.event(
+                        ViewEvent::Input(InputEvent::Key {
+                            key: Key::Backspace,
+                            raw: Vec::new(),
+                        }),
+                        &context,
+                    )
+                    .unwrap(),
+                    ViewDecision::Close
+                ));
+            }
+            drop(view);
+            tasks.shutdown_and_wait();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_query_backspace_returns_to_root_only_from_a_child() {
+        let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let tasks = TaskRuntime::new();
+        let services = crate::engine::picker::PickerRuntimeServices::new(
+            fixture,
+            MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
+            "core:default",
+        )
+        .view_services();
+        let mut picker_config = config_with_tasks(services, tasks.clone());
+        picker_config.route_entry = false;
+        picker_config.query_prefix = Some("app".to_string());
+        let mut view = create_protocol_view(
+            picker_config,
+            &request("core:default"),
+            ViewInstanceId(1),
+            &MapRouteCatalog::default(),
+        )
+        .unwrap();
+        let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
+        for (has_parent, expected) in [
+            (true, ViewDecision::CloseToRoot),
+            (false, ViewDecision::Invalidate),
+        ] {
+            context.has_parent = has_parent;
+            assert_eq!(
+                view.event(
+                    ViewEvent::Input(InputEvent::Key {
+                        key: Key::Backspace,
+                        raw: Vec::new(),
+                    }),
+                    &context,
+                )
+                .unwrap(),
+                expected,
+            );
+        }
+        drop(view);
+        tasks.shutdown_and_wait();
+    }
+
+    #[test]
     fn command_edit_updates_the_private_editor_and_rendered_cursor() {
         let mut routes = MapRouteCatalog::default();
         routes.insert("core:default", "core:default");
@@ -2007,8 +2361,7 @@ mod tests {
                         }),
                     )
                     .unwrap();
-                let cursor = rendered.cursor.unwrap();
-                frame.set_cursor_position((cursor.x, cursor.y));
+                assert!(rendered.cursor.is_none());
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -2021,11 +2374,53 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(query.starts_with("app rewritten"), "query row: {query:?}");
+        let cursor_cell = buffer.cell((7, 0)).unwrap();
+        assert_eq!(cursor_cell.symbol(), "r");
         assert!(divider.chars().all(|character| character == '─'));
+    }
+
+    #[test]
+    fn pseudo_cursor_styles_existing_and_trailing_cells() {
+        let style = Style::default().fg(Color::Magenta).bg(Color::Green);
+        let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("ab界"), frame.area());
+                render_pseudo_cursor(frame, frame.area(), 2, style);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, 0)).unwrap().symbol(), "界");
         assert_eq!(
-            terminal.get_cursor_position().unwrap(),
-            Position { x: 7, y: 0 }
+            buffer.cell((2, 0)).unwrap().style().fg,
+            Some(Color::Magenta)
         );
+        assert_eq!(buffer.cell((2, 0)).unwrap().style().bg, Some(Color::Green));
+
+        let mut terminal = Terminal::new(TestBackend::new(4, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("ab界"), frame.area());
+                render_pseudo_cursor(frame, frame.area(), 3, style);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, 0)).unwrap().symbol(), "界");
+        assert_eq!(buffer.cell((2, 0)).unwrap().style().bg, Some(Color::Green));
+        assert_ne!(buffer.cell((3, 0)).unwrap().symbol(), PSEUDO_CURSOR_SYMBOL);
+
+        let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("abc"), frame.area());
+                render_pseudo_cursor(frame, frame.area(), 3, style);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let cursor_cell = buffer.cell((3, 0)).unwrap();
+        assert_eq!(cursor_cell.symbol(), PSEUDO_CURSOR_SYMBOL);
+        assert_eq!(cursor_cell.style().fg, Some(Color::Magenta));
+        assert_eq!(cursor_cell.style().bg, Some(Color::Green));
     }
 
     #[test]
@@ -2105,100 +2500,87 @@ mod tests {
     }
 
     #[test]
-    fn picker_preview_image_renders_with_image_picker() {
+    fn picker_preview_declared_image_renders_after_decode_and_encoding() {
         let temp_dir = std::env::temp_dir().join(format!("test-picker-img-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
         let image_path = temp_dir.join("test.png");
-        image::DynamicImage::new_rgba8(2, 2)
-            .save(&image_path)
-            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            64,
+            64,
+            image::Rgb([255, 0, 0]),
+        ))
+        .save(&image_path)
+        .unwrap();
 
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("core:default", "core:default");
         let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let tasks = TaskRuntime::new();
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
-        let services = crate::engine::picker::PickerRuntimeServices::new(
-            Arc::clone(&fixture),
-            starter,
-            "core:default",
-        )
-        .view_services();
-        let mut picker_config = config(services);
-        picker_config.engine.fields.insert(
-            "layout".to_string(),
-            serde_json::json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
-                ]
-            }),
-        );
+        let services =
+            crate::engine::picker::PickerRuntimeServices::new(fixture, starter, "core:default")
+                .view_services();
+        let mut picker_config = config_with_tasks(services, tasks.clone());
         picker_config.engine.fields.insert(
             "preview".to_string(),
             serde_json::json!({
-                "blocks": [{"type": "image", "source": "/metadata/image", "grow": 1}]
+                "producer": "declared",
+                "document": {"type": "image", "path": image_path.to_string_lossy()}
             }),
         );
         let mut view = create_protocol_view(
             picker_config,
             &request("core:default"),
             ViewInstanceId(1),
-            &routes,
+            &MapRouteCatalog::default(),
         )
         .unwrap();
-
         let context = ViewContext::new(ViewInstanceId(1), "core:default");
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
-            .unwrap();
+        let size = crate::view::TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        view.event(ViewEvent::Resize(size), &context).unwrap();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
             .unwrap();
-
         view.event(
-            ViewEvent::Task(TaskEvent {
-                instance: ViewInstanceId(1),
-                task: TaskId(1),
-                generation: 0,
-                outcome: TaskOutcome::Completed(serde_json::json!({
-                    "items": [{
-                        "text": "test item",
-                        "metadata": {
-                            "image": image_path.to_string_lossy(),
-                        }
-                    }]
-                })),
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Ctrl('p'),
+                raw: vec![0x10],
             }),
             &context,
         )
         .unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        view.event(ViewEvent::Tick, &context).unwrap();
-
-        let image_picker = crate::terminal::ImagePicker::test_halfblocks();
-        let render_context = RenderContext::new(
-            crate::view::TerminalSize {
-                width: 80,
-                height: 24,
-            },
-            Some(image_picker),
-        );
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                view.render(frame, frame.area(), &render_context).unwrap();
-            })
+        let render_context =
+            RenderContext::new(size, Some(crate::terminal::ImagePicker::test_halfblocks()));
+        let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            view.event(ViewEvent::Tick, &context).unwrap();
+            for event in tasks.drain_events() {
+                view.event(ViewEvent::Task(event), &context).unwrap();
+            }
+            terminal
+                .draw(|frame| {
+                    view.render(frame, frame.area(), &render_context).unwrap();
+                })
+                .unwrap();
+            // The known red pixels must reach the preview pane through both async pools.
+            if (40..size.width).any(|x| {
+                terminal.backend().buffer()[(x, 2)].bg == ratatui::style::Color::Rgb(255, 0, 0)
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "declared image was never rendered: {:?}",
+                terminal.backend().buffer()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        terminal
-            .draw(|frame| {
-                view.render(frame, frame.area(), &render_context).unwrap();
-            })
-            .unwrap();
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        drop(view);
+        tasks.shutdown_and_wait();
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
@@ -2211,5 +2593,145 @@ mod tests {
             action,
             crate::workflow::config::CommandAction::OpenCommands
         ));
+    }
+}
+
+#[cfg(test)]
+mod preview_correlation_tests {
+    use super::*;
+    #[test]
+    fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
+        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/preview/config.toml"),
+        )
+        .unwrap()
+        .compile()
+        .unwrap();
+        let engines = crate::engine::EngineRegistry::new();
+        let tasks = TaskRuntime::new();
+        let instance = ViewInstanceId(901);
+        let page = "browser:main";
+        let services = super::super::mount_data(
+            &config,
+            &Value::Null,
+            page,
+            MountTaskLease::new(ViewMountId(instance.0)),
+        )
+        .unwrap();
+        let definition = engines.definition(&config, page).unwrap();
+        let protocol_config = PickerProtocolConfig {
+            commands: crate::protocol::ViewCommandBindings::new(
+                &config,
+                page,
+                crate::lifecycle::CancellationToken::new().observer(),
+            )
+            .unwrap(),
+            identity: ViewIdentity::new(page, "picker"),
+            engine: crate::engine::project_engine_config(&config, page, &definition, Value::Null)
+                .unwrap(),
+            bindings: crate::engine::project_binding_config(&config, page, &definition).unwrap(),
+            services,
+            parameter_bindings: BTreeMap::new(),
+            parameter_binding: config.parameter_binding(page).unwrap(),
+            theme: ResolvedTheme::terminal(),
+            route_entry: false,
+            query_prefix: None,
+            runtime_snapshot: serde_json::json!({"view":{}}),
+            tasks: tasks.clone(),
+        };
+        let request = NavigationRequest::new(
+            page,
+            ParsedQuery::new(
+                page,
+                "query",
+                serde_json::json!({"search":"","owner":"browser"}),
+            ),
+        );
+        let mut view = create_protocol_view(
+            protocol_config,
+            &request,
+            instance,
+            &crate::view::MapRouteCatalog::default(),
+        )
+        .unwrap();
+        let context = ViewContext::new(instance, page);
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 80,
+                height: 24,
+            }),
+            &context,
+        )
+        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Ctrl('p'),
+                raw: vec![0x10],
+            }),
+            &context,
+        )
+        .unwrap();
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            view.event(ViewEvent::Tick, &context).unwrap();
+            for event in tasks.drain_events() {
+                events.push(event.clone());
+                view.event(ViewEvent::Task(event), &context).unwrap();
+            }
+            if events.iter().any(|event| event.task == TaskId(2)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(events.iter().any(|event| event.task == TaskId(1)));
+        let preview_event = events
+            .iter()
+            .find(|event| event.task == TaskId(2))
+            .expect("preview event missing");
+        assert_eq!(preview_event.instance, instance);
+        // Duplicate and stale preview events cannot consume an item completion.
+        assert!(matches!(
+            view.event(ViewEvent::Task(preview_event.clone()), &context)
+                .unwrap(),
+            ViewDecision::Stay
+        ));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(
+                    frame,
+                    frame.area(),
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 80,
+                        height: 24,
+                    }),
+                )
+                .unwrap();
+            })
+            .unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            content.contains("Mixed preview")
+                && content.contains("Details")
+                && content.contains("library"),
+            "{content}"
+        );
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
+            .unwrap();
+        drop(view);
+        tasks.shutdown_and_wait();
     }
 }

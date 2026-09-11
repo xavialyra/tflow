@@ -529,6 +529,19 @@ pub(crate) trait EngineRuntime {
         false
     }
 
+    /// Update the body available to auxiliary content before starting committed work.
+    fn set_auxiliary_content_size(&mut self, _size: (u16, u16)) {}
+
+    fn suspend_auxiliary_work(&mut self) {}
+
+    /// Start independently correlated auxiliary work after the same host commit.
+    fn start_prepared_auxiliary_work(
+        &mut self,
+        _starter: &crate::task::MountTaskStarter,
+    ) -> Vec<(crate::protocol::contracts::TaskId, u64)> {
+        Vec::new()
+    }
+
     /// Poll foreground Engine-owned work. A completion is consumed once and
     /// its Engine state is applied before Host processing begins.
     fn poll_work(&mut self) -> Result<Option<EngineEmission>> {

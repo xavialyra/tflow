@@ -11,7 +11,6 @@ const MAX_LOG_MESSAGE_CHARS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub enum LogLevel {
-    #[cfg(test)]
     Info,
     Error,
 }
@@ -19,7 +18,6 @@ pub enum LogLevel {
 impl LogLevel {
     fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
             Self::Info => "INFO",
             Self::Error => "ERROR",
         }
@@ -27,7 +25,6 @@ impl LogLevel {
 
     fn metadata_value(self) -> &'static str {
         match self {
-            #[cfg(test)]
             Self::Info => "info",
             Self::Error => "error",
         }

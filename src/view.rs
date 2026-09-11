@@ -56,6 +56,7 @@ pub(crate) struct ViewCommandSnapshot {
 pub(crate) struct ViewContext {
     pub(crate) instance: ViewInstanceId,
     pub(crate) location: ViewLocation,
+    pub(crate) has_parent: bool,
     pub(crate) presentation: ViewPresentation,
     pub(crate) query: ParsedQuery,
 }
@@ -66,6 +67,7 @@ impl ViewContext {
         Self {
             instance,
             location: ViewLocation::new(target.clone()),
+            has_parent: false,
             presentation: ViewPresentation::default(),
             query: ParsedQuery::new(target, "query", Value::Null),
         }
@@ -256,7 +258,10 @@ impl RenderContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EffectRequest {
     CopyToClipboard(String),
-    RunPrepared(crate::execution::PreparedProcess),
+    RunPrepared {
+        prepared: crate::execution::PreparedProcess,
+        success_message: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -413,6 +418,7 @@ pub(crate) enum ViewDecision {
     Command(CommandResult),
     Batch(Vec<ViewDecision>),
     Close,
+    CloseToRoot,
     CloseWithError(String),
     Exit,
 }
@@ -426,6 +432,7 @@ impl ViewDecision {
                 | Self::RequestCommand(_)
                 | Self::Command(_)
                 | Self::Close
+                | Self::CloseToRoot
                 | Self::CloseWithError(_)
                 | Self::Exit
         )
@@ -653,6 +660,7 @@ pub(crate) struct Router {
     pending_result: Option<ViewResult>,
     result_committed: bool,
     last_error: Option<RouterError>,
+    pending_info: Option<(ViewInstanceId, String, String)>,
     popup_closed: bool,
 }
 
@@ -680,6 +688,7 @@ impl Router {
             pending_result: None,
             result_committed: false,
             last_error: None,
+            pending_info: None,
             popup_closed: false,
         }
     }
@@ -862,6 +871,7 @@ impl Router {
                 target: target.reference,
                 alias: target.label,
             },
+            has_parent: self.stack.len() > usize::from(replace),
             presentation: request.presentation.clone(),
             query: canonical_request.query.clone(),
         };
@@ -1069,6 +1079,10 @@ impl Router {
         Ok(())
     }
 
+    pub(crate) fn take_info(&mut self) -> Option<(ViewInstanceId, String, String)> {
+        self.pending_info.take()
+    }
+
     pub(crate) fn record_error(&mut self, source: Option<ViewInstanceId>, error: &anyhow::Error) {
         self.last_error = Some(RouterError {
             source,
@@ -1274,6 +1288,12 @@ impl Router {
                             anyhow::anyhow!("cannot execute an effect without a View")
                         })?,
                 };
+                let success_message = match &effect {
+                    EffectRequest::CopyToClipboard(_) => Some("Copied to clipboard".to_string()),
+                    EffectRequest::RunPrepared {
+                        success_message, ..
+                    } => success_message.clone(),
+                };
                 let result = match executor.as_mut() {
                     Some(executor) => match (**executor).execute(effect, &context) {
                         Ok(result) => result,
@@ -1289,7 +1309,12 @@ impl Router {
                     }
                 };
                 match result {
-                    EffectResult::Complete => {}
+                    EffectResult::Complete => {
+                        if let Some(message) = success_message {
+                            self.pending_info =
+                                Some((context.instance, context.location.target.clone(), message));
+                        }
+                    }
                     EffectResult::Error(error) => {
                         let EffectError::Failed(message) = error;
                         let error = anyhow::anyhow!("external effect failed: {message}");
@@ -1332,6 +1357,13 @@ impl Router {
                 self.result_committed = false;
                 self.finish_return(executor)?;
             }
+            ViewDecision::CloseToRoot => {
+                self.pending_result = None;
+                self.result_committed = false;
+                if self.stack.len() > 1 {
+                    self.finish_return_to(executor, Some(0))?;
+                }
+            }
             ViewDecision::CloseWithError(message) => {
                 let error = anyhow::anyhow!(message);
                 self.record_error(source, &error);
@@ -1354,12 +1386,24 @@ impl Router {
     }
 
     fn finish_return(&mut self, executor: &mut Option<&mut dyn EffectExecutor>) -> Result<()> {
+        self.finish_return_to(executor, None)
+    }
+
+    fn finish_return_to(
+        &mut self,
+        executor: &mut Option<&mut dyn EffectExecutor>,
+        target_override: Option<usize>,
+    ) -> Result<()> {
         let Some(active_index) = self.stack.len().checked_sub(1) else {
             return Ok(());
         };
         let active_id = self.stack[active_index].id;
         let source_location = self.stack[active_index].context.location.clone();
-        let continuation = self.stack[active_index].continuation.clone();
+        let continuation = if target_override.is_some() {
+            Continuation::None
+        } else {
+            self.stack[active_index].continuation.clone()
+        };
         let call_boundary = match &continuation {
             Continuation::Call(boundary) => Some(boundary.clone()),
             Continuation::None | Continuation::ReturnTo(_) => None,
@@ -1380,7 +1424,7 @@ impl Router {
                 }
             }
             Continuation::Call(_) => unreachable!("call boundary target was resolved above"),
-            Continuation::None => active_index.saturating_sub(1),
+            Continuation::None => target_override.unwrap_or(active_index.saturating_sub(1)),
         };
         let post_commit_processor = call_boundary
             .as_ref()
@@ -2202,6 +2246,84 @@ mod tests {
     }
 
     #[test]
+    fn close_to_root_discards_nested_calls_and_preserves_the_root_state() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut routes = MapRouteCatalog::default();
+        for target in ["root", "child", "grandchild"] {
+            routes.insert(target, target);
+        }
+        let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
+        let root = router.push(request("root")).unwrap();
+        let mut executor = None;
+        router
+            .process_decision_inner(
+                ViewDecision::Command(CommandResult::EditInput {
+                    value: "root query".into(),
+                    cursor: 4,
+                }),
+                &mut executor,
+                Some(root),
+            )
+            .unwrap();
+        let snapshot = router.active().unwrap().view.command_snapshot().runtime;
+        let child = router
+            .call(
+                request("child"),
+                call_boundary(root, Rc::clone(&calls), ViewDecision::Exit),
+            )
+            .unwrap();
+        let grandchild = router
+            .call(
+                request("grandchild"),
+                call_boundary(child, Rc::clone(&calls), ViewDecision::Exit),
+            )
+            .unwrap();
+        router.pending_result = Some(ViewResult { value: Value::Null });
+        router
+            .process_decision_inner(ViewDecision::CloseToRoot, &mut executor, Some(grandchild))
+            .unwrap();
+        assert_eq!(router.stack().len(), 1);
+        let active = router.active().unwrap();
+        assert_eq!(active.id, root);
+        assert_eq!(active.view.command_snapshot().runtime, snapshot);
+        assert!(router.take_result().is_none());
+        assert!(calls.borrow().is_empty());
+
+        router
+            .process_decision_inner(ViewDecision::CloseToRoot, &mut executor, Some(root))
+            .unwrap();
+        assert_eq!(router.active().unwrap().id, root);
+    }
+
+    #[test]
+    fn close_to_root_closes_intermediate_views_without_activating_them() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut routes = MapRouteCatalog::default();
+        for target in ["root", "child", "grandchild"] {
+            routes.insert(target, target);
+        }
+        let mut router = Router::new(
+            Box::new(routes),
+            Box::new(LifecycleFactory {
+                events: Rc::clone(&events),
+                reject_activation: false,
+            }),
+        );
+        let root = router.push(request("root")).unwrap();
+        router.push(request("child")).unwrap();
+        let grandchild = router.push(request("grandchild")).unwrap();
+        events.borrow_mut().clear();
+        router
+            .process_decision_inner(ViewDecision::CloseToRoot, &mut None, Some(grandchild))
+            .unwrap();
+        assert_eq!(router.active().unwrap().id, root);
+        assert_eq!(
+            *events.borrow(),
+            ["Closing", "Closed", "Closing", "Activated", "Closed"]
+        );
+    }
+
+    #[test]
     fn nested_call_null_result_is_delivered_and_parent_accepts_next_input() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut routes = MapRouteCatalog::default();
@@ -2691,6 +2813,7 @@ mod tests {
         assert!(error.to_string().contains("denied"));
         assert_eq!(router.active().map(|entry| entry.id), Some(root));
         assert_eq!(router.take_error().unwrap().source, Some(root));
+        assert!(router.take_info().is_none());
     }
 
     #[test]
@@ -2712,6 +2835,15 @@ mod tests {
         assert_eq!(executor.calls.len(), 1);
         assert_eq!(router.stack().len(), 1);
         assert!(router.take_result().is_none());
+        assert_eq!(
+            router.take_info(),
+            Some((
+                router.active().unwrap().id,
+                "root".into(),
+                "Copied to clipboard".into()
+            ))
+        );
+        assert!(router.take_info().is_none());
     }
 
     #[test]

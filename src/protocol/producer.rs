@@ -30,6 +30,7 @@ pub(crate) enum ProtocolOperation {
         mode: String,
         argv: Vec<String>,
         exit: bool,
+        success_message: Option<String>,
     },
     EditInput {
         value: String,
@@ -87,6 +88,8 @@ enum RawOperation {
         argv: Vec<String>,
         #[serde(default)]
         exit: bool,
+        #[serde(default)]
+        success_message: Option<String>,
     },
     EditInput {
         value: String,
@@ -139,7 +142,17 @@ pub(crate) fn parse_response(
             presentation,
         },
         RawOperation::Return { value } => ProtocolOperation::Return { value },
-        RawOperation::Run { mode, argv, exit } => ProtocolOperation::Run { mode, argv, exit },
+        RawOperation::Run {
+            mode,
+            argv,
+            exit,
+            success_message,
+        } => ProtocolOperation::Run {
+            mode,
+            argv,
+            exit,
+            success_message,
+        },
         RawOperation::EditInput { value, cursor } => ProtocolOperation::EditInput { value, cursor },
         RawOperation::Invoke { command } => ProtocolOperation::Invoke { command },
     };
@@ -357,6 +370,52 @@ pub(crate) fn run_script_capture_response(
         result,
         managed_child_reaped,
     }
+}
+
+pub(crate) fn parse_preview_response(stdout: &[u8]) -> Result<Value> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Response {
+        version: u64,
+        preview: Value,
+    }
+    let response: Response = serde_json::from_slice(stdout)
+        .context("picker-preview producer must write exactly one JSON response")?;
+    anyhow::ensure!(
+        response.version == PROTOCOL_VERSION,
+        "unsupported picker-preview protocol version {}; expected 1",
+        response.version
+    );
+    Ok(response.preview)
+}
+
+pub(crate) fn run_script_preview_response(
+    owner: &str,
+    root: Option<&std::path::Path>,
+    source: &ResolvedScriptSource,
+    request: &Value,
+    cancellation: &dyn CancellationStatus,
+) -> ScriptResponseOutcome<Value> {
+    let output = run_script_output(
+        owner,
+        "picker-preview",
+        root,
+        source,
+        request,
+        Some(1024 * 1024),
+        cancellation,
+    );
+    ScriptResponseOutcome {
+        managed_child_reaped: output.managed_child_reaped,
+        result: output
+            .result
+            .and_then(|output| parse_preview_response(&output.stdout)),
+    }
+}
+
+pub(crate) fn preview_request(parameters: &Value, input: &Value, state: &Value) -> Value {
+    json!({"version": PROTOCOL_VERSION, "entrypoint": "picker-preview",
+        "context": producer_context(parameters, input, "picker", state)})
 }
 
 #[derive(Debug, Deserialize)]

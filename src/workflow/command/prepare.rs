@@ -26,6 +26,7 @@ pub(crate) enum PreparedAction {
     Execute {
         prepared: PreparedProcess,
         exit: bool,
+        success_message: Option<String>,
     },
 }
 
@@ -260,9 +261,18 @@ fn prepare_protocol_operation(
             }))
         }
         crate::protocol::ProtocolOperation::Return { value } => Ok(PreparedAction::Return(value)),
-        crate::protocol::ProtocolOperation::Run { argv, exit, .. } => {
+        crate::protocol::ProtocolOperation::Run {
+            argv,
+            exit,
+            success_message,
+            ..
+        } => {
             let prepared = prepared_direct_process(config, command_invocation.source_view(), argv)?;
-            Ok(PreparedAction::Execute { prepared, exit })
+            Ok(PreparedAction::Execute {
+                prepared,
+                exit,
+                success_message,
+            })
         }
         crate::protocol::ProtocolOperation::EditInput { value, cursor } => {
             let cursor = cursor

@@ -24,7 +24,6 @@ const SEARCH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_milli
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PickerOptions {
-    pub(super) preview_enabled: bool,
     pub(super) show_input: bool,
     pub(super) show_divider: bool,
 }
@@ -32,7 +31,6 @@ pub(super) struct PickerOptions {
 impl Default for PickerOptions {
     fn default() -> Self {
         Self {
-            preview_enabled: false,
             show_input: true,
             show_divider: true,
         }
@@ -189,10 +187,10 @@ enum ItemsCompletion {
 pub(crate) struct PickerView {
     state: PickerState,
     pub(super) services: PickerViewServices,
-    options: PickerOptions,
     items_task: Option<ItemsTaskHandle>,
     items_completion: Option<ItemsCompletion>,
-    preview: Option<PickerPreview>,
+    preview: PickerPreview,
+    preview_content_size: Option<(u16, u16)>,
 }
 
 impl Deref for PickerView {
@@ -211,17 +209,19 @@ impl DerefMut for PickerView {
 
 impl PickerView {
     #[cfg(test)]
-    pub(super) fn new(view: &str, services: PickerViewServices, options: PickerOptions) -> Self {
-        Self::new_with_preview(view, services, options, None)
+    pub(super) fn new(view: &str, services: PickerViewServices) -> Self {
+        Self::new_with_preview(
+            view,
+            services,
+            super::preview::parse(0.35, 24, None).expect("default picker preview is valid"),
+        )
     }
 
     pub(super) fn new_with_preview(
         view: &str,
         services: PickerViewServices,
-        options: PickerOptions,
-        preview: Option<PickerPreviewConfig>,
+        preview: PickerPreviewConfig,
     ) -> Self {
-        let preview_visible = options.preview_enabled;
         Self {
             state: PickerState {
                 frame: PickerFrame::new(view),
@@ -232,14 +232,14 @@ impl PickerView {
                 active: true,
                 started: false,
                 items_task_state: ItemsTaskState::Idle,
-                preview_visible,
+                preview_visible: false,
                 initial_load_completed: false,
             },
             services,
-            options,
             items_task: None,
             items_completion: None,
-            preview: preview.map(PickerPreview::new),
+            preview: PickerPreview::new(preview),
+            preview_content_size: None,
         }
     }
 
@@ -251,8 +251,13 @@ impl PickerView {
         self.preview_visible
     }
 
-    pub(crate) fn preview_render_state(&self) -> Option<super::preview::PickerPreviewRenderState> {
-        self.preview.as_ref().map(PickerPreview::render_state)
+    pub(crate) fn set_preview_visible(&mut self, visible: bool) {
+        self.preview_visible = visible;
+        self.preview.set_visible(visible);
+    }
+
+    pub(crate) fn preview_render_state(&self) -> super::preview::PickerPreviewRenderState {
+        self.preview.render_state()
     }
 
     fn requested_request_ref(&self) -> Option<&ItemsRequest> {
@@ -296,24 +301,48 @@ impl PickerView {
         if !self.active {
             return;
         }
-        let visible = self.preview_visible;
-        let item = visible
-            .then(|| {
-                self.frame
-                    .selection
-                    .items
-                    .get(self.frame.selection.selected)
-                    .cloned()
-            })
-            .flatten();
-        let workflow_root = item
-            .as_ref()
-            .and_then(|item| self.services.workflow_root(&item.source_view))
-            .map(std::path::Path::to_path_buf);
-        if let Some(preview) = &mut self.preview {
-            preview.set_visible(visible);
-            preview.update(item.as_ref(), workflow_root.as_deref());
-        }
+        let visible = self.preview_visible
+            && self
+                .preview_content_size
+                .is_none_or(|size| self.preview.fits(size));
+        let item = (visible
+            && (self.requested_request.is_none()
+                || self.results_current_snapshot(self.requested_input())))
+        .then(|| {
+            self.frame
+                .selection
+                .items
+                .get(self.frame.selection.selected)
+                .cloned()
+        })
+        .flatten();
+        let request = item.and_then(|item| {
+            let configured = self.preview.source();
+            let (owner, source) = match configured {
+                super::preview::PreviewSource::Inherit => (
+                    item.source_view.clone(),
+                    self.services.preview_sources.get(&item.source_view)
+                        .filter(|source| !matches!(source, super::preview::PreviewSource::Inherit))
+                        .cloned()
+                        .unwrap_or(super::preview::PreviewSource::Details),
+                ),
+                source => (self.frame.view.clone(), source.clone()),
+            };
+            let parameters = if owner == self.frame.view {
+                self.parameter_snapshot.as_ref().map(|p| p.values().clone()).unwrap_or(Value::Null)
+            } else {
+                self.feed_instances.get(&FeedId(owner.clone())).map(|f| f.parameters.values().clone()).unwrap_or(Value::Null)
+            };
+            let state = serde_json::json!({"input": self.requested_input(), "item": super::preview::item_value(&item)});
+            let request = crate::protocol::preview_request(&parameters, &self.services.launch_input, &state);
+            let identity = serde_json::json!({"owner": owner, "source_view": item.source_view, "request": request}).to_string();
+            let root = self.services.workflow_root(&owner).map(std::path::Path::to_path_buf);
+            Some(super::preview::PreviewRequest { identity, owner, request, root, source })
+        });
+        let content_size = self.preview_content_size;
+        self.preview.set_content_size(content_size);
+        self.preview.set_visible(visible);
+        self.preview.prepare(request);
     }
 
     pub(super) fn list_presentation(&self) -> String {
@@ -351,10 +380,6 @@ impl PickerView {
 
     pub(crate) fn has_completed_initial_load(&self) -> bool {
         self.initial_load_completed
-    }
-
-    pub(crate) fn preview_is_configured(&self) -> bool {
-        self.preview.is_some()
     }
 
     #[cfg(test)]
@@ -836,6 +861,7 @@ impl PickerView {
         self.remember_context(context);
         self.parameter_snapshot = Some(context.parameter_snapshot().clone());
         self.invalidate_items_for_committed_input();
+        self.preview.prepare(None);
         Ok(EngineDecision::RuntimeUpdate(self.runtime_update(
             context.runtime_snapshot(),
             context.input_raw(),
@@ -855,6 +881,7 @@ impl PickerView {
     }
 
     fn handle_input_rejected(&mut self) -> Result<EngineDecision> {
+        self.preview.prepare(None);
         self.frame.input_refresh = InputRefreshState::Stable;
         self.items_task_state = ItemsTaskState::Idle;
         self.frame.results = ResultsState::Invalid;
@@ -921,11 +948,18 @@ impl PickerView {
             "picker.cancel" => Ok(EngineDecision::Close),
             "picker.back" => Ok(EngineDecision::Close),
             "picker.exit" => Ok(EngineDecision::Exit),
+            "picker.preview_scroll_up" | "picker.preview_scroll_down" => {
+                self.preview
+                    .scroll(if id.as_str() == "picker.preview_scroll_up" {
+                        -3
+                    } else {
+                        3
+                    });
+                Ok(EngineDecision::Continue)
+            }
             "picker.toggle_preview" => {
-                if self.options.preview_enabled {
-                    self.preview_visible = !self.preview_visible;
-                    self.sync_preview();
-                }
+                self.preview_visible = !self.preview_visible;
+                self.sync_preview();
                 Ok(EngineDecision::Invalidate)
             }
             "picker.retry" => {
@@ -988,7 +1022,14 @@ impl PickerView {
 
 impl EngineRuntime for PickerView {
     fn action(&mut self, input: EngineActionInput) -> Result<EngineEmission> {
+        let preview_scroll = matches!(
+            input.invocation.id.as_str(),
+            "picker.preview_scroll_up" | "picker.preview_scroll_down"
+        );
         let decision = self.dispatch_action_input(input)?;
+        if preview_scroll {
+            return Ok(EngineEmission::decision(EngineDecision::Invalidate));
+        }
         Ok(EngineEmission::decision(decision).with_publication(self.current_publication()))
     }
 
@@ -1122,6 +1163,30 @@ impl EngineRuntime for PickerView {
         started
     }
 
+    fn set_auxiliary_content_size(&mut self, size: (u16, u16)) {
+        self.preview_content_size = Some(size);
+        self.sync_preview();
+    }
+
+    fn suspend_auxiliary_work(&mut self) {
+        self.active = false;
+        self.preview.deactivate();
+    }
+
+    fn start_prepared_auxiliary_work(
+        &mut self,
+        starter: &crate::task::MountTaskStarter,
+    ) -> Vec<(crate::protocol::contracts::TaskId, u64)> {
+        self.sync_preview();
+        if !self.active {
+            return Vec::new();
+        }
+        self.preview
+            .start(starter)
+            .map(|generation| vec![(crate::protocol::contracts::TaskId(2), generation)])
+            .unwrap_or_default()
+    }
+
     fn deactivate(&mut self) {
         let was_loading = self.items_task_state.is_loading();
         self.items_task_state = ItemsTaskState::Idle;
@@ -1130,9 +1195,7 @@ impl EngineRuntime for PickerView {
         if was_loading {
             self.schedule_retry();
         }
-        if let Some(preview) = &mut self.preview {
-            preview.deactivate();
-        }
+        self.preview.deactivate();
         self.active = false;
     }
 
@@ -1184,7 +1247,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let picker = PickerView::new("core:default", services, PickerOptions::default());
+        let picker = PickerView::new("core:default", services);
         (config, picker)
     }
 
@@ -1254,6 +1317,29 @@ mod tests {
     }
 
     #[test]
+    fn preview_scroll_invalidates_rendering_without_publishing_selection_or_readiness() {
+        let (_config, mut picker) = test_picker(110);
+        let source = crate::input::InputSourceIdentity {
+            frame: crate::input::ViewMountId(110),
+            generation: 0,
+        };
+        let context = test_context("", test_parameters("", source, 1));
+        for id in ["picker.preview_scroll_up", "picker.preview_scroll_down"] {
+            let emission = picker
+                .action(EngineActionInput {
+                    invocation: ActionInvocation::new(crate::engine::ActionId::new(id)),
+                    context: context.clone(),
+                })
+                .unwrap();
+            assert!(emission.publication().is_none());
+            assert!(matches!(
+                emission.decision_ref(),
+                EngineDecision::Invalidate
+            ));
+        }
+    }
+
+    #[test]
     fn command_projection_includes_selected_feed_commands() {
         let (config, mut picker) = test_picker(109);
         let source = crate::input::InputSourceIdentity {
@@ -1290,10 +1376,39 @@ mod tests {
 
         let projection = picker.command_projection(&context).unwrap();
         assert_eq!(projection.based_on, context.identity());
-        assert_eq!(projection.bindings.len(), 1);
-        assert_eq!(projection.bindings[0].command.owner, "apps:main");
-        assert_eq!(projection.bindings[0].command.id, "open");
-        assert!(projection.bindings[0].enabled);
+        let mut projected_commands = projection
+            .bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.command.owner.as_str(),
+                    binding.command.id.as_str(),
+                    binding.key,
+                    binding.label.as_deref(),
+                    binding.enabled,
+                )
+            })
+            .collect::<Vec<_>>();
+        projected_commands.sort_by_key(|(_, id, ..)| *id);
+        assert_eq!(
+            projected_commands,
+            vec![
+                (
+                    "apps:main",
+                    "open",
+                    crate::input::Key::Enter,
+                    Some("Open"),
+                    true,
+                ),
+                (
+                    "apps:main",
+                    "weight",
+                    crate::input::Key::Ctrl('w'),
+                    Some("Set weight"),
+                    true,
+                ),
+            ]
+        );
         let publication = picker.current_publication();
         let current = publication.current();
         assert_eq!(current["item"]["value"], "application");
@@ -1630,7 +1745,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
+        let mut picker = PickerView::new("core:default", services);
         let mut first = config.instantiate_parameters("core:default").unwrap();
         let mut second = config.instantiate_parameters("core:default").unwrap();
         config
@@ -1674,7 +1789,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
+        let mut picker = PickerView::new("core:default", services);
         let state = config.instantiate_parameters("core:default").unwrap();
         let parameters = config
             .parameter_snapshot(
@@ -1729,7 +1844,7 @@ mod tests {
             "core:default",
         )
         .view_services();
-        let mut picker = PickerView::new("core:default", services, PickerOptions::default());
+        let mut picker = PickerView::new("core:default", services);
         let mut state = config.instantiate_parameters("core:default").unwrap();
         config
             .parameter_binding(state.view_ref())
@@ -1910,7 +2025,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_decode_starts_only_during_prepared_work_start() {
+    fn preview_decode_starts_only_during_prepared_auxiliary_work_start() {
         let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let services = crate::engine::picker::PickerRuntimeServices::new(
             Arc::clone(&config),
@@ -1922,26 +2037,14 @@ mod tests {
         )
         .view_services();
         let preview = super::super::preview::parse(
+            0.35,
+            24,
             Some(serde_json::json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
-                ]
-            })),
-            Some(serde_json::json!({
-                "blocks": [{"type": "image", "source": "/metadata/image", "grow": 1}]
+                "producer": "declared", "document": {"type": "image", "path": "/missing.png"}
             })),
         )
         .unwrap();
-        let mut picker = PickerView::new_with_preview(
-            "core:default",
-            services,
-            PickerOptions {
-                preview_enabled: true,
-                ..Default::default()
-            },
-            preview,
-        );
+        let mut picker = PickerView::new_with_preview("core:default", services, preview);
         picker.frame.selection.replace(vec![Item {
             text: "item".to_string(),
             display: crate::engine::picker::ItemDisplayInput::Plain("item".to_string()).into(),
@@ -1950,17 +2053,25 @@ mod tests {
             source_view: "core:default".to_string(),
         }]);
 
-        assert!(!picker.preview.as_ref().unwrap().has_pending_task());
+        assert!(!picker.preview.has_pending_task());
         let tasks = TaskRuntime::new();
         let starter = crate::task::MountTaskStarter::from_lease(
             &tasks,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(107)),
         );
         picker.start_prepared_work(&starter);
-        assert!(picker.preview.as_ref().unwrap().has_pending_task());
+        picker.start_prepared_auxiliary_work(&starter);
+        assert!(!picker.preview.has_pending_task());
+        assert!(picker.preview.prepared_request().is_none());
+        picker
+            .dispatch_action(crate::engine::ActionId::new("picker.toggle_preview"), None)
+            .unwrap();
+        assert!(!picker.preview.has_pending_task());
+        picker.start_prepared_auxiliary_work(&starter);
+        assert!(picker.preview.has_pending_task());
         picker.deactivate();
-        picker.start_prepared_work(&starter);
-        assert!(!picker.preview.as_ref().unwrap().has_pending_task());
+        picker.start_prepared_auxiliary_work(&starter);
+        assert!(!picker.preview.has_pending_task());
         tasks.shutdown_and_wait();
     }
 
@@ -2059,5 +2170,277 @@ mod tests {
     fn selection_count_uses_zero_for_an_empty_list() {
         assert_eq!(selection_count(0, 0), "0 of 0");
         assert_eq!(selection_count(1, 3), "2 of 3");
+    }
+}
+
+#[cfg(test)]
+mod preview_provider_tests {
+    use super::*;
+    use crate::engine::ActionId;
+    use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
+    use serde_json::json;
+
+    #[test]
+    fn preview_uses_raw_route_input_with_object_parameters_and_stays_suspended_in_background() {
+        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/preview/config.toml"),
+        )
+        .unwrap()
+        .compile()
+        .unwrap();
+        let tasks = TaskRuntime::new();
+        let mount = crate::input::ViewMountId(1001);
+        let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount));
+        let page = "browser:override";
+        let services =
+            super::super::mount_data(&config, &Value::Null, page, MountTaskLease::new(mount))
+                .unwrap();
+        let preview_config = super::super::preview::parse(
+            0.35,
+            24,
+            Some(
+                crate::workflow::config::toml_to_json(
+                    config.view(page).unwrap().engine_field("preview").unwrap(),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        let mut picker = PickerView::new_with_preview(page, services, preview_config);
+        picker
+            .dispatch_action(ActionId::new("picker.toggle_preview"), None)
+            .unwrap();
+        let raw_input = "preview needle";
+        let binding_raw = "needle";
+        let values = json!({"search":"needle", "owner":"browser"});
+        let parameters = ParameterSnapshot::from_parts(
+            values.clone(),
+            binding_raw.into(),
+            crate::input::InputSourceIdentity {
+                frame: mount,
+                generation: 3,
+            },
+            4,
+        );
+        picker.parameter_snapshot = Some(parameters.clone());
+        picker
+            .request_items(page, raw_input, binding_raw, parameters)
+            .unwrap();
+        let identity = picker.requested_identity().unwrap().clone();
+        let response = ItemsResponse {
+            view: page.into(),
+            identity: identity.clone(),
+            result: Ok(super::super::items::ItemsResult {
+                items: vec![Item {
+                    text: "Needle".into(),
+                    display: super::super::ItemDisplayInput::Plain("Needle".into()).into(),
+                    value: Some("needle".into()),
+                    metadata: json!({"summary":"route item"}),
+                    source_view: "library:main".into(),
+                }],
+                contexts: BTreeMap::new(),
+                errors: Vec::new(),
+            }),
+        };
+        picker.collect_items(response.clone());
+        assert_eq!(picker.frame.query, binding_raw);
+        assert!(picker.results_current_snapshot(raw_input));
+        assert!(!picker.results_current_snapshot(binding_raw));
+        picker.sync_preview();
+        let prepared = picker.preview.prepared_request().unwrap();
+        assert_eq!(prepared.request["context"]["parameters"], values);
+        assert_eq!(
+            prepared.request["context"]["engine"]["state"]["input"],
+            raw_input
+        );
+        assert_eq!(
+            prepared.request["context"]["engine"]["state"]["item"]["value"],
+            "needle"
+        );
+
+        picker.suspend_auxiliary_work();
+        picker.items_task_state = ItemsTaskState::running(identity);
+        picker.items_task = Some(tasks.spawn(move |_| Ok(response)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if picker.poll_background_work().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background items did not complete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!picker.active);
+        assert_eq!(
+            picker.frame.selection.items[0].value.as_deref(),
+            Some("needle")
+        );
+        assert!(picker.preview.prepared_request().is_none());
+        assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
+        assert!(picker.preview.prepared_request().is_none());
+        picker.deactivate();
+        tasks.shutdown_and_wait();
+    }
+
+    #[test]
+    fn preview_feed_owner_and_page_override_keep_parameters_input_and_paths_in_owner_workflow() {
+        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/preview/config.toml"),
+        )
+        .unwrap()
+        .compile()
+        .unwrap();
+        let engines = crate::engine::EngineRegistry::new();
+        config.validate_with_engines(&engines).unwrap();
+        let tasks = TaskRuntime::new();
+        for (page, owner, expected_parameter) in [
+            ("browser:main", "library:main", "library"),
+            ("browser:override", "browser:override", "browser"),
+        ] {
+            let mount = crate::input::ViewMountId(999);
+            let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount));
+            let input = json!({"stdin":{"path":"launch-input","length":9,"is_tty":false}});
+            let services =
+                super::super::mount_data(&config, &input, page, MountTaskLease::new(mount))
+                    .unwrap();
+            assert!(services.workflow_root(page).unwrap().ends_with("browser"));
+            if page == "browser:main" {
+                assert!(
+                    services
+                        .workflow_root("library:main")
+                        .unwrap()
+                        .ends_with("library")
+                );
+            }
+            let view = config.view(page).unwrap();
+            let preview_ratio = view
+                .engine_field("preview_ratio")
+                .map(crate::workflow::config::toml_to_json)
+                .transpose()
+                .unwrap();
+            let preview_min_width = view
+                .engine_field("preview_min_width")
+                .map(crate::workflow::config::toml_to_json)
+                .transpose()
+                .unwrap();
+            let (preview_ratio, preview_min_width, _) = super::super::preview_options(
+                preview_ratio.as_ref(),
+                preview_min_width.as_ref(),
+                None,
+            )
+            .unwrap();
+            let preview_config = super::super::preview::parse(
+                preview_ratio,
+                preview_min_width,
+                view.engine_field("preview")
+                    .map(crate::workflow::config::toml_to_json)
+                    .transpose()
+                    .unwrap(),
+            )
+            .unwrap();
+            let mut picker = PickerView::new_with_preview(page, services, preview_config);
+            picker
+                .dispatch_action(ActionId::new("picker.toggle_preview"), None)
+                .unwrap();
+            let parameters = ParameterSnapshot::from_parts(
+                json!({"search":"","owner":"browser"}),
+                String::new(),
+                crate::input::InputSourceIdentity {
+                    frame: mount,
+                    generation: 1,
+                },
+                1,
+            );
+            picker.parameter_snapshot = Some(parameters.clone());
+            picker.request_items(page, "", "", parameters).unwrap();
+            picker.start_prepared_work(&starter);
+            for _ in 0..200 {
+                if picker.poll_work().unwrap().is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            picker.sync_preview();
+            let request = picker.preview.prepared_request().unwrap();
+            assert_eq!(request.owner, owner);
+            assert_eq!(
+                request.request["context"]["parameters"]["owner"],
+                expected_parameter
+            );
+            assert_eq!(request.request["context"]["input"], input);
+            assert_eq!(
+                request.request["context"]["engine"]["state"]["item"]["value"],
+                "mixed"
+            );
+            assert!(
+                request.request["context"]["engine"]["state"]["item"]
+                    .get("source_view")
+                    .is_none()
+            );
+            assert_eq!(request.root.as_deref(), config.workflow_root(owner));
+            let identity = request.identity.clone();
+            // Same public value, new metadata must invalidate the prepared preview.
+            Arc::make_mut(&mut picker.frame.selection.items)[0].metadata["summary"] =
+                json!("updated metadata");
+            picker.sync_preview();
+            assert_ne!(
+                picker.preview.prepared_request().unwrap().identity,
+                identity
+            );
+            let identity = picker.preview.prepared_request().unwrap().identity.clone();
+            Arc::make_mut(&mut picker.frame.selection.items)[0].source_view =
+                "browser:override".into();
+            picker.sync_preview();
+            assert_ne!(
+                picker.preview.prepared_request().unwrap().identity,
+                identity
+            );
+            picker.preview_content_size = Some((1, 1));
+            picker.sync_preview();
+            assert!(picker.preview.prepared_request().is_none());
+            picker.preview_content_size = Some((80, 24));
+            picker.sync_preview();
+            assert!(picker.preview.prepared_request().is_some());
+            // Real session synchronization controls visibility, starts and authoritative scrolling.
+            picker.preview = super::super::preview::PickerPreview::new(
+                super::super::preview::parse(0.35, 24, Some(json!({"producer":"declared", "document":(0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")}))).unwrap()
+            );
+            for size in [(40, 0), (23, 3)] {
+                picker.set_auxiliary_content_size(size);
+                assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
+                let preview = &picker.preview;
+                assert!(preview.prepared_request().is_none());
+                assert!(!preview.render_state().visible);
+                assert!(!preview.document_scroll_state().0);
+            }
+            picker.set_auxiliary_content_size((40, 5));
+            picker.start_prepared_auxiliary_work(&starter);
+            assert!(picker.preview.document_scroll_state().0);
+            for _ in 0..100 {
+                picker
+                    .dispatch_action(ActionId::new("picker.preview_scroll_down"), None)
+                    .unwrap();
+            }
+            assert_eq!(picker.preview.document_scroll_state().1, 5);
+            picker
+                .dispatch_action(ActionId::new("picker.preview_scroll_up"), None)
+                .unwrap();
+            assert_eq!(picker.preview.document_scroll_state().1, 2);
+            picker.set_auxiliary_content_size((40, 10));
+            assert_eq!(picker.preview.document_scroll_state().1, 0);
+            picker.set_auxiliary_content_size((40, 5));
+            assert_eq!(picker.preview.document_scroll_state().1, 0);
+            picker
+                .dispatch_action(ActionId::new("picker.preview_scroll_up"), None)
+                .unwrap();
+            assert_eq!(picker.preview.document_scroll_state().1, 0);
+            picker.deactivate();
+            assert!(picker.preview.prepared_request().is_none());
+        }
+        tasks.shutdown_and_wait();
     }
 }

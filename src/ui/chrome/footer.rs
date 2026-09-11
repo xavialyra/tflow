@@ -18,12 +18,24 @@ pub(crate) struct FooterModel {
     pub(crate) location: ViewLocation,
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
+    pub(crate) info: Option<String>,
     pub(crate) bindings: BindingSet,
     pub(crate) overflow_command: Option<(String, String)>,
     pub(crate) has_unbound: bool,
 }
 
 impl FooterModel {
+    pub(crate) fn notification(&self, theme: &Theme) -> Option<(&str, ratatui::style::Style)> {
+        self.error
+            .as_deref()
+            .map(|text| (text, theme.chrome.error))
+            .or_else(|| {
+                self.info
+                    .as_deref()
+                    .map(|text| (text, theme.chrome.footer_status))
+            })
+    }
+
     pub(crate) fn commands(&self) -> Vec<(String, String)> {
         let mut commands = self
             .bindings
@@ -103,9 +115,9 @@ impl FooterRenderer {
         let width = area.width as usize;
         let footer_width =
             width.saturating_sub(self.left_padding.saturating_add(self.right_padding));
-        let is_error = model.error.is_some();
-        let footer = if let Some(error) = &model.error {
-            FooterContent::plain(error)
+        let notification = model.notification(theme);
+        let footer = if let Some((message, _)) = notification {
+            FooterContent::plain(message)
         } else {
             let mut commands = model.commands();
             if let Some((overflow_key, _)) = &model.overflow_command {
@@ -125,11 +137,7 @@ impl FooterRenderer {
         };
 
         let footer = clip_footer(&footer, footer_width);
-        let footer_style = if is_error {
-            theme.chrome.error
-        } else {
-            theme.chrome.footer
-        };
+        let footer_style = notification.map_or(theme.chrome.footer, |(_, style)| style);
         let key_style = theme.chrome.footer_key;
 
         let mut spans = vec![Span::raw(" ".repeat(self.left_padding.min(width)))];

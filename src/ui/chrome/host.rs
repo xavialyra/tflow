@@ -245,12 +245,11 @@ impl ContentHost {
 
         let bottom_width = (popup.width as usize).saturating_sub(2);
         if bottom_width > 0 {
-            if let Some(error) = &model.error {
+            if let Some((message, style)) = model.notification(theme) {
                 let budget = bottom_width.saturating_sub(2);
-                let clipped = super::clip(error, budget);
+                let clipped = super::clip(message, budget);
                 if !clipped.is_empty() {
-                    let span =
-                        ratatui::text::Span::styled(format!(" {clipped} "), theme.chrome.error);
+                    let span = ratatui::text::Span::styled(format!(" {clipped} "), style);
                     block = block.title_bottom(Line::from(span));
                 }
             } else {

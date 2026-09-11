@@ -64,6 +64,8 @@ pub(crate) struct PickerViewServices {
     owner_commands: BTreeMap<String, Vec<PickerSelectionCommand>>,
     non_selection_commands: BTreeSet<(String, String)>,
     workflow_roots: BTreeMap<String, PathBuf>,
+    preview_sources: BTreeMap<String, preview::PreviewSource>,
+    launch_input: Value,
     task_services: Option<Arc<PickerTaskServices>>,
 }
 
@@ -143,11 +145,21 @@ impl PickerViewServices {
             }
         }
 
-        let view_refs = feed_views
+        let mut view_refs = feed_views
             .into_iter()
             .map(|(view_ref, _)| view_ref)
             .collect::<BTreeSet<_>>();
+        view_refs.insert(root_view_ref.to_string());
         for view_ref in view_refs {
+            if let Some(value) = config
+                .view(&view_ref)
+                .and_then(|view| view.engine_field("preview"))
+            {
+                services.preview_sources.insert(
+                    view_ref.clone(),
+                    preview::parse_source(toml_to_json(value)?, config.workflow_root(&view_ref))?,
+                );
+            }
             services
                 .owner_commands
                 .insert(view_ref.clone(), collect_owner_commands(config, &view_ref)?);
@@ -235,9 +247,11 @@ pub(crate) fn mount_data(
     let projection = Arc::new(crate::workflow::config::PickerItemsProjection::from_config(
         config, input, view_ref,
     )?);
+    let mut view_services = PickerViewServices::from_config(config, view_ref)?;
+    view_services.launch_input = input.clone();
     let plan = PickerMountPlan {
         definitions: FeedDefinition::collection(Arc::clone(&projection), view_ref)?,
-        view_services: PickerViewServices::from_config(config, view_ref)?,
+        view_services,
     };
     let picker = PickerRuntimeServices::from_plan(plan, lease, view_ref);
     Ok(picker.view_services())
@@ -306,8 +320,15 @@ pub(crate) use items::Item;
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["layout", "preview"],
-            binding: &["layout", "preview"],
+            runtime: &[
+                "preview_ratio",
+                "preview_min_width",
+                "preview_default_open",
+                "preview",
+                "show_input",
+                "show_divider",
+            ],
+            binding: &["preview_ratio", "preview_min_width", "preview"],
             binding_defaults: Some(&["defaults", "picker", "bindings"]),
         })
         .with_actions([
@@ -316,23 +337,101 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
             crate::engine::ActionSpec::unit("picker.cancel"),
             crate::engine::ActionSpec::unit("picker.retry"),
             crate::engine::ActionSpec::unit("picker.toggle_preview"),
+            crate::engine::ActionSpec::unit("picker.preview_scroll_up"),
+            crate::engine::ActionSpec::unit("picker.preview_scroll_down"),
             crate::engine::ActionSpec::unit("picker.back"),
             crate::engine::ActionSpec::unit("picker.exit"),
         ])
 }
 
+pub(super) fn preview_options(
+    preview_ratio: Option<&Value>,
+    preview_min_width: Option<&Value>,
+    preview_default_open: Option<&Value>,
+) -> Result<(f64, u16, bool)> {
+    let ratio = preview_ratio
+        .map(|value| {
+            value
+                .as_f64()
+                .context("picker preview_ratio must be a number")
+        })
+        .transpose()?
+        .unwrap_or(0.35);
+    anyhow::ensure!(
+        ratio.is_finite() && (0.0..=1.0).contains(&ratio),
+        "picker preview_ratio must be between 0 and 1"
+    );
+
+    let min_width = preview_min_width
+        .map(|value| {
+            value
+                .as_u64()
+                .context("picker preview_min_width must be an unsigned 16-bit integer")
+        })
+        .transpose()?
+        .unwrap_or(24);
+    anyhow::ensure!(
+        min_width <= u16::MAX as u64,
+        "picker preview_min_width must be an unsigned 16-bit integer"
+    );
+
+    let default_open = preview_default_open
+        .map(|value| {
+            value
+                .as_bool()
+                .context("picker preview_default_open must be a boolean")
+        })
+        .transpose()?
+        .unwrap_or(false);
+
+    Ok((ratio, min_width as u16, default_open))
+}
+
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(name, view, &["layout", "preview", "source_badge"])?;
-    if let Some(source_badge) = view.engine_field("source_badge")
-        && !matches!(source_badge, toml::Value::Boolean(_))
-    {
-        bail!("view {:?} picker source_badge must be a boolean", name);
+    validate_fields(
+        name,
+        view,
+        &[
+            "preview_ratio",
+            "preview_min_width",
+            "preview_default_open",
+            "preview",
+            "source_badge",
+            "show_input",
+            "show_divider",
+        ],
+    )?;
+    for field in ["source_badge", "show_input", "show_divider"] {
+        if let Some(value) = view.engine_field(field)
+            && !matches!(value, toml::Value::Boolean(_))
+        {
+            bail!("view {:?} picker {} must be a boolean", name, field);
+        }
     }
-    let layout = view.engine_field("layout").map(toml_to_json).transpose()?;
+    let preview_ratio = view
+        .engine_field("preview_ratio")
+        .map(toml_to_json)
+        .transpose()?;
+    let preview_min_width = view
+        .engine_field("preview_min_width")
+        .map(toml_to_json)
+        .transpose()?;
+    let preview_default_open = view
+        .engine_field("preview_default_open")
+        .map(toml_to_json)
+        .transpose()?;
+    let (preview_ratio, preview_min_width, _) = preview_options(
+        preview_ratio.as_ref(),
+        preview_min_width.as_ref(),
+        preview_default_open.as_ref(),
+    )?;
     let preview = view.engine_field("preview").map(toml_to_json).transpose()?;
-    self::preview::parse(layout, preview)?;
+    let preview = self::preview::parse(preview_ratio, preview_min_width, preview)?;
+    if let self::preview::PreviewSource::Script(source) = &preview.source {
+        source.validate_target(context.script_root)?;
+    }
     if let Some(items) = view.selected_items() {
         validate_items_source_config(items, context.script_root)
             .with_context(|| format!("view {:?} has invalid items source configuration", name))?;
@@ -413,11 +512,16 @@ pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
 ) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
     let bindings = context.bindings;
-    let has_preview = self::preview::parse(
-        bindings.engine_field("layout").cloned(),
+    let (preview_ratio, preview_min_width, _) = preview_options(
+        bindings.engine_field("preview_ratio"),
+        bindings.engine_field("preview_min_width"),
+        None,
+    )?;
+    self::preview::parse(
+        preview_ratio,
+        preview_min_width,
         bindings.engine_field("preview").cloned(),
-    )?
-    .is_some();
+    )?;
     let keymap = PickerKeymap::from_values(bindings.defaults, bindings.view_keymap)?;
     Ok(keymap
         .bindings()
@@ -465,11 +569,23 @@ pub(crate) fn create_input_bindings(
                     ),
                     true,
                 ),
+                self::keymap::PickerAction::PreviewScrollUp => (
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.preview_scroll_up"),
+                    ),
+                    true,
+                ),
+                self::keymap::PickerAction::PreviewScrollDown => (
+                    crate::workflow::command::ResolvedInputAction::Engine(
+                        crate::engine::ActionId::new("picker.preview_scroll_down"),
+                    ),
+                    true,
+                ),
                 self::keymap::PickerAction::TogglePreview => (
                     crate::workflow::command::ResolvedInputAction::Engine(
                         crate::engine::ActionId::new("picker.toggle_preview"),
                     ),
-                    has_preview,
+                    true,
                 ),
             };
             crate::workflow::command::InputActionBinding {
@@ -564,6 +680,33 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn display_options_must_be_boolean() {
+        for field in ["show_input", "show_divider"] {
+            for value in ["true", "false", "\"false\"", "0", "[]", "{}"] {
+                let view: View = toml::from_str(&format!(
+                    "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = {value}\n"
+                ))
+                .unwrap();
+                let result = validate_config(EngineValidationContext {
+                    view_ref: "core:menu",
+                    view: &view,
+                    script_root: None,
+                });
+                if matches!(value, "true" | "false") {
+                    result.unwrap();
+                } else {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains("core:menu"), "{error}");
+                    assert!(
+                        error.contains(&format!("{field} must be a boolean")),
+                        "{error}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

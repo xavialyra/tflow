@@ -29,16 +29,12 @@ pub(crate) fn render_picker(
 ) {
     let width = area.width as usize;
     let height = area.height as usize;
-    let row_height = state.row_height.max(1);
-    let visible_capacity = if height >= row_height {
-        height / row_height
-    } else {
-        0
-    };
-
     if height == 0 || width == 0 {
         return;
     }
+
+    let row_height = state.row_height.max(1);
+    let item_height = |item: &Item| item.display.rows.len().max(row_height).min(height);
 
     if state.items.is_empty() {
         let text = if state.searching {
@@ -55,16 +51,32 @@ pub(crate) fn render_picker(
         return;
     }
 
-    let start = if state.selected >= visible_capacity && visible_capacity > 0 {
-        state.selected + 1 - visible_capacity
-    } else {
-        0
-    };
+    let selected_index = state.selected.min(state.items.len().saturating_sub(1));
+    let mut start = selected_index;
+    let mut used = item_height(&state.items[selected_index]);
+    while start > 0 && used < height {
+        let next = item_height(&state.items[start - 1]);
+        if used.saturating_add(next) > height {
+            break;
+        }
+        start -= 1;
+        used += next;
+    }
 
-    let reserves_scrollbar = state.items.len() > visible_capacity;
-    let show_scrollbar = scrollbar_visible(state.items.len(), visible_capacity, start);
-    let thumb_top = scrollbar_thumb_top(start, state.items.len(), visible_capacity);
-    let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(visible_capacity);
+    let mut end = selected_index.saturating_add(1);
+    while end < state.items.len() {
+        let next = item_height(&state.items[end]);
+        if used.saturating_add(next) > height {
+            break;
+        }
+        end += 1;
+        used += next;
+    }
+    let visible_count = end.saturating_sub(start);
+    let reserves_scrollbar = state.items.len() > visible_count;
+    let show_scrollbar = scrollbar_visible(state.items.len(), visible_count, start);
+    let thumb_top = scrollbar_thumb_top(start, state.items.len(), visible_count);
+    let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(visible_count);
     let scrollbar_color = if let Some(bg) = theme.picker.scrollbar.bg {
         if Some(bg) != theme.picker.text.bg {
             bg
@@ -86,16 +98,21 @@ pub(crate) fn render_picker(
         .iter()
         .enumerate()
         .skip(start)
-        .take(visible_capacity)
+        .take(visible_count)
         .enumerate()
     {
         let selected = index == state.selected;
-        let item_y = area.y + (visible_row * row_height) as u16;
+        let item_y = area.y
+            + state.items[start..index]
+                .iter()
+                .map(item_height)
+                .sum::<usize>() as u16;
+        let current_height = item_height(item);
         let item_rect = Rect {
             x: area.x,
             y: item_y,
             width: area.width,
-            height: row_height as u16,
+            height: current_height as u16,
         };
 
         if selected {
@@ -126,7 +143,7 @@ pub(crate) fn render_picker(
                 x: item_rect.x + item_rect.width.saturating_sub(1),
                 y: item_rect.y,
                 width: 1,
-                height: row_height as u16,
+                height: current_height as u16,
             };
             frame.render_widget(ratatui::widgets::Clear, scrollbar_rect);
             frame.render_widget(
@@ -143,7 +160,7 @@ pub(crate) fn render_picker(
         let v_chunks =
             ratatui::layout::Layout::vertical(vec![
                 ratatui::layout::Constraint::Length(1);
-                row_height
+                current_height
             ])
             .split(content_area);
 
@@ -206,11 +223,7 @@ impl PickerView {
             (Arc::new(Vec::new()), 0)
         };
 
-        let preview = if should_retain || self.preview_is_configured() {
-            self.preview_render_state()
-        } else {
-            None
-        };
+        let preview = Some(self.preview_render_state());
 
         PickerRenderState {
             items,
@@ -452,5 +465,60 @@ mod tests {
         assert!(content.contains('▌'));
         assert!(content.contains("Open File"));
         assert!(content.contains("Ctrl+O"));
+    }
+
+    #[test]
+    fn mixed_row_heights_keep_selected_item_in_visible_window() {
+        use crate::engine::picker::ItemDisplayInput;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use serde_json::json;
+
+        let item = |rows: &[&str]| Item {
+            text: rows[0].to_string(),
+            display: serde_json::from_value::<ItemDisplayInput>(json!({
+                "rows": rows
+                    .iter()
+                    .map(|text| json!({"cells": [{"text": text}]}))
+                    .collect::<Vec<_>>()
+            }))
+            .unwrap()
+            .into(),
+            value: None,
+            metadata: serde_json::Value::Null,
+            source_view: "test".to_string(),
+        };
+        let state = PickerRenderState {
+            items: Arc::new(vec![
+                item(&["FIRST-A", "FIRST-B", "FIRST-C"]),
+                item(&["SECOND-A", "SECOND-B"]),
+                item(&["THIRD"]),
+            ]),
+            selected: 2,
+            initial_loading: false,
+            searching: false,
+            preview_visible: false,
+            preview: None,
+            empty_message: "(no matches)".to_string(),
+            row_height: 1,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(32, 4)).unwrap();
+        terminal
+            .draw(|frame| render_picker(frame, frame.area(), &state, &Theme::terminal()))
+            .unwrap();
+
+        let content = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("SECOND-A"));
+        assert!(content.contains("THIRD"));
+        assert_eq!(
+            terminal.backend().buffer().cell((0, 2)).unwrap().symbol(),
+            "▌"
+        );
     }
 }

@@ -96,7 +96,10 @@ pub(crate) struct TaskRuntimeMetricsSnapshot {
     pub(crate) now: TaskElapsed,
     pub(crate) queue_depth: usize,
     pub(crate) active_tasks: usize,
+    /// Active task on the default serialized worker.
     pub(crate) current_active: Option<TaskActiveSnapshot>,
+    /// Active task on the independently scheduled preview worker.
+    pub(crate) preview_active: Option<TaskActiveSnapshot>,
     pub(crate) queue_high_water: usize,
     pub(crate) submitted_total: u64,
     pub(crate) started_total: u64,
@@ -145,6 +148,7 @@ struct TaskRecord {
 }
 
 struct TaskMetricsState {
+    queue_depths: [usize; 2],
     queue_high_water: usize,
     submitted_total: u64,
     started_total: u64,
@@ -163,7 +167,8 @@ struct TaskMetrics {
     state: Mutex<TaskMetricsState>,
 }
 
-/// A serialized background task runtime.
+/// A background runtime with a serialized default worker and an isolated,
+/// bounded preview worker using the same lifecycle and event machinery.
 ///
 /// Task closures must observe `TaskContext::cancellation` at bounded I/O and
 /// computation points. `shutdown_and_wait` cancels queued and active tasks,
@@ -176,6 +181,7 @@ pub(crate) struct TaskRuntime {
 
 struct TaskRuntimeOwner {
     registry: Arc<TaskRegistry>,
+    preview_registry: Arc<TaskRegistry>,
     events: Arc<Mutex<VecDeque<TaskEvent>>>,
     #[cfg(test)]
     publication_gate: Arc<Mutex<Option<Arc<TaskPublicationGate>>>>,
@@ -217,9 +223,10 @@ impl TaskMetrics {
         record
     }
 
-    fn queued(&self, depth: usize) {
+    fn queued(&self, class: TaskExecutionClass, depth: usize) {
         let mut state = self.state.lock().expect("task metrics state was poisoned");
-        state.queue_high_water = state.queue_high_water.max(depth);
+        state.queue_depths[usize::from(matches!(class, TaskExecutionClass::Preview))] = depth;
+        state.queue_high_water = state.queue_high_water.max(state.queue_depths.iter().sum());
     }
 
     fn started(&self, record: &Arc<Mutex<TaskRecord>>) {
@@ -339,12 +346,20 @@ impl MountTaskLease {
 /// Host-owned authority created only after the Host state has committed. A
 /// prepared capability job must receive this value before it can affect the
 /// scheduler.
+#[derive(Clone, Copy, Default)]
+pub(crate) enum TaskExecutionClass {
+    #[default]
+    Serial,
+    Preview,
+}
+
 #[derive(Clone)]
 pub(crate) struct MountTaskStarter {
     runtime: TaskRuntime,
     mount_id: crate::input::ViewMountId,
     lane_prefix: String,
     correlation: Option<(TaskId, u64)>,
+    execution_class: TaskExecutionClass,
 }
 
 impl MountTaskStarter {
@@ -355,6 +370,7 @@ impl MountTaskStarter {
             mount_id,
             lane_prefix: format!("mount-{}", mount_id.0),
             correlation: None,
+            execution_class: TaskExecutionClass::Serial,
         }
     }
 
@@ -365,6 +381,12 @@ impl MountTaskStarter {
     pub(crate) fn for_task(&self, task: TaskId, generation: u64) -> Self {
         let mut starter = self.clone();
         starter.correlation = Some((task, generation));
+        starter
+    }
+
+    pub(crate) fn for_preview(&self) -> Self {
+        let mut starter = self.clone();
+        starter.execution_class = TaskExecutionClass::Preview;
         starter
     }
 
@@ -434,6 +456,7 @@ impl MountTaskStarter {
         self.runtime.spawn_latest_with_correlation(
             format!("{}:{}", self.lane_prefix, lane.as_ref()),
             tags,
+            self.execution_class,
             self.correlation
                 .map(|(task, generation)| (ViewInstanceId(self.mount_id.0), task, generation)),
             task,
@@ -465,7 +488,7 @@ impl TaskContext {
     }
 }
 
-type TaskJob = Box<dyn FnOnce(Value, CancellationToken) + Send + 'static>;
+type TaskJob = Box<dyn FnOnce(Value, CancellationToken, Option<String>) + Send + 'static>;
 
 struct Job {
     lane: Option<String>,
@@ -497,6 +520,8 @@ struct TaskRegistry {
     ready: Condvar,
     worker: Mutex<WorkerSlot>,
     metrics: Arc<TaskMetrics>,
+    max_pending: Option<usize>,
+    execution_class: TaskExecutionClass,
 }
 
 impl TaskRuntime {
@@ -510,6 +535,7 @@ impl TaskRuntime {
         let metrics = Arc::new(TaskMetrics {
             clock,
             state: Mutex::new(TaskMetricsState {
+                queue_depths: [0; 2],
                 queue_high_water: 0,
                 submitted_total: 0,
                 started_total: 0,
@@ -536,7 +562,24 @@ impl TaskRuntime {
                         handle: None,
                         thread_id: None,
                     }),
+                    metrics: Arc::clone(&metrics),
+                    max_pending: None,
+                    execution_class: TaskExecutionClass::Serial,
+                }),
+                preview_registry: Arc::new(TaskRegistry {
+                    state: Mutex::new(RegistryState {
+                        active: None,
+                        pending: VecDeque::new(),
+                        closed: false,
+                    }),
+                    ready: Condvar::new(),
+                    worker: Mutex::new(WorkerSlot {
+                        handle: None,
+                        thread_id: None,
+                    }),
                     metrics,
+                    max_pending: Some(1),
+                    execution_class: TaskExecutionClass::Preview,
                 }),
                 events: Arc::new(Mutex::new(VecDeque::new())),
                 #[cfg(test)]
@@ -590,6 +633,7 @@ impl TaskRuntime {
         &self,
         lane: impl Into<String>,
         tags: TaskTags,
+        execution_class: TaskExecutionClass,
         correlation: Option<(ViewInstanceId, TaskId, u64)>,
         task: F,
     ) -> TaskHandle<T>
@@ -597,7 +641,14 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_with_snapshot(task, Some(lane.into()), tags, Value::Null, correlation)
+        self.spawn_with_snapshot(
+            task,
+            Some(lane.into()),
+            tags,
+            Value::Null,
+            correlation,
+            execution_class,
+        )
     }
 
     #[cfg(test)]
@@ -613,7 +664,14 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_with_snapshot(task, Some(lane.into()), tags, runtime_snapshot, correlation)
+        self.spawn_with_snapshot(
+            task,
+            Some(lane.into()),
+            tags,
+            runtime_snapshot,
+            correlation,
+            TaskExecutionClass::Serial,
+        )
     }
 
     #[cfg(test)]
@@ -622,7 +680,14 @@ impl TaskRuntime {
         T: Send + 'static,
         F: FnOnce(TaskContext) -> Result<T, String> + Send + 'static,
     {
-        self.spawn_with_snapshot(task, replace_lane, TaskTags::DEFAULT, Value::Null, None)
+        self.spawn_with_snapshot(
+            task,
+            replace_lane,
+            TaskTags::DEFAULT,
+            Value::Null,
+            None,
+            TaskExecutionClass::Serial,
+        )
     }
 
     fn spawn_with_snapshot<T, F>(
@@ -632,6 +697,7 @@ impl TaskRuntime {
         tags: TaskTags,
         runtime_snapshot: Value,
         correlation: Option<(ViewInstanceId, TaskId, u64)>,
+        execution_class: TaskExecutionClass,
     ) -> TaskHandle<T>
     where
         T: Send + 'static,
@@ -646,84 +712,95 @@ impl TaskRuntime {
         let record = metrics.submit(tags, replace_lane.clone());
         let execute_metrics = Arc::clone(&metrics);
         let execute_record = Arc::clone(&record);
-        let execute = Box::new(move |runtime, cancellation: CancellationToken| {
-            let (result, terminal_outcome) = if cancellation.is_cancelled() {
-                (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
-            } else {
-                match catch_unwind(AssertUnwindSafe(|| {
-                    #[cfg(test)]
-                    let task_context = TaskContext {
-                        runtime,
-                        cancellation: cancellation.clone(),
-                        metrics: Arc::clone(&execute_metrics),
-                        record: Arc::clone(&execute_record),
-                    };
-                    #[cfg(not(test))]
-                    let task_context = {
-                        let _ = runtime;
-                        TaskContext {
+        let execute = Box::new(
+            move |runtime, cancellation: CancellationToken, rejection: Option<String>| {
+                let (result, terminal_outcome) = if let Some(error) = rejection {
+                    (TaskCompletion::Failed(error), TaskTerminalOutcome::Failed)
+                } else if cancellation.is_cancelled() {
+                    (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
+                } else {
+                    match catch_unwind(AssertUnwindSafe(|| {
+                        #[cfg(test)]
+                        let task_context = TaskContext {
+                            runtime,
                             cancellation: cancellation.clone(),
                             metrics: Arc::clone(&execute_metrics),
                             record: Arc::clone(&execute_record),
+                        };
+                        #[cfg(not(test))]
+                        let task_context = {
+                            let _ = runtime;
+                            TaskContext {
+                                cancellation: cancellation.clone(),
+                                metrics: Arc::clone(&execute_metrics),
+                                record: Arc::clone(&execute_record),
+                            }
+                        };
+                        task(task_context)
+                    })) {
+                        Ok(Ok(_value)) if cancellation.is_cancelled() => {
+                            (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
                         }
-                    };
-                    task(task_context)
-                })) {
-                    Ok(Ok(_value)) if cancellation.is_cancelled() => {
-                        (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
+                        Ok(Ok(value)) => (
+                            TaskCompletion::Completed(value),
+                            TaskTerminalOutcome::Completed,
+                        ),
+                        Ok(Err(_error)) if cancellation.is_cancelled() => {
+                            (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
+                        }
+                        Ok(Err(error)) => {
+                            (TaskCompletion::Failed(error), TaskTerminalOutcome::Failed)
+                        }
+                        Err(_) if cancellation.is_cancelled() => {
+                            (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
+                        }
+                        Err(_) => (
+                            TaskCompletion::Failed("task panicked".to_string()),
+                            TaskTerminalOutcome::Panicked,
+                        ),
                     }
-                    Ok(Ok(value)) => (
-                        TaskCompletion::Completed(value),
-                        TaskTerminalOutcome::Completed,
-                    ),
-                    Ok(Err(_error)) if cancellation.is_cancelled() => {
-                        (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
-                    }
-                    Ok(Err(error)) => (TaskCompletion::Failed(error), TaskTerminalOutcome::Failed),
-                    Err(_) if cancellation.is_cancelled() => {
-                        (TaskCompletion::Cancelled, TaskTerminalOutcome::Cancelled)
-                    }
-                    Err(_) => (
-                        TaskCompletion::Failed("task panicked".to_string()),
-                        TaskTerminalOutcome::Panicked,
-                    ),
-                }
-            };
-            #[cfg(test)]
-            if let Some(gate) = publication_gate
-                .lock()
-                .expect("task publication gate was poisoned")
-                .as_ref()
-                .cloned()
-            {
-                gate.entered.wait();
-                gate.release.wait();
-            }
-            let terminal_outcome = execute_metrics.terminalize(&execute_record, terminal_outcome);
-            let result = if terminal_outcome == TaskTerminalOutcome::Cancelled {
-                TaskCompletion::Cancelled
-            } else {
-                result
-            };
-            let outcome = match &result {
-                TaskCompletion::Completed(_) => TaskOutcome::Completed(serde_json::Value::Null),
-                TaskCompletion::Failed(message) => TaskOutcome::Failed(message.clone()),
-                TaskCompletion::Cancelled => TaskOutcome::Cancelled,
-            };
-            let _ = completion.send(result);
-            if let Some((instance, task, generation)) = correlation {
-                events
+                };
+                #[cfg(test)]
+                if let Some(gate) = publication_gate
                     .lock()
-                    .expect("task event queue was poisoned")
-                    .push_back(TaskEvent {
-                        instance,
-                        task,
-                        generation,
-                        outcome,
-                    });
-            }
-        });
-        self.owner.registry.submit(
+                    .expect("task publication gate was poisoned")
+                    .as_ref()
+                    .cloned()
+                {
+                    gate.entered.wait();
+                    gate.release.wait();
+                }
+                let terminal_outcome =
+                    execute_metrics.terminalize(&execute_record, terminal_outcome);
+                let result = if terminal_outcome == TaskTerminalOutcome::Cancelled {
+                    TaskCompletion::Cancelled
+                } else {
+                    result
+                };
+                let outcome = match &result {
+                    TaskCompletion::Completed(_) => TaskOutcome::Completed(serde_json::Value::Null),
+                    TaskCompletion::Failed(message) => TaskOutcome::Failed(message.clone()),
+                    TaskCompletion::Cancelled => TaskOutcome::Cancelled,
+                };
+                let _ = completion.send(result);
+                if let Some((instance, task, generation)) = correlation {
+                    events
+                        .lock()
+                        .expect("task event queue was poisoned")
+                        .push_back(TaskEvent {
+                            instance,
+                            task,
+                            generation,
+                            outcome,
+                        });
+                }
+            },
+        );
+        let registry = match execution_class {
+            TaskExecutionClass::Serial => &self.owner.registry,
+            TaskExecutionClass::Preview => &self.owner.preview_registry,
+        };
+        registry.submit(
             Job {
                 lane: replace_lane.clone(),
                 runtime: runtime_snapshot,
@@ -754,22 +831,32 @@ impl TaskRuntime {
     /// event delivery and deliberately has no user-facing presentation API.
     #[cfg(test)]
     pub(crate) fn metrics_snapshot(&self) -> TaskRuntimeMetricsSnapshot {
-        let (queue_depth, active) = {
+        let active = {
             let state = self
                 .owner
                 .registry
                 .state
                 .lock()
                 .expect("task registry state was poisoned");
-            (
-                state.pending.len(),
-                state
-                    .active
-                    .as_ref()
-                    .map(|active| Arc::clone(&active.record)),
-            )
+            state
+                .active
+                .as_ref()
+                .map(|active| Arc::clone(&active.record))
         };
-        let current_active = active.map(|record| {
+        let preview_active = {
+            let state = self
+                .owner
+                .preview_registry
+                .state
+                .lock()
+                .expect("preview registry poisoned");
+            state
+                .active
+                .as_ref()
+                .map(|active| Arc::clone(&active.record))
+        };
+        let active_tasks = usize::from(active.is_some()) + usize::from(preview_active.is_some());
+        let snapshot_active = |record: Arc<Mutex<TaskRecord>>| {
             let record = record.lock().expect("task record was poisoned");
             TaskActiveSnapshot {
                 tags: record.tags,
@@ -778,7 +865,9 @@ impl TaskRuntime {
                 started_at: record.started_at,
                 cancellation: record.cancellation.clone(),
             }
-        });
+        };
+        let current_active = active.map(snapshot_active);
+        let preview_active = preview_active.map(snapshot_active);
         let state = self
             .owner
             .registry
@@ -788,9 +877,10 @@ impl TaskRuntime {
             .expect("task metrics state was poisoned");
         TaskRuntimeMetricsSnapshot {
             now: self.owner.registry.metrics.now(),
-            queue_depth,
-            active_tasks: usize::from(current_active.is_some()),
+            queue_depth: state.queue_depths.iter().sum(),
+            active_tasks,
             current_active,
+            preview_active,
             queue_high_water: state.queue_high_water,
             submitted_total: state.submitted_total,
             started_total: state.started_total,
@@ -812,7 +902,16 @@ impl TaskRuntime {
             .state
             .lock()
             .expect("task registry state was poisoned");
-        state.active.is_some() || !state.pending.is_empty()
+        let preview = self
+            .owner
+            .preview_registry
+            .state
+            .lock()
+            .expect("preview registry poisoned");
+        state.active.is_some()
+            || !state.pending.is_empty()
+            || preview.active.is_some()
+            || !preview.pending.is_empty()
     }
 
     pub(crate) fn has_pending_events(&self) -> bool {
@@ -827,6 +926,7 @@ impl TaskRuntime {
     #[cfg(test)]
     pub(crate) fn cancel_all(&self) {
         self.owner.registry.cancel_all();
+        self.owner.preview_registry.cancel_all();
     }
 
     #[cfg(test)]
@@ -840,18 +940,25 @@ impl TaskRuntime {
 
     fn cancel_lane_prefix(&self, prefix: &str) {
         self.owner.registry.cancel_lane_prefix(prefix);
+        self.owner.preview_registry.cancel_lane_prefix(prefix);
     }
 
     /// Cancel all work and wait for the worker to exit.
     #[cfg(test)]
     pub(crate) fn shutdown_and_wait(&self) {
+        self.owner.registry.begin_shutdown();
+        self.owner.preview_registry.begin_shutdown();
         self.owner.registry.shutdown_and_wait();
+        self.owner.preview_registry.shutdown_and_wait();
     }
 }
 
 impl Drop for TaskRuntimeOwner {
     fn drop(&mut self) {
+        self.registry.begin_shutdown();
+        self.preview_registry.begin_shutdown();
         self.registry.shutdown_and_wait();
+        self.preview_registry.shutdown_and_wait();
     }
 }
 
@@ -871,7 +978,25 @@ impl TaskRegistry {
             self.metrics
                 .cancel(&record, TaskCancellationReason::SubmissionAfterShutdown);
             cancellation.cancel();
-            execute(runtime, cancellation);
+            execute(runtime, cancellation, None);
+            return;
+        }
+        // Capacity is shared across mounts, but replacement authority is lane-local.
+        // Reject before cancelling active work if another lane owns the pending slot.
+        if self
+            .max_pending
+            .is_some_and(|limit| state.pending.len() >= limit)
+            && !state
+                .pending
+                .iter()
+                .any(|pending| replace_lane.is_some() && pending.lane.as_deref() == replace_lane)
+        {
+            drop(state);
+            (job.execute)(
+                job.runtime,
+                job.cancellation,
+                Some("preview task queue is full".into()),
+            );
             return;
         }
         let mut replaced = Vec::new();
@@ -904,7 +1029,8 @@ impl TaskRegistry {
             state.pending = retained;
         }
         state.pending.push_back(job);
-        self.metrics.queued(state.pending.len());
+        self.metrics
+            .queued(self.execution_class, state.pending.len());
         self.ensure_worker();
         drop(state);
         for Job {
@@ -914,7 +1040,7 @@ impl TaskRegistry {
             ..
         } in replaced
         {
-            execute(runtime, cancellation);
+            execute(runtime, cancellation, None);
         }
         self.ready.notify_one();
     }
@@ -965,6 +1091,8 @@ impl TaskRegistry {
                 }
             }
             state.pending = retained;
+            self.metrics
+                .queued(self.execution_class, state.pending.len());
             cancelled
         };
         for Job {
@@ -974,11 +1102,11 @@ impl TaskRegistry {
             ..
         } in cancelled
         {
-            execute(runtime, cancellation);
+            execute(runtime, cancellation, None);
         }
     }
 
-    fn shutdown_and_wait(&self) {
+    fn begin_shutdown(&self) {
         let pending = {
             let mut state = self.state.lock().expect("task registry state was poisoned");
             state.closed = true;
@@ -988,6 +1116,7 @@ impl TaskRegistry {
                 active.cancellation.cancel();
             }
             let pending = state.pending.drain(..).collect::<Vec<_>>();
+            self.metrics.queued(self.execution_class, 0);
             for pending_job in &pending {
                 self.metrics.cancel(
                     &pending_job.record,
@@ -1004,10 +1133,13 @@ impl TaskRegistry {
             ..
         } in pending
         {
-            execute(runtime, cancellation);
+            execute(runtime, cancellation, None);
         }
         self.ready.notify_all();
+    }
 
+    fn shutdown_and_wait(&self) {
+        self.begin_shutdown();
         let worker = {
             let mut slot = self
                 .worker
@@ -1078,6 +1210,9 @@ fn worker_loop(registry: Arc<TaskRegistry>) {
                 return;
             }
             let job = state.pending.pop_front().expect("pending task disappeared");
+            registry
+                .metrics
+                .queued(registry.execution_class, state.pending.len());
             state.active = Some(ActiveJob {
                 lane: job.lane.clone(),
                 cancellation: job.cancellation.clone(),
@@ -1094,7 +1229,7 @@ fn worker_loop(registry: Arc<TaskRegistry>) {
             ..
         } = job;
         registry.metrics.started(&record);
-        execute(runtime, cancellation);
+        execute(runtime, cancellation, None);
         registry
             .state
             .lock()
@@ -1887,5 +2022,241 @@ mod tests {
             TaskOutcome::Completed(serde_json::Value::Null)
         );
         tasks.shutdown_and_wait();
+    }
+}
+
+#[cfg(test)]
+mod preview_lane_tests {
+    use super::*;
+    #[test]
+    fn preview_overflow_preserves_other_mount_and_combined_queue_metrics() {
+        let tasks = TaskRuntime::new();
+        let mount = |id| {
+            MountTaskStarter::from_lease(&tasks, MountTaskLease::new(crate::input::ViewMountId(id)))
+        };
+        let first = mount(911);
+        let second = mount(912);
+        let third = mount(913);
+        let (started_tx, started_rx) = sync_channel(2);
+        let blocker = |tx: std::sync::mpsc::SyncSender<()>| {
+            move |context: TaskContext| {
+                tx.send(()).unwrap();
+                while !context.cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            }
+        };
+        let active = first.for_preview().spawn_latest_tagged(
+            "preview",
+            TaskTags::new("picker", "preview"),
+            blocker(started_tx.clone()),
+        );
+        let serial = first.spawn_latest_tagged(
+            "items",
+            TaskTags::new("picker", "items"),
+            blocker(started_tx),
+        );
+        for _ in 0..2 {
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        let items_pending =
+            second.spawn_latest_tagged("items", TaskTags::new("picker", "items"), |_| Ok(3));
+        let pending = second.for_preview().spawn_latest_tagged(
+            "preview",
+            TaskTags::new("picker", "preview"),
+            |_| Ok(1),
+        );
+        let rejected: TaskHandle<()> = third
+            .for_task(TaskId(2), 9)
+            .for_preview()
+            .spawn_latest_tagged("preview", TaskTags::new("picker", "preview"), |_| {
+                panic!("overflow ran")
+            });
+        assert!(
+            matches!(rejected.completion.recv_timeout(Duration::from_secs(1)).unwrap(), TaskCompletion::Failed(message) if message == "preview task queue is full")
+        );
+        assert!(matches!(
+            pending.completion.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(!pending.cancellation.is_cancelled());
+        let metrics = tasks.metrics_snapshot();
+        assert_eq!(metrics.active_tasks, 2);
+        assert_eq!(
+            metrics.current_active.as_ref().unwrap().tags,
+            TaskTags::new("picker", "items")
+        );
+        assert_eq!(
+            metrics.preview_active.as_ref().unwrap().tags,
+            TaskTags::new("picker", "preview")
+        );
+        assert_eq!(metrics.queue_depth, 2);
+        assert_eq!(metrics.queue_high_water, 2);
+        assert_eq!(metrics.failed_total, 1);
+        assert!(tasks.drain_events().iter().any(|event| event.task == TaskId(2) && event.generation == 9 && matches!(&event.outcome, TaskOutcome::Failed(message) if message == "preview task queue is full")));
+        // Replacement remains allowed for the mount that owns the pending slot.
+        let replacement = second.for_preview().spawn_latest_tagged(
+            "preview",
+            TaskTags::new("picker", "preview"),
+            |_| Ok(2),
+        );
+        assert!(matches!(
+            pending
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            TaskCompletion::Cancelled
+        ));
+        assert_eq!(tasks.metrics_snapshot().queue_depth, 2);
+        first.cancel_all();
+        for handle in [active, serial] {
+            assert!(matches!(
+                handle
+                    .completion
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap(),
+                TaskCompletion::Cancelled
+            ));
+        }
+        assert!(matches!(
+            replacement
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            TaskCompletion::Completed(2)
+        ));
+        assert!(matches!(
+            items_pending
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            TaskCompletion::Completed(3)
+        ));
+        tasks.shutdown_and_wait();
+        assert_eq!(tasks.metrics_snapshot().queue_depth, 0);
+    }
+
+    #[test]
+    fn shutdown_cancels_preview_before_waiting_for_serial_teardown() {
+        let tasks = TaskRuntime::new();
+        let starter = MountTaskStarter::from_lease(
+            &tasks,
+            MountTaskLease::new(crate::input::ViewMountId(914)),
+        );
+        let (started_tx, started_rx) = sync_channel(2);
+        let (preview_cancelled_tx, preview_cancelled_rx) = sync_channel(1);
+        let (observed_tx, observed_rx) = sync_channel(1);
+        let preview_started = started_tx.clone();
+        let preview = starter.for_preview().spawn_latest_tagged(
+            "preview",
+            TaskTags::new("picker", "preview"),
+            move |context| {
+                preview_started.send(()).unwrap();
+                while !context.cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                preview_cancelled_tx.send(()).unwrap();
+                Ok(())
+            },
+        );
+        let serial = starter.spawn_latest_tagged(
+            "items",
+            TaskTags::new("picker", "items"),
+            move |context| {
+                started_tx.send(()).unwrap();
+                while !context.cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                let cancelled_before_join = preview_cancelled_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .is_ok();
+                observed_tx.send(cancelled_before_join).unwrap();
+                Ok(())
+            },
+        );
+        for _ in 0..2 {
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        tasks.shutdown_and_wait();
+        assert!(
+            observed_rx.try_recv().unwrap(),
+            "preview was not cancelled during serial teardown"
+        );
+        for handle in [serial, preview] {
+            assert!(matches!(
+                handle.completion.try_recv(),
+                Ok(TaskCompletion::Cancelled)
+            ));
+        }
+        assert_eq!(tasks.metrics_snapshot().worker_joined_total, 2);
+    }
+
+    #[test]
+    fn slow_preview_does_not_block_items_and_mount_shutdown_reaps_both_workers() {
+        let tasks = TaskRuntime::new();
+        let starter = MountTaskStarter::from_lease(
+            &tasks,
+            MountTaskLease::new(crate::input::ViewMountId(910)),
+        );
+        let (started_tx, started_rx) = sync_channel(1);
+        let mut preview = starter
+            .for_task(TaskId(2), 7)
+            .for_preview()
+            .spawn_latest_tagged(
+                "preview",
+                TaskTags::new("picker", "preview"),
+                move |context| {
+                    started_tx.send(()).unwrap();
+                    while !context.cancellation.is_cancelled() {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Ok(())
+                },
+            );
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let items = starter.for_task(TaskId(1), 3).spawn_latest_tagged(
+            "items",
+            TaskTags::new("picker", "items"),
+            |_| Ok(42),
+        );
+        assert!(matches!(
+            items
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            TaskCompletion::Completed(42)
+        ));
+        assert!(matches!(preview.try_recv(), Err(TryRecvError::Empty)));
+        starter.cancel_all();
+        assert!(matches!(
+            preview
+                .completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            TaskCompletion::Cancelled
+        ));
+        tasks.shutdown_and_wait();
+        let events = tasks.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.task == TaskId(1) && e.generation == 3)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.task == TaskId(2) && e.generation == 7)
+        );
+        let metrics = tasks.metrics_snapshot();
+        assert_eq!(metrics.worker_started_total, 2);
+        assert_eq!(metrics.worker_joined_total, 2);
+        assert!(!tasks.has_active_tasks());
+        let mut rejected = starter.for_preview().spawn_latest_tagged(
+            "preview",
+            TaskTags::new("picker", "preview"),
+            |_| Ok(()),
+        );
+        assert!(matches!(rejected.try_recv(), Ok(TaskCompletion::Cancelled)));
     }
 }

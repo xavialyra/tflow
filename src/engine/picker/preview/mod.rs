@@ -1,10 +1,10 @@
+mod document;
 mod image_decode;
 mod image_path;
 mod image_protocol;
 
 use self::image_decode::ImageDecodeHandle;
 pub(super) use self::image_protocol::ImageProtocolCache;
-use self::image_protocol::{DesiredImageProtocol, ImageProtocolKey};
 use super::Item;
 use crate::ui::theme::Theme;
 use anyhow::{Context, Result, bail};
@@ -12,7 +12,6 @@ use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui_image::StatefulImage;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct PickerPreviewConfig {
     layout: PickerLayout,
-    blocks: Vec<PreviewBlockConfig>,
+    pub(super) source: PreviewSource,
 }
 
 #[derive(Clone, Deserialize)]
@@ -52,31 +51,62 @@ pub(crate) struct PaneConfig {
     min: u16,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PreviewSpec {
-    blocks: Vec<PreviewBlockConfig>,
+#[derive(Clone)]
+pub(super) enum PreviewSource {
+    Inherit,
+    Details,
+    Declared(Option<document::Document>),
+    Script(crate::workflow::config::ResolvedScriptSource),
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PreviewBlockConfig {
-    #[serde(rename = "type")]
-    kind: PreviewBlockKind,
+struct PreviewSpec {
     #[serde(default)]
-    source: Option<String>,
+    producer: Option<crate::workflow::config::ProducerKind>,
     #[serde(default)]
-    size: Option<u16>,
+    inherit: bool,
     #[serde(default)]
-    grow: Option<u16>,
+    handler: Option<Value>,
+    #[serde(default)]
+    document: Option<Value>,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum PreviewBlockKind {
-    Image,
-    Text,
-    Separator,
+pub(super) fn parse_source(value: Value, root: Option<&std::path::Path>) -> Result<PreviewSource> {
+    let source = parse_source_shape(value)?;
+    if let PreviewSource::Script(script) = &source {
+        script.validate_target(root)?;
+    }
+    Ok(source)
+}
+
+fn parse_source_shape(value: Value) -> Result<PreviewSource> {
+    let spec: PreviewSpec = serde_json::from_value(value).context("picker preview is invalid")?;
+    use crate::workflow::config::ProducerKind;
+    match (spec.producer, spec.inherit, spec.handler, spec.document) {
+        (None, true, None, None) => Ok(PreviewSource::Inherit),
+        (Some(ProducerKind::Declared), false, None, Some(value)) => {
+            Ok(PreviewSource::Declared(document::parse(value)?))
+        }
+        (Some(ProducerKind::Script), false, Some(handler), None) => {
+            let handler = toml::Value::try_from(&handler)?;
+            Ok(PreviewSource::Script(
+                crate::workflow::config::parse_producer_script_handler_shape(&handler)?,
+            ))
+        }
+        _ => bail!(
+            "preview requires inherit=true, producer='declared' with document, or producer='script' with handler"
+        ),
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct PreviewRequest {
+    pub(super) identity: String,
+    pub(super) owner: String,
+    pub(super) request: Value,
+    pub(super) root: Option<std::path::PathBuf>,
+    pub(super) source: PreviewSource,
 }
 
 fn default_direction() -> Direction {
@@ -84,24 +114,25 @@ fn default_direction() -> Direction {
 }
 
 pub(super) fn parse(
-    layout: Option<Value>,
+    preview_ratio: f64,
+    preview_min_width: u16,
     preview: Option<Value>,
-) -> Result<Option<PickerPreviewConfig>> {
-    let (layout, preview) = match (layout, preview) {
-        (None, None) => return Ok(None),
-        (Some(layout), Some(preview)) => (layout, preview),
-        _ => bail!("picker layout and preview must be configured together"),
-    };
+) -> Result<PickerPreviewConfig> {
+    anyhow::ensure!(
+        (0.0..=1.0).contains(&preview_ratio),
+        "picker preview_ratio must be between 0 and 1"
+    );
+    let layout = serde_json::json!({"gap": 1, "panes": [
+        {"slot": "items", "grow": (((1.0 - preview_ratio) * 100.0).round() as u16).max(1)},
+        {"slot": "preview", "grow": ((preview_ratio * 100.0).round() as u16).max(1), "min": preview_min_width}]});
     let layout: PickerLayout =
         serde_json::from_value(layout).context("picker layout is invalid")?;
-    let preview: PreviewSpec =
-        serde_json::from_value(preview).context("picker preview is invalid")?;
     validate_layout(&layout)?;
-    validate_blocks(&preview.blocks)?;
-    Ok(Some(PickerPreviewConfig {
-        layout,
-        blocks: preview.blocks,
-    }))
+    let source = match preview {
+        Some(value) => parse_source_shape(value)?,
+        None => PreviewSource::Inherit,
+    };
+    Ok(PickerPreviewConfig { layout, source })
 }
 
 fn validate_layout(layout: &PickerLayout) -> Result<()> {
@@ -171,46 +202,17 @@ fn pane_lengths(
     Some((items_length, preview_length))
 }
 
-fn validate_blocks(blocks: &[PreviewBlockConfig]) -> Result<()> {
-    if blocks.is_empty() {
-        bail!("picker preview requires at least one block");
-    }
-    let image_blocks = blocks
-        .iter()
-        .filter(|block| matches!(&block.kind, PreviewBlockKind::Image))
-        .count();
-    if image_blocks > 4 {
-        bail!("picker preview supports at most 4 image blocks");
-    }
-    for block in blocks {
-        if matches!(&block.kind, PreviewBlockKind::Separator) {
-            if block.source.is_some() || block.grow.is_some() || block.size == Some(0) {
-                bail!("picker preview separator accepts only an optional positive size");
-            }
-            continue;
-        }
-        let Some(source) = &block.source else {
-            bail!("picker preview block requires a JSON Pointer source");
-        };
-        if !source.starts_with('/') {
-            bail!("picker preview source {:?} must be a JSON Pointer", source);
-        }
-        if block.size.is_some() == block.grow.is_some()
-            || block.size == Some(0)
-            || block.grow == Some(0)
-        {
-            bail!("picker preview block needs exactly one positive size or grow");
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone)]
 pub(crate) struct PickerPreviewRenderState {
     pub(crate) config: PickerPreviewConfig,
     pub(crate) visible: bool,
     pub(crate) revision: u64,
-    pub(crate) blocks: Vec<PreviewRenderBlockState>,
+    images: Vec<PreviewImageState>,
+    document: Option<document::Document>,
+    status: Option<String>,
+    error: bool,
+    package: String,
+    scroll: u16,
 }
 
 pub(super) struct PickerPreview {
@@ -218,45 +220,28 @@ pub(super) struct PickerPreview {
     visible: bool,
     revision: u64,
     selection: Option<String>,
-    blocks: Vec<PreviewBlockState>,
+    images: Vec<PreviewImageState>,
     task: Option<ImageTask>,
+    prepared: Option<PreviewRequest>,
+    script_task: Option<crate::task::TaskHandle<Option<document::Document>>>,
+    due: Option<std::time::Instant>,
+    document: Option<document::Document>,
+    status: Option<String>,
+    error: bool,
+    package: String,
+    scroll: u16,
     pool: Option<Arc<image_decode::ImageDecodePool>>,
+    content_size: Option<(u16, u16)>,
 }
 
-enum PreviewBlockState {
-    Empty,
-    Text(String),
-    Image {
-        image: Option<Arc<DynamicImage>>,
-        error: Option<String>,
-    },
-}
-
-#[derive(Clone)]
-pub(crate) enum PreviewRenderBlockState {
-    Empty,
-    Text(String),
-    Image {
-        image: Option<Arc<DynamicImage>>,
-        error: Option<String>,
-    },
+#[derive(Clone, Default)]
+struct PreviewImageState {
+    image: Option<Arc<DynamicImage>>,
+    error: Option<String>,
 }
 
 struct ImageTask {
     handle: ImageDecodeHandle,
-}
-
-impl Clone for PreviewBlockState {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Empty => Self::Empty,
-            Self::Text(text) => Self::Text(text.clone()),
-            Self::Image { image, error } => Self::Image {
-                image: image.clone(),
-                error: error.clone(),
-            },
-        }
-    }
 }
 
 impl PickerPreviewRenderState {
@@ -282,81 +267,64 @@ impl PickerPreviewRenderState {
         picker: Option<crate::terminal::ImagePicker>,
         protocols: &mut ImageProtocolCache,
     ) {
-        let areas = populated_block_areas(area, &self.config.blocks, &self.blocks);
-        let desired = picker
-            .into_iter()
-            .flat_map(|picker| {
-                self.blocks.iter().zip(&areas).enumerate().filter_map(
-                    move |(block, (state, area))| {
-                        let PreviewRenderBlockState::Image {
-                            image: Some(image), ..
-                        } = state
-                        else {
-                            return None;
-                        };
-                        if area.width == 0 || area.height == 0 {
-                            return None;
-                        }
-                        let key = ImageProtocolKey::new(
-                            self.revision,
-                            block,
-                            image,
-                            ratatui::layout::Size::new(area.width, area.height),
-                            picker,
-                        );
-                        Some(DesiredImageProtocol {
-                            key,
-                            image: Arc::clone(image),
-                            picker,
-                        })
-                    },
-                )
-            })
-            .collect();
-        protocols.update(desired);
-        for (index, ((block, state), area)) in self
-            .config
-            .blocks
-            .iter()
-            .zip(&self.blocks)
-            .zip(areas)
-            .enumerate()
-        {
-            let key = match (picker, state) {
-                (
-                    Some(picker),
-                    PreviewRenderBlockState::Image {
-                        image: Some(image), ..
-                    },
-                ) if area.width > 0 && area.height > 0 => Some(ImageProtocolKey::new(
-                    self.revision,
-                    index,
-                    image,
-                    ratatui::layout::Size::new(area.width, area.height),
-                    picker,
-                )),
-                _ => None,
-            };
-            render_block(frame, area, block, state, theme, protocols, key);
+        if let Some(document) = &self.document {
+            document.render(
+                frame,
+                area,
+                theme,
+                &self.package,
+                self.scroll,
+                self.revision,
+                &self.images,
+                picker,
+                protocols,
+            );
+            return;
         }
+        if let Some(status) = &self.status {
+            protocols.update(Vec::new());
+            frame.render_widget(
+                Paragraph::new(status.as_str())
+                    .style(if self.error {
+                        theme.picker.preview.error
+                    } else {
+                        theme.picker.preview.text
+                    })
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+        protocols.update(Vec::new());
     }
 }
 
 impl PickerPreview {
     pub(super) fn new(config: PickerPreviewConfig) -> Self {
-        let count = config.blocks.len();
         Self {
             config,
-            visible: true,
+            visible: false,
             revision: 0,
             selection: None,
-            blocks: (0..count).map(|_| PreviewBlockState::Empty).collect(),
+            images: Vec::new(),
             task: None,
+            prepared: None,
+            script_task: None,
+            due: None,
+            document: None,
+            status: None,
+            error: false,
+            package: String::new(),
+            scroll: 0,
             pool: None,
+            content_size: None,
         }
     }
 
     pub(super) fn set_visible(&mut self, visible: bool) {
+        if self.visible && !visible {
+            self.reset_selection();
+        }
         self.visible = visible;
     }
 
@@ -374,55 +342,168 @@ impl PickerPreview {
         self.revision = self.revision.wrapping_add(1);
         self.selection = None;
         self.task.take();
-        self.blocks = (0..self.config.blocks.len())
-            .map(|_| PreviewBlockState::Empty)
-            .collect();
+        self.prepared = None;
+        self.script_task = None;
+        self.due = None;
+        self.document = None;
+        self.status = None;
+        self.error = false;
+        self.scroll = 0;
+        self.images.clear();
     }
 
-    pub(super) fn update(&mut self, item: Option<&Item>, workflow_root: Option<&std::path::Path>) {
-        self.collect();
-        let selection = item.and_then(|item| serde_json::to_string(&item_value(item)).ok());
-        if selection == self.selection {
+    pub(super) fn fits(&self, size: (u16, u16)) -> bool {
+        preview_areas(&self.config, true, Rect::new(0, 0, size.0, size.1))
+            .1
+            .is_some_and(|area| !area.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(super) fn document_scroll_state(&self) -> (bool, u16) {
+        (self.document.is_some(), self.scroll)
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepared_request(&self) -> Option<&PreviewRequest> {
+        self.prepared.as_ref()
+    }
+
+    pub(super) fn source(&self) -> &PreviewSource {
+        &self.config.source
+    }
+
+    pub(super) fn prepare(&mut self, request: Option<PreviewRequest>) {
+        let identity = request.as_ref().map(|r| r.identity.as_str());
+        if identity == self.selection.as_deref() {
             return;
         }
         self.reset_selection();
-        self.selection = selection;
-        let Some(item) = item else {
-            return;
-        };
-        let value = item_value(item);
-        let mut images = Vec::new();
-        for (index, block) in self.config.blocks.iter().enumerate() {
-            if matches!(&block.kind, PreviewBlockKind::Separator) {
-                continue;
-            }
-            let source = block
-                .source
-                .as_deref()
-                .expect("validated preview block source");
-            let Some(value) = value.pointer(source).filter(|value| !value.is_null()) else {
-                continue;
-            };
-            match block.kind {
-                PreviewBlockKind::Text => {
-                    if let Some(text) = value.as_str() {
-                        self.blocks[index] = PreviewBlockState::Text(text.to_string());
-                    }
+        if let Some(request) = request {
+            self.selection = Some(request.identity.clone());
+            self.package = request.owner.split(':').next().unwrap_or("").to_owned();
+            self.status = Some("Loading preview…".into());
+            self.due = Some(std::time::Instant::now() + std::time::Duration::from_millis(80));
+            self.prepared = Some(request);
+        }
+    }
+
+    pub(super) fn set_content_size(&mut self, size: Option<(u16, u16)>) {
+        self.content_size = size;
+        self.scroll(0);
+    }
+
+    pub(super) fn scroll(&mut self, delta: i16) {
+        let limit = self
+            .content_size
+            .and_then(|(width, height)| {
+                let area =
+                    preview_areas(&self.config, self.visible, Rect::new(0, 0, width, height)).1?;
+                Some(self.document.as_ref()?.scroll_limit(area))
+            })
+            .unwrap_or(0);
+        self.scroll = self
+            .scroll
+            .min(limit)
+            .saturating_add_signed(delta)
+            .min(limit);
+    }
+
+    // Only called with post-commit host authority. Both scripts and image decoding
+    // begin here; input callbacks merely replace the prepared immutable request.
+    pub(super) fn start(&mut self, starter: &crate::task::MountTaskStarter) -> Option<u64> {
+        self.collect();
+        if let Some(mut task) = self.script_task.take() {
+            use crate::task::TaskCompletion;
+            match task.try_recv() {
+                Ok(TaskCompletion::Completed(document)) => self.install_document(document),
+                Ok(TaskCompletion::Failed(error)) => {
+                    self.status = Some(error);
+                    self.error = true;
                 }
-                PreviewBlockKind::Image => {
-                    let Some(path) = value.as_str() else {
-                        continue;
-                    };
-                    let path = self::image_path::resolve(workflow_root, path);
-                    self.blocks[index] = PreviewBlockState::Image {
-                        image: None,
-                        error: None,
-                    };
-                    images.push((index, path));
+                Ok(TaskCompletion::Cancelled) => {
+                    self.status = None;
                 }
-                PreviewBlockKind::Separator => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.script_task = Some(task),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.status = Some("preview worker disconnected".into());
+                    self.error = true;
+                }
             }
         }
+        let request = self.prepared.as_ref()?;
+        match &request.source {
+            PreviewSource::Script(source) => {
+                if self.script_task.is_some()
+                    || self.due.is_none_or(|due| std::time::Instant::now() < due)
+                {
+                    return None;
+                }
+                self.due = None;
+                let source = source.clone();
+                let request = request.clone();
+                let generation = self.revision;
+                self.script_task = Some(
+                    starter
+                        .for_task(crate::protocol::contracts::TaskId(2), generation)
+                        .for_preview()
+                        .spawn_latest_tagged(
+                            "preview",
+                            crate::task::TaskTags::new("picker", "preview"),
+                            move |context| {
+                                let outcome = crate::protocol::run_script_preview_response(
+                                    &request.owner,
+                                    request.root.as_deref(),
+                                    &source,
+                                    &request.request,
+                                    &context.cancellation,
+                                );
+                                if outcome.managed_child_reaped {
+                                    context.mark_process_reaped();
+                                }
+                                outcome
+                                    .result
+                                    .and_then(document::parse)
+                                    .map_err(|error| format!("{error:#}"))
+                            },
+                        ),
+                );
+                Some(generation)
+            }
+            PreviewSource::Declared(document) => {
+                if self.due.take().is_some() {
+                    let document = document.clone();
+                    self.install_document(document);
+                }
+                None
+            }
+            PreviewSource::Inherit | PreviewSource::Details => {
+                if self.due.take().is_some() {
+                    let item = &request.request["context"]["engine"]["state"]["item"];
+                    self.install_document(Some(document::item_details(item)));
+                }
+                None
+            }
+        }
+    }
+
+    fn install_document(&mut self, document: Option<document::Document>) {
+        self.status = document.is_none().then(|| "(no preview)".into());
+        let mut paths = Vec::new();
+        if let Some(document) = &document {
+            document.images(&mut paths);
+        }
+        let root = self.prepared.as_ref().and_then(|r| r.root.as_deref());
+        let images = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, image_path::resolve(root, p)))
+            .collect::<Vec<_>>();
+        self.images = vec![PreviewImageState::default(); paths.len()];
+        self.document = document;
+        self.start_images(images);
+    }
+
+    fn start_images(&mut self, images: Vec<(usize, std::path::PathBuf)>) {
         if images.is_empty() {
             return;
         }
@@ -434,10 +515,8 @@ impl PickerPreview {
                     pool
                 }
                 Err(message) => {
-                    for state in &mut self.blocks {
-                        if let PreviewBlockState::Image { error, .. } = state {
-                            *error = Some(message.clone());
-                        }
+                    for state in &mut self.images {
+                        state.error = Some(message.clone());
                     }
                     return;
                 }
@@ -454,20 +533,18 @@ impl PickerPreview {
             Some(Ok(batch)) => {
                 self.task = None;
                 if batch.revision != self.revision {
-                    self.reset_selection();
+                    // A cancelled generation must never clear the newer document.
+                    return;
                 } else {
                     for decoded in batch.images {
-                        if let PreviewBlockState::Image { image, error, .. } =
-                            &mut self.blocks[decoded.block]
-                        {
-                            match decoded.result {
-                                Ok(decoded) => *image = Some(Arc::new(decoded)),
-                                Err(message) => {
-                                    *error = Some(format!(
-                                        "could not load {}: {message}",
-                                        decoded.path.display()
-                                    ))
-                                }
+                        let PreviewImageState { image, error } = &mut self.images[decoded.block];
+                        match decoded.result {
+                            Ok(decoded) => *image = Some(Arc::new(decoded)),
+                            Err(message) => {
+                                *error = Some(format!(
+                                    "could not load {}: {message}",
+                                    decoded.path.display()
+                                ))
                             }
                         }
                     }
@@ -481,23 +558,19 @@ impl PickerPreview {
     }
 
     pub(super) fn render_state(&self) -> PickerPreviewRenderState {
-        let blocks = self
-            .blocks
-            .iter()
-            .map(|state| match state {
-                PreviewBlockState::Empty => PreviewRenderBlockState::Empty,
-                PreviewBlockState::Text(text) => PreviewRenderBlockState::Text(text.clone()),
-                PreviewBlockState::Image { image, error } => PreviewRenderBlockState::Image {
-                    image: image.clone(),
-                    error: error.clone(),
-                },
-            })
-            .collect();
         PickerPreviewRenderState {
             config: self.config.clone(),
             visible: self.visible,
             revision: self.revision,
-            blocks,
+            images: self.images.clone(),
+            document: self.document.clone(),
+            status: self
+                .status
+                .clone()
+                .or_else(|| self.selection.is_none().then(|| "(no preview)".into())),
+            error: self.error,
+            package: self.package.clone(),
+            scroll: self.scroll,
         }
     }
 }
@@ -596,60 +669,7 @@ fn render_separator(
     );
 }
 
-fn render_block(
-    frame: &mut Frame,
-    area: Rect,
-    block: &PreviewBlockConfig,
-    state: &PreviewRenderBlockState,
-    theme: &Theme,
-    protocols: &mut ImageProtocolCache,
-    protocol_key: Option<ImageProtocolKey>,
-) {
-    if matches!(&block.kind, PreviewBlockKind::Separator) {
-        frame.render_widget(
-            Block::new()
-                .borders(Borders::TOP)
-                .border_style(theme.picker.preview.border),
-            area,
-        );
-        return;
-    }
-    match state {
-        PreviewRenderBlockState::Empty => {}
-        PreviewRenderBlockState::Text(text) => frame.render_widget(
-            Paragraph::new(text.as_str())
-                .style(theme.picker.preview.text)
-                .wrap(Wrap { trim: false }),
-            area,
-        ),
-        PreviewRenderBlockState::Image { image: Some(_), .. } => {
-            let Some(key) = protocol_key else {
-                return;
-            };
-            if let Some(protocol) = protocols.protocol(key) {
-                frame.render_stateful_widget(StatefulImage::default(), area, protocol);
-            } else if let Some(error) = protocols.error(key) {
-                frame.render_widget(
-                    Paragraph::new(error)
-                        .style(theme.picker.preview.error)
-                        .wrap(Wrap { trim: false }),
-                    area,
-                );
-            }
-        }
-        PreviewRenderBlockState::Image {
-            error: Some(error), ..
-        } => frame.render_widget(
-            Paragraph::new(error.as_str())
-                .style(theme.picker.preview.error)
-                .wrap(Wrap { trim: false }),
-            area,
-        ),
-        PreviewRenderBlockState::Image { .. } => {}
-    }
-}
-
-fn item_value(item: &Item) -> Value {
+pub(super) fn item_value(item: &Item) -> Value {
     serde_json::json!({
         "text": item.text,
         "value": item.value,
@@ -657,64 +677,11 @@ fn item_value(item: &Item) -> Value {
     })
 }
 
-fn populated_block_areas(
-    area: Rect,
-    blocks: &[PreviewBlockConfig],
-    states: &[PreviewRenderBlockState],
-) -> Vec<Rect> {
-    let blocks = blocks
-        .iter()
-        .zip(states)
-        .map(|(block, state)| {
-            let mut block = block.clone();
-            if matches!(state, PreviewRenderBlockState::Empty)
-                && !matches!(block.kind, PreviewBlockKind::Separator)
-            {
-                block.size = Some(0);
-                block.grow = None;
-            }
-            block
-        })
-        .collect::<Vec<_>>();
-    block_areas(area, &blocks)
-}
-
-fn block_areas(area: Rect, blocks: &[PreviewBlockConfig]) -> Vec<Rect> {
-    let total_grow = blocks
-        .iter()
-        .map(|block| block.grow.unwrap_or(0))
-        .sum::<u16>()
-        .max(1);
-    let fixed = blocks
-        .iter()
-        .map(|block| block_size(block).unwrap_or(0))
-        .sum::<u16>();
-    let remaining = area.height.saturating_sub(fixed);
-    let mut y = area.y;
-    blocks
-        .iter()
-        .map(|block| {
-            let height = block_size(block)
-                .unwrap_or_else(|| remaining.saturating_mul(block.grow.unwrap_or(0)) / total_grow);
-            let rect = Rect::new(area.x, y, area.width, height);
-            y = y.saturating_add(height);
-            rect
-        })
-        .collect()
-}
-
-fn block_size(block: &PreviewBlockConfig) -> Option<u16> {
-    if matches!(&block.kind, PreviewBlockKind::Separator) {
-        Some(block.size.unwrap_or(1))
-    } else {
-        block.size
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageProtocolCache, Item, PickerPreview, PreviewBlockState, block_areas, item_value, parse,
+        ImageProtocolCache, Item, PickerPreview, PreviewImageState, PreviewSource, item_value,
+        parse,
     };
     use crate::ui::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
@@ -724,16 +691,25 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn requires_items_and_preview_panes() {
-        assert!(
-            parse(
-                Some(json!({"panes": [{"slot": "items", "grow": 1}]})),
-                Some(
-                    json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})
-                )
-            )
-            .is_err()
-        );
+    fn preview_ratio_and_min_width_define_outer_panes() {
+        let config = parse(
+            0.25,
+            24,
+            Some(json!({"producer": "declared", "document": "summary"})),
+        )
+        .unwrap();
+        let mut preview = PickerPreview::new(config);
+        preview.set_visible(true);
+
+        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
+        let preview_area = preview_area.expect("preview should fit");
+        assert_eq!(items.x, 0);
+        assert_eq!(items.width + preview_area.width, 79);
+        assert!(preview_area.width < items.width);
+
+        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 24, 10));
+        assert_eq!(items, Rect::new(0, 0, 24, 10));
+        assert!(preview_area.is_none());
     }
 
     #[test]
@@ -753,210 +729,56 @@ mod tests {
     }
 
     #[test]
-    fn rejects_undocumented_json_blocks() {
-        assert!(
-            parse(
-                Some(json!({
-                    "panes": [
-                        {"slot": "items", "grow": 1},
-                        {"slot": "preview", "grow": 1}
-                    ]
-                })),
-                Some(json!({
-                    "blocks": [{"type": "json", "source": "/metadata" , "grow": 1}]
-                })),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn rejects_more_than_four_image_blocks() {
-        let blocks = (0..5)
-            .map(|index| json!({"type": "image", "source": format!("/image{index}"), "grow": 1}))
-            .collect::<Vec<_>>();
-        assert!(
-            parse(
-                Some(json!({
-                    "panes": [
-                        {"slot": "items", "grow": 1},
-                        {"slot": "preview", "grow": 1}
-                    ]
-                })),
-                Some(json!({"blocks": blocks})),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn missing_preview_content_does_not_reserve_space() {
-        let config = parse(
-            Some(json!({"panes": [
-                {"slot": "items", "grow": 1},
-                {"slot": "preview", "grow": 1}
-            ]})),
-            Some(json!({"blocks": [
-                {"type": "text", "source": "/title", "size": 1},
-                {"type": "separator"},
-                {"type": "image", "source": "/image", "grow": 1},
-                {"type": "text", "source": "/content", "grow": 1}
-            ]})),
-        )
-        .unwrap()
-        .unwrap();
-        use super::PreviewRenderBlockState::{Empty, Image, Text};
-        for (states, expected) in [
-            (
-                vec![Text("Title".into()), Empty, Empty, Text("Body".into())],
-                vec![1, 1, 0, 8],
-            ),
-            (
-                vec![
-                    Text("Title".into()),
-                    Empty,
-                    Image { image: None, error: None },
-                    Empty,
-                ],
-                vec![1, 1, 8, 0],
-            ),
-            (
-                vec![Empty, Empty, Empty, Text("Body".into())],
-                vec![0, 1, 0, 9],
-            ),
-        ] {
-            let areas =
-                super::populated_block_areas(Rect::new(0, 0, 40, 10), &config.blocks, &states);
-            assert_eq!(
-                areas.iter().map(|area| area.height).collect::<Vec<_>>(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn separator_has_a_default_height_and_no_source() {
-        let config = parse(
-            Some(json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "separator"}]})),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            block_areas(Rect::new(0, 0, 10, 5), &config.blocks)[0].height,
-            1
-        );
-        assert!(
-            parse(
-                Some(json!({
-                    "panes": [
-                        {"slot": "items", "grow": 1},
-                        {"slot": "preview", "grow": 1}
-                    ]
-                })),
-                Some(json!({"blocks": [{"type": "separator", "grow": 1}]})),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn deactivation_releases_loaded_preview_state() {
         let config = parse(
-            Some(json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
+            0.35,
+            24,
+            Some(json!({"producer":"declared", "document":{
+                "type":"layout", "direction":"vertical", "children":[
+                    "loaded", {"type":"image", "path":"image.png"}
                 ]
-            })),
-            Some(json!({
-                "blocks": [
-                    {"type": "text", "source": "/summary", "grow": 1},
-                    {"type": "image", "source": "/image", "grow": 1}
-                ]
-            })),
+            }})),
         )
-        .unwrap()
         .unwrap();
         let mut preview = PickerPreview::new(config);
         preview.selection = Some("selected".to_string());
-        preview.blocks[0] = PreviewBlockState::Text("loaded".to_string());
-        preview.blocks[1] = PreviewBlockState::Image {
-            image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
-            error: None,
+        let PreviewSource::Declared(document) = preview.source().clone() else {
+            unreachable!()
         };
+        preview.install_document(document);
+        preview.images[0].image = Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2)));
         let revision = preview.revision;
 
         preview.deactivate();
 
         assert!(preview.selection.is_none());
         assert!(preview.task.is_none());
-        assert!(
-            preview
-                .blocks
-                .iter()
-                .all(|state| matches!(state, PreviewBlockState::Empty))
-        );
+        assert!(preview.images.is_empty());
+        assert!(preview.document.is_none());
+        assert!(preview.prepared.is_none());
+        assert!(preview.script_task.is_none());
+        assert!(preview.pool.is_none());
         assert_ne!(preview.revision, revision);
-    }
-
-    #[test]
-    fn preview_text_uses_the_preview_text_binding() {
-        let config = parse(
-            Some(json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "text", "source": "/summary", "grow": 1}]})),
-        )
-        .unwrap()
-        .unwrap();
-        let mut preview = PickerPreview::new(config);
-        preview.blocks[0] = PreviewBlockState::Text("summary".to_string());
-        let mut theme = Theme::terminal();
-        theme.picker.preview.text.fg = Some(Color::Magenta);
-        theme.picker.preview.text.bg = Some(Color::Green);
-        let mut terminal = RatatuiTerminal::new(TestBackend::new(12, 1)).unwrap();
-        let render_state = preview.render_state();
-        let mut protocols = ImageProtocolCache::new();
-
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_state.render(frame, area, &theme, None, &mut protocols);
-            })
-            .unwrap();
-
-        let cell = terminal.backend().buffer().cell((0, 0)).unwrap();
-        assert_eq!(cell.style().fg, Some(Color::Magenta));
-        assert_eq!(cell.style().bg, Some(Color::Green));
     }
 
     #[test]
     fn preview_errors_use_the_preview_error_binding() {
         let config = parse(
-            Some(json!({
-                "panes": [
-                    {"slot": "items", "grow": 1},
-                    {"slot": "preview", "grow": 1}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "image", "source": "/image", "grow": 1}]})),
+            0.35,
+            24,
+            Some(json!({"producer":"declared", "document":{"type":"image", "path":"image.png"}})),
         )
-        .unwrap()
         .unwrap();
         let mut preview = PickerPreview::new(config);
-        preview.blocks[0] = PreviewBlockState::Image {
+        preview.set_visible(true);
+        let PreviewSource::Declared(document) = preview.source().clone() else {
+            unreachable!()
+        };
+        preview.document = document;
+        preview.images = vec![PreviewImageState {
             image: None,
             error: Some("image failed".to_string()),
-        };
+        }];
         let mut theme = Theme::terminal();
         theme.picker.preview.error.fg = Some(Color::Magenta);
         theme.picker.preview.error.bg = Some(Color::Green);
@@ -972,77 +794,11 @@ mod tests {
             .unwrap();
 
         let cell = terminal.backend().buffer().cell((0, 0)).unwrap();
+        assert_eq!(cell.symbol(), "i");
         assert_eq!(cell.style().fg, Some(Color::Magenta));
         assert_eq!(cell.style().bg, Some(Color::Green));
     }
-
-    #[test]
-    fn fixed_items_pane_keeps_its_configured_width() {
-        let config = parse(
-            Some(json!({
-                "gap": 1,
-                "panes": [
-                    {"slot": "items", "size": 30},
-                    {"slot": "preview", "grow": 1}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})),
-        )
-        .unwrap()
-        .unwrap();
-        let preview = PickerPreview::new(config);
-        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
-        assert_eq!(items.width, 30);
-        assert_eq!(preview_area.unwrap().width, 49);
-    }
-
-    #[test]
-    fn fixed_panes_keep_both_configured_widths() {
-        let config = parse(
-            Some(json!({
-                "panes": [
-                    {"slot": "items", "size": 30},
-                    {"slot": "preview", "size": 36}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})),
-        )
-        .unwrap()
-        .unwrap();
-        let preview = PickerPreview::new(config);
-        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
-        assert_eq!(items.width, 30);
-        assert_eq!(preview_area.unwrap().width, 36);
-    }
-
-    #[test]
-    fn hides_preview_when_its_minimum_width_does_not_fit() {
-        let config = parse(
-            Some(json!({
-                "direction": "horizontal",
-                "gap": 1,
-                "panes": [
-                    {"slot": "items", "grow": 1, "min": 28},
-                    {"slot": "preview", "size": 36, "min": 24}
-                ]
-            })),
-            Some(json!({"blocks": [{"type": "text", "source": "/metadata/summary", "grow": 1}]})),
-        )
-        .unwrap()
-        .unwrap();
-        let mut preview = PickerPreview::new(config);
-
-        let (items, hidden) = preview.render_state().areas(Rect::new(0, 0, 52, 10));
-        assert_eq!(items, Rect::new(0, 0, 52, 10));
-        assert!(hidden.is_none());
-
-        let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
-        assert_eq!(items.width, 43);
-        assert_eq!(preview_area.unwrap(), Rect::new(44, 0, 36, 10));
-
-        preview.set_visible(false);
-        let (items, hidden) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
-        assert_eq!(items, Rect::new(0, 0, 80, 10));
-        assert!(hidden.is_none());
-    }
 }
+
+#[cfg(test)]
+mod runtime_tests;

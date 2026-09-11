@@ -106,7 +106,7 @@ impl EffectExecutor for ProtocolEffects<'_> {
                 self.terminal.copy_to_clipboard(&value)?;
                 Ok(EffectResult::Complete)
             }
-            EffectRequest::RunPrepared(prepared) => {
+            EffectRequest::RunPrepared { prepared, .. } => {
                 self.pipeline.discard_pending();
                 run_foreground_effect(self.terminal, prepared, self.cancellation)
             }

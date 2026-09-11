@@ -14,6 +14,14 @@ use crate::view::{
 use crate::view::{ViewCommandSnapshot, ViewContext};
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
+use std::time::{Duration, Instant};
+
+const INFO_MESSAGE_DURATION: Duration = Duration::from_secs(3);
+
+struct InfoMessage {
+    label: String,
+    expires_at: Instant,
+}
 
 fn command_request(decision: &ViewDecision) -> Option<&crate::view::CommandRequest> {
     match decision {
@@ -46,6 +54,7 @@ pub(crate) struct ProtocolSession {
     runtime_log: Option<crate::diagnostics::RuntimeLog>,
     runtime_warning: Option<String>,
     active_error: Option<String>,
+    active_info: Option<InfoMessage>,
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
 }
@@ -77,6 +86,7 @@ impl ProtocolSession {
             runtime_log: None,
             runtime_warning: None,
             active_error: None,
+            active_info: None,
             error_source: None,
             last_diagnostic: None,
         }
@@ -101,6 +111,7 @@ impl ProtocolSession {
             runtime_log: Some(runtime_log),
             runtime_warning: warning.as_ref().map(|record| record.message.clone()),
             active_error: warning.map(|record| record.label),
+            active_info: None,
             error_source,
             last_diagnostic: None,
         }
@@ -216,6 +227,12 @@ impl ProtocolSession {
         // A failed dispatch is reported from its returned error. Discard its
         // Router-side copy before the next event so it cannot be reported twice.
         let _ = self.router.take_recorded_error();
+        let _ = self.router.take_info();
+        if matches!(event, ViewEvent::Input(_)) {
+            self.active_info = None;
+        } else if matches!(event, ViewEvent::Tick) {
+            self.expire_info(Instant::now());
+        }
         if matches!(event, ViewEvent::Input(_)) && self.error_source == Some(ErrorSource::Session) {
             self.active_error = None;
             self.error_source = None;
@@ -243,6 +260,22 @@ impl ProtocolSession {
             self.router.process_with_effects(next, source, effects)?;
         }
         self.resize_new_active_view(active, effects)?;
+        let current = self.router.active().map(|entry| entry.id);
+        if current != active {
+            self.active_info = None;
+        }
+        if let Some((source, source_view, message)) = self.router.take_info() {
+            if current == Some(source) {
+                self.report_info(&message);
+            } else if let Some(runtime_log) = self.runtime_log.as_mut() {
+                runtime_log.record(
+                    crate::diagnostics::LogLevel::Info,
+                    Some(&source_view),
+                    None,
+                    &message,
+                );
+            }
+        }
         if let Some(error) = self.router.take_recorded_error() {
             self.report_error(&error.message);
         }
@@ -363,6 +396,7 @@ impl ProtocolSession {
             location: footer_location,
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
+            info: self.active_info.as_ref().map(|info| info.label.clone()),
             bindings,
             overflow_command: chrome_snapshot.overflow_command,
             has_unbound: chrome_snapshot.has_unbound,
@@ -412,7 +446,44 @@ impl ProtocolSession {
         });
     }
 
+    fn expire_info(&mut self, now: Instant) {
+        if self
+            .active_info
+            .as_ref()
+            .is_some_and(|info| now >= info.expires_at)
+        {
+            self.active_info = None;
+        }
+    }
+
+    pub(crate) fn report_info(&mut self, message: &str) {
+        let Some(active) = self.router.active() else {
+            return;
+        };
+        let view_ref = &active.context.location.target;
+        let label = if let Some(runtime_log) = self.runtime_log.as_mut() {
+            runtime_log
+                .record(
+                    crate::diagnostics::LogLevel::Info,
+                    Some(view_ref),
+                    None,
+                    message,
+                )
+                .label
+        } else {
+            format!(
+                "INFO [{view_ref}]: {}",
+                crate::terminal::sanitize_text(message)
+            )
+        };
+        self.active_info = Some(InfoMessage {
+            label,
+            expires_at: Instant::now() + INFO_MESSAGE_DURATION,
+        });
+    }
+
     pub(crate) fn report_error(&mut self, message: &str) {
+        self.active_info = None;
         let Some(active) = self.router.active() else {
             return;
         };
@@ -804,6 +875,164 @@ mod tests {
         let candidates = routes.complete("core:");
         assert_eq!(candidates[0].label, "core:default");
         assert_eq!(candidates[0].target.label.as_deref(), Some("core:default"));
+    }
+
+    #[test]
+    fn copy_feedback_renders_until_input_and_errors_take_priority() {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        session
+            .input(InputEvent::Key {
+                key: crate::input::Key::Char('p'),
+                raw: vec![b'p'],
+            })
+            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        let render_message = |session: &mut ProtocolSession,
+                              terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| {
+                    session.render(frame, frame.area(), None).unwrap();
+                })
+                .unwrap();
+            (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 9)].symbol())
+                .collect::<String>()
+        };
+        assert!(
+            render_message(&mut session, &mut terminal)
+                .contains("INFO [root]: Copied to clipboard")
+        );
+        session
+            .dispatch_with_owned_effects(ViewEvent::Tick)
+            .unwrap();
+        assert!(render_message(&mut session, &mut terminal).contains("Copied to clipboard"));
+        session.report_error("copy failed");
+        session.report_info("another notification");
+        let row = render_message(&mut session, &mut terminal);
+        assert!(row.contains("ERROR [root]: copy failed"));
+        assert!(!row.contains("another notification"));
+        session
+            .input(InputEvent::Key {
+                key: crate::input::Key::Char('a'),
+                raw: vec![b'a'],
+            })
+            .unwrap();
+        let row = render_message(&mut session, &mut terminal);
+        assert!(!row.contains("INFO"));
+        assert!(!row.contains("ERROR"));
+        assert!(row.contains("local"));
+    }
+
+    #[test]
+    fn info_expiration_honors_deadline_and_replacement() {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        let before = Instant::now();
+        session.report_info("first");
+        let deadline = session.active_info.as_ref().unwrap().expires_at;
+        assert!(deadline >= before + Duration::from_secs(3));
+        assert!(deadline <= Instant::now() + Duration::from_secs(3));
+        session.expire_info(deadline - Duration::from_nanos(1));
+        assert!(session.active_info.is_some());
+        session.expire_info(deadline);
+        assert!(session.active_info.is_none());
+
+        session.report_info("old");
+        let old_deadline = Instant::now() - Duration::from_secs(1);
+        session.active_info.as_mut().unwrap().expires_at = old_deadline;
+        session.report_info("replacement");
+        session.expire_info(old_deadline);
+        assert_eq!(
+            session.active_info.as_ref().unwrap().label,
+            "INFO [root]: replacement"
+        );
+        assert!(session.active_info.as_ref().unwrap().expires_at > old_deadline);
+    }
+
+    #[test]
+    fn idle_tick_expires_info_in_footer_and_popup_without_clearing_errors() {
+        for popup in [false, true] {
+            let (mut session, _, _) = session();
+            let mut root = request("root");
+            if popup {
+                root.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
+                root.presentation.width = Some(60);
+                root.presentation.height = Some(6);
+            }
+            session.start_root(root).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            let render_text = |session: &mut ProtocolSession,
+                               terminal: &mut Terminal<TestBackend>| {
+                terminal
+                    .draw(|frame| {
+                        session.render(frame, frame.area(), None).unwrap();
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                (0..12)
+                    .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            session.report_info("temporary feedback");
+            assert!(render_text(&mut session, &mut terminal).contains("temporary feedback"));
+            session.active_info.as_mut().unwrap().expires_at = Instant::now();
+            session.tick().unwrap();
+            let text = render_text(&mut session, &mut terminal);
+            assert!(!text.contains("temporary feedback"));
+            assert!(text.contains("local"));
+
+            session.report_error("persistent error");
+            session.report_info("hidden feedback");
+            session.active_info.as_mut().unwrap().expires_at = Instant::now();
+            session.tick().unwrap();
+            assert!(session.active_info.is_none());
+            assert!(render_text(&mut session, &mut terminal).contains("persistent error"));
+        }
+    }
+
+    #[test]
+    fn popup_copy_feedback_uses_bottom_border_and_clears_on_navigation() {
+        let (mut session, _, _) = session();
+        let mut root = request("root");
+        root.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
+        root.presentation.width = Some(60);
+        root.presentation.height = Some(6);
+        session.start_root(root).unwrap();
+        session
+            .input(InputEvent::Key {
+                key: crate::input::Key::Char('p'),
+                raw: vec![b'p'],
+            })
+            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let contents = (0..12)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        assert!(
+            contents
+                .iter()
+                .any(|row| row.contains("INFO [root]: Copied to clipboard"))
+        );
+        assert!(contents[11].trim().is_empty());
+        session
+            .input(InputEvent::Key {
+                key: crate::input::Key::Char('q'),
+                raw: vec![b'q'],
+            })
+            .unwrap();
+        assert_eq!(
+            session.router.active().unwrap().context.location.target,
+            "child"
+        );
+        assert!(session.active_info.is_none());
     }
 
     #[test]

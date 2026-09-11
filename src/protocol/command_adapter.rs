@@ -424,8 +424,15 @@ pub(crate) fn map_prepared_action(
             )?,
             caller,
         ),
-        PreparedAction::Execute { prepared, exit, .. } => {
-            let effect = ViewDecision::Effect(crate::view::EffectRequest::RunPrepared(prepared));
+        PreparedAction::Execute {
+            prepared,
+            exit,
+            success_message,
+        } => {
+            let effect = ViewDecision::Effect(crate::view::EffectRequest::RunPrepared {
+                prepared,
+                success_message,
+            });
             Ok(if exit {
                 ViewDecision::Batch(vec![effect, ViewDecision::Exit])
             } else {
@@ -503,6 +510,7 @@ mod tests {
             crate::workflow::command::PreparedAction::Execute {
                 prepared: prepared.clone(),
                 exit: false,
+                success_message: Some("Copied to clipboard".into()),
             },
             ViewInstanceId(1),
         )
@@ -510,7 +518,10 @@ mod tests {
 
         assert_eq!(
             decision,
-            ViewDecision::Effect(EffectRequest::RunPrepared(prepared))
+            ViewDecision::Effect(EffectRequest::RunPrepared {
+                prepared,
+                success_message: Some("Copied to clipboard".into())
+            })
         );
     }
 }

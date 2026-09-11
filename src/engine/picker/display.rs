@@ -156,7 +156,7 @@ impl NormalizedItemDisplay {
 /// - Level 1: SingleLine shorthand with flat `cells`
 /// - Level 2: MultiLine layout with explicit `rows`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum ItemDisplayInput {
     /// Level 0: Plain text string
     Plain(String),
@@ -181,6 +181,7 @@ impl ItemDisplayInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RowInput {
     #[serde(default)]
     pub constraints: Vec<ConstraintInput>,
@@ -231,7 +232,7 @@ impl From<AlignmentInput> for Alignment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum CellInput {
     /// Simple cell shorthand: single text and optional slot/align
     Simple {
@@ -251,7 +252,7 @@ pub enum CellInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum SpanInput {
     /// Plain string span
     Plain(String),
