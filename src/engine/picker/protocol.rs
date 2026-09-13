@@ -573,15 +573,11 @@ impl PickerProtocolView {
     fn can_dispatch_command(
         &self,
         context: &ViewContext,
-        invocation: &crate::workflow::command::CommandInvocation,
+        _invocation: &crate::workflow::command::CommandInvocation,
     ) -> bool {
         self.publication_ready
             && self.publication.is_some()
-            && (matches!(
-                &invocation.command.action,
-                crate::workflow::config::CommandAction::OpenCommands
-            ) || self.has_command_output(context)
-                || !self.editor.raw.is_empty())
+            && (self.has_command_output(context) || !self.editor.raw.is_empty())
     }
 
     fn dispatch_command_key(
@@ -1072,6 +1068,15 @@ impl View for PickerProtocolView {
 
     fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
         Some(&self.commands)
+    }
+
+    fn command_owner_context(
+        &self,
+        _context: &ViewContext,
+        owner: &str,
+    ) -> Result<Option<crate::workflow::command::CommandOwnerContext>> {
+        self.runtime
+            .command_owner_context(&self.engine_context, owner)
     }
 
     fn business_bindings(&self, _context: &ViewContext) -> BindingSet {
@@ -2601,22 +2606,6 @@ mod tests {
         std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
-    #[test]
-    fn builtin_commands_are_an_internal_action() {
-        let binding = crate::workflow::config::CommandBinding::builtin_commands();
-        let action = binding
-            .command_action("commands")
-            .expect("commands action should exist");
-        assert!(matches!(
-            action,
-            crate::workflow::config::CommandAction::OpenCommands
-        ));
-    }
-}
-
-#[cfg(test)]
-mod preview_correlation_tests {
-    use super::*;
     #[test]
     fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
         let config = crate::workflow::config::CompiledConfig::load_unvalidated(

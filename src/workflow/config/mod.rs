@@ -196,19 +196,14 @@ impl CompiledConfig {
     }
 
     pub(crate) fn session_command(&self, id: &str) -> Option<Command> {
-        let binding = self.commands.bindings.get(id).cloned().or_else(|| {
-            (id == "commands" && self.view("selectors:commands").is_some())
-                .then(CommandBinding::builtin_commands)
-        })?;
+        let binding = self.commands.bindings.get(id).cloned()?;
         binding.as_command(id)
     }
 
     pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
-        let mut globals = self.commands.bindings.clone();
-        if !globals.contains_key("commands") && self.view("selectors:commands").is_some() {
-            globals.insert("commands".to_string(), CommandBinding::builtin_commands());
-        }
-        globals
+        self.commands
+            .bindings
+            .clone()
             .into_iter()
             .filter_map(|(id, binding)| {
                 let cmd = binding.as_command(&id)?;
@@ -417,20 +412,6 @@ mod tests {
         compiled
             .validate_with_engines(&EngineRegistry::new())
             .unwrap();
-    }
-
-    #[test]
-    fn built_in_commands_require_the_commands_selector_view() {
-        let compiled = config(
-            r#"
-            [commands.bindings.commands]
-            key = "ctrl+k"
-            "#,
-        );
-        let error = compiled
-            .validate_with_engines(&EngineRegistry::new())
-            .expect_err("built-in commands need their selector view");
-        assert!(error.to_string().contains("selectors:commands"));
     }
 
     #[test]

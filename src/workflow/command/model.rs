@@ -203,5 +203,4 @@ pub(crate) struct CallRequest {
     pub(crate) origin: CommandOrigin,
     pub(crate) context: CommandContext,
     pub(crate) return_processor: Option<crate::workflow::config::ReturnProcessor>,
-    pub(crate) invoke_selected: bool,
 }

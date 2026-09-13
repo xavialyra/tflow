@@ -77,41 +77,6 @@ fn check_rejects_unknown_workflow_manifest_fields() {
 }
 
 #[test]
-fn check_rejects_builtin_session_command_action_overrides() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [commands.bindings.commands]
-        key = "ctrl+k"
-        label = "Override"
-
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
-        .output()
-        .expect("could not validate the session command override");
-    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("session command \"commands\" is built in; configure only its key"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn check_rejects_unknown_defaults_fields() {
     for (source, expected) in [
         (

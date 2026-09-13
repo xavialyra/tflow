@@ -46,7 +46,8 @@ impl CompiledConfig {
         if let Some(table) = user_config.as_table_mut() {
             table.remove("disabled_workflows");
         }
-        let mut merged = toml::Value::Table(toml::map::Map::new());
+        let mut merged = toml::from_str(include_str!("builtin/command-picker.toml"))
+            .context("cannot parse built-in workflow configuration")?;
         let workflow_directory = user_path
             .parent()
             .unwrap_or_else(|| Path::new("."))

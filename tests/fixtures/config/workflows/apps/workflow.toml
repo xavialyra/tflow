@@ -32,6 +32,15 @@ producer = "script"
 [views.main.commands.open.handler]
 file = "scripts/open.sh"
 
+[views.main.commands.openx]
+key = "ctrl+o"
+label = "Opend"
+type = "run"
+
+producer = "script"
+[views.main.commands.openx.handler]
+file = "scripts/open.sh"
+
 [views.main.commands.weight]
 key = "ctrl+w"
 label = "Set weight"

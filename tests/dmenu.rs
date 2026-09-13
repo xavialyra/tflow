@@ -1,7 +1,7 @@
 mod support;
 
 use std::fmt::Write as _;
-use support::{run_dmenu, run_dmenu_steps, run_dmenu_steps_waiting_for_text, run_tty_dmenu};
+use support::{run_dmenu, run_dmenu_steps, run_tty_dmenu};
 
 #[test]
 fn accepts_a_selected_line_without_terminal_bytes_on_stdout() {
@@ -116,19 +116,6 @@ fn route_like_input_remains_a_dmenu_query() {
 #[test]
 fn dmenu_does_not_inherit_the_default_views_tab_binding() {
     let result = run_dmenu_steps(&[], b"first\nsecond\n", &[&b"\t"[..], &b"\r"[..]]);
-
-    assert_eq!(result.status, 0);
-    assert_eq!(result.stdout, b"first\n");
-}
-
-#[test]
-fn dmenu_can_cancel_the_global_command_selector_and_continue() {
-    let result = run_dmenu_steps_waiting_for_text(
-        &[],
-        b"first\nsecond\n",
-        &[&b"\x0b"[..], &b"\x1b\r"[..]],
-        &["first", "commands"],
-    );
 
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"first\n");

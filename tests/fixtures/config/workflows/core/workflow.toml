@@ -14,4 +14,4 @@ view = "calculator:main"
 view = "apps:main"
 
 [[views.default.engine.config.feeds]]
-view = "selectors:views"
+view = "sys:main"

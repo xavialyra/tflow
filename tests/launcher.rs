@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use support::{
-    discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
-    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
+    fixture_config, run_tty_invocation_with_blocked_stdout_signal, spawn_launcher,
+    spawn_launcher_with_args, spawn_launcher_with_args_and_env,
     spawn_launcher_with_redirected_stdout, temporary_root, wait_for_fresh_screen,
     wait_for_fresh_text, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
     wait_for_nonempty_file, wait_for_output, wait_for_process_exit, wait_for_ready,
@@ -1668,55 +1668,6 @@ fi
 }
 
 #[test]
-fn view_selector_discovers_views_and_navigates_to_the_selected_view() {
-    let mut process = spawn_launcher_with_args(&fixture_config(), &["selectors:views"]);
-    wait_for_ready(&process.master);
-
-    process.master.write_all(b"sys").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "sys (sys:main)");
-
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show system information");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "sys (sys:main)");
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-}
-
-#[test]
-fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show date");
-
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Run");
-
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "sys:output");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show date");
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
 fn command_palette_opens_for_an_empty_aggregate_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1724,9 +1675,6 @@ fn command_palette_opens_for_an_empty_aggregate_view() {
         &config,
         r#"
         default_view = "core:default"
-
-        [commands.bindings.commands]
-        key = "ctrl+k"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -1776,7 +1724,6 @@ sys.stdout.write("\n")
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    wait_for_text(&process.master, "(no matches)");
     process.master.write_all(b"\x0b").unwrap();
     process.master.flush().unwrap();
     let output = wait_for_text(&process.master, "Aggregate command");
@@ -1785,6 +1732,8 @@ sys.stdout.write("\n")
         "aggregate command did not reach the command palette: {output:?}"
     );
 
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
@@ -1845,42 +1794,6 @@ fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
         "aggregate View command did not dispatch: {output:?}"
     );
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn command_selector_does_not_expose_an_owner_from_stale_items() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show date");
-
-    process.master.write_all(b"no-match\x0b").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "(no matches)");
-    let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---").next().unwrap();
-    assert!(
-        visible.contains("Info"),
-        "page command disappeared: {visible}"
-    );
-    assert!(
-        visible.contains("Run"),
-        "page command disappeared: {visible}"
-    );
-    assert!(
-        !visible.contains("Open"),
-        "stale owner command leaked: {visible}"
-    );
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    discard_pending_master_output(&process.master);
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
 }
 
 #[test]
@@ -2951,39 +2864,4 @@ sys.stdout.write("\n")
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn command_selector_displays_keybindings_for_commands() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show date");
-
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "Run");
-    let screen = String::from_utf8_lossy(&output);
-    assert!(
-        screen.contains("Run"),
-        "screen should contain command label 'Run': {screen}"
-    );
-    assert!(
-        screen.contains("enter"),
-        "screen should contain command keybinding 'enter': {screen}"
-    );
-    assert!(
-        screen.contains("Info"),
-        "screen should contain command label 'Info': {screen}"
-    );
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show date");
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
 }

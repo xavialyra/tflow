@@ -43,8 +43,15 @@ impl FooterModel {
                 Some((binding.key.binding_name()?, binding.label.as_ref()?.clone()))
             })
             .collect::<Vec<_>>();
-        commands
-            .sort_by(|left, right| crate::workflow::command::compare_bindings(&left.0, &right.0));
+        commands.sort_by(|left, right| {
+            let left_is_palette = left.1 == "Commands";
+            let right_is_palette = right.1 == "Commands";
+            match (left_is_palette, right_is_palette) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => crate::workflow::command::compare_bindings(&left.0, &right.0),
+            }
+        });
         commands
     }
 }

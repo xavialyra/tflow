@@ -11,8 +11,9 @@ use anyhow::{Context, Result};
 pub(crate) struct ViewCommandBindings {
     pub(crate) bindings: Vec<ProtocolCommandBinding>,
     pub(crate) business: Vec<(Option<crate::input::Key>, String)>,
-    pub(crate) palette_binding: Option<ProtocolCommandBinding>,
     pub(crate) has_unbound: bool,
+    command_invocations:
+        std::collections::BTreeMap<String, crate::workflow::command::CommandInvocation>,
     view_invocations:
         std::collections::BTreeMap<(String, String), crate::workflow::command::CommandInvocation>,
 }
@@ -31,12 +32,13 @@ impl ViewCommandBindings {
         _cancellation: crate::lifecycle::CancellationObserver,
     ) -> anyhow::Result<Self> {
         let mut bindings = Vec::new();
-        let mut palette_binding = None;
         let mut business = Vec::new();
+        let mut command_invocations = std::collections::BTreeMap::new();
         let mut add = |id: String,
                        binding: &crate::workflow::config::CommandBinding,
-                       invocation|
+                       invocation: crate::workflow::command::CommandInvocation|
          -> anyhow::Result<()> {
+            command_invocations.insert(id.clone(), invocation.clone());
             let key = binding
                 .key(&id)
                 .map(crate::workflow::config::normalize_key)
@@ -48,24 +50,13 @@ impl ViewCommandBindings {
                 label: binding.label(&id).map(str::to_string),
                 invocation,
             };
-            if id == "commands" {
-                palette_binding = Some(entry);
-            } else {
-                business.push((key, entry.label.clone().unwrap_or_else(|| id.clone())));
-                if key.is_some() {
-                    bindings.push(entry);
-                }
+            business.push((key, entry.label.clone().unwrap_or_else(|| id.clone())));
+            if key.is_some() {
+                bindings.push(entry);
             }
             Ok(())
         };
-        let mut globals = config.commands.bindings.clone();
-        if !globals.contains_key("commands") && config.view("selectors:commands").is_some() {
-            globals.insert(
-                "commands".to_string(),
-                crate::workflow::config::CommandBinding::builtin_commands(),
-            );
-        }
-        for (id, binding) in globals {
+        for (id, binding) in config.commands.bindings.clone() {
             let Some(command) = binding.as_command(&id) else {
                 continue;
             };
@@ -115,8 +106,8 @@ impl ViewCommandBindings {
         Ok(Self {
             bindings,
             business,
-            palette_binding,
             has_unbound,
+            command_invocations,
             view_invocations,
         })
     }
@@ -156,6 +147,56 @@ impl ViewCommandBindings {
         owner: Option<crate::workflow::command::CommandOwnerContext>,
     ) -> crate::view::ViewDecision {
         crate::view::ViewDecision::RequestCommand(crate::view::CommandRequest { invocation, owner })
+    }
+
+    pub(crate) fn command_descriptors(&self) -> Vec<crate::view::CommandDescriptor> {
+        self.command_invocations
+            .values()
+            .map(|invocation| crate::view::CommandDescriptor {
+                id: invocation.id().to_string(),
+                label: invocation.command.label.clone(),
+                key: self
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.invocation.id() == invocation.id())
+                    .and_then(|binding| binding.key.binding_name()),
+                owner: invocation
+                    .view_reference()
+                    .map(|reference| reference.view.clone()),
+            })
+            .collect()
+    }
+
+    pub(crate) fn command_descriptors_for_owner(
+        &self,
+        owner: &str,
+    ) -> Vec<crate::view::CommandDescriptor> {
+        self.view_invocations
+            .iter()
+            .filter(|((command_owner, _), _)| command_owner == owner)
+            .map(|((_, id), invocation)| crate::view::CommandDescriptor {
+                id: id.clone(),
+                label: invocation.command.label.clone(),
+                key: invocation
+                    .command
+                    .key
+                    .as_deref()
+                    .and_then(|key| crate::workflow::config::normalize_key(key).ok())
+                    .and_then(|key| crate::input::Key::parse_binding(&key).ok())
+                    .and_then(|key| key.binding_name()),
+                owner: Some(owner.to_string()),
+            })
+            .collect()
+    }
+
+    pub(crate) fn command_invocation(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<crate::workflow::command::CommandInvocation> {
+        self.command_invocations
+            .get(id)
+            .cloned()
+            .with_context(|| format!("command {id:?} is unavailable"))
     }
 
     pub(crate) fn view_invocation(
@@ -267,12 +308,11 @@ struct ProtocolCallReturnHandler {
     origin: crate::workflow::command::CommandOrigin,
     context: crate::workflow::command::CommandContext,
     return_processor: Option<crate::workflow::config::ReturnProcessor>,
-    invoke_selected: bool,
 }
 
 impl CallReturnHandler for ProtocolCallReturnHandler {
     fn post_commit(&self) -> bool {
-        self.return_processor.is_some() || self.invoke_selected
+        self.return_processor.is_some()
     }
 
     fn resume(
@@ -299,28 +339,6 @@ impl CallReturnHandler for ProtocolCallReturnHandler {
                 &self.invocation,
                 &self.cancellation,
                 action,
-                caller.instance,
-            );
-        }
-        if self.invoke_selected {
-            let reference: crate::workflow::command::CommandRef =
-                serde_json::from_value(result.value.clone())
-                    .context("command selector must return {view, id}")?;
-            let invocation = crate::workflow::command::resolve_visible_command(
-                &self.config,
-                &context,
-                &reference,
-            )?;
-            return map_prepared_action(
-                &self.config,
-                &self.invocation,
-                &self.cancellation,
-                crate::workflow::command::PreparedAction::Invoke(
-                    crate::workflow::command::CommandExecution {
-                        invocation,
-                        context,
-                    },
-                ),
                 caller.instance,
             );
         }
@@ -358,7 +376,6 @@ pub(crate) fn map_prepared_action(
                     origin: call.origin,
                     context: call.context,
                     return_processor: call.return_processor,
-                    invoke_selected: call.invoke_selected,
                 }),
             };
             Ok(ViewDecision::Transition(TransitionRequest::Call {

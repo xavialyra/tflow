@@ -8,5 +8,5 @@ pub(crate) use model::{
 };
 pub(crate) use prepare::{
     PreparedAction, collect_available_commands, collect_page_owner_commands, compare_bindings,
-    prepare_command_action, prepare_return_processor, resolve_visible_command,
+    prepare_command_action, prepare_return_processor,
 };

@@ -251,8 +251,6 @@ pub(crate) enum CommandBindingVisibility {
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
-    #[serde(skip)]
-    OpenCommands,
     Run {
         producer: ProducerKind,
         handler: toml::Value,
@@ -284,7 +282,6 @@ pub enum CommandAction {
 impl CommandAction {
     pub(crate) fn producer(&self) -> Option<ProducerKind> {
         match self {
-            CommandAction::OpenCommands => None,
             CommandAction::Run { producer, .. }
             | CommandAction::Navigate { producer, .. }
             | CommandAction::Call { producer, .. }
@@ -296,7 +293,6 @@ impl CommandAction {
 
     pub(crate) fn operation_type(&self) -> &'static str {
         match self {
-            CommandAction::OpenCommands => "open-commands",
             CommandAction::Run { .. } => "run",
             CommandAction::Navigate { .. } => "navigate",
             CommandAction::Call { .. } => "call",
@@ -353,30 +349,16 @@ impl<'de> Deserialize<'de> for CommandBinding {
 }
 
 impl CommandBinding {
-    pub(crate) fn builtin_commands() -> Self {
-        Self {
-            key: None,
-            label: None,
-            action: None,
-        }
+    pub(crate) fn key(&self, _id: &str) -> Option<&str> {
+        self.key.as_deref()
     }
 
-    pub(crate) fn key(&self, id: &str) -> Option<&str> {
-        self.key
-            .as_deref()
-            .or_else(|| (id == "commands").then_some("ctrl+k"))
+    pub(crate) fn label(&self, _id: &str) -> Option<&str> {
+        self.label.as_deref()
     }
 
-    pub(crate) fn label(&self, id: &str) -> Option<&str> {
-        self.label
-            .as_deref()
-            .or_else(|| (id == "commands").then_some("Commands"))
-    }
-
-    pub(crate) fn command_action(&self, id: &str) -> Option<CommandAction> {
-        self.action
-            .clone()
-            .or_else(|| (id == "commands").then_some(CommandAction::OpenCommands))
+    pub(crate) fn command_action(&self, _id: &str) -> Option<CommandAction> {
+        self.action.clone()
     }
 
     pub(crate) fn as_command(&self, id: &str) -> Option<Command> {
@@ -619,17 +601,5 @@ args = []
         )
         .unwrap();
         assert!(config.bindings["help"].action.is_none());
-    }
-
-    #[test]
-    fn built_in_commands_are_an_internal_action() {
-        let action = CommandBinding::builtin_commands()
-            .command_action("commands")
-            .unwrap();
-        assert!(matches!(action, CommandAction::OpenCommands));
-        assert_eq!(action.operation_type(), "open-commands");
-        let _ = ResolvedScriptSource {
-            target: ResolvedScriptTarget::Inline(String::new()),
-        };
     }
 }

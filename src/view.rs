@@ -52,6 +52,14 @@ pub(crate) struct ViewCommandSnapshot {
     pub(crate) revision: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandDescriptor {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) key: Option<String>,
+    pub(crate) owner: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewContext {
     pub(crate) instance: ViewInstanceId,
@@ -506,6 +514,20 @@ pub(crate) trait View {
     /// actions so the host can own command presentation and palette folding.
     fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
         None
+    }
+
+    fn command_descriptors(&self, _context: &ViewContext) -> Vec<CommandDescriptor> {
+        self.command_bindings()
+            .map(|bindings| bindings.command_descriptors())
+            .unwrap_or_default()
+    }
+
+    fn command_owner_context(
+        &self,
+        _context: &ViewContext,
+        _owner: &str,
+    ) -> anyhow::Result<Option<crate::workflow::command::CommandOwnerContext>> {
+        Ok(None)
     }
 
     fn business_bindings(&self, _context: &ViewContext) -> BindingSet {

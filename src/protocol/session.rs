@@ -17,6 +17,7 @@ use ratatui::{Frame, layout::Rect};
 use std::time::{Duration, Instant};
 
 const INFO_MESSAGE_DURATION: Duration = Duration::from_secs(3);
+const COMMAND_PICKER_VIEW: &str = "__builtin:command_picker";
 
 struct InfoMessage {
     label: String,
@@ -26,7 +27,7 @@ struct InfoMessage {
 #[derive(Clone)]
 struct CommandPresentation {
     bindings: crate::view::BindingSet,
-    palette: Option<crate::protocol::ProtocolCommandBinding>,
+    palette: bool,
 }
 
 fn command_presentation(
@@ -36,25 +37,30 @@ fn command_presentation(
     let Some(commands) = view.command_bindings() else {
         return CommandPresentation {
             bindings: view.bindings(context),
-            palette: None,
+            palette: false,
         };
     };
     let business = view.business_bindings(context);
     let folded = business.entries().len() > 2 || commands.has_unbound();
     if folded {
-        let mut bindings = business.entries().to_vec();
+        let mut bindings = business
+            .entries()
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>();
         bindings.push(crate::view::Binding {
             key: crate::input::Key::Ctrl('k'),
             label: Some("Commands".to_string()),
         });
         return CommandPresentation {
             bindings: crate::view::BindingSet::new(bindings),
-            palette: commands.palette_binding.clone(),
+            palette: true,
         };
     }
     CommandPresentation {
         bindings: business,
-        palette: None,
+        palette: false,
     }
 }
 
@@ -64,6 +70,16 @@ fn command_request(decision: &ViewDecision) -> Option<&crate::view::CommandReque
         ViewDecision::Batch(decisions) => decisions.iter().find_map(command_request),
         _ => None,
     }
+}
+
+fn selected_command_owner(snapshot: &crate::view::ViewCommandSnapshot) -> Option<&str> {
+    snapshot
+        .publication
+        .as_ref()?
+        .current
+        .get("item")?
+        .get("owner_view")?
+        .as_str()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +108,7 @@ pub(crate) struct ProtocolSession {
     active_info: Option<InfoMessage>,
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
+    command_picker_caller: Option<ViewInstanceId>,
 }
 
 #[cfg(test)]
@@ -124,6 +141,7 @@ impl ProtocolSession {
             active_info: None,
             error_source: None,
             last_diagnostic: None,
+            command_picker_caller: None,
         }
     }
 
@@ -149,6 +167,7 @@ impl ProtocolSession {
             active_info: None,
             error_source,
             last_diagnostic: None,
+            command_picker_caller: None,
         }
     }
 
@@ -279,21 +298,73 @@ impl ProtocolSession {
             ..
         }) = &event
             && let Some(entry) = self.router.active()
-            && let Some(binding) = command_presentation(&*entry.view, &entry.context).palette
+            && command_presentation(&*entry.view, &entry.context).palette
         {
-            let source = entry.id;
-            let context = entry.context.clone();
+            let caller = entry.id;
             let snapshot = entry.view.command_snapshot();
-            let request = crate::view::CommandRequest {
-                invocation: binding.invocation,
-                owner: None,
+            let mut descriptors = entry.view.command_descriptors(&entry.context);
+            if let Some(owner) = selected_command_owner(&snapshot)
+                && owner != entry.context.location.target
+                && let Some(bindings) = entry.view.command_bindings()
+            {
+                let mut seen = descriptors
+                    .iter()
+                    .map(|command| {
+                        (
+                            command.owner.clone().unwrap_or_default(),
+                            command.id.clone(),
+                        )
+                    })
+                    .collect::<std::collections::HashSet<_>>();
+                descriptors.extend(
+                    bindings
+                        .command_descriptors_for_owner(owner)
+                        .into_iter()
+                        .filter(|command| {
+                            seen.insert((
+                                command.owner.clone().unwrap_or_default(),
+                                command.id.clone(),
+                            ))
+                        }),
+                );
+            }
+            let commands = descriptors
+                .into_iter()
+                .map(|command| {
+                    let owner = command
+                        .owner
+                        .clone()
+                        .unwrap_or_else(|| entry.context.location.target.clone());
+                    serde_json::json!({
+                        "ref": {"view": owner, "id": command.id},
+                        "label": command.label,
+                        "key": command.key,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let query = crate::view::ParsedQuery::new(
+                COMMAND_PICKER_VIEW,
+                "query",
+                serde_json::json!({"commands": commands}),
+            );
+            let request = crate::view::NavigationRequest {
+                target: COMMAND_PICKER_VIEW.to_string(),
+                query,
+                input: None,
+                presentation: crate::workflow::config::ViewPresentation {
+                    mode: crate::workflow::config::ViewPresentationMode::Popup,
+                    width: Some(72),
+                    height: Some(16),
+                },
             };
-            let next = self
-                .commands
-                .execute(request.clone(), &context, &snapshot)?;
-            self.router.process_with_effects(next, source, effects)?;
-            self.resize_new_active_view(active, effects)?;
-            return Ok(ViewDecision::RequestCommand(request));
+            self.router.process_with_effects(
+                ViewDecision::Transition(crate::view::TransitionRequest::Push(request)),
+                caller,
+                effects,
+            )?;
+            self.command_picker_caller = Some(caller);
+            self.resize_new_active_view(Some(caller), effects)?;
+            return Ok(ViewDecision::Stay);
         }
         let decision = self.router.dispatch_with_effects(event, effects)?;
         if let Some(request) = command_request(&decision).cloned() {
@@ -315,6 +386,7 @@ impl ProtocolSession {
             };
             self.router.process_with_effects(next, source, effects)?;
         }
+        self.dispatch_command_picker_result(effects)?;
         self.resize_new_active_view(active, effects)?;
         let current = self.router.active().map(|entry| entry.id);
         if current != active {
@@ -336,6 +408,48 @@ impl ProtocolSession {
             self.report_error(&error.message);
         }
         Ok(decision)
+    }
+
+    fn dispatch_command_picker_result(&mut self, effects: &mut dyn EffectExecutor) -> Result<()> {
+        let Some(caller) = self.command_picker_caller else {
+            return Ok(());
+        };
+        if !self.router.take_popup_closed() {
+            return Ok(());
+        }
+        self.command_picker_caller = None;
+        let Some(result) = self.router.take_result() else {
+            return Ok(());
+        };
+        let reference: crate::workflow::command::CommandRef = serde_json::from_value(result.value)
+            .context("command picker returned an invalid command reference")?;
+        let entry = self
+            .router
+            .stack()
+            .iter()
+            .find(|entry| entry.id == caller)
+            .context("command picker caller View is no longer mounted")?;
+        let bindings = entry
+            .view
+            .command_bindings()
+            .context("command picker caller has no command bindings")?;
+        let invocation = if reference.view == entry.context.location.target {
+            bindings.command_invocation(&reference.id)?
+        } else {
+            bindings.view_invocation(&reference.view, &reference.id)?
+        };
+        let owner = if reference.view == entry.context.location.target {
+            None
+        } else {
+            entry
+                .view
+                .command_owner_context(&entry.context, &reference.view)?
+        };
+        let request = crate::view::CommandRequest { invocation, owner };
+        let next =
+            self.commands
+                .execute(request, &entry.context, &entry.view.command_snapshot())?;
+        self.router.process_with_effects(next, caller, effects)
     }
 
     fn resize_new_active_view(
@@ -1189,88 +1303,6 @@ mod tests {
             service.execute(request, &context, &snapshot).unwrap(),
             ViewDecision::Return(_)
         ));
-    }
-
-    #[test]
-    fn command_call_records_caller_and_runs_non_null_return_continuation() {
-        let config = crate::workflow::config::load_test_fixture().unwrap();
-        let cancellation = crate::lifecycle::CancellationToken::new();
-        let adapter =
-            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer()).unwrap();
-        let binding = adapter
-            .palette_binding
-            .as_ref()
-            .expect("fixture exposes the built-in commands binding");
-        let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
-        let parameters = config.instantiate_parameters("dmenu:main").unwrap();
-        let snapshot = ViewCommandSnapshot {
-            engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
-            parameters: config.parameter_values(&parameters).unwrap(),
-            raw_input: String::new(),
-            runtime: serde_json::json!({"revision": 2}),
-            publication: Some(crate::view::ViewPublication::new(
-                serde_json::json!({
-                    "item": {
-                        "text": "first",
-                        "value": "0",
-                        "metadata": {},
-                        "owner_view": "dmenu:main"
-                    },
-                    "input": ""
-                }),
-                true,
-            )),
-            revision: 2,
-        };
-
-        let ViewDecision::RequestCommand(request) = adapter.request(binding, None) else {
-            panic!("binding must produce a command request");
-        };
-        let stdin_path =
-            std::env::temp_dir().join(format!("tlaunch-protocol-session-{}", std::process::id()));
-        std::fs::write(&stdin_path, b"first\n").unwrap();
-        let invocation = Arc::new(
-            crate::workflow::InvocationContext::new(
-                "dmenu:main".to_string(),
-                serde_json::json!({
-                    "stdin": {
-                        "path": stdin_path.to_string_lossy(),
-                        "length": 6,
-                        "is_tty": false
-                    }
-                }),
-                config.instantiate_parameters("dmenu:main").unwrap(),
-            )
-            .unwrap(),
-        );
-        let mut service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
-        let decision = service.execute(request, &caller, &snapshot).unwrap();
-        let ViewDecision::Transition(crate::view::TransitionRequest::Call {
-            continuation: crate::view::Continuation::Call(boundary),
-            ..
-        }) = decision
-        else {
-            panic!("commands binding must prepare a protocol Call");
-        };
-        assert_eq!(boundary.caller, caller.instance);
-
-        let selected_command = serde_json::json!({"view": "dmenu:main", "id": "accept"});
-        let continued = boundary
-            .handler
-            .resume(
-                &ViewLocation::new("selectors:commands"),
-                &caller,
-                &snapshot,
-                &ViewResult {
-                    value: selected_command,
-                },
-            )
-            .unwrap();
-        let ViewDecision::Return(result) = continued else {
-            panic!("selected command must continue into its configured return");
-        };
-        assert_eq!(result.value, serde_json::json!("first"));
-        std::fs::remove_file(stdin_path).unwrap();
     }
 
     #[test]

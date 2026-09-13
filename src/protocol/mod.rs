@@ -12,7 +12,5 @@ pub(crate) use producer::{
     run_script_response,
 };
 
-pub(crate) use command_adapter::{
-    ProtocolCommandBinding, ProtocolCommandService, ViewCommandBindings,
-};
+pub(crate) use command_adapter::{ProtocolCommandService, ViewCommandBindings};
 pub(crate) use session::ProtocolSession;

@@ -1402,6 +1402,13 @@ mod tests {
                 ),
                 (
                     "apps:main",
+                    "openx",
+                    crate::input::Key::Ctrl('o'),
+                    Some("Opend"),
+                    true,
+                ),
+                (
+                    "apps:main",
                     "weight",
                     crate::input::Key::Ctrl('w'),
                     Some("Set weight"),

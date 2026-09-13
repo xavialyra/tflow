@@ -55,19 +55,14 @@ fn prepare_action(
     context: CommandContext,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    match action {
-        CommandAction::OpenCommands => {
-            prepare_builtin_commands(config, command_invocation, context)
-        }
-        _ => prepare_producer_action(
-            config,
-            invocation,
-            action,
-            command_invocation,
-            context,
-            cancellation,
-        ),
-    }
+    prepare_producer_action(
+        config,
+        invocation,
+        action,
+        command_invocation,
+        context,
+        cancellation,
+    )
 }
 
 fn prepare_producer_action(
@@ -206,7 +201,6 @@ fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
         | CommandAction::Return { handler, .. }
         | CommandAction::EditInput { handler, .. }
         | CommandAction::Invoke { handler, .. } => Ok(handler),
-        CommandAction::OpenCommands => bail!("built-in commands do not have a producer handler"),
     }
 }
 
@@ -257,7 +251,6 @@ fn prepare_protocol_operation(
                 origin: command_invocation.origin(),
                 context,
                 return_processor,
-                invoke_selected: false,
             }))
         }
         crate::protocol::ProtocolOperation::Return { value } => Ok(PreparedAction::Return(value)),
@@ -315,33 +308,6 @@ fn prepared_direct_process(
     })
 }
 
-fn prepare_builtin_commands(
-    config: &CompiledConfig,
-    command_invocation: CommandInvocation,
-    context: CommandContext,
-) -> Result<PreparedAction> {
-    let target = config.resolve_view("selectors:commands")?;
-    let owner_view = (context.owner.view_ref != context.page.view_ref)
-        .then_some(context.owner.view_ref.as_str());
-    let commands = collect_available_commands(config, &context.page.view_ref, owner_view, true)?
-        .into_values()
-        .collect::<Vec<_>>();
-    let request = NavigationRequest::new(target, "")
-        .with_parameters(json!({"commands": commands}))
-        .with_presentation(crate::workflow::config::ViewPresentation {
-            mode: crate::workflow::config::ViewPresentationMode::Popup,
-            width: Some(72),
-            height: Some(16),
-        });
-    Ok(PreparedAction::Call(CallRequest {
-        request,
-        origin: command_invocation.origin(),
-        context,
-        return_processor: None,
-        invoke_selected: true,
-    }))
-}
-
 pub(crate) fn collect_available_commands(
     config: &CompiledConfig,
     page_view: &str,
@@ -351,12 +317,10 @@ pub(crate) fn collect_available_commands(
     let mut commands = BTreeMap::new();
     if include_globals {
         for (id, command) in config.session_commands() {
-            if id != "commands" {
-                commands.insert(
-                    format!("session/{id}"),
-                    runtime_command_value("session", &id, &command)?,
-                );
-            }
+            commands.insert(
+                format!("session/{id}"),
+                runtime_command_value("session", &id, &command)?,
+            );
         }
     }
     if let Some(page) = config.view(page_view) {
