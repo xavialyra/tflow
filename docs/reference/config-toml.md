@@ -28,9 +28,13 @@ select_previous = ["up"]
 select_next = ["down"]
 toggle_preview = ["ctrl+p"]
 
-# Session-wide commands
-[commands.bindings.commands]
-key = "ctrl+k"
+# Session-wide command
+[commands.bindings.help]
+key = "f1"
+label = "Help"
+type = "navigate"
+producer = "declared"
+handler = { target = "help:main" }
 ```
 
 ## Top-Level Fields
@@ -64,6 +68,8 @@ Picker Enter behavior is configured by the View's explicit command bindings. The
 
 Session commands are high-priority actions handled by the host above all individual views and engines.
 
-### `[commands.bindings.commands]`
-- The command palette is opened by the host with `Ctrl-K` when command folding is active.
-- This is a built-in host action and is not configurable; `selectors:commands` remains the palette view.
+Session commands are business commands available above individual View commands. They may appear in the command palette when the active View is folded, but they do not define or open the palette.
+
+The command palette is opened by the host with `Ctrl-K` when command folding is active. It is implemented as a built-in Popup Picker View. The host passes the eligible command descriptors to that View through the Popup navigation request; the View returns the selected command reference to the host for execution.
+
+The built-in command-picker View is loaded before user workflow packages. User configuration may extend or override built-in View configuration through the normal workflow merge rules. The built-in View is host-owned and is not a user-declared session command.

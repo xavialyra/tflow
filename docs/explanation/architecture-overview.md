@@ -55,7 +55,7 @@ The following 14 dependency rules define the intended architecture. They are des
 2. **`workflow/config/loader`** owns filesystem access and workflow package discovery. Runtime session code must never load files directly.
 3. **`workflow/config/validation`** owns static safety and schema checks. Runtime code may invoke validation APIs, but must not duplicate validation logic.
 4. **`workflow/config`** compiles and validates static values. Runtime data enters scripts through an explicit producer request.
-5. **`engine`** owns the View Engine protocol and concrete View implementations. The runtime `Router` owns View navigation and transitions; `session` owns the terminal host and orchestration around the `Router`.
+5. **`engine`** owns the View Engine protocol and concrete user-facing Engine implementations. The runtime `Router` owns View navigation and transitions; `session` owns the terminal host and orchestration around the `Router`. Host-provided built-in Views, such as the command palette, belong to the protocol/session layer and may use an Engine without becoming Engine-owned behavior.
 6. **`ui/chrome`** is split conceptually into `ContentHost` and `Footer`:
    - `ContentHost` owns framing, inline/popup placement, and view content rendering.
    - `Footer` consumes committed `Router` location and generic View metadata for status, errors, and command hints.
@@ -65,6 +65,6 @@ The following 14 dependency rules define the intended architecture. They are des
 9. **Engines consume stable configuration queries**. Code should not reach into `CompiledConfig` internals or reconstruct a mutable configuration tree at runtime.
 10. **Encapsulation over visibility**: New crate-visible fields are not a substitute for an API; prefer private fields with focused constructors and accessors.
 11. **`task` owns generic background scheduling, cancellation, and task handles**. It must not depend on a concrete engine or picker item types. Task closures must cooperate with cancellation; latest-wins replacement must use an explicit lane.
-12. **`session` depends on abstract contracts** (`ViewFactory` and `TaskRuntime`), not on concrete `EngineRegistry` or `engine::picker` types.
+12. **`session` depends on abstract contracts** (`ViewFactory` and `TaskRuntime`) for ordinary Views, and owns host-provided built-in View invocation. A built-in command palette is mounted through the Router as a Popup View; Session must not maintain a parallel Picker state or renderer.
 13. **`execution` owns process and script mechanics**. It may be used by command preparation and task bodies, but must not own task scheduling or engine semantics.
 14. **`EngineRegistry` is a closed dispatcher** for the three built-in Engines (`picker`, `capture`, `embedded`). Engine-specific validation remains inside each Engine module.

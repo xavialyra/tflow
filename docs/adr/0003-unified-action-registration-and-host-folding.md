@@ -14,7 +14,7 @@ description: "Register View and Engine actions through one dispatch model while 
 
 - **Status**: Accepted
 - **Date**: 2026-09-12
-- **Implementation status**: Planned; this decision defines the target behavior for the command-layer cleanup.
+- **Implementation status**: Implemented; the command palette is a built-in Popup Picker View routed through the normal View lifecycle.
 - **Scope**: Action registration, key dispatch, Footer hints, command palette contents, and normal versus popup command presentation.
 - **Related decisions**: [ADR 0002](0002-static-configuration-and-script-boundaries.md), [Input and Navigation Model](../explanation/input-and-navigation-model.md).
 
@@ -93,18 +93,22 @@ When `fold` is false:
 
 When `fold` is true:
 
-- the host registers the Ctrl-K command-palette action;
-- the Footer presents the command-palette entry according to the host's compact layout rule;
+- the host keeps up to two directly bound View commands in the Footer;
+- the host registers the Ctrl-K command-palette action as the final Footer entry;
 - configured View commands omitted from the Footer remain directly dispatchable when they have keys;
 - all configured View commands, including unbound commands, are available as selectable palette entries.
+
+Thus three business commands are presented as two direct commands plus `Commands`. Folding does not mean hiding every direct shortcut; it limits the number shown in the Footer.
 
 Folding is a presentation decision. It does not remove direct View-command bindings from the dispatch registry.
 
 ### 4. Treat the command palette opener as a host action
 
-The command palette UI remains an ordinary configured Picker View such as `selectors:commands`, but opening it is a host action. It is not a business command defined by the active View, and it is not an Engine command.
+The command palette opener is a host action, but the palette itself is an ordinary built-in Popup Picker View. It is not a business command defined by the active View, and it is not an Engine command.
 
-The host creates the palette request from the active View's committed context and supplies the eligible View-command entries. The palette must not include its own opener, Engine commands, or Footer-only presentation artifacts.
+When folding is enabled, the host pushes the built-in command-picker View through the Router with a Popup presentation and passes the eligible View-command entries through the request parameters. The built-in View converts those parameters into standard Picker items and returns a `CommandRef` when the user selects one. The host then resolves and executes that command.
+
+The built-in command-picker View uses the normal View lifecycle, Popup placement, Picker input, selection, rendering, and return flow. It must not include its own opener, Engine commands, or Footer-only presentation artifacts. Its configuration is part of the built-in View configuration set and is loaded before user workflow configuration so it can be extended or overridden under the normal merge rules.
 
 This removes the need for a special `overflow_binding` to act as both a display marker and a dispatch gate. Ctrl-K exists only when the host's folding decision inserts it.
 
@@ -135,6 +139,7 @@ If configured commands need ownership metadata, `session` and `view` remain scop
 - Footer width, popup geometry, and command availability are independent.
 - Ctrl-K behavior is deterministic: it exists exactly when folding is enabled.
 - Normal and popup views share the same command set and folding decision.
+- The command palette is a routed built-in Popup Picker View, not a Session-owned rendering path.
 - The command palette contains business commands rather than low-level editing and navigation controls.
 
 ### Costs
@@ -171,3 +176,4 @@ Rejected because hiding a command is a presentation decision. A directly bound V
 5. Footer rendering and popup rendering consume the same prepared command presentation.
 6. A View command with a key remains directly dispatchable even when omitted from the Footer.
 7. The command palette never presents its own opener or Engine actions.
+8. The command palette is mounted through the Router as a built-in Popup Picker View; Session does not maintain a parallel Picker state or renderer.

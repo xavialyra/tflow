@@ -30,7 +30,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 [Raw Terminal Event]
          │
          ▼
-[1. Session Bindings] ───────► (Global actions, e.g. ctrl+k Command Palette)
+[1. Session / Host Bindings] ─► (Global actions, e.g. ctrl+k when command folding is active)
          │ (unhandled)
          ▼
 [2. Active View Commands] ───► (User-configured commands on the mounted view)
@@ -43,7 +43,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 ```
 
 - **Lossless Transport**: Raw byte sequences from the terminal (including complex chords and escape sequences) are preserved without lossy conversions until matched by a binding.
-- **Overlays and Popups**: When a modal popup is mounted via `presentation.mode = "popup"`, only the topmost view receives input. Unmatched input does **not** fall through to background views.
+- **Overlays and Popups**: When a modal popup is mounted via `presentation.mode = "popup"`, only the topmost view receives input. Unmatched input does **not** fall through to background views. The command palette follows this same path as a built-in Popup Picker View; it is not a Session-local overlay.
 
 ## 3. Route Resolution and Query Contracts
 
@@ -55,6 +55,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 ### The `call` and `return` Boundary
 - When a command uses `type = "call"`, the Router establishes a return frame on the View stack. A producer call may return a typed operation from a literal or JSON protocol handler.
 - When the target View invokes `type = "return"`, the active child View is popped and its result is delivered to the recorded caller. A producer `return_processor` runs only after the child is closed and the caller is active.
+- The built-in command palette is a Popup Picker View opened by the host with command descriptors in its navigation parameters. Its return value is a `CommandRef`, which the host resolves against the originating View context and executes after the popup closes.
 
 ### Task Correlation and Cancellation
 - Asynchronous tasks (such as background script feeds or PTY streams) are tagged with unique task IDs associated with their owning view.

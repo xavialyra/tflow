@@ -2,6 +2,14 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-13
+
+- Refined ADR 0004 with stable CommandRef and scope generations, deterministic same-scope conflict handling, unified enabled-state queries, and explicit dispatcher/task boundaries.
+
+- Added accepted ADR 0004, `docs/adr/0004-scoped-command-registration.md`: use one scoped command registry with explicit precedence; register Host, Engine, and View commands dynamically; keep callback context with the registering component; and dispatch input directly from key resolution to callback.
+
+- Updated ADR 0003, the configuration reference, input/navigation model, and architecture overview: the command palette is specified as a built-in Popup Picker View opened through the Router with command descriptors passed as navigation parameters. Host-owned folding remains the only command-palette policy; the Session must not maintain a parallel Picker implementation.
+
 ## 2026-09-12
 
 - Simplified the native Form Engine by removing field help text, the form help theme slot, and the native-form help popup fixture. Validation errors remain inline; updated the form and theme references and native form guide.
