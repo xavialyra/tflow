@@ -3,7 +3,7 @@
 //! Capture remains implemented by `CaptureView` and `CaptureRenderer`; this
 //! module translates their engine runtime contract to the common View protocol.
 
-use super::{CaptureKeymap, create_input_bindings, create_renderer, create_view};
+use super::{CaptureKeymap, create_renderer, create_view};
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
     EngineNavigationRequest, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
@@ -18,9 +18,9 @@ use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, EffectRequest, LifecycleEvent, NavigationRequest, RelativeCursor,
-    RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent,
-    ViewPublication, ViewTaskRegistry,
+    EffectRequest, LifecycleEvent, NavigationRequest, RelativeCursor, RenderContext, RenderResult,
+    View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication,
+    ViewTaskRegistry,
 };
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Result, bail};
@@ -30,7 +30,6 @@ use serde_json::Value;
 /// Inputs required by the opt-in Capture adapter. Values must already be
 /// projected from static configuration in the same host scope that produced the navigation request.
 pub(crate) struct CaptureProtocolConfig {
-    pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
     pub(crate) engine: ProjectedEngineConfig,
     pub(crate) bindings: ProjectedBindingConfig,
@@ -46,14 +45,12 @@ impl CaptureProtocolConfig {
         view_ref: impl Into<String>,
         engine: ProjectedEngineConfig,
         bindings: ProjectedBindingConfig,
-        commands: crate::protocol::ViewCommandBindings,
         cancellation: CancellationObserver,
         runtime_snapshot: Value,
         theme: ResolvedTheme,
         tasks: TaskRuntime,
     ) -> Self {
         Self {
-            commands,
             identity: ViewIdentity::new(view_ref, crate::workflow::config::ENGINE_CAPTURE),
             engine,
             bindings,
@@ -114,15 +111,10 @@ fn create_protocol_view_state(
         parameters: parameters.clone(),
         cancellation: config.cancellation,
     };
-    let binding_context = crate::engine::InputBindingFactoryContext {
-        identity: identity.clone(),
-        bindings: config.bindings.clone(),
-    };
     let keymap = CaptureKeymap::from_values(
         config.bindings.defaults.clone(),
         config.bindings.view_keymap.clone(),
     )?;
-    let bindings = create_input_bindings(binding_context)?;
     let renderer = create_renderer(RendererFactoryContext)?;
     let runtime = create_view(runtime_context)?;
     let engine_context = engine_context(
@@ -139,8 +131,6 @@ fn create_protocol_view_state(
         runtime,
         renderer,
         keymap,
-        bindings,
-        commands: config.commands,
         starter,
         runtime_snapshot: config.runtime_snapshot,
         parameters,
@@ -154,7 +144,6 @@ fn create_protocol_view_state(
         has_async_work,
         task_generation: 0,
         active_task: None,
-        pending_command: None,
         active: false,
         closed: false,
         content_size: (0, 0),
@@ -167,8 +156,6 @@ struct CaptureProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     keymap: CaptureKeymap,
-    bindings: Vec<crate::workflow::command::InputActionBinding>,
-    commands: crate::protocol::ViewCommandBindings,
     starter: MountTaskStarter,
     runtime_snapshot: Value,
     parameters: ParameterSnapshot,
@@ -182,7 +169,6 @@ struct CaptureProtocolView {
     has_async_work: bool,
     task_generation: u64,
     active_task: Option<AdapterTaskCorrelation>,
-    pending_command: Option<crate::view::CommandRequest>,
     active: bool,
     closed: bool,
     content_size: (u16, u16),
@@ -310,40 +296,8 @@ impl CaptureProtocolView {
         context: &ViewContext,
         emission: EngineEmission,
     ) -> Result<ViewDecision> {
-        let published = emission.publication().is_some();
         self.apply_publication(context, &emission);
-        let decision = self.engine_decision(context, emission.decision_ref().clone())?;
-        if !published {
-            return Ok(decision);
-        }
-        let Some(pending) = self.dispatch_pending_command(context)? else {
-            return Ok(decision);
-        };
-        Ok(match decision {
-            ViewDecision::Stay => pending,
-            ViewDecision::Invalidate => {
-                ViewDecision::Batch(vec![ViewDecision::Invalidate, pending])
-            }
-            ViewDecision::Batch(mut decisions) if decisions.iter().all(passive_decision) => {
-                decisions.push(pending);
-                ViewDecision::Batch(decisions)
-            }
-            _ => bail!("a pending Capture command cannot follow a structural decision"),
-        })
-    }
-
-    fn dispatch_pending_command(&mut self, _: &ViewContext) -> Result<Option<ViewDecision>> {
-        if !self
-            .publication
-            .as_ref()
-            .is_some_and(|publication| publication.ready)
-        {
-            return Ok(None);
-        }
-        Ok(self
-            .pending_command
-            .take()
-            .map(ViewDecision::RequestCommand))
+        self.engine_decision(context, emission.decision_ref().clone())
     }
 
     fn engine_decision(
@@ -367,14 +321,8 @@ impl CaptureProtocolView {
             EngineDecision::Execute(crate::engine::EffectRequest::CopyToClipboard(value)) => {
                 Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(value)))
             }
-            EngineDecision::Close => {
-                self.pending_command = None;
-                Ok(ViewDecision::Close)
-            }
-            EngineDecision::Exit => {
-                self.pending_command = None;
-                Ok(ViewDecision::Exit)
-            }
+            EngineDecision::Close => Ok(ViewDecision::Close),
+            EngineDecision::Exit => Ok(ViewDecision::Exit),
             EngineDecision::Batch(decisions) => {
                 let mut mapped = Vec::with_capacity(decisions.len());
                 for decision in decisions {
@@ -393,27 +341,15 @@ impl CaptureProtocolView {
             self.cancel_stale_adapter_task();
             return Ok(ViewDecision::Stay);
         }
-        let polled = match self.runtime.poll_work() {
-            Ok(polled) => polled,
-            Err(error) => {
-                self.pending_command = None;
-                return Err(error);
-            }
-        };
+        let polled = self.runtime.poll_work()?;
         if let Some(emission) = polled {
             self.active_task = None;
             return self.decision(context, emission);
         }
-        let emission = match self.runtime.tick(EngineTick {
+        let emission = self.runtime.tick(EngineTick {
             context: self.engine_context.clone(),
             content_size: self.content_size,
-        }) {
-            Ok(emission) => emission,
-            Err(error) => {
-                self.pending_command = None;
-                return Err(error);
-            }
-        };
+        })?;
         self.decision(context, emission)
     }
 
@@ -449,46 +385,21 @@ impl CaptureProtocolView {
     }
 }
 
-fn passive_decision(decision: &ViewDecision) -> bool {
-    match decision {
-        ViewDecision::Stay | ViewDecision::Invalidate => true,
-        ViewDecision::Batch(decisions) => decisions.iter().all(passive_decision),
-        _ => false,
-    }
-}
-
 impl View for CaptureProtocolView {
-    fn bindings(&self, _: &ViewContext) -> BindingSet {
-        let commands = self.commands.view_bindings();
-        BindingSet::new(
-            commands.entries().iter().cloned().chain(
-                self.bindings
-                    .iter()
-                    .filter(|binding| binding.enabled)
-                    .map(|binding| Binding {
-                        key: binding.key,
-                        label: binding.label.clone(),
-                    }),
-            ),
-        )
-    }
-
-    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
-        Some(&self.commands)
-    }
-
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
 
-    fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+    fn chrome(&self, _context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
-            bindings: Some(self.bindings(context)),
+            bindings: None,
+            overflow_command: None,
+            has_unbound: false,
         })
     }
 
@@ -500,6 +411,7 @@ impl View for CaptureProtocolView {
             runtime: self.runtime_snapshot.clone(),
             publication: self.publication.clone(),
             revision: self.state_revision,
+            owner_view: None,
         }
     }
 
@@ -522,7 +434,6 @@ impl View for CaptureProtocolView {
                 self.active = false;
                 self.active_task = None;
                 self.task_registry.invalidate_all();
-                self.pending_command = None;
                 self.runtime.deactivate();
                 self.starter.cancel_all();
                 Ok(ViewDecision::Stay)
@@ -539,22 +450,6 @@ impl View for CaptureProtocolView {
                 crate::view::operation_failure("Capture does not provide an editable input"),
             ),
             ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
-                if let Some(binding) = self.commands.binding(key) {
-                    if !self
-                        .publication
-                        .as_ref()
-                        .is_some_and(|publication| publication.ready)
-                    {
-                        let ViewDecision::RequestCommand(request) =
-                            self.commands.request(binding, None)
-                        else {
-                            unreachable!("command binding must produce a command request")
-                        };
-                        self.pending_command = Some(request);
-                        return Ok(ViewDecision::Stay);
-                    }
-                    return Ok(self.commands.request(binding, None));
-                }
                 let Some(action) = self.keymap.action(key) else {
                     return Ok(ViewDecision::Stay);
                 };
@@ -633,7 +528,7 @@ impl View for CaptureProtocolView {
             metadata: crate::view::ViewMetadata {
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
-                bindings: Some(self.bindings(&ViewContext::new(ViewInstanceId(0), "capture"))),
+                bindings: None,
             },
         })
     }
@@ -674,12 +569,6 @@ mod tests {
                 ..ProjectedEngineConfig::default()
             },
             ProjectedBindingConfig::default(),
-            crate::protocol::ViewCommandBindings::new(
-                &crate::workflow::config::load_test_fixture().unwrap(),
-                "capture",
-                crate::lifecycle::CancellationToken::new().observer(),
-            )
-            .unwrap(),
             crate::lifecycle::CancellationToken::new().observer(),
             Value::Null,
             ResolvedTheme::terminal(),

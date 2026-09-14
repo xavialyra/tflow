@@ -734,7 +734,7 @@ mod tests {
             argv: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "exec 0<&- 2>&-; sleep 0.3; printf result".to_string(),
+                "exec 0<&- 2>&-; sleep 0.5; printf result".to_string(),
             ],
             environment: Vec::new(),
             current_dir: None,

@@ -7,197 +7,254 @@ tags:
   - commands
   - input
   - registration
-description: "Define command registration as a small scoped input registry whose callbacks retain their own context and whose dispatch is independent of workflow context resolution."
+description: "Define scoped command registration and the ordinary navigation and return flow for command selection."
 ---
 
 # ADR 0004: Scoped Command Registration
 
 - **Status**: Accepted
 - **Date**: 2026-09-13
-- **Scope**: Command registration, lifecycle, key resolution, callback ownership, and View/Engine switching.
-- **Related decisions**: [ADR 0003](0003-unified-action-registration-and-host-folding.md)
+- **Scope**: The current command set, scope lifecycles, input resolution, Footer, command selection, navigation return values, and command execution requests.
 
-## Context
+## Decision Summary
 
-The command path had grown a second responsibility: resolving execution context after a key had already selected a command. Command bindings produced invocations, the Session located a source View, a View supplied a snapshot, and a protocol command service reconstructed page and owner context before preparing an operation.
+`CommandRegistry` is the single source of truth for the currently effective commands. Input resolution, Footer rendering, and command selection use the same registry entries and revision; they do not maintain separate command lists or reconstruct commands from different contexts.
 
-This made command dispatch depend on Router state, View snapshots, command origins, owner contexts, projections, and several intermediate request types. It also made View switching appear to be a command-context transition instead of a simple replacement of the commands belonging to the active scope.
-
-The command subsystem only needs to answer two questions:
-
-1. Which registered command owns this input?
-2. What callback should be invoked for that command?
-
-The object that registers a callback owns the context required by that callback. The registry does not need to understand or reconstruct that context.
-
-## Decision
-
-### 1. Use one scoped command registry
-
-Commands are registered dynamically in one registry. The registry stores commands grouped by one concept: `CommandScope`. `layer` and `scope` are not separate concepts.
-
-The initial scopes are:
-
-```text
-Host
-Engine
-View
-```
-
-A separate dynamic scope is not required. Commands whose availability depends on runtime state are registered or removed by the component that owns that state, using the appropriate existing scope.
-
-Each scope has an explicit priority. Key resolution searches scopes from highest to lowest priority. Registration order is not used as an implicit priority rule.
+The registry has exactly three scopes: `Host`, `Engine`, and `View`. Scopes express priority only. They do not express history, caller, origin, or the Router stack. The fixed priority order is:
 
 ```text
 View > Engine > Host
 ```
 
-The exact numeric representation is an implementation detail; the precedence is part of the contract. A higher-priority registration shadows a lower-priority registration for the same physical key.
+Three responsibilities are deliberately separate:
 
-### 2. Store registrations, not reconstructed command contexts
+1. **Navigation caller**: the View immediately below a pushed View on the Router stack determines who receives that View's result. The Router stack supplies the return target; the Host does not save caller state.
+2. **Command registration**: the component that owns the lifecycle of a command registers it in the `Host`, `Engine`, or `View` scope. The Host registers fixed Host commands; the Engine and current View supply their current dynamic commands.
+3. **Command execution**: the callback or its invoking caller completes execution according to the returned contract. Navigation carries results; it does not execute commands.
 
-A registered command contains stable metadata and an implementation handler:
-
-```text
-RegisteredCommand:
-  id
-  description
-  binding
-  scope
-  generation
-  enabled_query
-  handler
-```
-
-`CommandId`, `CommandRef`, and `RegistrationHandle` are the stable references shared by the registry, Footer, Palette, and dispatcher. A `CommandRef` includes the scope generation and becomes invalid when that scope is replaced. The handler may be a callback internally, but callers must not retain or invoke a bare callback.
-
-The registry does not store `ViewContext`, `CommandContext`, `CommandOwnerContext`, Router references, Engine snapshots, or Session state.
-
-The callback, or the object captured by the callback, owns the context needed to perform its work. Host callbacks retain Host-owned state; Engine callbacks retain Engine-owned state; View callbacks retain View-owned state.
-
-### 3. Registration is the lifecycle operation
-
-Components register commands when they become active:
+A normal navigation result carries an explicit return contract. For example:
 
 ```text
-Session startup  → register Host commands
-Engine mount     → register Engine commands
-View mount       → register View commands
+NavigationRequest.return_contract = Normal | CommandSelection
 ```
 
-Components remove or replace their registrations when they become inactive.
+A `CommandSelection` result identifies a selected command reference and the registry revision against which it was selected. The Host is the caller of the command panel: it registers `Ctrl-K`, reads the current registry entries, pushes the command picker, and, when the returned contract is `CommandSelection`, dispatches the current reference. The Host does not retain the panel's caller. Other Popups return `Normal` results to their respective immediate callers, which handle those results according to their own View contracts.
 
-View switching therefore has a direct lifecycle meaning:
+The command picker is an ordinary View with popup presentation. It reads its query, applies ordinary Picker selection, and returns an ordinary `ViewResult` through the Router. It does not access the registry, register commands, or execute commands.
+
+## Why This Design Is Needed
+
+The command set changes with the Engine, View, current item, and query-related state. If input, the Footer, and the command picker each retain a projection, the application can display one command while resolving another key to a different command, leak commands from an old View, or restore historical commands after returning from a Popup.
+
+These failures conflate command availability, navigation ownership, and execution. Registration defines the current commands and their execution references. The Router defines where a View result goes. The callback or its invoking caller performs execution. No one component needs to infer the original caller from closed state, command ownership, or historical Views.
+
+## Core Model
+
+### Registry and scopes
+
+The registry contains only three ordered scopes:
 
 ```text
-retain Host commands
-retain Engine commands if the Engine remains active
-replace View commands
+Host    Fixed Host-level commands, such as Open Command Panel
+Engine  Commands supplied by the current Engine for the current View/current item
+View    More specific commands belonging to the current View
 ```
 
-When the Engine changes:
+Scope priority is the only conflict rule. A higher-priority scope with the same binding overrides a lower-priority scope. Conflicts within one scope must be rejected or reported deterministically. A scope must not retain a replaced set, commands from a previous View, call history, caller, closed View, owner, or commands belonging to another View.
+
+Each scope submission produces a monotonically increasing registry `revision` (or equivalent scope generation). `replace_scope(scope, entries)` is one commit: validation and conflict checks complete against a temporary set, then one indivisible state transition replaces the entire scope and publishes `CommandsChanged` with the new revision. If the commit fails, the previously committed set remains effective.
+
+A registry entry contains at least a stable command ID, label/description, binding, scope, and the command reference or callback required for execution. A reference is valid only while its entry belongs to the current revision. The registry does not retain historical sets or reconstruct context from the Router, Session, View snapshot, or workflow owner. The registry does not understand navigation or return contracts.
+
+### Current set and single snapshot
+
+Chrome maintains one command snapshot containing the registry's current revision and the entries resolved at that revision. When Chrome receives `CommandsChanged`, it reads the complete registry state for that revision and replaces the snapshot; it does not merge new and old entries item by item.
+
+The Footer and command-panel opening read their display data from this snapshot. If an implementation reads the registry directly, it must read the same revision and entries. Footer rendering, panel rendering, and input `resolve` therefore share the same command ID, label, binding, scope, and validity.
+
+Input resolution must agree with presentation: for the same registry revision and key, the binding displayed by the Footer or picker must resolve to the same entry as `resolve(key)`. Before dispatching, input handling verifies that the entry still belongs to the current revision. If the revision changed, it discards the stale reference and resolves again against the current registry or snapshot.
+
+## Registration Responsibilities and Lifecycles
+
+### Host
+
+The Host registers fixed Host commands during session initialization. `Ctrl-K` (or the configured command-panel binding) is a Host command registered by the Host. It produces a `NavigationRequest` that pushes the ordinary command picker with the current Chrome snapshot/query. It is not a Popup command and not a `command_picker` special case.
+
+The Host is the command panel's navigation caller. When the picker returns with `return_contract = CommandSelection`, the Router delivers that result to the Host because the Host View is immediately below the picker. The Host validates the selected reference against the current registry revision and dispatches it. The Host does not save a caller field, panel state, or return target. The Router stack supplies the target.
+
+Host commands remain effective while the Engine or View is replaced, until the session ends or the Host explicitly replaces the Host scope.
+
+### Engine and View
+
+The Engine computes the complete command set required by the current View and current item for the Engine and View scopes. A View may provide inputs for its View scope, or the Engine may submit them on the View's behalf, but activation and replacement must have the same complete-set semantics.
+
+After a View or current item change, recompute the complete set, compare it with the committed set, and atomically replace only an affected scope when it changed. When the Engine changes, replace the Engine scope and clear or resubmit dependent View commands in the same lifecycle transition. When the View changes, replace the View scope with the new View's complete set. Commit an empty View scope when the new View has no commands, so old commands disappear explicitly. Neither component retains historical commands or caller state.
+
+## Navigation and Return Contracts
+
+Navigation and command execution use different contracts. A pushed View returns a `ViewResult` through the Router to the immediate caller below it on the stack. The Router routes and propagates that value; it does not interpret commands, inspect the registry, dispatch references, or choose an execution owner.
+
+`Normal` is the default contract for ordinary Popup results. The calling View handles the returned value according to its own navigation protocol. `CommandSelection` is used only when the Host intentionally pushes the command picker. It carries the selected command ID/reference and the selection revision. The Host then performs revision validation and dispatch. A normal Popup does not become a command caller merely because it uses popup presentation.
+
+A Popup is an ordinary View plus presentation. It reads only the query supplied to it, maintains ordinary Picker selection, returns the current selection on Enter, and returns/closes on Return according to the normal View protocol. It never reads the registry, registers commands, or executes commands. Presentation changes layout only.
+
+## Data Flow
 
 ```text
-retain Host commands
-replace Engine commands
-replace View commands
+Host initialization
+  -> Host registers fixed Host commands, including Ctrl-K
+
+Current View/current item changes
+  -> Engine/View computes complete Engine/View command sets
+  -> Atomically replace affected scope(s), when changed
+  -> registry revision += 1
+  -> CommandsChanged(revision)
+  -> Chrome replaces its single snapshot
+       ├─ Footer reads the snapshot
+       └─ Host reads the snapshot to build the command-picker query
+
+Ctrl-K
+  -> Host command resolves from the current snapshot/registry
+  -> Host creates NavigationRequest(return_contract = CommandSelection)
+  -> Router pushes ordinary command-picker View with query and snapshot data
+  -> Router stack records Host as the immediate return target
+
+Command picker
+  -> Reads query and uses ordinary Picker selection
+  -> Enter returns ViewResult(contract = CommandSelection, selection, revision)
+  -> Return/close returns the ordinary result required by its navigation contract
+  -> Router propagates the result to the View below it
+
+CommandSelection at Host
+  -> Host validates the selected revision/reference against the current registry
+  -> Host dispatches the current command callback/reference
+  -> Callback/invoking caller completes execution according to its return contract
+
+Normal result from any other Popup
+  -> Router returns it to that Popup's immediate caller
+  -> That caller handles the result according to its own View contract
 ```
 
-A registration handle or scope generation must be used for removal so an old View cannot remove a newer View's command after a transition.
+The Router never understands commands; it only maintains the stack and propagates return values. The registry never understands navigation; it only maintains current entries, resolves by scope priority, and validates references for dispatch.
 
-### 4. Input dispatch resolves and invokes directly
+## Strictly Forbidden Legacy Models
 
-The input path is:
+The implementation must not reintroduce any of the following:
 
-```text
-InputEvent::Key
-  → CommandRegistry::resolve(key)
-  → RegisteredCommand::callback
-  → CommandOutcome
-```
+- A Host-wide result handler that receives or interprets every Popup's return; each result goes to the immediate caller below that Popup on the Router stack.
+- Host-saved caller state, return targets, or `caller`/`closed` inference; the Router stack determines the return target.
+- Popup access to `CommandRegistry`, registry entries, registry revisions, registration APIs, producers, callbacks, or command execution.
+- `owner` or `replace_owner`, historical scopes, or any cache that restores old View commands.
+- Legacy `bindings`/`projection`, separate Footer/input/picker command lists, or a `command_picker` lifecycle branch.
+- An `enabled_query` that can make display and resolution disagree; presence in the current registry revision determines availability.
+- Router command dispatch, registry lookups, command filtering, or interpretation of `CommandSelection`.
+- Registry navigation requests, Router-stack knowledge, or return-target selection.
 
-The command registry does not participate after command selection. It does not prepare workflow operations, resolve owners, inspect View snapshots, or convert commands into Router decisions. Dispatch validates the command reference generation and enabled state before invoking the handler.
+## Implementation Order
 
-The input layer handles an unregistered key as unhandled. A registered command is invoked immediately. A disabled command is consumed without invoking its callback.
+1. Define `CommandScope::{Host, Engine, View}`, entries, stable references, registry revision, and `CommandsChanged`. Keep the registry independent of navigation.
+2. Implement priority-based `resolve`, same-scope conflict validation, atomic `replace_scope`, stale-reference checks, and deterministic removal.
+3. Define `NavigationRequest`, `ViewResult`, and `return_contract = Normal | CommandSelection`; make Router push/pop and result propagation target the immediate View below the pushed View.
+4. Connect Host initialization to registration of fixed commands, especially `Ctrl-K`, and make that command push the ordinary picker with the Host as the stack-provided return target.
+5. Connect Engine/View lifecycles to complete-set computation, atomic scope replacement, dependent-scope invalidation, and empty-scope commits.
+6. Publish `CommandsChanged(revision)`, make Chrome maintain one snapshot, and make Footer, input, and Host's picker query use it.
+7. Implement the picker as an ordinary Popup View with ordinary query, selection, Enter, Return, and `ViewResult` behavior. Remove registry access, registration, execution, producer use, and special picker lifecycle handling.
+8. Implement Host handling only for `CommandSelection`: validate the current revision and dispatch the current reference. Verify that all other Popup results return to their own immediate callers with `Normal` semantics.
+9. Remove legacy owner, projection, caller/closed inference, enabled-query, and command-aware Router paths; run the contract and integration suites.
 
-### 5. Callbacks return a small outcome protocol
+## Atomic Replacement and Lifecycle Contract
 
-Callbacks may complete locally or ask the Host to perform an application-level operation:
+- The registry transitions only from one validated snapshot to one validated snapshot; partial command sets are never observable.
+- `CommandsChanged` is published after commit and includes enough revision information for Chrome to reject stale or duplicate notifications.
+- Chrome replaces its complete snapshot before Footer or Host picker-query construction reads it.
+- A failed replacement leaves the prior committed set effective.
+- Replacing the Engine invalidates dependent View entries; replacing the View leaves no entries from the old View.
+- The Host scope remains during ordinary View and Engine lifecycles.
+- An old reference cannot remove entries from a new revision or execute an old callback.
+- Pushing and returning from a Popup are ordinary navigation transactions. The Router retains the return target on its stack, while the registry continues maintaining the current command set.
+- Only the Host handles `CommandSelection` from the command picker. A `Normal` result is delivered to and handled by that Popup's immediate caller.
 
-```text
-CommandOutcome:
-  Consumed
-  Request(HostRequest)
-```
+## Test Acceptance Matrix
 
-`HostRequest` may contain navigation, call, return, external execution, palette opening, or exit requests. The Host interprets these requests and delegates to Router or infrastructure services.
+| Scenario | Required result |
+|---|---|
+| Same binding in all three scopes | Deterministic `View > Engine > Host` resolution; same-scope conflicts reject the commit. |
+| Host initialization | Host registers `Ctrl-K`; normal key dispatch triggers an ordinary picker navigation request. |
+| Router return target | A pushed View result is delivered to the immediate View below it; Host state is not required to identify the target. |
+| View switch | Host remains; View scope becomes the new View's complete set; all old View commands disappear. |
+| Engine switch | Old Engine commands and dependent View commands become invalid atomically; the new set is committed once. |
+| Current item change | Engine recomputes the complete set; only an actual set change replaces a scope and increments the revision. |
+| Empty command set | Old commands cannot resolve, display, or dispatch after an empty replacement. |
+| Atomic failure | Conflict or validation failure leaves the old set unchanged and publishes no spurious change. |
+| Revision/out-of-order notifications | Chrome accepts only the current complete revision; an old notification cannot roll the snapshot back. |
+| Footer and input | Every Footer binding resolves to the same entry at the same revision. |
+| Panel data | Host builds the picker query from Chrome's single snapshot; no Popup registry read occurs. |
+| Popup structure | The picker is an ordinary View with popup presentation and ordinary query/selection/Enter/Return behavior. |
+| Popup forbidden dependencies | No Popup accesses the registry, registers commands, uses a producer, or executes commands. |
+| Command selection return | The picker returns `CommandSelection` through Router; Host validates the current revision and dispatches the current reference. |
+| Other Popup return | The Popup returns `Normal`; Router delivers it to that Popup's immediate caller, which handles it locally. |
+| Closure and replacement | Cleanup for an old View/Engine cannot remove entries from a new revision; an old reference cannot execute. |
+| Concurrent changes | A selection made before a registry change is rejected or refreshed by Host; no historical set is restored. |
 
-A callback does not directly mutate Router or Session. It may mutate the state of the component that registered it, such as an Engine's selection state. Cross-component work is expressed through `HostRequest` or a task/effect request; process execution and scheduling remain owned by `execution` and `task`.
+## Stop When Something Smells Wrong
 
-### 6. Registration conflicts and replacement are deterministic
+Stop and return to this ADR when implementation requires any of the following:
 
-Conflicts between scopes use explicit scope priority. A conflict within one scope is rejected during registration and reported as a diagnostic; registration order is never an implicit override rule.
+- Saving a caller or making Host handle every Popup result instead of using the Router stack;
+- Making the Router inspect or dispatch commands, or making the registry understand navigation;
+- Giving a Popup registry access, registration authority, or execution logic;
+- Making old View commands reappear by retaining historical entries, an owner, or closed state;
+- Adding a separate Footer/input/picker projection, `command_picker` protocol, or enabled query;
+- Replacing only part of a scope or exposing an intermediate command set;
+- Weakening revision validation or calling an old callback;
+- Producing different commands for the same key and revision in resolve, Footer, or picker data.
 
-Scope replacement installs one new generation and invalidates the old generation. Removal is conditional on its registration handle, so an old View or Engine cannot remove a newer registration. Footer and Palette consume the same metadata and enabled-state query as dispatch, and retained references are revalidated before execution.
+These signals mean that navigation, registration, and execution responsibilities have been combined. Restore the single registry data flow, Router-stack return routing, and explicit return contracts before addressing local API details.
 
-### 7. Host commands use the same path
+## Rejected Alternatives
 
-Host commands are ordinary registrations in `Host` scope. They do not use a separate command execution path.
+### Multiple bindings or projections
 
-For example, the command palette opener is registered by Host and returns a Host request. Host then obtains the currently registered View commands for presentation and opens the built-in palette View. Selecting an entry invokes the still-valid registration through the normal callback path.
+Rejected. They create multiple sources for current commands and cannot guarantee consistency between Footer, picker, and input.
 
-The palette must reject or refresh a selection whose registration handle or scope generation is no longer valid.
+### owner/replace_owner or historical scopes
 
-## Consequences
+Rejected. Scopes represent priority only; history and return targets belong to navigation lifecycle management, not the registry.
 
-### Positive
+### Popup accessing the registry and executing commands directly
 
-- Command lookup is a direct key-to-callback operation.
-- Command registration and command context ownership are separate responsibilities.
-- View and Engine switching is explicit scope replacement.
-- Engine commands can remain active when only the View changes.
-- Host, Engine, and View commands share one precedence and dispatch mechanism.
-- The registry does not depend on Router, Session, View snapshots, or workflow execution details.
-- Dynamic command projection and a second dynamic scope are unnecessary.
-- Command palette, Footer, and input dispatch can derive their entries from the same registrations.
+Rejected. The Popup is an ordinary selection View. The Host receives its `CommandSelection` result because it called that picker, while other callers receive their own Popup's normal results through the Router.
 
-### Costs
+### A Host-wide Popup result handler or saved caller field
 
-- Callbacks need a safe lifetime strategy when they capture View or Engine state.
-- Workflow command preparation must move behind the callback or a View-owned command adapter.
-- Registration handles or scope generations are required for safe replacement.
-- Existing `CommandInvocation`, `CommandRequest`, and context reconstruction paths need migration.
+Rejected. The Router stack already identifies the immediate caller and propagates each result to it.
 
-## Rejected alternatives
+### A command-aware Router or navigation-aware registry
 
-### Maintain separate layers and scopes
+Rejected. The Router transports return values, and the registry maintains current commands. Dispatch belongs to the callback or invoking caller under the explicit return contract.
 
-Rejected because both concepts describe grouping, lifecycle, and precedence. Keeping both would require an additional rule explaining how they interact without adding domain value.
+### A dedicated `command_picker` View protocol
 
-### Reconstruct context in Session after dispatch
+Rejected. The command panel uses ordinary navigation and Picker behavior with an explicit `CommandSelection` return contract.
 
-Rejected because the registering component already owns the context needed by its callback. Reconstructing it from Router and View snapshots couples the registry to application orchestration.
+### An independent enabled query
 
-### Maintain a global current command context
+Rejected. Current availability is determined by entries in the current registry revision; a separate enabled decision would recreate divergence.
 
-Rejected because commands belong to different lifecycle owners. A global context becomes a shared mutable object containing unrelated Host, Engine, and View state.
+## Final Invariants
 
-### Add a Dynamic scope
-
-Rejected because runtime-dependent commands can be installed, replaced, or removed by their owning Host, Engine, or View scope. A fourth scope would encode a state transition as a second classification system.
-
-## Invariants
-
-1. `CommandScope` is the only grouping concept in the registry.
-2. Scope precedence is explicit and deterministic.
-3. Every active command is registered exactly once in its owning scope.
-4. The registering component owns the callback context.
-5. The registry only resolves keys, exposes descriptions, and manages registration lifetimes.
-6. View replacement replaces View registrations without requiring an Engine replacement.
-7. Engine replacement replaces Engine registrations and any dependent View registrations.
-8. A stale registration cannot remove or invoke a newer registration for the same scope.
-9. A `CommandRef` is invalid after its scope generation is replaced.
-10. Same-scope key conflicts fail deterministically.
-11. Footer, Palette, and dispatch use the same metadata and enabled-state decision.
-12. Host, Engine, and View commands use the same input dispatch path.
-10. Cross-component effects are returned as Host requests and interpreted outside the registry.
+1. `CommandRegistry` is the single source of truth for currently effective commands.
+2. The registry has only Host, Engine, and View scopes, and scopes manage priority only.
+3. Scopes do not retain historical sets, old View commands, caller, owner, or closed state.
+4. The Host registers fixed Host commands, including `Ctrl-K`; the Engine/View register current dynamic commands.
+5. Navigation caller identity comes from the Router stack's immediate View below the pushed View.
+6. `NavigationRequest.return_contract` explicitly distinguishes `Normal` from `CommandSelection`.
+7. The Router only pushes Views and propagates `ViewResult` values; it does not understand or dispatch commands.
+8. The registry only maintains and resolves entries; it does not understand navigation.
+9. Every effective replacement is atomic and publishes `CommandsChanged` with a revision.
+10. Chrome maintains one current snapshot; Footer, input, and Host picker-query construction use that current data.
+11. A Popup is an ordinary View plus presentation and uses ordinary query, Picker selection, Enter, and Return behavior.
+12. A Popup never accesses the registry, registers commands, or executes commands.
+13. The Host dispatches only a returned `CommandSelection` from the picker after revision validation; callbacks/invoking callers complete execution under the return contract.
+14. Other Popups return `Normal` results to their own immediate callers through Router.
+15. `owner`, `replace_owner`, legacy bindings/projection, `command_picker` special handling, caller/closed inference, and `enabled_query` are not part of the implementation.

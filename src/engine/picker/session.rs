@@ -7,16 +7,15 @@ use super::preview::{PickerPreview, PickerPreviewConfig};
 #[cfg(test)]
 use crate::engine::ActionInvocation;
 use crate::engine::{
-    BackgroundOutcome, EngineActionInput, EngineCommandBinding, EngineCommandProjection,
-    EngineDecision, EngineEmission, EngineNotice, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
-    QualifiedCommandId, RenderModel, ViewContext, ViewContextPublication,
+    BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission, EngineNotice,
+    EngineRuntime, EngineRuntimeSnapshot, EngineTick, RenderModel, ViewContext,
+    ViewContextPublication,
 };
 use crate::task::TaskCompletion;
-use crate::workflow::command::CommandOwnerContext;
 use crate::workflow::parameter::ParameterSnapshot;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -693,142 +692,6 @@ impl PickerView {
         }))
         .with_ready(results_ready)
     }
-
-    fn page_item_command_bindings(
-        &self,
-        page: &str,
-        items_ready: bool,
-        loading: bool,
-        has_selected_item: bool,
-    ) -> Result<Vec<EngineCommandBinding>> {
-        if !items_ready && !loading {
-            return Ok(Vec::new());
-        }
-        let mut seen_keys = HashSet::new();
-        let mut bindings = Vec::new();
-        for command in self
-            .services
-            .page_item_commands(page)
-            .iter()
-            .filter(|command| !self.services.is_non_selection_command(page, &command.id))
-        {
-            ensure!(
-                seen_keys.insert(command.key.binding_identity()),
-                "picker page command owner {:?} contains duplicate physical key {:?}",
-                page,
-                command.key.binding_name()
-            );
-            let mut binding = EngineCommandBinding::new(
-                QualifiedCommandId::new(page, command.id.clone()),
-                command.key,
-            );
-            binding.label = Some(command.label.clone());
-            binding.enabled = if command.requires_items {
-                items_ready && has_selected_item
-            } else {
-                items_ready
-            };
-            binding.visibility = command.visibility;
-            bindings.push(binding);
-        }
-        Ok(bindings)
-    }
-
-    fn command_projection_bindings(
-        &self,
-        context: &ViewContext,
-    ) -> Result<Vec<EngineCommandBinding>> {
-        if context.input_rejected() {
-            return Ok(Vec::new());
-        }
-
-        let items_ready = self.results_current_for_context(context);
-        let loading = self.is_loading();
-        let retain_stale = loading && !self.frame.selection.items.is_empty();
-        let effective_ready = items_ready || retain_stale;
-        let has_selected_item = effective_ready && self.frame.selection.selected_item().is_some();
-        let mut bindings = self.page_item_command_bindings(
-            context.view_ref(),
-            effective_ready,
-            loading,
-            has_selected_item,
-        )?;
-        if effective_ready
-            && let Some(owner) = self.selected_item_owner()
-            && owner != context.view_ref()
-        {
-            for binding in self.dynamic_command_bindings(owner)? {
-                bindings.retain(|existing| {
-                    existing.key.binding_identity() != binding.key.binding_identity()
-                });
-                bindings.push(binding);
-            }
-        }
-        Ok(bindings)
-    }
-
-    fn dynamic_command_bindings(&self, owner: &str) -> Result<Vec<EngineCommandBinding>> {
-        let mut seen_keys = HashSet::new();
-        let mut bindings = Vec::new();
-        for command in self.services.owner_commands(owner) {
-            ensure!(
-                seen_keys.insert(command.key.binding_identity()),
-                "picker owner command owner {:?} contains duplicate physical key {:?}",
-                owner,
-                command.key.binding_name()
-            );
-            let mut binding = EngineCommandBinding::new(
-                QualifiedCommandId::new(owner, command.id.clone()),
-                command.key,
-            );
-            binding.label = Some(command.label.clone());
-            binding.enabled = true;
-            binding.visibility = command.visibility;
-            bindings.push(binding);
-        }
-        Ok(bindings)
-    }
-
-    fn command_owner_context(
-        &self,
-        context: &ViewContext,
-        owner: &str,
-    ) -> Result<Option<CommandOwnerContext>> {
-        if owner == context.view_ref() {
-            return Ok(Some(CommandOwnerContext {
-                view_ref: context.view_ref().to_string(),
-                parameters: context.parameter_snapshot().clone(),
-                binding_raw: context.parameter_raw().to_string(),
-            }));
-        }
-
-        let Some(item) = self
-            .results_current_for_context(context)
-            .then(|| self.frame.selection.selected_item())
-            .flatten()
-        else {
-            return Ok(None);
-        };
-        if item.source_view != owner {
-            return Ok(None);
-        }
-
-        let feed_id = FeedId(owner.to_string());
-        let feed = self
-            .feed_instances
-            .get(&feed_id)
-            .with_context(|| format!("picker feed owner {:?} is unavailable", owner))?;
-        ensure!(
-            feed.definition.owner_view == owner,
-            "picker feed owner {:?} does not match selected item provenance",
-            owner
-        );
-        Ok(Some(CommandOwnerContext {
-            view_ref: owner.to_string(),
-            parameters: feed.parameters.clone(),
-            binding_raw: feed.parameters.raw_input().to_string(),
-        }))
-    }
 }
 
 impl PickerView {
@@ -1066,18 +929,8 @@ impl EngineRuntime for PickerView {
         Ok(EngineEmission::decision(decision).with_publication(self.current_publication()))
     }
 
-    fn command_projection(&self, context: &ViewContext) -> Result<EngineCommandProjection> {
-        let mut projection = EngineCommandProjection::new(context.identity());
-        projection.bindings = self.command_projection_bindings(context)?;
-        Ok(projection)
-    }
-
-    fn command_owner_context(
-        &self,
-        context: &ViewContext,
-        owner: &str,
-    ) -> Result<Option<CommandOwnerContext>> {
-        self.command_owner_context(context, owner)
+    fn selected_item_owner(&self) -> Option<String> {
+        self.selected_item_owner().map(str::to_string)
     }
 
     fn poll_work(&mut self) -> Result<Option<EngineEmission>> {
@@ -1340,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn command_projection_includes_selected_feed_commands() {
+    fn selected_feed_item_updates_publication_and_owner() {
         let (config, mut picker) = test_picker(109);
         let source = crate::input::InputSourceIdentity {
             frame: crate::input::ViewMountId(109),
@@ -1372,50 +1225,7 @@ mod tests {
                 "",
             ),
         );
-        let context = test_context("", test_parameters("", source, 1));
-
-        let projection = picker.command_projection(&context).unwrap();
-        assert_eq!(projection.based_on, context.identity());
-        let mut projected_commands = projection
-            .bindings
-            .iter()
-            .map(|binding| {
-                (
-                    binding.command.owner.as_str(),
-                    binding.command.id.as_str(),
-                    binding.key,
-                    binding.label.as_deref(),
-                    binding.enabled,
-                )
-            })
-            .collect::<Vec<_>>();
-        projected_commands.sort_by_key(|(_, id, ..)| *id);
-        assert_eq!(
-            projected_commands,
-            vec![
-                (
-                    "apps:main",
-                    "open",
-                    crate::input::Key::Enter,
-                    Some("Open"),
-                    true,
-                ),
-                (
-                    "apps:main",
-                    "openx",
-                    crate::input::Key::Ctrl('o'),
-                    Some("Opend"),
-                    true,
-                ),
-                (
-                    "apps:main",
-                    "weight",
-                    crate::input::Key::Ctrl('w'),
-                    Some("Set weight"),
-                    true,
-                ),
-            ]
-        );
+        assert_eq!(picker.selected_item_owner(), Some("apps:main"));
         let publication = picker.current_publication();
         let current = publication.current();
         assert_eq!(current["item"]["value"], "application");
@@ -1613,25 +1423,6 @@ mod tests {
                 ),
             ]),
         );
-        picker.services.page_item_commands.insert(
-            "core:default".to_string(),
-            vec![
-                super::super::PickerSelectionCommand {
-                    id: "requires_items".to_string(),
-                    key: crate::input::Key::Enter,
-                    label: "Requires item".to_string(),
-                    requires_items: true,
-                    visibility: crate::workflow::config::CommandBindingVisibility::Always,
-                },
-                super::super::PickerSelectionCommand {
-                    id: "selection_scope".to_string(),
-                    key: crate::input::Key::Tab,
-                    label: "Selection scope".to_string(),
-                    requires_items: false,
-                    visibility: crate::workflow::config::CommandBindingVisibility::Always,
-                },
-            ],
-        );
         let source = crate::input::InputSourceIdentity {
             frame: crate::input::ViewMountId(116),
             generation: 0,
@@ -1644,12 +1435,6 @@ mod tests {
         picker.parameter_snapshot = Some(parameters.clone());
         picker.frame.results = ResultsState::Ready(String::new());
 
-        let projection = picker
-            .command_projection(&test_context("", parameters))
-            .unwrap();
-        assert_eq!(projection.bindings.len(), 2);
-        assert!(!projection.bindings[0].enabled);
-        assert!(projection.bindings[1].enabled);
         let runtime = picker
             .runtime_update(&EngineRuntimeSnapshot::default(), "")
             .unwrap();
@@ -1666,21 +1451,6 @@ mod tests {
                 }
             ])
         );
-    }
-
-    #[test]
-    fn failed_feed_does_not_publish_pending_dynamic_commands() {
-        let (_config, mut picker) = test_picker(110);
-        let source = crate::input::InputSourceIdentity {
-            frame: crate::input::ViewMountId(110),
-            generation: 0,
-        };
-        let context = test_context("", test_parameters("", source, 1));
-        picker.frame.input_refresh = InputRefreshState::RetryRequested;
-        picker.items_task_state = ItemsTaskState::Idle;
-
-        let projection = picker.command_projection(&context).unwrap();
-        assert!(projection.bindings.is_empty());
     }
 
     #[test]

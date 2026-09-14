@@ -1,6 +1,7 @@
 use super::command_adapter::CommandService;
 #[cfg(test)]
 use super::command_adapter::map_prepared_action;
+use crate::command::{ChromeSnapshot, CommandRegistry, CommandScope};
 use crate::input::InputEvent;
 use crate::protocol::contracts::{TaskEvent, ViewInstanceId};
 #[cfg(test)]
@@ -12,74 +13,16 @@ use crate::view::{
 };
 #[cfg(test)]
 use crate::view::{ViewCommandSnapshot, ViewContext};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const INFO_MESSAGE_DURATION: Duration = Duration::from_secs(3);
-const COMMAND_PICKER_VIEW: &str = "__builtin:command_picker";
 
 struct InfoMessage {
     label: String,
     expires_at: Instant,
-}
-
-#[derive(Clone)]
-struct CommandPresentation {
-    bindings: crate::view::BindingSet,
-    palette: bool,
-}
-
-fn command_presentation(
-    view: &dyn crate::view::View,
-    context: &crate::view::ViewContext,
-) -> CommandPresentation {
-    let Some(commands) = view.command_bindings() else {
-        return CommandPresentation {
-            bindings: view.bindings(context),
-            palette: false,
-        };
-    };
-    let business = view.business_bindings(context);
-    let folded = business.entries().len() > 2 || commands.has_unbound();
-    if folded {
-        let mut bindings = business
-            .entries()
-            .iter()
-            .take(2)
-            .cloned()
-            .collect::<Vec<_>>();
-        bindings.push(crate::view::Binding {
-            key: crate::input::Key::Ctrl('k'),
-            label: Some("Commands".to_string()),
-        });
-        return CommandPresentation {
-            bindings: crate::view::BindingSet::new(bindings),
-            palette: true,
-        };
-    }
-    CommandPresentation {
-        bindings: business,
-        palette: false,
-    }
-}
-
-fn command_request(decision: &ViewDecision) -> Option<&crate::view::CommandRequest> {
-    match decision {
-        ViewDecision::RequestCommand(request) => Some(request),
-        ViewDecision::Batch(decisions) => decisions.iter().find_map(command_request),
-        _ => None,
-    }
-}
-
-fn selected_command_owner(snapshot: &crate::view::ViewCommandSnapshot) -> Option<&str> {
-    snapshot
-        .publication
-        .as_ref()?
-        .current
-        .get("item")?
-        .get("owner_view")?
-        .as_str()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +41,10 @@ enum ErrorSource {
 pub(crate) struct ProtocolSession {
     router: Router,
     commands: Box<dyn CommandService>,
+    pub(crate) registry: Arc<RwLock<CommandRegistry>>,
+    chrome_snapshot: ChromeSnapshot,
+    shared_snapshot: Arc<RwLock<ChromeSnapshot>>,
+    pending_key: Option<crate::input::Key>,
     #[cfg(test)]
     effects: Option<Box<dyn EffectExecutor>>,
     terminal: TerminalSize,
@@ -108,7 +55,6 @@ pub(crate) struct ProtocolSession {
     active_info: Option<InfoMessage>,
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
-    command_picker_caller: Option<ViewInstanceId>,
 }
 
 #[cfg(test)]
@@ -116,22 +62,43 @@ struct TestCommandService;
 
 #[cfg(test)]
 impl CommandService for TestCommandService {
-    fn execute(
-        &mut self,
-        _: crate::view::CommandRequest,
+    fn build_host_commands(
+        &self,
+        _: std::sync::Arc<std::sync::RwLock<crate::command::ChromeSnapshot>>,
+        _: std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>,
+    ) -> Result<Vec<crate::command::CommandEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn build_view_commands(
+        &self,
         _: &ViewContext,
         _: &ViewCommandSnapshot,
-    ) -> Result<ViewDecision> {
-        anyhow::bail!("command service is unavailable in test session")
+    ) -> Result<Vec<crate::command::CommandEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn build_engine_commands(
+        &self,
+        _: &ViewContext,
+        _: &ViewCommandSnapshot,
+    ) -> Result<Vec<crate::command::CommandEntry>> {
+        Ok(Vec::new())
     }
 }
 
 impl ProtocolSession {
     #[cfg(test)]
     pub(crate) fn new(router: Router, effects: Box<dyn EffectExecutor>) -> Self {
+        let registry = Arc::new(RwLock::new(CommandRegistry::new()));
+        let shared_snapshot = Arc::new(RwLock::new(ChromeSnapshot::default()));
         Self {
             router,
             commands: Box::new(TestCommandService),
+            registry,
+            chrome_snapshot: ChromeSnapshot::default(),
+            shared_snapshot,
+            pending_key: None,
             effects: Some(effects),
             terminal: TerminalSize::default(),
             theme: crate::ui::theme::ResolvedTheme::terminal(),
@@ -141,7 +108,6 @@ impl ProtocolSession {
             active_info: None,
             error_source: None,
             last_diagnostic: None,
-            command_picker_caller: None,
         }
     }
 
@@ -154,9 +120,26 @@ impl ProtocolSession {
     ) -> Self {
         let warning = runtime_log.take_warning_record();
         let error_source = warning.as_ref().map(|_| ErrorSource::StartupWarning);
+        let registry = Arc::new(RwLock::new(CommandRegistry::new()));
+        let shared_snapshot = Arc::new(RwLock::new(ChromeSnapshot::default()));
+        let host_entries = commands
+            .build_host_commands(Arc::clone(&shared_snapshot), Arc::clone(&registry))
+            .unwrap_or_default();
+        let _ = registry
+            .write()
+            .unwrap()
+            .replace_scope(CommandScope::Host, host_entries);
+        let active_id = router.active().map(|entry| entry.id);
+        let chrome_snapshot = ChromeSnapshot::from_registry(&registry.read().unwrap())
+            .with_active_instance(active_id);
+        *shared_snapshot.write().unwrap() = chrome_snapshot.clone();
         Self {
             router,
             commands,
+            registry,
+            chrome_snapshot,
+            shared_snapshot,
+            pending_key: None,
             #[cfg(test)]
             effects: None,
             terminal: TerminalSize::default(),
@@ -167,7 +150,6 @@ impl ProtocolSession {
             active_info: None,
             error_source,
             last_diagnostic: None,
-            command_picker_caller: None,
         }
     }
 
@@ -175,21 +157,14 @@ impl ProtocolSession {
         &self.router
     }
 
-    #[cfg(test)]
-    pub(crate) fn router_mut(&mut self) -> &mut Router {
-        &mut self.router
-    }
-
-    pub(crate) fn take_popup_closed(&mut self) -> bool {
-        self.router.take_popup_closed()
-    }
-
     pub(crate) fn start_root(&mut self, request: NavigationRequest) -> Result<ViewInstanceId> {
         anyhow::ensure!(
             self.router.stack().is_empty(),
             "protocol session root has already been constructed"
         );
-        self.router.push(request)
+        let id = self.router.push(request)?;
+        self.sync_active_commands()?;
+        Ok(id)
     }
 
     #[cfg(test)]
@@ -293,100 +268,39 @@ impl ProtocolSession {
             self.last_diagnostic = None;
         }
         let active = self.router.active().map(|entry| entry.id);
-        if let ViewEvent::Input(InputEvent::Key {
-            key: crate::input::Key::Ctrl('k'),
-            ..
-        }) = &event
-            && let Some(entry) = self.router.active()
-            && command_presentation(&*entry.view, &entry.context).palette
-        {
-            let caller = entry.id;
-            let snapshot = entry.view.command_snapshot();
-            let mut descriptors = entry.view.command_descriptors(&entry.context);
-            if let Some(owner) = selected_command_owner(&snapshot)
-                && owner != entry.context.location.target
-                && let Some(bindings) = entry.view.command_bindings()
-            {
-                let mut seen = descriptors
-                    .iter()
-                    .map(|command| {
-                        (
-                            command.owner.clone().unwrap_or_default(),
-                            command.id.clone(),
-                        )
-                    })
-                    .collect::<std::collections::HashSet<_>>();
-                descriptors.extend(
-                    bindings
-                        .command_descriptors_for_owner(owner)
-                        .into_iter()
-                        .filter(|command| {
-                            seen.insert((
-                                command.owner.clone().unwrap_or_default(),
-                                command.id.clone(),
-                            ))
-                        }),
-                );
-            }
-            let commands = descriptors
-                .into_iter()
-                .map(|command| {
-                    let owner = command
-                        .owner
-                        .clone()
-                        .unwrap_or_else(|| entry.context.location.target.clone());
-                    serde_json::json!({
-                        "ref": {"view": owner, "id": command.id},
-                        "label": command.label,
-                        "key": command.key,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let query = crate::view::ParsedQuery::new(
-                COMMAND_PICKER_VIEW,
-                "query",
-                serde_json::json!({"commands": commands}),
-            );
-            let request = crate::view::NavigationRequest {
-                target: COMMAND_PICKER_VIEW.to_string(),
-                query,
-                input: None,
-                presentation: crate::workflow::config::ViewPresentation {
-                    mode: crate::workflow::config::ViewPresentationMode::Popup,
-                    width: Some(72),
-                    height: Some(16),
-                },
-            };
-            self.router.process_with_effects(
-                ViewDecision::Transition(crate::view::TransitionRequest::Push(request)),
-                caller,
-                effects,
-            )?;
-            self.command_picker_caller = Some(caller);
-            self.resize_new_active_view(Some(caller), effects)?;
-            return Ok(ViewDecision::Stay);
-        }
-        let decision = self.router.dispatch_with_effects(event, effects)?;
-        if let Some(request) = command_request(&decision).cloned() {
-            let source = active.context("command request has no source View")?;
-            let entry = self
-                .router
-                .stack()
-                .iter()
-                .find(|entry| entry.id == source)
-                .context("command source View is no longer mounted")?;
-            let context = entry.context.clone();
-            let snapshot = entry.view.command_snapshot();
-            let next = match self.commands.execute(request, &context, &snapshot) {
-                Ok(next) => next,
-                Err(error) => {
-                    self.router.record_error(Some(source), &error);
-                    return Err(error);
+
+        let mut executed_command = false;
+        let mut command_decision = ViewDecision::Stay;
+
+        if let ViewEvent::Input(InputEvent::Key { key, .. }) = &event {
+            let entry_opt = self.registry.read().unwrap().resolve(*key).cloned();
+            if let Some(entry) = entry_opt {
+                if entry.scope != CommandScope::Host {
+                    let is_loading = self.router.active().is_some_and(|a| {
+                        let snapshot = a.view.command_snapshot();
+                        snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
+                            && snapshot.publication.as_ref().map_or(false, |p| !p.ready)
+                    });
+                    if is_loading {
+                        self.pending_key = Some(*key);
+                        return Ok(ViewDecision::Stay);
+                    }
                 }
-            };
-            self.router.process_with_effects(next, source, effects)?;
+                executed_command = true;
+                command_decision = entry.action.execute()?;
+                if let Some(source) = active {
+                    self.router
+                        .process_with_effects(command_decision.clone(), source, effects)?;
+                }
+            }
         }
-        self.dispatch_command_picker_result(effects)?;
+
+        let decision = if !executed_command {
+            self.router.dispatch_with_effects(event.clone(), effects)?
+        } else {
+            command_decision
+        };
+
         self.resize_new_active_view(active, effects)?;
         let current = self.router.active().map(|entry| entry.id);
         if current != active {
@@ -407,49 +321,78 @@ impl ProtocolSession {
         if let Some(error) = self.router.take_recorded_error() {
             self.report_error(&error.message);
         }
+        self.expire_info(Instant::now());
+        self.sync_active_commands()?;
+
+        if matches!(event, ViewEvent::Task(_)) {
+            if let Some(key) = self.pending_key.take() {
+                let is_ready = self.router.active().is_some_and(|a| {
+                    let snapshot = a.view.command_snapshot();
+                    snapshot.publication.as_ref().is_some_and(|p| p.ready)
+                });
+                if is_ready {
+                    let re_event = ViewEvent::Input(InputEvent::Key {
+                        key,
+                        raw: Vec::new(),
+                    });
+                    return self.dispatch_with_effects(re_event, effects);
+                } else {
+                    self.pending_key = Some(key);
+                }
+            }
+        }
+
         Ok(decision)
     }
 
-    fn dispatch_command_picker_result(&mut self, effects: &mut dyn EffectExecutor) -> Result<()> {
-        let Some(caller) = self.command_picker_caller else {
-            return Ok(());
-        };
-        if !self.router.take_popup_closed() {
+    pub(crate) fn sync_active_commands(&mut self) -> Result<()> {
+        let active_id = self.router.active().map(|entry| entry.id);
+        let is_same_instance =
+            self.chrome_snapshot.active_instance == active_id && active_id.is_some();
+        let is_loading = self.router.active().is_some_and(|a| {
+            let snapshot = a.view.command_snapshot();
+            snapshot.publication.as_ref().is_some_and(|p| !p.ready)
+        });
+        if is_same_instance && is_loading {
             return Ok(());
         }
-        self.command_picker_caller = None;
-        let Some(result) = self.router.take_result() else {
-            return Ok(());
-        };
-        let reference: crate::workflow::command::CommandRef = serde_json::from_value(result.value)
-            .context("command picker returned an invalid command reference")?;
-        let entry = self
-            .router
-            .stack()
-            .iter()
-            .find(|entry| entry.id == caller)
-            .context("command picker caller View is no longer mounted")?;
-        let bindings = entry
-            .view
-            .command_bindings()
-            .context("command picker caller has no command bindings")?;
-        let invocation = if reference.view == entry.context.location.target {
-            bindings.command_invocation(&reference.id)?
+
+        let (view_entries, engine_entries) = if let Some(active) = self.router.active() {
+            let context = &active.context;
+            let snapshot = active.view.command_snapshot();
+            let mut view_entries = self.commands.build_view_commands(context, &snapshot)?;
+            view_entries.extend(active.view.view_commands(context));
+            let engine_entries = if let Some(custom) = active.view.engine_commands(context) {
+                custom
+            } else {
+                self.commands.build_engine_commands(context, &snapshot)?
+            };
+            (view_entries, engine_entries)
         } else {
-            bindings.view_invocation(&reference.view, &reference.id)?
+            (Vec::new(), Vec::new())
         };
-        let owner = if reference.view == entry.context.location.target {
-            None
-        } else {
-            entry
-                .view
-                .command_owner_context(&entry.context, &reference.view)?
-        };
-        let request = crate::view::CommandRequest { invocation, owner };
-        let next =
-            self.commands
-                .execute(request, &entry.context, &entry.view.command_snapshot())?;
-        self.router.process_with_effects(next, caller, effects)
+
+        let mut changed = false;
+        let mut reg = self.registry.write().unwrap();
+        if reg
+            .replace_scope(CommandScope::View, view_entries)?
+            .is_some()
+        {
+            changed = true;
+        }
+        if reg
+            .replace_scope(CommandScope::Engine, engine_entries)?
+            .is_some()
+        {
+            changed = true;
+        }
+
+        if changed || self.chrome_snapshot.active_instance != active_id {
+            self.chrome_snapshot =
+                ChromeSnapshot::from_registry(&reg).with_active_instance(active_id);
+            *self.shared_snapshot.write().unwrap() = self.chrome_snapshot.clone();
+        }
+        Ok(())
     }
 
     fn resize_new_active_view(
@@ -501,13 +444,9 @@ impl ProtocolSession {
             let entry = &self.router.stack()[active_index];
             entry.view.chrome(&entry.context)?
         };
-        let (chrome_instance, chrome_location, presentation) = {
+        let (chrome_instance, chrome_location) = {
             let entry = &self.router.stack()[active_index];
-            (
-                entry.id,
-                entry.context.location.clone(),
-                command_presentation(&*entry.view, &entry.context),
-            )
+            (entry.id, entry.context.location.clone())
         };
         let footer_location = self.router.stack()[active_index].context.location.clone();
         self.surface_diagnostic(
@@ -515,7 +454,7 @@ impl ProtocolSession {
             &chrome_location.target,
             chrome_snapshot.error.as_deref(),
         );
-        let bindings = merge_bindings(self.router.global_bindings(), &presentation.bindings);
+        let bindings = self.chrome_snapshot.to_binding_set();
 
         let content_host = ContentHost::default();
         let footer_renderer = FooterRenderer::default();
@@ -564,6 +503,8 @@ impl ProtocolSession {
             error: self.active_error.clone().or(chrome_snapshot.error),
             info: self.active_info.as_ref().map(|info| info.label.clone()),
             bindings,
+            overflow_command: self.chrome_snapshot.overflow_command(),
+            has_unbound: self.chrome_snapshot.has_unbound(),
         };
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect {
@@ -688,27 +629,14 @@ fn active_render_area(stack: &[crate::view::ViewInstance], terminal: Rect) -> Re
     ContentHost::default().active_content_area(stack, terminal)
 }
 
-fn merge_bindings(
-    global: &crate::view::BindingSet,
-    local: &crate::view::BindingSet,
-) -> crate::view::BindingSet {
-    let mut seen = std::collections::HashSet::new();
-    let entries = global
-        .entries()
-        .iter()
-        .chain(local.entries().iter())
-        .filter(|binding| seen.insert(binding.key.binding_identity()))
-        .cloned();
-    crate::view::BindingSet::new(entries)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ProtocolCommandService, ViewCommandBindings};
+    use crate::command::{CommandEntry, CommandRegistry, CommandScope};
+    use crate::protocol::ProtocolCommandService;
     use crate::view::{
-        Binding, BindingSet, EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery,
-        RouteCatalog, View, ViewContext, ViewFactory, ViewLocation, ViewMetadata, ViewServices,
+        EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, RouteCatalog, View, ViewContext,
+        ViewFactory, ViewMetadata, ViewServices,
     };
     use ratatui::{Terminal, backend::TestBackend, layout::Position};
     use serde_json::Value;
@@ -754,11 +682,14 @@ mod tests {
             if self.target == "zero_inset" { 0 } else { 1 }
         }
 
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::new([Binding {
-                key: crate::input::Key::Char('l'),
-                label: Some("local".to_string()),
-            }])
+        fn view_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
+            vec![CommandEntry::new(
+                "local",
+                Some("local".to_string()),
+                Some(crate::input::Key::Char('l')),
+                CommandScope::View,
+                Arc::new(|| Ok(ViewDecision::Stay)),
+            )]
         }
 
         fn command_snapshot(&self) -> ViewCommandSnapshot {
@@ -769,6 +700,7 @@ mod tests {
                 runtime: self.runtime.clone(),
                 publication: self.publication.clone(),
                 revision: self.revision,
+                owner_view: None,
             }
         }
 
@@ -838,9 +770,9 @@ mod tests {
                         InputEvent::Key {
                             key: crate::input::Key::Char('r'),
                             ..
-                        } => Ok(ViewDecision::Return(ViewResult {
-                            value: Value::String(self.target.clone()),
-                        })),
+                        } => Ok(ViewDecision::Return(ViewResult::new(Value::String(
+                            self.target.clone(),
+                        )))),
                         InputEvent::Eof => Ok(ViewDecision::Exit),
                         _ => Ok(ViewDecision::Invalidate),
                     }
@@ -1004,32 +936,58 @@ mod tests {
     }
 
     #[test]
-    fn footer_binding_merge_keeps_global_precedence_without_duplicates() {
-        let global = BindingSet::new([
-            Binding {
-                key: crate::input::Key::Char('x'),
-                label: Some("global".to_string()),
-            },
-            Binding {
-                key: crate::input::Key::Char('g'),
-                label: Some("other".to_string()),
-            },
-        ]);
-        let local = BindingSet::new([
-            Binding {
-                key: crate::input::Key::Char('X'),
-                label: Some("local".to_string()),
-            },
-            Binding {
-                key: crate::input::Key::Char('l'),
-                label: Some("local-only".to_string()),
-            },
-        ]);
-        let merged = merge_bindings(&global, &local);
-        assert_eq!(merged.entries().len(), 3);
-        assert_eq!(merged.entries()[0].label.as_deref(), Some("global"));
-        assert_eq!(merged.entries()[1].label.as_deref(), Some("other"));
-        assert_eq!(merged.entries()[2].label.as_deref(), Some("local-only"));
+    fn command_registry_resolution_follows_view_over_engine_over_host() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .replace_scope(
+                CommandScope::Host,
+                vec![
+                    CommandEntry::new(
+                        "host_x",
+                        Some("host-x".into()),
+                        Some(crate::input::Key::Char('x')),
+                        CommandScope::Host,
+                        Arc::new(|| Ok(ViewDecision::Stay)),
+                    ),
+                    CommandEntry::new(
+                        "host_g",
+                        Some("host-only".into()),
+                        Some(crate::input::Key::Char('g')),
+                        CommandScope::Host,
+                        Arc::new(|| Ok(ViewDecision::Stay)),
+                    ),
+                ],
+            )
+            .unwrap();
+        registry
+            .replace_scope(
+                CommandScope::View,
+                vec![
+                    CommandEntry::new(
+                        "view_x",
+                        Some("view-x".into()),
+                        Some(crate::input::Key::Char('x')),
+                        CommandScope::View,
+                        Arc::new(|| Ok(ViewDecision::Stay)),
+                    ),
+                    CommandEntry::new(
+                        "view_l",
+                        Some("view-only".into()),
+                        Some(crate::input::Key::Char('l')),
+                        CommandScope::View,
+                        Arc::new(|| Ok(ViewDecision::Stay)),
+                    ),
+                ],
+            )
+            .unwrap();
+
+        let snapshot = ChromeSnapshot::from_registry(&registry);
+        let bindings = snapshot.to_binding_set();
+        assert_eq!(bindings.entries().len(), 3);
+        assert_eq!(
+            registry.resolve(crate::input::Key::Char('x')).unwrap().id,
+            "view_x"
+        );
     }
 
     #[test]
@@ -1203,12 +1161,22 @@ mod tests {
     fn delivers_lossless_input_and_honors_global_precedence() {
         let (mut session, events, effects) = session();
         session.start_root(request("root")).unwrap();
+        let global_cmd = CommandEntry::new(
+            "global.copy",
+            None,
+            Some(crate::input::Key::Char('g')),
+            CommandScope::Host,
+            Arc::new(|| {
+                Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(
+                    "global".to_string(),
+                )))
+            }),
+        );
         session
-            .router_mut()
-            .set_global_action(
-                crate::input::Key::Char('g'),
-                ViewDecision::Effect(EffectRequest::CopyToClipboard("global".to_string())),
-            )
+            .registry
+            .write()
+            .unwrap()
+            .replace_scope(CommandScope::Host, vec![global_cmd])
             .unwrap();
         session
             .input(InputEvent::Key {
@@ -1268,15 +1236,6 @@ mod tests {
     fn passthrough_binding_still_prepares_its_command_decision() {
         let config = crate::workflow::config::load_test_fixture().unwrap();
         let cancellation = crate::lifecycle::CancellationToken::new();
-        let adapter =
-            ViewCommandBindings::new(&config, "dmenu:main", cancellation.observer()).unwrap();
-        let mut binding = adapter
-            .bindings
-            .iter()
-            .find(|binding| binding.invocation.id() == "accept")
-            .cloned()
-            .expect("fixture exposes the dmenu accept binding");
-        binding.invocation.command.passthrough = true;
         let context = ViewContext::new(ViewInstanceId(40), "dmenu:main");
         let parameters = config.instantiate_parameters("dmenu:main").unwrap();
         let snapshot = ViewCommandSnapshot {
@@ -1291,18 +1250,122 @@ mod tests {
                 }),
                 true,
             )),
+            owner_view: None,
             revision: 0,
         };
 
-        let ViewDecision::RequestCommand(request) = adapter.request(&binding, None) else {
-            panic!("binding must produce a command request");
-        };
         let invocation = test_invocation(&config, "dmenu:main");
-        let mut service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
+        let service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
+        let engine_cmds = service.build_engine_commands(&context, &snapshot).unwrap();
+        let accept_cmd = engine_cmds
+            .into_iter()
+            .find(|entry| entry.id == "accept")
+            .expect("engine commands must contain accept");
         assert!(matches!(
-            service.execute(request, &context, &snapshot).unwrap(),
+            accept_cmd.action.execute().unwrap(),
             ViewDecision::Return(_)
         ));
+    }
+
+    #[test]
+    fn command_call_records_caller_and_runs_non_null_return_continuation() {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        let cancellation = crate::lifecycle::CancellationToken::new();
+        let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
+        let parameters = config.instantiate_parameters("dmenu:main").unwrap();
+        let snapshot = ViewCommandSnapshot {
+            engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
+            parameters: config.parameter_values(&parameters).unwrap(),
+            raw_input: String::new(),
+            runtime: serde_json::json!({"revision": 2}),
+            publication: Some(crate::view::ViewPublication::new(
+                serde_json::json!({
+                    "item": {
+                        "text": "first",
+                        "value": "0",
+                        "metadata": {},
+                        "owner_view": "dmenu:main"
+                    },
+                    "input": ""
+                }),
+                true,
+            )),
+            owner_view: Some("dmenu:main".to_string()),
+            revision: 2,
+        };
+
+        let stdin_path =
+            std::env::temp_dir().join(format!("tlaunch-protocol-session-{}", std::process::id()));
+        std::fs::write(&stdin_path, b"first\n").unwrap();
+        let invocation = Arc::new(
+            crate::workflow::InvocationContext::new(
+                "dmenu:main".to_string(),
+                serde_json::json!({
+                    "stdin": {
+                        "path": stdin_path.to_string_lossy(),
+                        "length": 6,
+                        "is_tty": false
+                    }
+                }),
+                config.instantiate_parameters("dmenu:main").unwrap(),
+            )
+            .unwrap(),
+        );
+        let service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
+        let shared_snapshot = Arc::new(RwLock::new(ChromeSnapshot::default()));
+        let registry = Arc::new(RwLock::new(CommandRegistry::new()));
+        let host_cmds = service
+            .build_host_commands(shared_snapshot.clone(), Arc::clone(&registry))
+            .unwrap();
+
+        let engine_cmds = service.build_engine_commands(&caller, &snapshot).unwrap();
+        registry
+            .write()
+            .unwrap()
+            .replace_scope(CommandScope::Engine, engine_cmds)
+            .unwrap();
+        *shared_snapshot.write().unwrap() =
+            ChromeSnapshot::from_registry(&registry.read().unwrap());
+
+        let cmd_entry = host_cmds.into_iter().find(|e| e.id == "commands").unwrap();
+        let call_decision = cmd_entry.action.execute().unwrap();
+        let ViewDecision::Transition(crate::view::TransitionRequest::Call {
+            request: _req,
+            continuation: crate::view::Continuation::Call(boundary),
+        }) = call_decision
+        else {
+            panic!("commands must call");
+        };
+
+        let selected_command = serde_json::json!({"ref": {"id": "accept"}});
+        let continued = boundary
+            .handler
+            .resume(
+                &crate::view::ViewLocation::new("selectors:commands"),
+                &caller,
+                &snapshot,
+                &ViewResult::command_selection(selected_command),
+            )
+            .unwrap();
+        let ViewDecision::Return(result) = continued else {
+            panic!("selected command must continue into its configured return");
+        };
+        assert_eq!(result.value, serde_json::json!("first"));
+
+        // Expired or unknown command ID does not execute old callback and returns Stay
+        let unknown_command = serde_json::json!({"ref": {"id": "nonexistent"}});
+        let continued_unknown = boundary
+            .handler
+            .resume(
+                &crate::view::ViewLocation::new("selectors:commands"),
+                &caller,
+                &snapshot,
+                &ViewResult::command_selection(unknown_command),
+            )
+            .unwrap();
+        assert!(matches!(continued_unknown, ViewDecision::Stay));
+
+        std::fs::remove_file(stdin_path).unwrap();
     }
 
     #[test]
@@ -1522,9 +1585,6 @@ mod tests {
         let view_error = Rc::new(RefCell::new(None));
         struct DiagView(Rc<RefCell<Option<String>>>);
         impl View for DiagView {
-            fn bindings(&self, _: &ViewContext) -> BindingSet {
-                BindingSet::default()
-            }
             fn command_snapshot(&self) -> ViewCommandSnapshot {
                 ViewCommandSnapshot {
                     engine_type: "test".to_string(),
@@ -1532,6 +1592,7 @@ mod tests {
                     raw_input: String::new(),
                     runtime: Value::Null,
                     publication: None,
+                    owner_view: None,
                     revision: 0,
                 }
             }
@@ -1548,11 +1609,10 @@ mod tests {
                     },
                 })
             }
-            fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+            fn chrome(&self, _context: &ViewContext) -> Result<crate::view::ViewChrome> {
                 Ok(crate::view::ViewChrome {
                     status: None,
                     error: self.0.borrow().clone(),
-                    bindings: Some(self.bindings(context)),
                     ..Default::default()
                 })
             }
@@ -1741,28 +1801,76 @@ mod tests {
     }
 
     #[test]
-    fn session_take_popup_closed_tracks_popup_lifecycle() {
+    fn custom_view_commands_switch_to_exclusive_commands_in_session() {
         let (mut session, _events, _effects) = session();
         session.start_root(request("root")).unwrap();
-        assert!(!session.take_popup_closed());
 
-        // Open child popup ('n' key)
-        session
-            .input(InputEvent::Key {
-                key: crate::input::Key::Char('n'),
-                raw: vec![b'n'],
-            })
-            .unwrap();
-        assert!(!session.take_popup_closed());
+        // Initially, root view commands are active (SyntheticView returns "local")
+        assert!(
+            session
+                .registry
+                .read()
+                .unwrap()
+                .resolve_id("local")
+                .is_some()
+        );
 
-        // Child returns to root ('r' key)
+        // When custom commands are returned by active view (e.g. completion)
+        let accept = CommandEntry::new(
+            "completion.accept",
+            Some("Accept".to_string()),
+            Some(crate::input::Key::Enter),
+            CommandScope::View,
+            Arc::new(|| Ok(ViewDecision::Stay)),
+        );
+        let cancel = CommandEntry::new(
+            "completion.cancel",
+            Some("Cancel".to_string()),
+            Some(crate::input::Key::Escape),
+            CommandScope::View,
+            Arc::new(|| Ok(ViewDecision::Stay)),
+        );
+
         session
-            .input(InputEvent::Key {
-                key: crate::input::Key::Char('r'),
-                raw: vec![b'r'],
-            })
+            .registry
+            .write()
+            .unwrap()
+            .replace_scope(CommandScope::View, vec![accept, cancel])
             .unwrap();
-        assert!(session.take_popup_closed());
-        assert!(!session.take_popup_closed());
+        session
+            .registry
+            .write()
+            .unwrap()
+            .replace_scope(CommandScope::Engine, Vec::new())
+            .unwrap();
+
+        assert_eq!(
+            session
+                .registry
+                .read()
+                .unwrap()
+                .resolve(crate::input::Key::Enter)
+                .unwrap()
+                .id,
+            "completion.accept"
+        );
+        assert_eq!(
+            session
+                .registry
+                .read()
+                .unwrap()
+                .resolve(crate::input::Key::Escape)
+                .unwrap()
+                .id,
+            "completion.cancel"
+        );
+        assert!(
+            session
+                .registry
+                .read()
+                .unwrap()
+                .resolve_id("local")
+                .is_none()
+        );
     }
 }

@@ -368,9 +368,6 @@ impl App {
     }
 
     fn draw(&mut self, terminal: &mut Terminal) -> Result<()> {
-        if self.session.take_popup_closed() {
-            terminal.clear()?;
-        }
         let mut result = Ok(());
         let image_picker = terminal.image_picker();
         terminal.draw(|frame| {

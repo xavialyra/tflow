@@ -181,7 +181,6 @@ impl CommandInvocation {
 pub(crate) struct CommandOwnerContext {
     pub(crate) view_ref: String,
     pub(crate) parameters: ParameterSnapshot,
-    pub(crate) binding_raw: String,
 }
 
 #[derive(Debug, Clone)]

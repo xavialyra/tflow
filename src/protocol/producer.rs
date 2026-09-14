@@ -24,6 +24,7 @@ pub(crate) enum ProtocolOperation {
         presentation: ViewPresentation,
     },
     Return {
+        kind: Option<String>,
         value: Value,
     },
     Run {
@@ -81,6 +82,8 @@ enum RawOperation {
         presentation: ViewPresentation,
     },
     Return {
+        #[serde(default)]
+        kind: Option<String>,
         value: Value,
     },
     Run {
@@ -141,7 +144,7 @@ pub(crate) fn parse_response(
             query,
             presentation,
         },
-        RawOperation::Return { value } => ProtocolOperation::Return { value },
+        RawOperation::Return { kind, value } => ProtocolOperation::Return { kind, value },
         RawOperation::Run {
             mode,
             argv,
@@ -621,7 +624,10 @@ mod tests {
         let null = parse_response(null, "return", "test").unwrap();
         assert!(matches!(
             null,
-            ProtocolOperation::Return { value: Value::Null }
+            ProtocolOperation::Return {
+                value: Value::Null,
+                ..
+            }
         ));
     }
 
@@ -642,7 +648,7 @@ mod tests {
             let parsed =
                 parse_response(&serde_json::to_vec(&response).unwrap(), "return", "test").unwrap();
             assert!(
-                matches!(parsed, ProtocolOperation::Return { value: parsed_value } if parsed_value == value)
+                matches!(parsed, ProtocolOperation::Return { value: parsed_value, .. } if parsed_value == value)
             );
         }
     }
@@ -667,7 +673,6 @@ mod tests {
                 crate::input::InputSourceIdentity::default(),
                 0,
             ),
-            binding_raw: String::new(),
         };
         let command = command_request(&owner, "open", "navigate", &input, &engine_state, "picker");
         let items = items_request(&parameters, &input, "picker", &engine_state);
@@ -675,9 +680,7 @@ mod tests {
         let returned = return_request(
             &parameters,
             &input,
-            &crate::view::ViewResult {
-                value: json!({"raw": true}),
-            },
+            &crate::view::ViewResult::new(json!({"raw": true})),
             "picker",
             &engine_state,
         );

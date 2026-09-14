@@ -1,4 +1,5 @@
 mod app;
+mod command;
 mod diagnostics;
 mod engine;
 mod execution;

@@ -1,8 +1,7 @@
 use super::api::ViewIdentity;
-use crate::input::{EditorSnapshot, Key, ViewMountId};
+use crate::input::{EditorSnapshot, ViewMountId};
 use crate::terminal::ImagePicker;
 use crate::ui::theme::ResolvedTheme;
-use crate::workflow::config::CommandBindingVisibility;
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
@@ -272,57 +271,6 @@ pub(crate) enum EffectRequest {
     CopyToClipboard(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct QualifiedCommandId {
-    pub(crate) owner: String,
-    pub(crate) id: String,
-}
-
-impl QualifiedCommandId {
-    pub(crate) fn new(owner: impl Into<String>, id: impl Into<String>) -> Self {
-        Self {
-            owner: owner.into(),
-            id: id.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EngineCommandBinding {
-    pub(crate) command: QualifiedCommandId,
-    pub(crate) key: Key,
-    pub(crate) label: Option<String>,
-    pub(crate) enabled: bool,
-    pub(crate) visibility: CommandBindingVisibility,
-}
-
-impl EngineCommandBinding {
-    pub(crate) fn new(command: QualifiedCommandId, key: Key) -> Self {
-        Self {
-            command,
-            key,
-            label: None,
-            enabled: true,
-            visibility: CommandBindingVisibility::Always,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct EngineCommandProjection {
-    pub(crate) based_on: ViewContextIdentity,
-    pub(crate) bindings: Vec<EngineCommandBinding>,
-}
-
-impl EngineCommandProjection {
-    pub(crate) fn new(based_on: ViewContextIdentity) -> Self {
-        Self {
-            based_on,
-            bindings: Vec::new(),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) enum EngineDecision {
     Continue,
@@ -576,18 +524,8 @@ pub(crate) trait EngineRuntime {
     /// the mount leaves the active stack; cleanup must not fail.
     fn deactivate(&mut self) {}
 
-    fn command_projection(&self, context: &ViewContext) -> Result<EngineCommandProjection> {
-        Ok(EngineCommandProjection::new(context.identity()))
-    }
-
-    /// Resolve the owner context for an Engine-owned command. The Host supplies
-    /// the page owner directly and asks the Engine only for domain-owned owners.
-    fn command_owner_context(
-        &self,
-        _context: &ViewContext,
-        _owner: &str,
-    ) -> Result<Option<crate::workflow::command::CommandOwnerContext>> {
-        Ok(None)
+    fn selected_item_owner(&self) -> Option<String> {
+        None
     }
 
     /// Returns the mount-owned raw receiver, when this runtime supports raw

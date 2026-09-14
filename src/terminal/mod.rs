@@ -383,6 +383,7 @@ impl Terminal {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) -> Result<()> {
         if self.cancellation.is_cancelled() {
             return Err(shutdown_error()).context("could not clear Ratatui terminal");

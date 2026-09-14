@@ -2,7 +2,7 @@
 //!
 
 use crate::input::{InputEvent, Key};
-use crate::workflow::config::{ViewPresentation, ViewPresentationMode};
+use crate::workflow::config::ViewPresentation;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
@@ -18,6 +18,7 @@ pub(crate) struct ViewLocation {
 }
 
 impl ViewLocation {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(target: impl Into<String>) -> Self {
         Self {
             target: target.into(),
@@ -50,6 +51,7 @@ pub(crate) struct ViewCommandSnapshot {
     pub(crate) runtime: Value,
     pub(crate) publication: Option<ViewPublication>,
     pub(crate) revision: u64,
+    pub(crate) owner_view: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,7 @@ pub(crate) struct ViewContext {
 }
 
 impl ViewContext {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(instance: ViewInstanceId, target: impl Into<String>) -> Self {
         let target = target.into();
         Self {
@@ -149,27 +152,6 @@ pub(crate) enum ViewEvent {
     Resize(TerminalSize),
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct CommandRequest {
-    pub(crate) invocation: crate::workflow::command::CommandInvocation,
-    pub(crate) owner: Option<crate::workflow::command::CommandOwnerContext>,
-}
-
-impl PartialEq for CommandRequest {
-    fn eq(&self, other: &Self) -> bool {
-        self.invocation.source_view() == other.invocation.source_view()
-            && self.invocation.id() == other.invocation.id()
-            && self
-                .owner
-                .as_ref()
-                .map(|owner| (&owner.view_ref, &owner.parameters, &owner.binding_raw))
-                == other
-                    .owner
-                    .as_ref()
-                    .map(|owner| (&owner.view_ref, &owner.parameters, &owner.binding_raw))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandResult {
     EditInput { value: String, cursor: usize },
@@ -195,12 +177,6 @@ impl BindingSet {
 
     pub(crate) fn entries(&self) -> &[Binding] {
         &self.entries
-    }
-
-    pub(crate) fn contains(&self, key: Key) -> bool {
-        self.entries
-            .iter()
-            .any(|binding| binding.key.binding_identity() == key.binding_identity())
     }
 }
 
@@ -270,14 +246,37 @@ pub(crate) enum EffectRequest {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ViewResultKind {
+    #[default]
+    Value,
+    CommandSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ViewResult {
+    pub(crate) kind: ViewResultKind,
     pub(crate) value: Value,
 }
 
-impl PartialEq for ViewResult {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
+impl ViewResult {
+    pub(crate) fn new(value: Value) -> Self {
+        Self {
+            kind: ViewResultKind::Value,
+            value,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn text(value: impl Into<String>) -> Self {
+        Self::new(Value::String(value.into()))
+    }
+
+    pub(crate) fn command_selection(value: Value) -> Self {
+        Self {
+            kind: ViewResultKind::CommandSelection,
+            value,
+        }
     }
 }
 
@@ -420,7 +419,6 @@ pub(crate) enum ViewDecision {
     Transition(TransitionRequest),
     Return(ViewResult),
     Effect(EffectRequest),
-    RequestCommand(CommandRequest),
     Command(CommandResult),
     Batch(Vec<ViewDecision>),
     Close,
@@ -435,7 +433,6 @@ impl ViewDecision {
             self,
             Self::Transition(_)
                 | Self::Return(_)
-                | Self::RequestCommand(_)
                 | Self::Command(_)
                 | Self::Close
                 | Self::CloseToRoot
@@ -508,7 +505,13 @@ pub(crate) trait View {
         0
     }
 
-    fn bindings(&self, context: &ViewContext) -> BindingSet;
+    fn view_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        Vec::new()
+    }
+
+    fn engine_commands(&self, _context: &ViewContext) -> Option<Vec<crate::command::CommandEntry>> {
+        None
+    }
 
     /// Configured business commands are projected separately from Engine input
     /// actions so the host can own command presentation and palette folding.
@@ -550,6 +553,7 @@ pub(crate) trait View {
             runtime: Value::Null,
             publication: None,
             revision: 0,
+            owner_view: None,
         }
     }
 
@@ -558,11 +562,8 @@ pub(crate) trait View {
         None
     }
 
-    fn chrome(&self, context: &ViewContext) -> Result<ViewChrome> {
-        Ok(ViewChrome {
-            bindings: Some(self.bindings(context)),
-            ..ViewChrome::default()
-        })
+    fn chrome(&self, _context: &ViewContext) -> Result<ViewChrome> {
+        Ok(ViewChrome::default())
     }
 
     fn event(&mut self, event: ViewEvent, context: &ViewContext) -> Result<ViewDecision>;
@@ -691,15 +692,12 @@ pub(crate) struct Router {
     routes: Box<dyn RouteCatalog>,
     factory: Box<dyn ViewFactory>,
     host: Box<dyn HostServices>,
-    global_bindings: BindingSet,
-    global_actions: std::collections::HashMap<crate::input::BindingKey, ViewDecision>,
     stack: Vec<ViewInstance>,
     next_instance: u64,
     pending_result: Option<ViewResult>,
     result_committed: bool,
     last_error: Option<RouterError>,
     pending_info: Option<(ViewInstanceId, String, String)>,
-    popup_closed: bool,
 }
 
 impl Router {
@@ -719,15 +717,12 @@ impl Router {
             routes,
             factory,
             host,
-            global_bindings: BindingSet::default(),
-            global_actions: std::collections::HashMap::new(),
             stack: Vec::new(),
             next_instance: 1,
             pending_result: None,
             result_committed: false,
             last_error: None,
             pending_info: None,
-            popup_closed: false,
         }
     }
 
@@ -739,78 +734,12 @@ impl Router {
         self.stack.last()
     }
 
-    pub(crate) fn take_popup_closed(&mut self) -> bool {
-        std::mem::take(&mut self.popup_closed)
-    }
-
     fn pop_view(&mut self) -> Option<ViewInstance> {
-        let view = self.stack.pop()?;
-        if view.context.presentation.mode == ViewPresentationMode::Popup {
-            self.popup_closed = true;
-        }
-        Some(view)
+        self.stack.pop()
     }
 
     fn remove_view(&mut self, index: usize) -> ViewInstance {
-        let view = self.stack.remove(index);
-        if view.context.presentation.mode == ViewPresentationMode::Popup {
-            self.popup_closed = true;
-        }
-        view
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_global_bindings(&mut self, bindings: BindingSet) {
-        self.global_bindings = bindings;
-        self.global_actions.clear();
-    }
-
-    /// Replaces global bindings and actions atomically. Duplicate physical
-    /// keys are rejected before either map is changed.
-    #[cfg(test)]
-    pub(crate) fn set_global_actions(
-        &mut self,
-        actions: impl IntoIterator<Item = (Binding, ViewDecision)>,
-    ) -> Result<()> {
-        let mut bindings = Vec::new();
-        let mut resolved = std::collections::HashMap::new();
-        for (binding, decision) in actions {
-            let identity = binding.key.binding_identity();
-            anyhow::ensure!(
-                !resolved.contains_key(&identity),
-                "global binding key {:?} is registered more than once",
-                binding.key.binding_name()
-            );
-            resolved.insert(identity, decision);
-            bindings.push(binding);
-        }
-        self.global_bindings = BindingSet::new(bindings);
-        self.global_actions = resolved;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_global_action(&mut self, key: Key, decision: ViewDecision) -> Result<()> {
-        let mut actions = self
-            .global_bindings
-            .entries
-            .iter()
-            .cloned()
-            .map(|binding| {
-                let decision = self
-                    .global_actions
-                    .get(&binding.key.binding_identity())
-                    .cloned()
-                    .unwrap_or(ViewDecision::Stay);
-                (binding, decision)
-            })
-            .collect::<Vec<_>>();
-        actions.push((Binding { key, label: None }, decision));
-        self.set_global_actions(actions)
-    }
-
-    pub(crate) fn global_bindings(&self) -> &BindingSet {
-        &self.global_bindings
+        self.stack.remove(index)
     }
 
     pub(crate) fn take_result(&mut self) -> Option<ViewResult> {
@@ -877,6 +806,17 @@ impl Router {
             self.notify_transition_rejected(source_id, ViewInstanceId(0), &error);
             return Err(error);
         }
+        let continuation = match continuation {
+            Continuation::Call(mut boundary) => {
+                if boundary.caller == ViewInstanceId(0)
+                    && let Some(parent_id) = source_id.or_else(|| self.stack.last().map(|e| e.id))
+                {
+                    boundary.caller = parent_id;
+                }
+                Continuation::Call(boundary)
+            }
+            other => other,
+        };
         if let Some(id) = match &continuation {
             Continuation::ReturnTo(id) => Some(*id),
             Continuation::Call(boundary) => Some(boundary.caller),
@@ -1210,17 +1150,6 @@ impl Router {
         event: ViewEvent,
         executor: &mut Option<&mut dyn EffectExecutor>,
     ) -> Result<ViewDecision> {
-        if let ViewEvent::Input(InputEvent::Key { key, .. }) = &event
-            && self.global_bindings.contains(*key)
-        {
-            let decision = self
-                .global_actions
-                .get(&key.binding_identity())
-                .cloned()
-                .unwrap_or(ViewDecision::Stay);
-            self.process_decision_inner(decision.clone(), executor, None)?;
-            return Ok(decision);
-        }
         if matches!(event, ViewEvent::Tick) {
             let ids = self.stack.iter().map(|entry| entry.id).collect::<Vec<_>>();
             let mut decision = ViewDecision::Stay;
@@ -1412,7 +1341,7 @@ impl Router {
             ViewDecision::Exit => {
                 self.close_all()?;
             }
-            ViewDecision::RequestCommand(_) | ViewDecision::Stay | ViewDecision::Invalidate => {}
+            ViewDecision::Stay | ViewDecision::Invalidate => {}
         }
         Ok(())
     }
@@ -1665,9 +1594,6 @@ mod tests {
         runtime: Value,
     }
     impl View for TestView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
         fn command_snapshot(&self) -> ViewCommandSnapshot {
             ViewCommandSnapshot {
                 engine_type: "test".to_string(),
@@ -1676,6 +1602,7 @@ mod tests {
                 runtime: self.runtime.clone(),
                 publication: None,
                 revision: 0,
+                owner_view: None,
             }
         }
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
@@ -1691,9 +1618,7 @@ mod tests {
                 ViewEvent::Input(InputEvent::Eof) => ViewDecision::Exit,
                 ViewEvent::Input(InputEvent::Key {
                     key: Key::Enter, ..
-                }) => ViewDecision::Return(ViewResult {
-                    value: Value::String("done".into()),
-                }),
+                }) => ViewDecision::Return(ViewResult::new(Value::String("done".into()))),
                 _ => ViewDecision::Invalidate,
             })
         }
@@ -1721,10 +1646,6 @@ mod tests {
     }
 
     impl View for PushThenReturnView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             Ok(match event {
                 ViewEvent::Lifecycle(_) => ViewDecision::Stay,
@@ -1735,9 +1656,9 @@ mod tests {
                 }
                 ViewEvent::Input(InputEvent::Key {
                     key: Key::Enter, ..
-                }) => ViewDecision::Return(ViewResult {
-                    value: Value::String("grandchild-value".into()),
-                }),
+                }) => {
+                    ViewDecision::Return(ViewResult::new(Value::String("grandchild-value".into())))
+                }
                 _ => ViewDecision::Stay,
             })
         }
@@ -1774,10 +1695,6 @@ mod tests {
     }
 
     impl View for LifecycleView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             if let ViewEvent::Lifecycle(ref lifecycle) = event {
                 self.events.borrow_mut().push(format!("{lifecycle:?}"));
@@ -1881,10 +1798,6 @@ mod tests {
     }
 
     impl View for FaultView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             if let ViewEvent::Lifecycle(ref lifecycle) = event {
                 self.events.borrow_mut().push(format!("{lifecycle:?}"));
@@ -2022,10 +1935,6 @@ mod tests {
     }
 
     impl View for ParentActivationView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             if self.is_root && matches!(event, ViewEvent::Lifecycle(LifecycleEvent::Activated)) {
                 let mut activations = self.activations.borrow_mut();
@@ -2254,6 +2163,94 @@ mod tests {
     }
 
     #[test]
+    fn call_continuation_delivers_structured_command_selection_result_to_caller_handler() {
+        struct TypedRecordingHandler {
+            received: Rc<RefCell<Option<(ViewResultKind, Value)>>>,
+        }
+        impl CallReturnHandler for TypedRecordingHandler {
+            fn resume(
+                &self,
+                _: &ViewLocation,
+                _: &ViewContext,
+                _: &ViewCommandSnapshot,
+                result: &ViewResult,
+            ) -> Result<ViewDecision> {
+                *self.received.borrow_mut() = Some((result.kind, result.value.clone()));
+                Ok(ViewDecision::Stay)
+            }
+        }
+
+        struct CommandSelectionChildView;
+        impl View for CommandSelectionChildView {
+            fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+                match event {
+                    ViewEvent::Input(InputEvent::Key {
+                        key: Key::Enter, ..
+                    }) => Ok(ViewDecision::Return(ViewResult::command_selection(
+                        serde_json::json!("app:run"),
+                    ))),
+                    _ => Ok(ViewDecision::Stay),
+                }
+            }
+            fn render(&self, _: &mut Frame, _: Rect, _: &RenderContext) -> Result<RenderResult> {
+                Ok(RenderResult::default())
+            }
+        }
+
+        struct CustomFactory;
+        impl ViewFactory for CustomFactory {
+            fn create(
+                &self,
+                req: &NavigationRequest,
+                _: ViewInstanceId,
+                _: &ViewServices<'_>,
+            ) -> Result<Box<dyn View>> {
+                if req.target == "child" {
+                    Ok(Box::new(CommandSelectionChildView))
+                } else {
+                    Ok(Box::new(TestView {
+                        runtime: Value::Null,
+                    }))
+                }
+            }
+        }
+
+        let received = Rc::new(RefCell::new(None));
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("root", "root");
+        routes.insert("child", "child");
+        let mut router = Router::new(Box::new(routes), Box::new(CustomFactory));
+        let root = router.push(request("root")).unwrap();
+        router
+            .call(
+                request("child"),
+                Continuation::Call(CallBoundary {
+                    caller: root,
+                    handler: Arc::new(TypedRecordingHandler {
+                        received: Rc::clone(&received),
+                    }),
+                }),
+            )
+            .unwrap();
+
+        router
+            .dispatch(ViewEvent::Input(InputEvent::Key {
+                key: Key::Enter,
+                raw: vec![b'\r'],
+            }))
+            .unwrap();
+
+        assert_eq!(router.active().unwrap().id, root);
+        assert_eq!(
+            *received.borrow(),
+            Some((
+                ViewResultKind::CommandSelection,
+                serde_json::json!("app:run")
+            ))
+        );
+    }
+
+    #[test]
     fn close_restores_a_parent_without_publishing_a_result_and_closes_a_root() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut routes = MapRouteCatalog::default();
@@ -2316,7 +2313,7 @@ mod tests {
                 call_boundary(child, Rc::clone(&calls), ViewDecision::Exit),
             )
             .unwrap();
-        router.pending_result = Some(ViewResult { value: Value::Null });
+        router.pending_result = Some(ViewResult::new(Value::Null));
         router
             .process_decision_inner(ViewDecision::CloseToRoot, &mut executor, Some(grandchild))
             .unwrap();
@@ -2379,7 +2376,7 @@ mod tests {
         let mut executor = None;
         router
             .process_decision_inner(
-                ViewDecision::Return(ViewResult { value: Value::Null }),
+                ViewDecision::Return(ViewResult::new(Value::Null)),
                 &mut executor,
                 Some(child),
             )
@@ -2420,9 +2417,7 @@ mod tests {
                 call_boundary(
                     root,
                     Rc::clone(&calls),
-                    ViewDecision::Return(ViewResult {
-                        value: Value::String("continued".to_string()),
-                    }),
+                    ViewDecision::Return(ViewResult::new(Value::String("continued".to_string()))),
                 ),
             )
             .unwrap();
@@ -2430,9 +2425,7 @@ mod tests {
         let mut executor = None;
         router
             .process_decision_inner(
-                ViewDecision::Return(ViewResult {
-                    value: Value::String("child-value".to_string()),
-                }),
+                ViewDecision::Return(ViewResult::new(Value::String("child-value".to_string()))),
                 &mut executor,
                 Some(child),
             )
@@ -2517,10 +2510,6 @@ mod tests {
     }
 
     impl View for CoverFailView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             if let ViewEvent::Lifecycle(lifecycle) = event {
                 self.events.borrow_mut().push(format!("{lifecycle:?}"));
@@ -2778,10 +2767,6 @@ mod tests {
     struct EffectView;
 
     impl View for EffectView {
-        fn bindings(&self, _: &ViewContext) -> BindingSet {
-            BindingSet::default()
-        }
-
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             if matches!(
                 event,
@@ -2891,24 +2876,13 @@ mod tests {
         routes.insert("child", "child");
         let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
         let root = router.push(request("root")).unwrap();
-        router
-            .set_global_action(
-                Key::Char('x'),
-                ViewDecision::Batch(vec![
-                    ViewDecision::Effect(EffectRequest::CopyToClipboard("value".into())),
-                    ViewDecision::Transition(TransitionRequest::Push(request("child"))),
-                ]),
-            )
-            .unwrap();
+        let decision = ViewDecision::Batch(vec![
+            ViewDecision::Effect(EffectRequest::CopyToClipboard("value".into())),
+            ViewDecision::Transition(TransitionRequest::Push(request("child"))),
+        ]);
         let mut executor = EffectRecorder { calls: Vec::new() };
         let error = router
-            .dispatch_with_effects(
-                ViewEvent::Input(InputEvent::Key {
-                    key: Key::Char('x'),
-                    raw: vec![b'x'],
-                }),
-                &mut executor,
-            )
+            .process_with_effects(decision, root, &mut executor)
             .unwrap_err();
         assert!(error.to_string().contains("cannot be combined"));
         assert!(executor.calls.is_empty());
@@ -2921,26 +2895,15 @@ mod tests {
         let mut routes = MapRouteCatalog::default();
         routes.insert("root", "root");
         let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-        router.push(request("root")).unwrap();
-        router
-            .set_global_action(
-                Key::Char('x'),
-                ViewDecision::Batch(vec![ViewDecision::Batch(vec![
-                    ViewDecision::Effect(EffectRequest::CopyToClipboard("first".into())),
-                    ViewDecision::Effect(EffectRequest::CopyToClipboard("second".into())),
-                ])]),
-            )
-            .unwrap();
+        let root = router.push(request("root")).unwrap();
+        let decision = ViewDecision::Batch(vec![ViewDecision::Batch(vec![
+            ViewDecision::Effect(EffectRequest::CopyToClipboard("first".into())),
+            ViewDecision::Effect(EffectRequest::CopyToClipboard("second".into())),
+        ])]);
         let mut executor = EffectRecorder { calls: Vec::new() };
         assert!(
             router
-                .dispatch_with_effects(
-                    ViewEvent::Input(InputEvent::Key {
-                        key: Key::Char('x'),
-                        raw: vec![b'x'],
-                    }),
-                    &mut executor,
-                )
+                .process_with_effects(decision, root, &mut executor)
                 .is_err()
         );
         assert!(executor.calls.is_empty());
@@ -2957,19 +2920,10 @@ mod tests {
         let mut routes = MapRouteCatalog::default();
         routes.insert("root", "root");
         let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-        router.push(request("root")).unwrap();
-        router
-            .set_global_action(Key::Char('x'), action.clone())
-            .unwrap();
+        let root = router.push(request("root")).unwrap();
         let mut executor = EffectRecorder { calls: Vec::new() };
         router
-            .dispatch_with_effects(
-                ViewEvent::Input(InputEvent::Key {
-                    key: Key::Char('x'),
-                    raw: vec![b'x'],
-                }),
-                &mut executor,
-            )
+            .process_with_effects(action.clone(), root, &mut executor)
             .unwrap();
         assert_eq!(executor.calls.len(), 1);
         assert!(router.stack().is_empty());
@@ -2977,17 +2931,10 @@ mod tests {
         let mut routes = MapRouteCatalog::default();
         routes.insert("root", "root");
         let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-        router.push(request("root")).unwrap();
-        router.set_global_action(Key::Char('x'), action).unwrap();
+        let root = router.push(request("root")).unwrap();
         assert!(
             router
-                .dispatch_with_effects(
-                    ViewEvent::Input(InputEvent::Key {
-                        key: Key::Char('x'),
-                        raw: vec![b'x'],
-                    }),
-                    &mut FailingEffectExecutor,
-                )
+                .process_with_effects(action, root, &mut FailingEffectExecutor)
                 .is_err()
         );
         assert_eq!(router.stack().len(), 1);
@@ -3010,34 +2957,6 @@ mod tests {
     }
 
     #[test]
-    fn global_action_registration_is_atomic_for_duplicate_physical_keys() {
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("root", "root");
-        let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-        assert!(
-            router
-                .set_global_actions([
-                    (
-                        Binding {
-                            key: Key::Char('g'),
-                            label: None
-                        },
-                        ViewDecision::Stay,
-                    ),
-                    (
-                        Binding {
-                            key: Key::Char('G'),
-                            label: None
-                        },
-                        ViewDecision::Exit,
-                    ),
-                ])
-                .is_err()
-        );
-        assert!(router.global_bindings().entries().is_empty());
-    }
-
-    #[test]
     fn router_commits_a_mounted_view_and_owns_stack() {
         let mut routes = MapRouteCatalog::default();
         routes.insert("default", "core:default");
@@ -3053,19 +2972,6 @@ mod tests {
             "core:default"
         );
 
-        router.set_global_bindings(BindingSet::new([Binding {
-            key: Key::Char('x'),
-            label: None,
-        }]));
-        assert_eq!(
-            router
-                .dispatch(ViewEvent::Input(InputEvent::Key {
-                    key: Key::Char('x'),
-                    raw: b"x".to_vec(),
-                }))
-                .unwrap(),
-            ViewDecision::Stay
-        );
         router
             .dispatch(ViewEvent::Input(InputEvent::Key {
                 key: Key::Enter,
@@ -3077,36 +2983,5 @@ mod tests {
             router.take_result().map(|result| result.value),
             Some(Value::String("done".into()))
         );
-    }
-
-    #[test]
-    fn popup_closing_records_popup_closed_flag_in_router() {
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("root", "core:root");
-        routes.insert("child_popup", "core:child_popup");
-        let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-
-        let root_request =
-            NavigationRequest::new("root", ParsedQuery::new("core:root", "query", Value::Null));
-        router.push(root_request).expect("mount succeeds");
-        assert!(!router.take_popup_closed());
-
-        let mut popup_request = NavigationRequest::new(
-            "child_popup",
-            ParsedQuery::new("core:child_popup", "query", Value::Null),
-        );
-        popup_request.presentation.mode = ViewPresentationMode::Popup;
-        router.push(popup_request).expect("mount popup succeeds");
-        assert!(!router.take_popup_closed());
-
-        router
-            .dispatch(ViewEvent::Input(InputEvent::Key {
-                key: Key::Enter,
-                raw: b"\r".to_vec(),
-            }))
-            .unwrap();
-
-        assert!(router.take_popup_closed());
-        assert!(!router.take_popup_closed());
     }
 }

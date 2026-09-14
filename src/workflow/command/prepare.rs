@@ -17,7 +17,10 @@ pub(crate) enum PreparedAction {
         mode: NavigationMode,
     },
     Call(CallRequest),
-    Return(Value),
+    Return {
+        kind: Option<String>,
+        value: Value,
+    },
     EditInput {
         value: String,
         cursor: usize,
@@ -55,14 +58,19 @@ fn prepare_action(
     context: CommandContext,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    prepare_producer_action(
-        config,
-        invocation,
-        action,
-        command_invocation,
-        context,
-        cancellation,
-    )
+    match action {
+        CommandAction::OpenCommands => {
+            prepare_builtin_commands(config, command_invocation, context)
+        }
+        _ => prepare_producer_action(
+            config,
+            invocation,
+            action,
+            command_invocation,
+            context,
+            cancellation,
+        ),
+    }
 }
 
 fn prepare_producer_action(
@@ -201,6 +209,7 @@ fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
         | CommandAction::Return { handler, .. }
         | CommandAction::EditInput { handler, .. }
         | CommandAction::Invoke { handler, .. } => Ok(handler),
+        CommandAction::OpenCommands => bail!("built-in commands do not have a producer handler"),
     }
 }
 
@@ -253,7 +262,9 @@ fn prepare_protocol_operation(
                 return_processor,
             }))
         }
-        crate::protocol::ProtocolOperation::Return { value } => Ok(PreparedAction::Return(value)),
+        crate::protocol::ProtocolOperation::Return { kind, value } => {
+            Ok(PreparedAction::Return { kind, value })
+        }
         crate::protocol::ProtocolOperation::Run {
             argv,
             exit,
@@ -308,19 +319,44 @@ fn prepared_direct_process(
     })
 }
 
+fn prepare_builtin_commands(
+    config: &CompiledConfig,
+    command_invocation: CommandInvocation,
+    context: CommandContext,
+) -> Result<PreparedAction> {
+    let target = config.resolve_view("selectors:commands")?;
+    let commands = collect_available_commands(config, &context.page.view_ref, true)?
+        .into_values()
+        .collect::<Vec<_>>();
+    let request = NavigationRequest::new(target, "")
+        .with_parameters(json!({"commands": commands}))
+        .with_presentation(crate::workflow::config::ViewPresentation {
+            mode: crate::workflow::config::ViewPresentationMode::Popup,
+            width: Some(72),
+            height: Some(16),
+        });
+    Ok(PreparedAction::Call(CallRequest {
+        request,
+        origin: command_invocation.origin(),
+        context,
+        return_processor: None,
+    }))
+}
+
 pub(crate) fn collect_available_commands(
     config: &CompiledConfig,
     page_view: &str,
-    owner_view: Option<&str>,
     include_globals: bool,
 ) -> Result<BTreeMap<String, Value>> {
     let mut commands = BTreeMap::new();
     if include_globals {
         for (id, command) in config.session_commands() {
-            commands.insert(
-                format!("session/{id}"),
-                runtime_command_value("session", &id, &command)?,
-            );
+            if id != "commands" {
+                commands.insert(
+                    format!("session/{id}"),
+                    runtime_command_value("session", &id, &command)?,
+                );
+            }
         }
     }
     if let Some(page) = config.view(page_view) {
@@ -331,26 +367,7 @@ pub(crate) fn collect_available_commands(
             );
         }
     }
-    if let Some(owner_view) = owner_view.filter(|owner| *owner != page_view) {
-        let Some(owner) = config.view(owner_view) else {
-            return Ok(commands);
-        };
-        for (id, command) in &owner.commands {
-            commands.insert(
-                format!("{owner_view}/{id}"),
-                runtime_command_value(owner_view, id, command)?,
-            );
-        }
-    }
     Ok(commands)
-}
-
-pub(crate) fn collect_page_owner_commands(
-    config: &CompiledConfig,
-    page_view: &str,
-    owner_view: Option<&str>,
-) -> Result<BTreeMap<String, Value>> {
-    collect_available_commands(config, page_view, owner_view, false)
 }
 
 pub(crate) fn resolve_visible_command(
@@ -358,9 +375,7 @@ pub(crate) fn resolve_visible_command(
     context: &CommandContext,
     reference: &CommandRef,
 ) -> Result<CommandInvocation> {
-    let owner = (context.owner.view_ref != context.page.view_ref)
-        .then_some(context.owner.view_ref.as_str());
-    let visible = collect_available_commands(config, &context.page.view_ref, owner, true)?;
+    let visible = collect_available_commands(config, &context.page.view_ref, true)?;
     let is_visible = visible.values().any(|value| {
         value.get("ref").is_some_and(|value| {
             value.get("view").and_then(Value::as_str) == Some(reference.view.as_str())
@@ -449,7 +464,7 @@ mod tests {
     #[test]
     fn fixture_commands_have_serializable_references() {
         let config = crate::workflow::config::load_test_fixture().unwrap();
-        let commands = collect_available_commands(&config, "dmenu:main", None, true).unwrap();
+        let commands = collect_available_commands(&config, "dmenu:main", true).unwrap();
         let (key, value) = commands.iter().next().expect("fixture exposes commands");
         let (view, id) = key.split_once('/').expect("command key has an owner");
         assert_eq!(value["ref"]["view"], view);

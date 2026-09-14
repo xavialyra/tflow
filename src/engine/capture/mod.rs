@@ -9,12 +9,11 @@ use self::keymap::{CaptureAction, CaptureKeymap};
 pub(crate) use self::render::CaptureRenderer;
 use self::session::CaptureSession;
 use super::{
-    ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission, EngineNotice,
-    EngineRuntime, EngineValidationContext, InputBindingFactoryContext, ProjectedEngineConfig,
-    RenderModel, RendererFactoryContext, RuntimeFactoryContext, ViewContextPublication,
-    require_field, validate_fields,
+    BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission, EngineNotice,
+    EngineRuntime, EngineValidationContext, ProjectedEngineConfig, RenderModel,
+    RendererFactoryContext, RuntimeFactoryContext, ViewContextPublication, require_field,
+    validate_fields,
 };
-use crate::workflow::command::ResolvedInputAction;
 use crate::workflow::config::{
     Defaults, ProducerKind, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
 };
@@ -185,27 +184,6 @@ pub(super) fn create_renderer(
     _context: RendererFactoryContext,
 ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
     Ok(Box::new(CaptureRenderer))
-}
-
-pub(crate) fn create_input_bindings(
-    context: InputBindingFactoryContext,
-) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
-    let keymap =
-        CaptureKeymap::from_values(context.bindings.defaults, context.bindings.view_keymap)?;
-    Ok(keymap
-        .bindings()
-        .map(
-            |(key, action)| crate::workflow::command::InputActionBinding {
-                key,
-                action: ResolvedInputAction::Engine(ActionId::new(match action {
-                    CaptureAction::Copy => "capture.copy",
-                    CaptureAction::Back => "capture.back",
-                })),
-                label: Some(action.label().to_string()),
-                enabled: true,
-            },
-        )
-        .collect())
 }
 
 fn prepare_output(

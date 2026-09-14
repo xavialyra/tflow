@@ -4,7 +4,6 @@ use crate::engine::{
 };
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
-use crate::protocol::ViewCommandBindings;
 use crate::protocol::contracts::ViewInstanceId;
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{NavigationRequest, View, ViewFactory, ViewServices};
@@ -69,7 +68,7 @@ impl ProtocolViewFactory {
     fn runtime_snapshot(&self, target: &str, parameters: &ParameterSnapshot) -> Result<Value> {
         let raw = parameters.raw_input();
         let commands =
-            crate::workflow::command::collect_available_commands(&self.config, target, None, true)?
+            crate::workflow::command::collect_available_commands(&self.config, target, true)?
                 .into_values()
                 .collect::<Vec<_>>();
         Ok(serde_json::json!({
@@ -168,11 +167,6 @@ impl ViewFactory for ProtocolViewFactory {
                     })
                     .collect::<Result<BTreeMap<_, _>>>()?;
                 let config = PickerProtocolConfig {
-                    commands: ViewCommandBindings::new(
-                        &self.config,
-                        target,
-                        self.cancellation.observer(),
-                    )?,
                     identity: crate::engine::ViewIdentity::new(
                         target,
                         crate::workflow::config::ENGINE_PICKER,
@@ -198,7 +192,6 @@ impl ViewFactory for ProtocolViewFactory {
                     target,
                     engine,
                     bindings,
-                    ViewCommandBindings::new(&self.config, target, self.cancellation.observer())?,
                     self.cancellation.observer(),
                     runtime_snapshot,
                     self.theme.clone(),
@@ -215,7 +208,6 @@ impl ViewFactory for ProtocolViewFactory {
                     target,
                     engine,
                     bindings,
-                    ViewCommandBindings::new(&self.config, target, self.cancellation.observer())?,
                     self.cancellation.observer(),
                     runtime_snapshot,
                     parameters,

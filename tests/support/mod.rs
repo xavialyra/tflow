@@ -234,6 +234,18 @@ fn prepare_exec(arguments: Vec<String>, overrides: &[(&str, &str)]) -> PreparedE
     ));
     fs::create_dir_all(&state_home).expect("could not create test XDG state directory");
     let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    if let Some(bin_dir) = binary_path().parent() {
+        let current_path = environment
+            .get(std::ffi::OsStr::new("PATH"))
+            .cloned()
+            .unwrap_or_default();
+        let mut new_path = bin_dir.as_os_str().to_os_string();
+        if !current_path.is_empty() {
+            new_path.push(":");
+            new_path.push(current_path);
+        }
+        environment.insert(OsString::from("PATH"), new_path);
+    }
     environment.insert(
         OsString::from("XDG_STATE_HOME"),
         OsString::from(state_home.as_os_str()),

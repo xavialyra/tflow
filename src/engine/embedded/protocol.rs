@@ -16,9 +16,8 @@ use crate::lifecycle::CancellationObserver;
 use crate::protocol::contracts::ViewInstanceId;
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, EffectRequest, LifecycleEvent, RelativeCursor, RenderContext,
-    RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication,
-    ViewResult,
+    EffectRequest, LifecycleEvent, RelativeCursor, RenderContext, RenderResult, View,
+    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewResult,
 };
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
@@ -26,7 +25,6 @@ use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
 
 pub(crate) struct EmbeddedProtocolConfig {
-    pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
     pub(crate) engine: ProjectedEngineConfig,
     pub(crate) bindings: ProjectedBindingConfig,
@@ -41,14 +39,12 @@ impl EmbeddedProtocolConfig {
         view_ref: impl Into<String>,
         engine: ProjectedEngineConfig,
         bindings: ProjectedBindingConfig,
-        commands: crate::protocol::ViewCommandBindings,
         cancellation: CancellationObserver,
         runtime_snapshot: Value,
         parameters: ParameterSnapshot,
         theme: ResolvedTheme,
     ) -> Self {
         Self {
-            commands,
             identity: ViewIdentity::new(view_ref, crate::workflow::config::ENGINE_EMBEDDED),
             engine,
             bindings,
@@ -107,7 +103,6 @@ fn create_protocol_view_state(
         runtime,
         renderer,
         bindings,
-        commands: config.commands,
         theme: config.theme,
         input_raw,
         parameters,
@@ -132,7 +127,6 @@ struct EmbeddedProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     bindings: Vec<crate::workflow::command::InputActionBinding>,
-    commands: crate::protocol::ViewCommandBindings,
     theme: ResolvedTheme,
     input_raw: String,
     parameters: ParameterSnapshot,
@@ -301,7 +295,7 @@ impl EmbeddedProtocolView {
             ExternalTickAction::Return(value) => {
                 self.terminal_finished = true;
                 self.external_ack_pending = true;
-                Ok(ViewDecision::Return(ViewResult { value }))
+                Ok(ViewDecision::Return(ViewResult::new(value)))
             }
             ExternalTickAction::Close => {
                 self.terminal_finished = true;
@@ -333,44 +327,20 @@ impl RawInputReceiver for EmbeddedProtocolView {
 }
 
 impl View for EmbeddedProtocolView {
-    fn bindings(&self, _: &ViewContext) -> BindingSet {
-        let commands = self.commands.bindings.iter().filter(|binding| {
-            binding.invocation.view_reference().is_none() || binding.invocation.command.passthrough
-        });
-        BindingSet::new(
-            commands
-                .map(|binding| Binding {
-                    key: binding.key,
-                    label: binding.label.clone(),
-                })
-                .chain(
-                    self.bindings
-                        .iter()
-                        .filter(|binding| binding.enabled)
-                        .map(|binding| Binding {
-                            key: binding.key,
-                            label: binding.label.clone(),
-                        }),
-                ),
-        )
-    }
-
-    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
-        Some(&self.commands)
-    }
-
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
 
-    fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+    fn chrome(&self, _context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         let chrome = self.renderer.chrome(&model);
         Ok(crate::view::ViewChrome {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
-            bindings: Some(self.bindings(context)),
+            bindings: None,
+            overflow_command: None,
+            has_unbound: false,
         })
     }
 
@@ -382,6 +352,7 @@ impl View for EmbeddedProtocolView {
             runtime: self.runtime_snapshot.clone(),
             publication: self.publication.clone(),
             revision: self.state_revision,
+            owner_view: None,
         }
     }
 
@@ -424,13 +395,6 @@ impl View for EmbeddedProtocolView {
                 crate::view::operation_failure("Embedded does not provide an editable input"),
             ),
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                if let Some(binding) = self.commands.binding(key) {
-                    if binding.invocation.view_reference().is_none()
-                        || binding.invocation.command.passthrough
-                    {
-                        return Ok(self.commands.request(binding, None));
-                    }
-                }
                 if self.keymap_action(key).is_some() {
                     return self.action(context, ActionId::new("embedded.cancel"));
                 }
@@ -487,7 +451,7 @@ impl View for EmbeddedProtocolView {
             metadata: crate::view::ViewMetadata {
                 status: self.status.clone().or(chrome.status),
                 error: self.error.clone(),
-                bindings: Some(self.bindings(&ViewContext::new(self.instance, "embedded"))),
+                bindings: None,
             },
         })
     }
@@ -561,12 +525,6 @@ mod tests {
                 ..ProjectedEngineConfig::default()
             },
             ProjectedBindingConfig::default(),
-            crate::protocol::ViewCommandBindings::new(
-                &crate::workflow::config::load_test_fixture().unwrap(),
-                "embedded",
-                crate::lifecycle::CancellationToken::new().observer(),
-            )
-            .unwrap(),
             crate::lifecycle::CancellationToken::new().observer(),
             serde_json::json!({"view": {"current": {}}}),
             ParameterSnapshot::from_parts(

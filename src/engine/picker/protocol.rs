@@ -21,12 +21,12 @@ use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, EffectRequest, LifecycleEvent, NavigationRequest, ParsedQuery,
-    RenderContext, RenderResult, RouteCandidate, RouteCatalog, TransitionRequest, View,
-    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    EffectRequest, LifecycleEvent, NavigationRequest, ParsedQuery, RenderContext, RenderResult,
+    RouteCandidate, RouteCatalog, TransitionRequest, View, ViewCommandSnapshot, ViewContext,
+    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -45,7 +45,6 @@ use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone)]
 pub(crate) struct PickerProtocolConfig {
-    pub(crate) commands: crate::protocol::ViewCommandBindings,
     pub(crate) identity: ViewIdentity,
     pub(crate) engine: ProjectedEngineConfig,
     pub(crate) bindings: ProjectedBindingConfig,
@@ -188,8 +187,6 @@ pub(crate) fn create_protocol_view(
         runtime,
         renderer,
         keymap,
-        bindings,
-        commands: config.commands,
         route_candidates,
         recognized_route_selectors,
         route_schemas,
@@ -215,7 +212,6 @@ pub(crate) fn create_protocol_view(
         activated_once: false,
         closed: false,
         completion: None,
-        pending_command: None,
         route_transition_pending: false,
         defer_work_poll: false,
         task_completion_pending: false,
@@ -306,20 +302,11 @@ struct CompletionState {
     range: Range<usize>,
 }
 
-struct PendingCommand {
-    invocation: crate::workflow::command::CommandInvocation,
-    dynamic_owner: Option<String>,
-    editor_generation: u64,
-    projected_command: Option<(String, String)>,
-}
-
 struct PickerProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     options: PickerOptions,
     keymap: PickerKeymap,
-    bindings: Vec<crate::workflow::command::InputActionBinding>,
-    commands: crate::protocol::ViewCommandBindings,
     route_candidates: Vec<RouteCandidate>,
     recognized_route_selectors: HashSet<String>,
     route_schemas: BTreeMap<String, crate::view::QuerySchema>,
@@ -345,7 +332,6 @@ struct PickerProtocolView {
     activated_once: bool,
     closed: bool,
     completion: Option<CompletionState>,
-    pending_command: Option<PendingCommand>,
     route_transition_pending: bool,
     defer_work_poll: bool,
     task_completion_pending: bool,
@@ -416,7 +402,6 @@ impl PickerProtocolView {
 
     fn edit_changed(&mut self, context: &ViewContext) -> Result<ViewDecision> {
         self.completion = None;
-        self.pending_command = None;
         self.task_completion_pending = false;
         if self.parse_editor(context)? {
             let committed = self.runtime.input_committed(self.engine_context.clone())?;
@@ -558,170 +543,6 @@ impl PickerProtocolView {
             .then_some(selector.len())
     }
 
-    fn has_command_output(&self, _: &ViewContext) -> bool {
-        self.publication_ready
-            && self.publication.as_ref().is_some_and(|publication| {
-                let current = &publication.current;
-                !current.is_null()
-                    && current
-                        .as_object()
-                        .and_then(|values| values.get("item"))
-                        .is_some_and(|item| !item.is_null())
-            })
-    }
-
-    fn can_dispatch_command(
-        &self,
-        context: &ViewContext,
-        _invocation: &crate::workflow::command::CommandInvocation,
-    ) -> bool {
-        self.publication_ready
-            && self.publication.is_some()
-            && (self.has_command_output(context) || !self.editor.raw.is_empty())
-    }
-
-    fn dispatch_command_key(
-        &mut self,
-        context: &ViewContext,
-        key: crate::input::Key,
-        defer_until_ready: bool,
-    ) -> Result<Option<ViewDecision>> {
-        let projection = self.runtime.command_projection(&self.engine_context)?;
-        anyhow::ensure!(
-            projection.based_on == self.engine_context.identity(),
-            "picker command projection is based on a stale ViewContext"
-        );
-        let static_binding = self.commands.binding(key).cloned();
-        let static_global = static_binding
-            .as_ref()
-            .is_some_and(|binding| binding.invocation.view_reference().is_none());
-        let projected = (!static_global)
-            .then(|| {
-                projection
-                    .bindings
-                    .into_iter()
-                    .find(|binding| binding.key.binding_identity() == key.binding_identity())
-            })
-            .flatten();
-        if projected.is_none() && static_binding.is_none() {
-            return Ok(None);
-        }
-        let projected_enabled = projected.as_ref().map(|binding| binding.enabled);
-        let projected_command = projected
-            .as_ref()
-            .map(|binding| (binding.command.owner.clone(), binding.command.id.clone()));
-        let (invocation, dynamic_owner) = if let Some(binding) = projected {
-            if binding.command.owner == context.location.target {
-                let binding = static_binding.with_context(|| {
-                    format!(
-                        "projected page command {}/{} has no configured binding",
-                        binding.command.owner, binding.command.id
-                    )
-                })?;
-                (binding.invocation, None)
-            } else {
-                let invocation = self
-                    .commands
-                    .view_invocation(&binding.command.owner, &binding.command.id)?;
-                (invocation, Some(binding.command.owner))
-            }
-        } else {
-            (
-                static_binding
-                    .expect("a command binding was checked above")
-                    .invocation,
-                None,
-            )
-        };
-        let pending = PendingCommand {
-            invocation,
-            dynamic_owner,
-            editor_generation: self.editor.revision,
-            projected_command,
-        };
-        if defer_until_ready && !self.can_dispatch_command(context, &pending.invocation) {
-            self.pending_command = Some(pending);
-            return Ok(Some(ViewDecision::Stay));
-        }
-        if projected_enabled == Some(false) {
-            return Ok(Some(ViewDecision::Stay));
-        }
-        Ok(Some(self.command_request(pending)?))
-    }
-
-    fn command_request(&self, pending: PendingCommand) -> Result<ViewDecision> {
-        let owner = pending
-            .dynamic_owner
-            .as_deref()
-            .map(|owner| {
-                self.runtime
-                    .command_owner_context(&self.engine_context, owner)?
-                    .with_context(|| {
-                        format!(
-                            "command owner {:?} is unavailable in the current ViewContext",
-                            owner
-                        )
-                    })
-            })
-            .transpose()?;
-        Ok(self
-            .commands
-            .request_for_invocation(pending.invocation, owner))
-    }
-
-    fn dispatch_pending_command(&mut self, context: &ViewContext) -> Result<Option<ViewDecision>> {
-        let Some(pending) = self.pending_command.as_ref() else {
-            return Ok(None);
-        };
-        if pending.editor_generation != self.editor.revision {
-            self.pending_command = None;
-            return Ok(Some(ViewDecision::Stay));
-        }
-        if !self.can_dispatch_command(context, &pending.invocation) {
-            return Ok(None);
-        }
-        if let Some((owner, id)) = &pending.projected_command {
-            let projection = self.runtime.command_projection(&self.engine_context)?;
-            anyhow::ensure!(
-                projection.based_on == self.engine_context.identity(),
-                "picker command projection is based on a stale ViewContext"
-            );
-            let enabled = projection.bindings.into_iter().find_map(|binding| {
-                (binding.command.owner == *owner && binding.command.id == *id)
-                    .then_some(binding.enabled)
-            });
-            if enabled != Some(true) {
-                self.pending_command = None;
-                return Ok(Some(ViewDecision::Stay));
-            }
-        }
-        self.pending_command
-            .take()
-            .map(|pending| self.command_request(pending))
-            .transpose()
-    }
-
-    fn combine_pending_command(
-        &mut self,
-        context: &ViewContext,
-        decision: ViewDecision,
-    ) -> Result<ViewDecision> {
-        let Some(pending) = self.dispatch_pending_command(context)? else {
-            return Ok(decision);
-        };
-        Ok(match decision {
-            ViewDecision::Stay => pending,
-            ViewDecision::Invalidate => {
-                ViewDecision::Batch(vec![ViewDecision::Invalidate, pending])
-            }
-            ViewDecision::Batch(mut decisions) if decisions.iter().all(passive_decision) => {
-                decisions.push(pending);
-                ViewDecision::Batch(decisions)
-            }
-            _ => bail!("a pending Picker command cannot follow a structural decision"),
-        })
-    }
-
     fn map_emission(
         &mut self,
         context: &ViewContext,
@@ -784,10 +605,7 @@ impl PickerProtocolView {
                 self.rebuild_context(context);
                 Ok(ViewDecision::Invalidate)
             }
-            EngineDecision::Close => {
-                self.pending_command = None;
-                Ok(ViewDecision::Close)
-            }
+            EngineDecision::Close => Ok(ViewDecision::Close),
             EngineDecision::Exit => Ok(ViewDecision::Exit),
             EngineDecision::Execute(crate::engine::EffectRequest::CopyToClipboard(value)) => {
                 Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(value)))
@@ -846,7 +664,9 @@ impl PickerProtocolView {
 
     fn open_completion(&mut self) {
         let Some(range) = self.completion_range() else {
-            self.completion = None;
+            if self.completion.take().is_some() {
+                self.state_revision = self.state_revision.wrapping_add(1);
+            }
             return;
         };
         let prefix = &self.editor.raw[range.clone()];
@@ -881,6 +701,7 @@ impl PickerProtocolView {
             selected: 0,
             range,
         });
+        self.state_revision = self.state_revision.wrapping_add(1);
     }
 
     fn completion_move(&mut self, direction: isize) -> bool {
@@ -899,6 +720,7 @@ impl PickerProtocolView {
         let Some(completion) = self.completion.take() else {
             return Ok(ViewDecision::Stay);
         };
+        self.state_revision = self.state_revision.wrapping_add(1);
         if completion.source_instance != self.instance
             || completion.source_revision != self.editor.revision
         {
@@ -1027,97 +849,11 @@ impl View for PickerProtocolView {
         1
     }
 
-    fn bindings(&self, _: &ViewContext) -> BindingSet {
-        let commands = self.commands.view_bindings();
-        let mut entries = commands
-            .entries()
-            .iter()
-            .cloned()
-            .chain(
-                self.bindings
-                    .iter()
-                    .filter(|binding| binding.enabled)
-                    .map(|binding| Binding {
-                        key: binding.key,
-                        label: binding.label.clone(),
-                    }),
-            )
-            .collect::<Vec<_>>();
-        if let Ok(projection) = self.runtime.command_projection(&self.engine_context) {
-            for command in projection.bindings {
-                let has_global_binding = self.commands.bindings.iter().any(|binding| {
-                    binding.key.binding_identity() == command.key.binding_identity()
-                        && binding.invocation.view_reference().is_none()
-                });
-                if has_global_binding {
-                    continue;
-                }
-                entries.retain(|binding| {
-                    binding.key.binding_identity() != command.key.binding_identity()
-                });
-                if command.enabled {
-                    entries.push(Binding {
-                        key: command.key,
-                        label: command.label,
-                    });
-                }
-            }
-        }
-        BindingSet::new(entries)
-    }
-
-    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
-        Some(&self.commands)
-    }
-
-    fn command_owner_context(
-        &self,
-        _context: &ViewContext,
-        owner: &str,
-    ) -> Result<Option<crate::workflow::command::CommandOwnerContext>> {
-        self.runtime
-            .command_owner_context(&self.engine_context, owner)
-    }
-
-    fn business_bindings(&self, _context: &ViewContext) -> BindingSet {
-        let mut entries = self
-            .commands
-            .business
-            .iter()
-            .filter_map(|(key, label)| {
-                key.map(|key| Binding {
-                    key,
-                    label: Some(label.clone()),
-                })
-            })
-            .collect::<Vec<_>>();
-        if let Ok(projection) = self.runtime.command_projection(&self.engine_context) {
-            for command in projection
-                .bindings
-                .into_iter()
-                .filter(|binding| binding.enabled)
-            {
-                if let Some(label) = command.label {
-                    entries.push(Binding {
-                        key: command.key,
-                        label: Some(label),
-                    });
-                }
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        BindingSet::new(
-            entries
-                .into_iter()
-                .filter(|binding| seen.insert(binding.key.binding_identity())),
-        )
-    }
-
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
 
-    fn chrome(&self, context: &ViewContext) -> Result<crate::view::ViewChrome> {
+    fn chrome(&self, _context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         let mut status = self.renderer.chrome(&model).status;
@@ -1131,8 +867,18 @@ impl View for PickerProtocolView {
         Ok(crate::view::ViewChrome {
             status,
             error: self.diagnostic.clone(),
-            bindings: Some(self.bindings(context)),
+            bindings: None,
+            overflow_command: None,
+            has_unbound: false,
         })
+    }
+
+    fn engine_commands(&self, _context: &ViewContext) -> Option<Vec<crate::command::CommandEntry>> {
+        if self.completion.is_some() {
+            Some(Vec::new())
+        } else {
+            None
+        }
     }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
@@ -1143,6 +889,7 @@ impl View for PickerProtocolView {
             runtime: self.runtime_snapshot.clone(),
             publication: self.publication.clone(),
             revision: self.state_revision,
+            owner_view: self.runtime.selected_item_owner(),
         }
     }
 
@@ -1174,7 +921,6 @@ impl View for PickerProtocolView {
                 self.active = false;
                 self.runtime.suspend_auxiliary_work();
                 self.task_registry.invalidate(TaskId(2));
-                self.pending_command = None;
                 self.defer_work_poll = false;
                 self.task_completion_pending = false;
                 Ok(ViewDecision::Stay)
@@ -1182,7 +928,6 @@ impl View for PickerProtocolView {
             ViewEvent::Lifecycle(LifecycleEvent::Closing) => {
                 self.active = false;
                 self.task_registry.invalidate_all();
-                self.pending_command = None;
                 self.defer_work_poll = false;
                 self.task_completion_pending = false;
                 self.runtime.deactivate();
@@ -1228,10 +973,8 @@ impl View for PickerProtocolView {
                     && !self.disabled_keys.contains(&key.binding_identity())
                 {
                     self.completion = None;
+                    self.state_revision = self.state_revision.wrapping_add(1);
                     return Ok(ViewDecision::Invalidate);
-                }
-                if let Some(decision) = self.dispatch_command_key(context, key, true)? {
-                    return Ok(decision);
                 }
                 if self.disabled_keys.contains(&key.binding_identity()) {
                     return Ok(ViewDecision::Stay);
@@ -1261,6 +1004,7 @@ impl View for PickerProtocolView {
             ViewEvent::Input(InputEvent::Paste { text: None, .. })
             | ViewEvent::Input(InputEvent::Bytes(_)) => {
                 if self.completion.take().is_some() {
+                    self.state_revision = self.state_revision.wrapping_add(1);
                     Ok(ViewDecision::Invalidate)
                 } else {
                     Ok(ViewDecision::Stay)
@@ -1282,7 +1026,7 @@ impl View for PickerProtocolView {
                     if let Some(emission) = self.runtime.poll_work()? {
                         self.task_registry.invalidate(task.task);
                         let decision = self.map_emission(context, emission)?;
-                        self.combine_pending_command(context, decision)
+                        Ok(decision)
                     } else {
                         Ok(ViewDecision::Stay)
                     }
@@ -1302,7 +1046,7 @@ impl View for PickerProtocolView {
                     self.task_completion_pending = false;
                     if let Some(emission) = self.runtime.poll_work()? {
                         let decision = self.map_emission(context, emission)?;
-                        return self.combine_pending_command(context, decision);
+                        return Ok(decision);
                     }
                 }
                 let emission = self.runtime.tick(EngineTick {
@@ -1311,7 +1055,7 @@ impl View for PickerProtocolView {
                 })?;
                 let decision = self.map_emission(context, emission)?;
                 self.start_prepared_work();
-                self.combine_pending_command(context, decision)
+                Ok(decision)
             }
             ViewEvent::Tick => Ok(ViewDecision::Stay),
             ViewEvent::Resize(size) => {
@@ -1436,17 +1180,9 @@ impl View for PickerProtocolView {
             metadata: crate::view::ViewMetadata {
                 status: self.renderer.chrome(&model).status,
                 error: self.diagnostic.clone(),
-                bindings: Some(self.bindings(&ViewContext::new(self.instance, "picker"))),
+                bindings: None,
             },
         })
-    }
-}
-
-fn passive_decision(decision: &ViewDecision) -> bool {
-    match decision {
-        ViewDecision::Stay | ViewDecision::Invalidate => true,
-        ViewDecision::Batch(decisions) => decisions.iter().all(passive_decision),
-        _ => false,
     }
 }
 
@@ -1681,6 +1417,7 @@ mod tests {
     use super::*;
     use crate::engine::ProjectedBindingConfig;
     use crate::view::{MapRouteCatalog, RouteCatalog, ViewContext};
+    use anyhow::bail;
     use ratatui::style::{Color, Style};
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::{
@@ -1703,12 +1440,6 @@ mod tests {
         let config = crate::workflow::config::load_test_fixture().unwrap();
         let parameter_binding = config.parameter_binding("core:default").unwrap();
         PickerProtocolConfig {
-            commands: crate::protocol::ViewCommandBindings::new(
-                &config,
-                "core:default",
-                crate::lifecycle::CancellationToken::new().observer(),
-            )
-            .unwrap(),
             identity: ViewIdentity::new("core:default", crate::workflow::config::ENGINE_PICKER),
             engine: ProjectedEngineConfig::default(),
             bindings: ProjectedBindingConfig::default(),
@@ -1739,18 +1470,6 @@ mod tests {
         assert_eq!(request.query, query);
         assert_eq!(request.input.as_ref().unwrap().cursor, 3);
         let _ = ViewContext::new(ViewInstanceId(1), "picker");
-    }
-
-    #[test]
-    fn pending_commands_can_follow_nested_passive_batches_only() {
-        assert!(passive_decision(&ViewDecision::Batch(vec![
-            ViewDecision::Invalidate,
-            ViewDecision::Batch(vec![ViewDecision::Stay, ViewDecision::Invalidate]),
-        ])));
-        assert!(!passive_decision(&ViewDecision::Batch(vec![
-            ViewDecision::Invalidate,
-            ViewDecision::Exit,
-        ])));
     }
 
     #[test]
@@ -1936,19 +1655,11 @@ mod tests {
             },
             0,
         );
-        let fixture = crate::workflow::config::load_test_fixture().unwrap();
         PickerProtocolView {
             runtime,
             renderer: create_renderer(RendererFactoryContext).unwrap(),
             options: PickerOptions::default(),
             keymap: PickerKeymap::from_values(None, None).unwrap(),
-            bindings: Vec::new(),
-            commands: crate::protocol::ViewCommandBindings::new(
-                &fixture,
-                "core:default",
-                crate::lifecycle::CancellationToken::new().observer(),
-            )
-            .unwrap(),
             route_candidates: Vec::new(),
             recognized_route_selectors: HashSet::new(),
             route_schemas: BTreeMap::new(),
@@ -1982,7 +1693,6 @@ mod tests {
             activated_once: false,
             closed: false,
             completion: None,
-            pending_command: None,
             route_transition_pending: false,
             defer_work_poll: false,
             task_completion_pending: false,
@@ -2607,6 +2317,22 @@ mod tests {
     }
 
     #[test]
+    fn builtin_commands_are_an_internal_action() {
+        let binding = crate::workflow::config::CommandBinding::builtin_commands();
+        let action = binding
+            .command_action("commands")
+            .expect("commands action should exist");
+        assert!(matches!(
+            action,
+            crate::workflow::config::CommandAction::OpenCommands
+        ));
+    }
+}
+
+#[cfg(test)]
+mod preview_correlation_tests {
+    use super::*;
+    #[test]
     fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
         let config = crate::workflow::config::CompiledConfig::load_unvalidated(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2628,12 +2354,6 @@ mod tests {
         .unwrap();
         let definition = engines.definition(&config, page).unwrap();
         let protocol_config = PickerProtocolConfig {
-            commands: crate::protocol::ViewCommandBindings::new(
-                &config,
-                page,
-                crate::lifecycle::CancellationToken::new().observer(),
-            )
-            .unwrap(),
             identity: ViewIdentity::new(page, "picker"),
             engine: crate::engine::project_engine_config(&config, page, &definition, Value::Null)
                 .unwrap(),

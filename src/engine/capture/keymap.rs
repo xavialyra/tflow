@@ -9,13 +9,6 @@ pub(super) enum CaptureAction {
 
 impl CaptureAction {
     const ALL: [Self; 2] = [Self::Copy, Self::Back];
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Copy => "Copy",
-            Self::Back => "Back",
-        }
-    }
 }
 
 impl KeymapAction for CaptureAction {
