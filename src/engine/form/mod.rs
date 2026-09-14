@@ -10,17 +10,14 @@ use crate::engine::{
     EngineDefinition, EngineValidationContext, FactoryFieldPlan, ProjectedEngineConfig,
 };
 use crate::input::{InputEvent, Key, ViewMountId};
-use crate::protocol::{
-    ViewCommandBindings,
-    contracts::{TaskId, ViewInstanceId},
-};
+use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{
     MountTaskLease, MountTaskStarter, TaskCompletion, TaskHandle, TaskRuntime, TaskTags,
 };
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    Binding, BindingSet, LifecycleEvent, NavigationRequest, View, ViewChrome, ViewCommandSnapshot,
-    ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    LifecycleEvent, NavigationRequest, View, ViewChrome, ViewCommandSnapshot, ViewContext,
+    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::config::{
     ProducerKind, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
@@ -80,7 +77,6 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
 
 pub(crate) struct FormProtocolConfig {
     pub(crate) engine: ProjectedEngineConfig,
-    pub(crate) commands: ViewCommandBindings,
     pub(crate) runtime_snapshot: Value,
     pub(crate) raw_input: String,
     pub(crate) theme: ResolvedTheme,
@@ -101,7 +97,6 @@ struct FormView {
     parameters: Value,
     raw_input: String,
     runtime_snapshot: Value,
-    commands: ViewCommandBindings,
     theme: ResolvedTheme,
     fields: Vec<Draft>,
     focus: usize,
@@ -146,7 +141,6 @@ impl FormView {
             parameters: request.query.values.clone(),
             raw_input: config.raw_input,
             runtime_snapshot: config.runtime_snapshot,
-            commands: config.commands,
             theme: config.theme,
             fields,
             focus: 0,
@@ -306,34 +300,6 @@ impl FormView {
 }
 
 impl View for FormView {
-    fn bindings(&self, _: &ViewContext) -> BindingSet {
-        let commands = self.commands.view_bindings();
-        BindingSet::new(
-            commands.entries().iter().cloned().chain(
-                [
-                    Binding {
-                        key: Key::Tab,
-                        label: Some("Next field".into()),
-                    },
-                    Binding {
-                        key: Key::BackTab,
-                        label: Some("Previous field".into()),
-                    },
-                    Binding {
-                        key: Key::Escape,
-                        label: Some("Back".into()),
-                    },
-                ]
-                .into_iter()
-                .filter(|b| !commands.contains(b.key)),
-            ),
-        )
-    }
-
-    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
-        Some(&self.commands)
-    }
-
     fn publication(&self) -> Option<&ViewPublication> {
         Some(&self.publication)
     }
@@ -346,14 +312,17 @@ impl View for FormView {
             runtime: self.runtime_snapshot.clone(),
             publication: Some(self.publication.clone()),
             revision: self.revision,
+            owner_view: None,
         }
     }
 
-    fn chrome(&self, context: &ViewContext) -> Result<ViewChrome> {
+    fn chrome(&self, _context: &ViewContext) -> Result<ViewChrome> {
         Ok(ViewChrome {
             status: Some(self.status().into()),
             error: self.error.clone(),
-            bindings: Some(self.bindings(context)),
+            bindings: None,
+            overflow_command: None,
+            has_unbound: false,
         })
     }
 
@@ -392,20 +361,12 @@ impl View for FormView {
             }
             ViewEvent::Task(task) if self.registry.accepts(&task) => self.poll(),
             ViewEvent::Input(InputEvent::Eof) => ViewDecision::Exit,
-            ViewEvent::Input(InputEvent::Key { key, .. }) if self.active => {
-                // Commands, including the command palette, remain available
-                // while content is loading or field drafts are invalid.
-                if let Some(binding) = self.commands.binding(key) {
-                    self.commands.request(binding, None)
-                } else {
-                    match key {
-                        Key::Escape => ViewDecision::Close,
-                        Key::Ctrl('c' | 'd') => ViewDecision::Exit,
-                        _ if self.publication.ready => self.edit(key),
-                        _ => ViewDecision::Stay,
-                    }
-                }
-            }
+            ViewEvent::Input(InputEvent::Key { key, .. }) if self.active => match key {
+                Key::Escape => ViewDecision::Close,
+                Key::Ctrl('c' | 'd') => ViewDecision::Exit,
+                _ if self.publication.ready => self.edit(key),
+                _ => ViewDecision::Stay,
+            },
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..
             }) if self.active && self.publication.ready => {

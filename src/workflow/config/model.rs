@@ -224,33 +224,19 @@ pub(crate) struct ReturnProcessor {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum CommandScope {
-    View,
-    #[default]
-    Selection,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
 pub enum CommandRequirement {
     Input,
     #[default]
     Items,
 }
 
-/// Visibility of Engine-owned selection controls. This is not used for
-/// configured business-command presentation.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum CommandBindingVisibility {
-    #[default]
-    Always,
-    Hidden,
-}
-
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
+    #[serde(skip)]
+    OpenCommands,
+    #[serde(skip)]
+    OpenParameters,
     Run {
         producer: ProducerKind,
         handler: toml::Value,
@@ -282,6 +268,7 @@ pub enum CommandAction {
 impl CommandAction {
     pub(crate) fn producer(&self) -> Option<ProducerKind> {
         match self {
+            CommandAction::OpenCommands | CommandAction::OpenParameters => None,
             CommandAction::Run { producer, .. }
             | CommandAction::Navigate { producer, .. }
             | CommandAction::Call { producer, .. }
@@ -293,6 +280,8 @@ impl CommandAction {
 
     pub(crate) fn operation_type(&self) -> &'static str {
         match self {
+            CommandAction::OpenCommands => "open-commands",
+            CommandAction::OpenParameters => "open-parameters",
             CommandAction::Run { .. } => "run",
             CommandAction::Navigate { .. } => "navigate",
             CommandAction::Call { .. } => "call",
@@ -301,6 +290,15 @@ impl CommandAction {
             CommandAction::Invoke { .. } => "invoke",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CommandBindingVisibility {
+    #[default]
+    Always,
+    Overflow,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -314,6 +312,7 @@ pub(crate) struct CommandConfig {
 pub(crate) struct CommandBinding {
     pub(crate) key: Option<String>,
     pub(crate) label: Option<String>,
+    pub(crate) visibility: Option<CommandBindingVisibility>,
     pub(crate) action: Option<CommandAction>,
 }
 
@@ -335,6 +334,14 @@ impl<'de> Deserialize<'de> for CommandBinding {
             .remove("label")
             .map(|value| value.try_into::<String>().map_err(serde::de::Error::custom))
             .transpose()?;
+        let visibility = table
+            .remove("visibility")
+            .map(|value| {
+                value
+                    .try_into::<CommandBindingVisibility>()
+                    .map_err(serde::de::Error::custom)
+            })
+            .transpose()?;
         let action = if table.is_empty() {
             None
         } else {
@@ -344,28 +351,65 @@ impl<'de> Deserialize<'de> for CommandBinding {
                     .map_err(serde::de::Error::custom)?,
             )
         };
-        Ok(Self { key, label, action })
+        Ok(Self {
+            key,
+            label,
+            visibility,
+            action,
+        })
     }
 }
 
 impl CommandBinding {
-    pub(crate) fn key(&self, _id: &str) -> Option<&str> {
-        self.key.as_deref()
+    pub(crate) fn builtin_commands() -> Self {
+        Self {
+            key: None,
+            label: None,
+            visibility: None,
+            action: None,
+        }
     }
 
-    pub(crate) fn label(&self, _id: &str) -> Option<&str> {
-        self.label.as_deref()
+    pub(crate) fn builtin_parameters() -> Self {
+        Self {
+            key: Some("ctrl+g".to_string()),
+            label: Some("Parameters".to_string()),
+            visibility: Some(CommandBindingVisibility::Hidden),
+            action: Some(CommandAction::OpenParameters),
+        }
     }
 
-    pub(crate) fn command_action(&self, _id: &str) -> Option<CommandAction> {
-        self.action.clone()
+    pub(crate) fn key(&self, id: &str) -> Option<&str> {
+        self.key
+            .as_deref()
+            .or_else(|| (id == "commands").then_some("ctrl+k"))
+    }
+
+    pub(crate) fn label(&self, id: &str) -> Option<&str> {
+        self.label
+            .as_deref()
+            .or_else(|| (id == "commands").then_some("Commands"))
+    }
+
+    pub(crate) fn visibility(&self, id: &str) -> Option<CommandBindingVisibility> {
+        Some(self.visibility.unwrap_or(if id == "commands" {
+            CommandBindingVisibility::Overflow
+        } else {
+            CommandBindingVisibility::Always
+        }))
+    }
+
+    pub(crate) fn command_action(&self, id: &str) -> Option<CommandAction> {
+        self.action
+            .clone()
+            .or_else(|| (id == "commands").then_some(CommandAction::OpenCommands))
     }
 
     pub(crate) fn as_command(&self, id: &str) -> Option<Command> {
         Some(Command {
             key: self.key(id).map(str::to_string),
             label: self.label(id)?.to_string(),
-            scope: CommandScope::View,
+            scope: None,
             requires: CommandRequirement::Input,
             passthrough: false,
             action: self.command_action(id)?,
@@ -379,8 +423,9 @@ pub struct Command {
     pub key: Option<String>,
     #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub scope: CommandScope,
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    pub scope: Option<String>,
     #[serde(default)]
     pub requires: CommandRequirement,
     #[serde(default)]
@@ -437,8 +482,8 @@ pub(super) struct WorkflowHeader {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandAction, CommandBinding, CommandConfig, ProducerKind, ResolvedScriptSource,
-        ResolvedScriptTarget, View,
+        CommandAction, CommandBinding, CommandBindingVisibility, CommandConfig, ProducerKind,
+        ResolvedScriptSource, ResolvedScriptTarget, View,
     };
 
     #[test]
@@ -544,6 +589,7 @@ args = []
             [bindings.help]
             key = "ctrl+h"
             label = "Help"
+            visibility = "always"
             type = "return"
             producer = "declared"
             [bindings.help.handler]
@@ -554,6 +600,7 @@ args = []
         let binding = &config.bindings["help"];
         assert_eq!(binding.key.as_deref(), Some("ctrl+h"));
         assert_eq!(binding.label.as_deref(), Some("Help"));
+        assert_eq!(binding.visibility, Some(CommandBindingVisibility::Always));
         assert!(matches!(
             binding.action,
             Some(CommandAction::Return {
@@ -601,5 +648,17 @@ args = []
         )
         .unwrap();
         assert!(config.bindings["help"].action.is_none());
+    }
+
+    #[test]
+    fn built_in_commands_are_an_internal_action() {
+        let action = CommandBinding::builtin_commands()
+            .command_action("commands")
+            .unwrap();
+        assert!(matches!(action, CommandAction::OpenCommands));
+        assert_eq!(action.operation_type(), "open-commands");
+        let _ = ResolvedScriptSource {
+            target: ResolvedScriptTarget::Inline(String::new()),
+        };
     }
 }

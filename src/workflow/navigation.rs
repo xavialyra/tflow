@@ -38,7 +38,7 @@ impl Router {
         let mut aliases = BTreeMap::<String, ViewRef>::new();
         let mut display = BTreeMap::new();
         let mut candidates = Vec::with_capacity(config.view_count());
-        for (view_ref, view) in config.iter_views() {
+        for (view_ref, view) in config.iter_public_views() {
             let workflow = view_ref
                 .split_once(':')
                 .map(|(workflow, _)| workflow)

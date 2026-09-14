@@ -56,10 +56,12 @@ input_order = ["app"]
 app = { type = "string", default = "" }
 
 [views.weight.engine]
-type = "picker"
-[views.weight.engine.config]
-show_input = false
-items = [{display = "Pin / unpin selected application", value = "toggle"}]
+type = "form"
+
+[views.weight.engine.config.content]
+producer = "script"
+[views.weight.engine.config.content.handler]
+file = "scripts/weight-content.sh"
 
 [views.weight.commands.save]
 key = "enter"

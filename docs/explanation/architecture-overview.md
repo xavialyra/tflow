@@ -67,4 +67,4 @@ The following 14 dependency rules define the intended architecture. They are des
 11. **`task` owns generic background scheduling, cancellation, and task handles**. It must not depend on a concrete engine or picker item types. Task closures must cooperate with cancellation; latest-wins replacement must use an explicit lane.
 12. **`session` depends on abstract contracts** (`ViewFactory` and `TaskRuntime`) for ordinary Views, and owns host-provided built-in View invocation. A built-in command palette is mounted through the Router as a Popup View; Session must not maintain a parallel Picker state or renderer.
 13. **`execution` owns process and script mechanics**. It may be used by command preparation and task bodies, but must not own task scheduling or engine semantics.
-14. **`EngineRegistry` is a closed dispatcher** for the three built-in Engines (`picker`, `capture`, `embedded`). Engine-specific validation remains inside each Engine module.
+14. **`EngineRegistry` is a closed dispatcher** for the four built-in Engines (`picker`, `form`, `capture`, `embedded`). Engine-specific validation remains inside each Engine module.

@@ -40,7 +40,7 @@ NavigationRequest.return_contract = Normal | CommandSelection
 
 A `CommandSelection` result identifies a selected command reference and the registry revision against which it was selected. The Host is the caller of the command panel: it registers `Ctrl-K`, reads the current registry entries, pushes the command picker, and, when the returned contract is `CommandSelection`, dispatches the current reference. The Host does not retain the panel's caller. Other Popups return `Normal` results to their respective immediate callers, which handle those results according to their own View contracts.
 
-The command picker is an ordinary View with popup presentation. It reads its query, applies ordinary Picker selection, and returns an ordinary `ViewResult` through the Router. It does not access the registry, register commands, or execute commands.
+The command picker is the built-in `__selectors:commands` ordinary View with popup presentation. It reads its query, applies ordinary Picker selection, and returns an ordinary `ViewResult` through the Router. Parameter editing is the separate built-in `__selectors:form` native Form View. Neither built-in View accesses the registry, registers commands, or executes commands.
 
 ## Why This Design Is Needed
 
@@ -78,7 +78,7 @@ Input resolution must agree with presentation: for the same registry revision an
 
 ### Host
 
-The Host registers fixed Host commands during session initialization. `Ctrl-K` (or the configured command-panel binding) is a Host command registered by the Host. It produces a `NavigationRequest` that pushes the ordinary command picker with the current Chrome snapshot/query. It is not a Popup command and not a `command_picker` special case.
+The Host registers fixed Host commands during session initialization. `Ctrl-K` (or the configured command-panel binding) is a Host command registered by the Host. It produces a `NavigationRequest` that pushes `__selectors:commands` with the current Chrome snapshot/query. It is not a Popup command and not a `command_picker` special case. The hidden `Ctrl-G` parameter command similarly calls `__selectors:form` with the active View's query definition and current values, including its raw input; form submission replaces that View after its query schema is applied.
 
 The Host is the command panel's navigation caller. When the picker returns with `return_contract = CommandSelection`, the Router delivers that result to the Host because the Host View is immediately below the picker. The Host validates the selected reference against the current registry revision and dispatches it. The Host does not save a caller field, panel state, or return target. The Router stack supplies the target.
 

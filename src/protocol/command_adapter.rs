@@ -58,6 +58,12 @@ impl ProtocolCommandService {
             .publication
             .as_ref()
             .is_some_and(|p| p.ready && !p.current.is_null());
+
+        let definitely_no_items = snapshot
+            .publication
+            .as_ref()
+            .is_some_and(|p| p.ready && p.current.is_null());
+
         if has_item {
             if let Some(owner) = &snapshot.owner_view {
                 if owner != target {
@@ -71,16 +77,12 @@ impl ProtocolCommandService {
                 continue;
             };
             for (id, cmd) in &view.commands {
-                let matches_scope = match scope {
-                    crate::command::CommandScope::View => {
-                        cmd.scope == crate::workflow::config::CommandScope::View
-                    }
-                    crate::command::CommandScope::Engine => {
-                        cmd.scope != crate::workflow::config::CommandScope::View
-                    }
-                    crate::command::CommandScope::Host => false,
-                };
-                if !matches_scope {
+                if scope != crate::command::CommandScope::View {
+                    continue;
+                }
+                if cmd.requires == crate::workflow::config::CommandRequirement::Items
+                    && definitely_no_items
+                {
                     continue;
                 }
                 let key = match &cmd.key {
@@ -192,8 +194,8 @@ impl CommandService for ProtocolCommandService {
             let label = cmd.label.clone();
             let target = self
                 .config
-                .resolve_view("selectors:commands")
-                .unwrap_or_else(|_| "selectors:commands".to_string());
+                .resolve_view("__selectors:commands")
+                .unwrap_or_else(|_| "__selectors:commands".to_string());
 
             let config_clone = std::sync::Arc::clone(&self.config);
             let snapshot_clone = std::sync::Arc::clone(&shared_snapshot);
@@ -221,6 +223,9 @@ impl CommandService for ProtocolCommandService {
                 let result_processor: CallResultProcessor =
                     std::sync::Arc::new(move |_source, caller, snapshot, result| {
                         if result.kind != crate::view::ViewResultKind::CommandSelection {
+                            return Ok(ViewDecision::Stay);
+                        }
+                        if active_caller != ViewInstanceId(0) && caller.instance != active_caller {
                             return Ok(ViewDecision::Stay);
                         }
                         let command_id = result
@@ -299,6 +304,13 @@ impl CommandService for ProtocolCommandService {
             let id_clone = id.clone();
             let cmd_clone = cmd.clone();
             let action = std::sync::Arc::new(move || {
+                let active_snapshot = snapshot_clone.read().unwrap().clone();
+                let active_view = active_snapshot
+                    .active_view
+                    .clone()
+                    .unwrap_or_else(|| invocation_clone.root_view().to_string());
+                let active_parameters = active_snapshot.active_parameters.clone();
+                let active_raw_input = active_snapshot.active_raw_input.clone();
                 let execution = crate::workflow::command::CommandExecution {
                     invocation: crate::workflow::command::CommandInvocation::session_command(
                         invocation_clone.root_view(),
@@ -307,10 +319,10 @@ impl CommandService for ProtocolCommandService {
                     ),
                     context: crate::workflow::command::CommandContext {
                         page: crate::workflow::command::CommandOwnerContext {
-                            view_ref: invocation_clone.root_view().to_string(),
+                            view_ref: active_view.clone(),
                             parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
-                                serde_json::Value::Null,
-                                String::new(),
+                                active_parameters.clone(),
+                                active_raw_input.clone(),
                                 crate::input::InputSourceIdentity {
                                     frame: crate::input::ViewMountId(0),
                                     generation: 0,
@@ -319,10 +331,10 @@ impl CommandService for ProtocolCommandService {
                             ),
                         },
                         owner: crate::workflow::command::CommandOwnerContext {
-                            view_ref: invocation_clone.root_view().to_string(),
+                            view_ref: active_view,
                             parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
-                                serde_json::Value::Null,
-                                String::new(),
+                                active_parameters,
+                                active_raw_input,
                                 crate::input::InputSourceIdentity {
                                     frame: crate::input::ViewMountId(0),
                                     generation: 0,
@@ -377,10 +389,10 @@ impl CommandService for ProtocolCommandService {
 
     fn build_engine_commands(
         &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
+        _context: &ViewContext,
+        _snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>> {
-        self.build_commands_for_scope(context, snapshot, crate::command::CommandScope::Engine)
+        Ok(Vec::new())
     }
 }
 
@@ -516,7 +528,37 @@ pub(crate) fn map_prepared_action(
             }))
         }
         PreparedAction::Call(call) => {
+            let is_parameter_form = call.request.view_ref == "__selectors:form";
             let request = protocol_navigation_request(config, call.request)?;
+            let result_processor = is_parameter_form.then(|| {
+                let config = std::sync::Arc::clone(config);
+                std::sync::Arc::new(
+                    move |_source: &ViewLocation,
+                          _caller: &ViewContext,
+                          _snapshot: &ViewCommandSnapshot,
+                          result: &ViewResult|
+                          -> anyhow::Result<ViewDecision> {
+                        let value = result.value.clone();
+                        let target = value
+                            .get("target")
+                            .and_then(|value| value.as_str())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("parameter form result has no target")
+                            })?;
+                        let parameters = value.get("parameters").cloned().ok_or_else(|| {
+                            anyhow::anyhow!("parameter form result has no parameters")
+                        })?;
+                        config.validate_parameter_values(&target, &parameters)?;
+                        let request =
+                            crate::workflow::command::NavigationRequest::with_defaults(target)
+                                .with_parameters(parameters);
+                        let request = protocol_navigation_request(&config, request)?;
+                        Ok(ViewDecision::Transition(
+                            crate::view::TransitionRequest::Replace(request),
+                        ))
+                    },
+                ) as CallResultProcessor
+            });
             let boundary = CallBoundary {
                 caller,
                 handler: std::sync::Arc::new(ProtocolCallReturnHandler {
@@ -526,7 +568,7 @@ pub(crate) fn map_prepared_action(
                     origin: Some(call.origin),
                     context: Some(call.context),
                     return_processor: call.return_processor,
-                    result_processor: None,
+                    result_processor,
                 }),
             };
             Ok(ViewDecision::Transition(TransitionRequest::Call {
@@ -597,7 +639,15 @@ fn protocol_navigation_request(
         if !parameters.is_null() {
             config.update_sanitized_initial_parameter_values(&mut state, parameters)?;
         }
-        None
+        request.input.as_ref().map(|input| {
+            let text = crate::terminal::sanitize_terminal_text(&input.params);
+            let cursor = if text == input.params {
+                input.cursor
+            } else {
+                crate::terminal::sanitize_terminal_text(&input.params[..input.cursor]).len()
+            };
+            (text, cursor)
+        })
     } else if let Some(input) = request.input.as_ref() {
         let text = crate::terminal::sanitize_terminal_text(&input.params);
         config.update_initial_parameter_input(&mut state, &text)?;

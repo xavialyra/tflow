@@ -74,6 +74,10 @@ impl EngineRegistry {
                 super::picker::validate_config(context)?;
                 super::picker::validate_keymap(name, view)
             }
+            crate::workflow::config::ENGINE_FORM => {
+                super::form::validate_config(context)?;
+                default_validate_keymap(crate::workflow::config::ENGINE_FORM, name, view)
+            }
             crate::workflow::config::ENGINE_CAPTURE => {
                 super::capture::validate_config(context)?;
                 super::capture::validate_keymap(name, view)
@@ -81,10 +85,6 @@ impl EngineRegistry {
             crate::workflow::config::ENGINE_EMBEDDED => {
                 super::embedded::validate_config(context)?;
                 default_validate_keymap(crate::workflow::config::ENGINE_EMBEDDED, name, view)
-            }
-            crate::workflow::config::ENGINE_FORM => {
-                super::form::validate_config(context)?;
-                default_validate_keymap(crate::workflow::config::ENGINE_FORM, name, view)
             }
             engine_type => bail!("view {:?} uses unsupported engine {:?}", name, engine_type),
         }

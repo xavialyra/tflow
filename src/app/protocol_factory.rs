@@ -187,6 +187,20 @@ impl ViewFactory for ProtocolViewFactory {
                 };
                 create_picker_protocol_view(config, request, instance, services.routes)
             }
+            crate::workflow::config::ENGINE_FORM => crate::engine::form::create_protocol_view(
+                crate::engine::form::FormProtocolConfig {
+                    engine,
+                    runtime_snapshot,
+                    raw_input: parameters.raw_input().to_string(),
+                    theme: self.theme.clone(),
+                    tasks: services
+                        .host
+                        .task_runtime()
+                        .context("protocol host does not provide a TaskRuntime")?,
+                },
+                request,
+                instance,
+            ),
             crate::workflow::config::ENGINE_CAPTURE => create_capture_protocol_view(
                 crate::engine::CaptureProtocolConfig::new(
                     target,
@@ -213,25 +227,6 @@ impl ViewFactory for ProtocolViewFactory {
                     parameters,
                     self.theme.clone(),
                 ),
-                request,
-                instance,
-            ),
-            crate::workflow::config::ENGINE_FORM => crate::engine::form::create_protocol_view(
-                crate::engine::form::FormProtocolConfig {
-                    engine,
-                    commands: ViewCommandBindings::new(
-                        &self.config,
-                        target,
-                        self.cancellation.observer(),
-                    )?,
-                    runtime_snapshot,
-                    raw_input: parameters.raw_input().to_string(),
-                    theme: self.theme.clone(),
-                    tasks: services
-                        .host
-                        .task_runtime()
-                        .context("protocol host does not provide a TaskRuntime")?,
-                },
                 request,
                 instance,
             ),

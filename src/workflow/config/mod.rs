@@ -10,6 +10,8 @@ use std::{
     sync::Arc,
 };
 
+#[path = "../builtin/mod.rs"]
+mod builtin;
 mod compile;
 mod loader;
 mod model;
@@ -176,8 +178,25 @@ impl CompiledConfig {
             .parameter_values(state)
     }
 
+    pub(crate) fn validate_parameter_values(&self, view_ref: &str, value: &Value) -> Result<()> {
+        let binding = self.parameter_binding(view_ref)?;
+        let mut state = binding.instantiate()?;
+        binding.update_sanitized_initial_value(&mut state, value)?;
+        binding.validate_instance(&state)
+    }
+
     pub(crate) fn parameter_binding(&self, view_ref: &str) -> Result<ParameterBinding> {
         self.parameter_registry.parameter_binding(view_ref)
+    }
+
+    pub(crate) fn query_definition(&self, view_ref: &str) -> Result<Value> {
+        let view = self
+            .view(view_ref)
+            .with_context(|| format!("view {:?} is not configured", view_ref))?;
+        match &view.query {
+            Some(query) => toml_to_json(&toml::Value::Table(query.clone())),
+            None => Ok(serde_json::json!({"type": "string"})),
+        }
     }
 
     #[cfg(test)]
@@ -196,14 +215,36 @@ impl CompiledConfig {
     }
 
     pub(crate) fn session_command(&self, id: &str) -> Option<Command> {
-        let binding = self.commands.bindings.get(id).cloned()?;
-        binding.as_command(id)
+        self.session_commands().get(id).cloned()
     }
 
     pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
-        self.commands
-            .bindings
-            .clone()
+        let mut globals = self.commands.bindings.clone();
+        let binding_uses_key = |binding: &CommandBinding, key: &str| {
+            binding
+                .key
+                .as_deref()
+                .and_then(|value| normalize_key(value).ok())
+                .is_some_and(|value| value == key)
+        };
+        let commands_binding_is_available = !globals.contains_key("commands")
+            && !globals
+                .values()
+                .any(|binding| binding_uses_key(binding, "ctrl+k"));
+        if commands_binding_is_available && self.view("__selectors:commands").is_some() {
+            globals.insert("commands".to_string(), CommandBinding::builtin_commands());
+        }
+        let parameters_binding_is_available = !globals.contains_key("parameters")
+            && !globals
+                .values()
+                .any(|binding| binding_uses_key(binding, "ctrl+g"));
+        if parameters_binding_is_available && self.view("__selectors:form").is_some() {
+            globals.insert(
+                "parameters".to_string(),
+                CommandBinding::builtin_parameters(),
+            );
+        }
+        globals
             .into_iter()
             .filter_map(|(id, binding)| {
                 let cmd = binding.as_command(&id)?;
@@ -249,6 +290,12 @@ impl CompiledConfig {
 
     pub(crate) fn iter_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
         self.views.iter()
+    }
+
+    pub(crate) fn iter_public_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
+        self.views
+            .iter()
+            .filter(|(view_ref, _)| !view_ref.starts_with("__"))
     }
 
     pub(crate) fn view_count(&self) -> usize {
@@ -412,6 +459,90 @@ mod tests {
         compiled
             .validate_with_engines(&EngineRegistry::new())
             .unwrap();
+    }
+
+    #[test]
+    fn built_in_commands_require_the_commands_selector_view() {
+        let compiled = config(
+            r#"
+            [commands.bindings.commands]
+            key = "ctrl+k"
+            "#,
+        );
+        let error = compiled
+            .validate_with_engines(&EngineRegistry::new())
+            .expect_err("built-in commands need their selector view");
+        assert!(error.to_string().contains("__selectors:commands"));
+    }
+
+    #[test]
+    fn built_in_parameters_yield_to_a_user_ctrl_g_binding() {
+        let compiled = config(
+            r#"
+            [commands.bindings.custom]
+            key = "ctrl+g"
+            label = "Custom"
+            type = "return"
+            producer = "declared"
+            handler = { value = "custom" }
+
+            [workflows.__selectors.views.form.engine]
+            type = "form"
+            [workflows.__selectors.views.form.engine.config.content]
+            producer = "declared"
+            [workflows.__selectors.views.form.engine.config.content.handler]
+            fields = []
+            "#,
+        );
+        let commands = compiled.session_commands();
+        assert!(!commands.contains_key("parameters"));
+        assert_eq!(commands["custom"].key.as_deref(), Some("ctrl+g"));
+    }
+
+    #[test]
+    fn parameter_form_replace_values_use_strict_target_schema_validation() {
+        let compiled = config(
+            r#"
+            [workflows.dynamic.views.main]
+            [workflows.dynamic.views.main.query]
+            type = "object"
+            required_name = { type = "string" }
+            count = { type = "integer", default = 1 }
+            [workflows.dynamic.views.main.engine]
+            type = "picker"
+            [workflows.dynamic.views.main.engine.config]
+            items = []
+            "#,
+        );
+        assert!(
+            compiled
+                .validate_parameter_values(
+                    "dynamic:main",
+                    &serde_json::json!({"required_name":"ok","count":2}),
+                )
+                .is_ok()
+        );
+        assert!(
+            compiled
+                .validate_parameter_values("dynamic:main", &serde_json::json!({"count":2}))
+                .is_err()
+        );
+        assert!(
+            compiled
+                .validate_parameter_values(
+                    "dynamic:main",
+                    &serde_json::json!({"required_name":"ok","count":"2"}),
+                )
+                .is_err()
+        );
+        assert!(
+            compiled
+                .validate_parameter_values(
+                    "dynamic:main",
+                    &serde_json::json!({"required_name":"ok","extra":true}),
+                )
+                .is_err()
+        );
     }
 
     #[test]

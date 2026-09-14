@@ -353,21 +353,50 @@ impl ProtocolSession {
             let snapshot = a.view.command_snapshot();
             snapshot.publication.as_ref().is_some_and(|p| !p.ready)
         });
+        let active_view = self
+            .router
+            .active()
+            .map(|active| active.context.location.target.clone());
+        let active_metadata = self.router.active().map(|active| {
+            let snapshot = active.view.command_snapshot();
+            (snapshot.parameters, snapshot.raw_input)
+        });
+        let active_parameters = active_metadata
+            .as_ref()
+            .map(|(parameters, _)| parameters.clone())
+            .unwrap_or(serde_json::Value::Null);
+        let active_raw_input = active_metadata
+            .map(|(_, raw_input)| raw_input)
+            .unwrap_or_default();
         if is_same_instance && is_loading {
+            if self.chrome_snapshot.active_view != active_view
+                || self.chrome_snapshot.active_parameters != active_parameters
+                || self.chrome_snapshot.active_raw_input != active_raw_input
+            {
+                let reg = self.registry.read().unwrap();
+                self.chrome_snapshot = ChromeSnapshot::from_registry(&reg)
+                    .with_active_instance(active_id)
+                    .with_active_view(
+                        active_view.clone(),
+                        active_parameters.clone(),
+                        active_raw_input.clone(),
+                    );
+                *self.shared_snapshot.write().unwrap() = self.chrome_snapshot.clone();
+            }
             return Ok(());
         }
 
         let (view_entries, engine_entries) = if let Some(active) = self.router.active() {
             let context = &active.context;
             let snapshot = active.view.command_snapshot();
-            let mut view_entries = self.commands.build_view_commands(context, &snapshot)?;
-            view_entries.extend(active.view.view_commands(context));
-            let engine_entries = if let Some(custom) = active.view.engine_commands(context) {
+            let view_entries = if let Some(custom) = active.view.engine_commands(context) {
                 custom
             } else {
-                self.commands.build_engine_commands(context, &snapshot)?
+                let mut view_entries = self.commands.build_view_commands(context, &snapshot)?;
+                view_entries.extend(active.view.view_commands(context));
+                view_entries
             };
-            (view_entries, engine_entries)
+            (view_entries, Vec::new())
         } else {
             (Vec::new(), Vec::new())
         };
@@ -387,9 +416,15 @@ impl ProtocolSession {
             changed = true;
         }
 
-        if changed || self.chrome_snapshot.active_instance != active_id {
-            self.chrome_snapshot =
-                ChromeSnapshot::from_registry(&reg).with_active_instance(active_id);
+        if changed
+            || self.chrome_snapshot.active_instance != active_id
+            || self.chrome_snapshot.active_view != active_view
+            || self.chrome_snapshot.active_parameters != active_parameters
+            || self.chrome_snapshot.active_raw_input != active_raw_input
+        {
+            self.chrome_snapshot = ChromeSnapshot::from_registry(&reg)
+                .with_active_instance(active_id)
+                .with_active_view(active_view, active_parameters, active_raw_input);
             *self.shared_snapshot.write().unwrap() = self.chrome_snapshot.clone();
         }
         Ok(())
@@ -454,7 +489,6 @@ impl ProtocolSession {
             &chrome_location.target,
             chrome_snapshot.error.as_deref(),
         );
-        let bindings = self.chrome_snapshot.to_binding_set();
 
         let content_host = ContentHost::default();
         let footer_renderer = FooterRenderer::default();
@@ -502,9 +536,8 @@ impl ProtocolSession {
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
             info: self.active_info.as_ref().map(|info| info.label.clone()),
-            bindings,
+            commands: self.chrome_snapshot.footer_commands(),
             overflow_command: self.chrome_snapshot.overflow_command(),
-            has_unbound: self.chrome_snapshot.has_unbound(),
         };
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect {
@@ -685,8 +718,8 @@ mod tests {
         fn view_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
             vec![CommandEntry::new(
                 "local",
-                Some("local".to_string()),
-                Some(crate::input::Key::Char('l')),
+                Some("ok".to_string()),
+                Some(crate::input::Key::Enter),
                 CommandScope::View,
                 Arc::new(|| Ok(ViewDecision::Stay)),
             )]
@@ -1043,7 +1076,7 @@ mod tests {
         let row = render_message(&mut session, &mut terminal);
         assert!(!row.contains("INFO"));
         assert!(!row.contains("ERROR"));
-        assert!(row.contains("local"));
+        assert!(row.contains("ok"));
     }
 
     #[test]
@@ -1103,7 +1136,7 @@ mod tests {
             session.tick().unwrap();
             let text = render_text(&mut session, &mut terminal);
             assert!(!text.contains("temporary feedback"));
-            assert!(text.contains("local"));
+            assert!(text.contains("ok"));
 
             session.report_error("persistent error");
             session.report_info("hidden feedback");
@@ -1256,11 +1289,11 @@ mod tests {
 
         let invocation = test_invocation(&config, "dmenu:main");
         let service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
-        let engine_cmds = service.build_engine_commands(&context, &snapshot).unwrap();
-        let accept_cmd = engine_cmds
+        let view_cmds = service.build_view_commands(&context, &snapshot).unwrap();
+        let accept_cmd = view_cmds
             .into_iter()
             .find(|entry| entry.id == "accept")
-            .expect("engine commands must contain accept");
+            .expect("view commands must contain accept");
         assert!(matches!(
             accept_cmd.action.execute().unwrap(),
             ViewDecision::Return(_)
@@ -1325,7 +1358,8 @@ mod tests {
             .replace_scope(CommandScope::Engine, engine_cmds)
             .unwrap();
         *shared_snapshot.write().unwrap() =
-            ChromeSnapshot::from_registry(&registry.read().unwrap());
+            ChromeSnapshot::from_registry(&registry.read().unwrap())
+                .with_active_instance(Some(caller.instance));
 
         let cmd_entry = host_cmds.into_iter().find(|e| e.id == "commands").unwrap();
         let call_decision = cmd_entry.action.execute().unwrap();
@@ -1341,7 +1375,7 @@ mod tests {
         let continued = boundary
             .handler
             .resume(
-                &crate::view::ViewLocation::new("selectors:commands"),
+                &crate::view::ViewLocation::new("__selectors:commands"),
                 &caller,
                 &snapshot,
                 &ViewResult::command_selection(selected_command),
@@ -1357,7 +1391,7 @@ mod tests {
         let continued_unknown = boundary
             .handler
             .resume(
-                &crate::view::ViewLocation::new("selectors:commands"),
+                &crate::view::ViewLocation::new("__selectors:commands"),
                 &caller,
                 &snapshot,
                 &ViewResult::command_selection(unknown_command),
@@ -1560,7 +1594,7 @@ mod tests {
         let bottom_border: String = (15..=24)
             .map(|x| terminal.backend().buffer().cell((x, 6)).unwrap().symbol())
             .collect();
-        assert!(bottom_border.contains("local"));
+        assert!(bottom_border.contains("ok"));
 
         // Global footer row (y = 9) is blank while popup is active
         for x in 0..40 {
@@ -1572,10 +1606,6 @@ mod tests {
 
         assert_eq!(rendered.footer.location.label(), "child");
         assert_eq!(rendered.footer.status.as_deref(), Some("child"));
-        assert_eq!(
-            rendered.footer.bindings.entries()[0].label.as_deref(),
-            Some("local")
-        );
         session.eof().unwrap();
         assert!(session.router().stack().is_empty());
     }
@@ -1715,7 +1745,7 @@ mod tests {
             .map(|x| terminal.backend().buffer().cell((x, 9)).unwrap().symbol())
             .collect();
         assert!(footer_row.contains("root"));
-        assert!(footer_row.contains("local"));
+        assert!(footer_row.contains("ok"));
 
         // 2. Open child popup ('n' key)
         session
@@ -1742,7 +1772,7 @@ mod tests {
         let child_bottom: String = (15..=24)
             .map(|x| terminal.backend().buffer().cell((x, 6)).unwrap().symbol())
             .collect();
-        assert!(child_bottom.contains("local"));
+        assert!(child_bottom.contains("ok"));
 
         // 3. Child returns to root ('r' key)
         session
@@ -1763,7 +1793,7 @@ mod tests {
             .map(|x| terminal.backend().buffer().cell((x, 9)).unwrap().symbol())
             .collect();
         assert!(restored_footer.contains("root"));
-        assert!(restored_footer.contains("local"));
+        assert!(restored_footer.contains("ok"));
     }
 
     #[test]

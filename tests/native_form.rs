@@ -203,7 +203,7 @@ fn native_form_content_failure_is_visible_and_can_be_cancelled() {
 }
 
 #[test]
-fn session_command_precedes_view_command_and_editor_even_when_form_is_invalid() {
+fn view_command_precedes_session_command_and_editor_even_when_form_is_invalid() {
     use std::io::Read;
 
     let root = temporary_root();
@@ -250,6 +250,6 @@ fn session_command_precedes_view_command_and_editor_even_when_form_is_invalid() 
         .unwrap()
         .read_to_string(&mut result)
         .unwrap();
-    assert_eq!(result.trim(), "SESSION_COMMAND_WON");
+    assert_eq!(result.trim(), "VIEW_COMMAND_WON");
     fs::remove_dir_all(root).unwrap();
 }

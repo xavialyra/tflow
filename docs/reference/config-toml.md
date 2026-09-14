@@ -66,10 +66,10 @@ Picker Enter behavior is configured by the View's explicit command bindings. The
 
 ## Session Command Bindings (`[commands.bindings]`)
 
-Session commands are high-priority actions handled by the host above all individual views and engines.
+Session commands are Host-scope actions handled by the session. They remain available across View transitions, but scoped input resolution gives `View > Engine > Host` precedence when bindings conflict.
 
-Session commands are business commands available above individual View commands. They may appear in the command palette when the active View is folded, but they do not define or open the palette.
+Session commands are business commands available across Views. They may appear in the command palette when the active View is folded, but they do not define or open the palette.
 
 The command palette is opened by the host with `Ctrl-K` when command folding is active. It is implemented as a built-in Popup Picker View. The host passes the eligible command descriptors to that View through the Popup navigation request; the View returns the selected command reference to the host for execution.
 
-The built-in command-picker View is loaded before user workflow packages. User configuration may extend or override built-in View configuration through the normal workflow merge rules. The built-in View is host-owned and is not a user-declared session command.
+The built-in selectors workflow is loaded before user workflow packages under the reserved `__selectors` workflow ID. It provides the ordinary Picker route `__selectors:commands` for the command palette and the native Form route `__selectors:form` for parameter editing. These routes are host-owned and are not user-declared session commands. The `__selectors` workflow ID is reserved; a user workflow may still use a separate ID such as `selectors` for custom view selectors.

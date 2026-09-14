@@ -1,4 +1,4 @@
-use super::{CommandAction, CompiledConfig, Defaults, View, ViewRef};
+use super::{CommandAction, CommandBindingVisibility, CompiledConfig, Defaults, View, ViewRef};
 use anyhow::{Context, Result, bail};
 use std::{collections::BTreeMap, path::Path};
 
@@ -34,6 +34,12 @@ fn validate_command_action(
             view_ref,
             command_id
         );
+    }
+    if matches!(
+        action,
+        CommandAction::OpenCommands | CommandAction::OpenParameters
+    ) {
+        return Ok(());
     }
     validate_producer_action(view_ref, command_id, action, views, script_root)
 }
@@ -84,6 +90,9 @@ fn producer_handler(action: &CommandAction) -> &toml::Value {
         | CommandAction::Return { handler, .. }
         | CommandAction::EditInput { handler, .. }
         | CommandAction::Invoke { handler, .. } => handler,
+        CommandAction::OpenCommands | CommandAction::OpenParameters => {
+            unreachable!("built-in actions have no producer handler")
+        }
     }
 }
 
@@ -182,10 +191,28 @@ impl CompiledConfig {
         }
 
         let mut command_keys = BTreeMap::new();
+        let mut overflow_commands = 0;
         for (id, binding) in &self.commands.bindings {
+            if id == "commands"
+                && (binding.action.is_some()
+                    || binding.label.is_some()
+                    || binding.visibility.is_some())
+            {
+                bail!("session command \"commands\" is built in; configure only its key");
+            }
             let action = binding
                 .command_action(id)
                 .with_context(|| format!("session command binding {id:?} must define an action"))?;
+            if id == "commands" {
+                anyhow::ensure!(
+                    matches!(action, CommandAction::OpenCommands),
+                    "session command binding \"commands\" is built in"
+                );
+                anyhow::ensure!(
+                    self.view("__selectors:commands").is_some(),
+                    "session command binding \"commands\" requires view \"__selectors:commands\""
+                );
+            }
             let key = binding
                 .key(id)
                 .with_context(|| format!("session command binding {id:?} has no key"))?;
@@ -201,6 +228,12 @@ impl CompiledConfig {
                     key
                 );
             }
+            let visibility = binding
+                .visibility(id)
+                .with_context(|| format!("session command binding {id:?} has no visibility"))?;
+            if visibility == CommandBindingVisibility::Overflow {
+                overflow_commands += 1;
+            }
             validate_command_action(
                 self.default_view.as_deref().unwrap_or("<root>"),
                 &format!("session:command:{id}"),
@@ -210,6 +243,10 @@ impl CompiledConfig {
                 0,
             )?;
         }
+        if overflow_commands > 1 {
+            bail!("session commands can define at most one overflow binding");
+        }
+
         let mut aliases = BTreeMap::<&str, &str>::new();
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;

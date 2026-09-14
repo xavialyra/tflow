@@ -98,7 +98,7 @@ response = {"version": 1, "operation": {"type": "return", "value": state["values
 
 ## Keyboard Behavior
 
-Session and View commands take precedence over these editing keys.
+Registered View, Engine, and Host commands take precedence over these editing keys.
 
 | Key | Behavior |
 | :--- | :--- |

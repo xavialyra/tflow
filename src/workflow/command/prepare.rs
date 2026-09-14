@@ -62,6 +62,9 @@ fn prepare_action(
         CommandAction::OpenCommands => {
             prepare_builtin_commands(config, command_invocation, context)
         }
+        CommandAction::OpenParameters => {
+            prepare_builtin_parameters(config, command_invocation, context)
+        }
         _ => prepare_producer_action(
             config,
             invocation,
@@ -209,7 +212,9 @@ fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
         | CommandAction::Return { handler, .. }
         | CommandAction::EditInput { handler, .. }
         | CommandAction::Invoke { handler, .. } => Ok(handler),
-        CommandAction::OpenCommands => bail!("built-in commands do not have a producer handler"),
+        CommandAction::OpenCommands | CommandAction::OpenParameters => {
+            bail!("built-in actions do not have a producer handler")
+        }
     }
 }
 
@@ -324,7 +329,7 @@ fn prepare_builtin_commands(
     command_invocation: CommandInvocation,
     context: CommandContext,
 ) -> Result<PreparedAction> {
-    let target = config.resolve_view("selectors:commands")?;
+    let target = config.resolve_view("__selectors:commands")?;
     let commands = collect_available_commands(config, &context.page.view_ref, true)?
         .into_values()
         .collect::<Vec<_>>();
@@ -343,6 +348,33 @@ fn prepare_builtin_commands(
     }))
 }
 
+fn prepare_builtin_parameters(
+    config: &CompiledConfig,
+    command_invocation: CommandInvocation,
+    context: CommandContext,
+) -> Result<PreparedAction> {
+    let target = config.resolve_view("__selectors:form")?;
+    let payload = serde_json::to_string(&json!({
+        "target": context.page.view_ref,
+        "query": config.query_definition(&context.page.view_ref)?,
+        "values": context.page.parameters.values().clone(),
+    }))
+    .context("could not serialize parameter form payload")?;
+    let request = NavigationRequest::with_defaults(target)
+        .with_parameters(json!({"payload": payload}))
+        .with_presentation(crate::workflow::config::ViewPresentation {
+            mode: crate::workflow::config::ViewPresentationMode::Popup,
+            width: Some(72),
+            height: Some(20),
+        });
+    Ok(PreparedAction::Call(CallRequest {
+        request,
+        origin: command_invocation.origin(),
+        context,
+        return_processor: None,
+    }))
+}
+
 pub(crate) fn collect_available_commands(
     config: &CompiledConfig,
     page_view: &str,
@@ -351,7 +383,7 @@ pub(crate) fn collect_available_commands(
     let mut commands = BTreeMap::new();
     if include_globals {
         for (id, command) in config.session_commands() {
-            if id != "commands" {
+            if id != "commands" && id != "parameters" {
                 commands.insert(
                     format!("session/{id}"),
                     runtime_command_value("session", &id, &command)?,
@@ -421,6 +453,7 @@ pub(crate) fn resolve_visible_command(
     );
 }
 
+#[cfg(test)]
 pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
     match (left == "enter", right == "enter") {
         (true, false) => std::cmp::Ordering::Less,

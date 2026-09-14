@@ -9,12 +9,6 @@ fn config(content: Value, tasks: TaskRuntime) -> FormProtocolConfig {
             fields: [("content".into(), content)].into_iter().collect(),
             ..Default::default()
         },
-        commands: ViewCommandBindings::new(
-            &crate::workflow::config::load_test_fixture().unwrap(),
-            "form",
-            crate::lifecycle::CancellationToken::new().observer(),
-        )
-        .unwrap(),
         runtime_snapshot: Value::Null,
         raw_input: "immutable query".into(),
         theme: ResolvedTheme::terminal(),
@@ -459,4 +453,20 @@ fn closing_rollback_restarts_incomplete_content_with_new_task_generation() {
         .unwrap();
     assert_eq!(form.task_generation, 2, "completed content must not reload");
     tasks.shutdown_and_wait();
+}
+
+#[test]
+fn form_chrome_has_no_footer_bindings() {
+    let form = declared(json!([{"name": "field", "value": "test"}]));
+    let chrome = form.chrome(&context()).unwrap();
+    assert!(chrome.bindings.is_none());
+}
+
+#[test]
+fn nullable_string_initializes_as_empty_and_evaluates_to_empty_string() {
+    let form = declared(json!([{"name": "nullable_str", "value": null, "type": "string"}]));
+    let snapshot = form.command_snapshot();
+    let state = &snapshot.publication.as_ref().unwrap().current;
+    assert_eq!(state["values"]["nullable_str"], json!(""));
+    assert_eq!(state["valid"], json!(true));
 }

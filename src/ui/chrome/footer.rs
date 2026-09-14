@@ -6,7 +6,7 @@
 
 use super::{FooterContent, clip_footer, footer_line};
 use crate::ui::theme::Theme;
-use crate::view::{BindingSet, ViewLocation};
+use crate::view::ViewLocation;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -19,7 +19,8 @@ pub(crate) struct FooterModel {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) info: Option<String>,
-    pub(crate) bindings: BindingSet,
+    pub(crate) commands: Vec<(String, String)>,
+    pub(crate) overflow_command: Option<(String, String)>,
 }
 
 impl FooterModel {
@@ -35,24 +36,7 @@ impl FooterModel {
     }
 
     pub(crate) fn commands(&self) -> Vec<(String, String)> {
-        let mut commands = self
-            .bindings
-            .entries()
-            .iter()
-            .filter_map(|binding| {
-                Some((binding.key.binding_name()?, binding.label.as_ref()?.clone()))
-            })
-            .collect::<Vec<_>>();
-        commands.sort_by(|left, right| {
-            let left_is_palette = left.1 == "Commands";
-            let right_is_palette = right.1 == "Commands";
-            match (left_is_palette, right_is_palette) {
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                _ => crate::workflow::command::compare_bindings(&left.0, &right.0),
-            }
-        });
-        commands
+        self.commands.clone()
     }
 }
 
@@ -124,14 +108,14 @@ impl FooterRenderer {
         let footer = if let Some((message, _)) = notification {
             FooterContent::plain(message)
         } else {
-            let commands = model.commands();
             let status = model.status.as_deref().unwrap_or("");
 
             footer_line(
                 footer_width,
                 Some(model.location.label()),
                 status,
-                &commands,
+                &model.commands,
+                model.overflow_command.as_ref(),
             )
         };
 

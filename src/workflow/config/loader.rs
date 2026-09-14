@@ -46,8 +46,13 @@ impl CompiledConfig {
         if let Some(table) = user_config.as_table_mut() {
             table.remove("disabled_workflows");
         }
-        let mut merged = toml::from_str(include_str!("builtin/command-picker.toml"))
-            .context("cannot parse built-in workflow configuration")?;
+        let mut merged = toml::Value::Table(toml::map::Map::new());
+        let (_, builtin_selectors) = parse_workflow_package(
+            super::builtin::SELECTORS_TOML,
+            "built-in __selectors",
+            "__selectors",
+        )?;
+        merge_values(&mut merged, builtin_selectors);
         let workflow_directory = user_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -100,6 +105,7 @@ pub(super) fn disabled_workflows(user_config: Option<&toml::Value>) -> Result<BT
             let entry = entry
                 .as_str()
                 .with_context(|| "disabled_workflows entries must be strings")?;
+            ensure_user_workflow_id_available(entry)?;
             disabled.insert(entry.to_string());
         }
     }
@@ -149,6 +155,7 @@ pub(super) fn load_workflow_packages(
                 .with_context(|| format!("workflow file {:?} has no valid name", path.display()))?
                 .to_string();
             validate_workflow_id(&id)?;
+            ensure_user_workflow_id_available(&id)?;
             if let Some(prev) = sources_by_id.insert(id.clone(), path.clone()) {
                 bail!(
                     "duplicate workflow {:?} detected: {:?} conflicts with {:?}",
@@ -169,6 +176,7 @@ pub(super) fn load_workflow_packages(
                     })?
                     .to_string();
                 validate_workflow_id(&id)?;
+                ensure_user_workflow_id_available(&id)?;
                 if let Some(prev) = sources_by_id.insert(id.clone(), manifest.clone()) {
                     bail!(
                         "duplicate workflow {:?} detected: {:?} conflicts with {:?}",
@@ -236,28 +244,32 @@ pub(super) fn read_workflow_package(
     manifest: &Path,
     workflow_id: &str,
 ) -> Result<(String, toml::Value)> {
-    validate_workflow_id(workflow_id)?;
-
     let source = fs::read_to_string(manifest)
         .with_context(|| format!("could not read workflow manifest {}", manifest.display()))?;
-    let mut value: toml::Value = toml::from_str(&source)
-        .with_context(|| format!("could not parse workflow manifest {}", manifest.display()))?;
+    parse_workflow_package(&source, &manifest.display().to_string(), workflow_id)
+}
+
+pub(super) fn parse_workflow_package(
+    source: &str,
+    source_name: &str,
+    workflow_id: &str,
+) -> Result<(String, toml::Value)> {
+    validate_workflow_id(workflow_id)?;
+    let mut value: toml::Value = toml::from_str(source)
+        .with_context(|| format!("could not parse workflow manifest {source_name}"))?;
 
     let table = value
         .as_table_mut()
         .context("workflow manifest root is not a table")?;
-    let header_value = table.remove("workflow").with_context(|| {
-        format!(
-            "workflow manifest {} is missing [workflow]",
-            manifest.display()
-        )
-    })?;
+    let header_value = table
+        .remove("workflow")
+        .with_context(|| format!("workflow manifest {source_name} is missing [workflow]"))?;
     let header: WorkflowHeader = header_value
         .try_into()
-        .with_context(|| format!("invalid [workflow] in {}", manifest.display()))?;
+        .with_context(|| format!("invalid [workflow] in {source_name}"))?;
     if header.api != 1 {
         bail!(
-            "workflow {:?} uses unsupported API version {}",
+            "workflow {:?} uses unsupported API {}",
             workflow_id,
             header.api
         );
@@ -278,7 +290,7 @@ pub(super) fn read_workflow_package(
         let fields = table.keys().cloned().collect::<Vec<_>>();
         bail!(
             "workflow manifest {} has unsupported fields {:?}",
-            manifest.display(),
+            source_name,
             fields
         );
     }
@@ -302,6 +314,16 @@ pub(super) fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
         }
         (base, overlay) => *base = overlay,
     }
+}
+
+fn ensure_user_workflow_id_available(workflow_id: &str) -> Result<()> {
+    if workflow_id == "__selectors" {
+        bail!(
+            "workflow ID {:?} is reserved for built-in selectors",
+            workflow_id
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn validate_workflow_id(workflow_id: &str) -> Result<()> {

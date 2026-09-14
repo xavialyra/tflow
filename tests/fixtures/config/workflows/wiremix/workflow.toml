@@ -1,0 +1,9 @@
+[workflow]
+api = 1
+name = "wiremix"
+
+[views.main.engine]
+type = "embedded"
+
+[views.main.engine.config]
+command = ["wiremix"]

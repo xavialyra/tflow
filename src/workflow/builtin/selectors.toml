@@ -1,0 +1,225 @@
+[workflow]
+api = 1
+name = "Built-in Selectors"
+
+[views.commands]
+
+[views.commands.engine]
+type = "picker"
+
+[views.commands.engine.config]
+show_input = false
+show_divider = false
+
+[views.commands.engine.config.items]
+producer = "script"
+[views.commands.engine.config.items.handler]
+script = '''#!/bin/sh
+set -eu
+
+exec python3 -c '
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+commands = parameters.get("commands", []) if isinstance(parameters, dict) else []
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+query = state.get("input", "") if isinstance(state, dict) else ""
+if not isinstance(commands, list) or not isinstance(query, str):
+    raise SystemExit("invalid command selector request")
+tokens = query.casefold().split()
+items = []
+for command in commands:
+    ref = command.get("ref")
+    if not isinstance(ref, dict):
+        continue
+    label = str(command.get("label", ref.get("id", "")))
+    key = str(command.get("key", ""))
+    owner = str(command.get("owner", ""))
+    searchable = " ".join([label, key, owner]).casefold()
+    if not all(token in searchable for token in tokens):
+        continue
+    item = {"value": key, "metadata": {"command": ref}}
+    if key:
+        item["display"] = {
+            "constraints": [{"Fill": 1}, {"Length": len(key)}],
+            "cells": [
+                {"text": label},
+                {"text": key, "align": "right", "slot": "badge"},
+            ],
+        }
+    else:
+        item["display"] = label
+    items.append(item)
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'
+'''
+
+[views.commands.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+commands = { type = "array<object>", default = [] }
+
+[views.commands.commands.accept]
+key = "enter"
+label = "Select"
+scope = "selection"
+requires = "items"
+type = "return"
+producer = "script"
+[views.commands.commands.accept.handler]
+script = '''#!/bin/sh
+set -eu
+
+exec python3 -c '
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+item = state.get("item") if isinstance(state, dict) else None
+command = item.get("metadata", {}).get("command") if isinstance(item, dict) else None
+if not isinstance(command, dict) or not isinstance(command.get("view"), str) or not isinstance(command.get("id"), str):
+    raise SystemExit("command selector result has no command reference")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "return",
+        "kind": "command-selection",
+        "value": command,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'
+'''
+
+[views.form]
+[views.form.engine]
+type = "form"
+
+[views.form.engine.config.content]
+producer = "script"
+[views.form.engine.config.content.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+parameters = request.get("context", {}).get("parameters", {})
+payload_text = parameters.get("payload") if isinstance(parameters, dict) else None
+if not isinstance(payload_text, str):
+    raise SystemExit("parameter form payload is missing")
+try:
+    payload = json.loads(payload_text)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"parameter form payload is invalid: {error}")
+query = payload.get("query") if isinstance(payload, dict) else None
+values = payload.get("values") if isinstance(payload, dict) else None
+if not isinstance(query, dict):
+    raise SystemExit("parameter form query definition is missing")
+
+fields = []
+query_type = query.get("type", "string")
+if query_type == "string":
+    if not isinstance(values, str):
+        raise SystemExit("string query values are invalid")
+    fields.append({"name": "query", "label": "Query", "type": "string", "value": values})
+elif query_type == "object":
+    order = query.get("input_order", [])
+    if not isinstance(order, list) or not all(isinstance(name, str) for name in order):
+        raise SystemExit("query input_order is invalid")
+    names = []
+    for name in order:
+        if name not in names:
+            names.append(name)
+    names.extend(sorted(
+        name for name in query
+        if name not in ("type", "input_order") and name not in names
+    ))
+    if not isinstance(values, dict):
+        raise SystemExit("object query values are invalid")
+    for name in names:
+        definition = query.get(name)
+        if not isinstance(definition, dict) or not isinstance(definition.get("type"), str):
+            raise SystemExit(f"query field {name!r} is invalid")
+        type_name = definition["type"]
+        if type_name in ("string", "integer", "number", "boolean"):
+            field_type = type_name
+        elif type_name == "object" or type_name.startswith("array<"):
+            field_type = "json"
+        else:
+            raise SystemExit(f"query field {name!r} has unsupported type {type_name!r}")
+        value = values.get(name, definition.get("default"))
+        field = {
+            "name": name,
+            "label": name,
+            "type": field_type,
+            "required": "default" not in definition and not definition.get("nullable", False),
+            "value": value,
+        }
+        fields.append(field)
+else:
+    raise SystemExit(f"query type {query_type!r} is unsupported")
+
+json.dump({"version": 1, "content": {"fields": fields}}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+
+[views.form.query]
+type = "object"
+input_order = ["payload"]
+payload = { type = "string", default = "" }
+
+[views.form.commands.accept]
+key = "enter"
+label = "Apply"
+scope = "selection"
+requires = "input"
+type = "return"
+producer = "script"
+[views.form.commands.accept.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+state = context.get("engine", {}).get("state", {})
+payload_text = parameters.get("payload") if isinstance(parameters, dict) else None
+if not isinstance(payload_text, str) or not isinstance(state, dict):
+    raise SystemExit("parameter form request is invalid")
+try:
+    payload = json.loads(payload_text)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"parameter form payload is invalid: {error}")
+target = payload.get("target") if isinstance(payload, dict) else None
+query = payload.get("query") if isinstance(payload, dict) else None
+values = state.get("values")
+if not isinstance(target, str) or not target or not isinstance(query, dict):
+    raise SystemExit("parameter form target is invalid")
+if state.get("valid") is not True or not isinstance(values, dict):
+    raise SystemExit("parameter form values are invalid")
+if query.get("type", "string") == "string":
+    parameters_value = values.get("query")
+    if not isinstance(parameters_value, str):
+        raise SystemExit("parameter form string value is invalid")
+else:
+    parameters_value = values
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "return",
+        "kind": "parameter-selection",
+        "value": {"target": target, "parameters": parameters_value},
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''

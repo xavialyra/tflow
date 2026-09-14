@@ -180,7 +180,7 @@ pub(crate) fn run() -> Result<i32> {
                 bail!("inspect --all cannot be combined with a View argument");
             }
             let views = config
-                .iter_views()
+                .iter_public_views()
                 .map(|(view_ref, view)| view_contract(view_ref, view))
                 .collect::<Vec<_>>();
             let output = serde_json::json!({ "views": views });
@@ -350,7 +350,7 @@ fn view_contract(view_ref: &str, view: &crate::workflow::config::View) -> serde_
                 "id": id,
                 "key": cmd.key,
                 "label": cmd.label,
-                "scope": cmd.scope,
+                "scope": "view",
                 "requires": cmd.requires,
             })
         }).collect::<Vec<_>>(),

@@ -11,3 +11,5 @@
 # Local logs and temporary files
 *.log
 *.tmp
+__pycache__/
+*.pyc

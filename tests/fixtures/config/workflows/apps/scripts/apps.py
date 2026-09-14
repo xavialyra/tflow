@@ -72,16 +72,27 @@ def scan_desktop_files():
 
     return lines
 
+def get_weight(entry):
+    weight = entry.get("weight")
+    if weight is not None:
+        try:
+            return int(weight)
+        except (TypeError, ValueError):
+            pass
+    return int(entry.get("launch_count", 0) or 0)
+
+
 def sort_items(items):
     weights = load_weights()
     return sorted(
         items,
         key=lambda item: (
             -(1 if weights.get(app_id(item.get("value", "")), {}).get("pinned", False) else 0),
-            -int(weights.get(app_id(item.get("value", "")), {}).get("launch_count", 0) or 0),
+            -get_weight(weights.get(app_id(item.get("value", "")), {})),
             item.get("display", "").casefold(),
         ),
     )
+
 
 
 def refresh_cache(cache_file):

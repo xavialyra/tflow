@@ -54,14 +54,6 @@ pub(crate) struct ViewCommandSnapshot {
     pub(crate) owner_view: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandDescriptor {
-    pub(crate) id: String,
-    pub(crate) label: String,
-    pub(crate) key: Option<String>,
-    pub(crate) owner: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewContext {
     pub(crate) instance: ViewInstanceId,
@@ -168,6 +160,7 @@ pub(crate) struct BindingSet {
     entries: Vec<Binding>,
 }
 
+#[cfg(test)]
 impl BindingSet {
     pub(crate) fn new(entries: impl IntoIterator<Item = Binding>) -> Self {
         Self {
@@ -203,6 +196,8 @@ pub(crate) struct ViewChrome {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: Option<BindingSet>,
+    pub(crate) overflow_command: Option<(String, String)>,
+    pub(crate) has_unbound: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -511,38 +506,6 @@ pub(crate) trait View {
 
     fn engine_commands(&self, _context: &ViewContext) -> Option<Vec<crate::command::CommandEntry>> {
         None
-    }
-
-    /// Configured business commands are projected separately from Engine input
-    /// actions so the host can own command presentation and palette folding.
-    fn command_bindings(&self) -> Option<&crate::protocol::ViewCommandBindings> {
-        None
-    }
-
-    fn command_descriptors(&self, _context: &ViewContext) -> Vec<CommandDescriptor> {
-        self.command_bindings()
-            .map(|bindings| bindings.command_descriptors())
-            .unwrap_or_default()
-    }
-
-    fn command_owner_context(
-        &self,
-        _context: &ViewContext,
-        _owner: &str,
-    ) -> anyhow::Result<Option<crate::workflow::command::CommandOwnerContext>> {
-        Ok(None)
-    }
-
-    fn business_bindings(&self, _context: &ViewContext) -> BindingSet {
-        let Some(commands) = self.command_bindings() else {
-            return BindingSet::default();
-        };
-        BindingSet::new(commands.business.iter().filter_map(|(key, label)| {
-            key.map(|key| Binding {
-                key,
-                label: Some(label.clone()),
-            })
-        }))
     }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
