@@ -22,6 +22,9 @@ pub(crate) struct PickerPreviewConfig {
     pub(super) source: PreviewSource,
 }
 
+const DEBOUNCE_DURATION: std::time::Duration = std::time::Duration::from_millis(80);
+const GRACE_PERIOD_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PickerLayout {
@@ -225,6 +228,7 @@ pub(super) struct PickerPreview {
     prepared: Option<PreviewRequest>,
     script_task: Option<crate::task::TaskHandle<Option<document::Document>>>,
     due: Option<std::time::Instant>,
+    grace_due: Option<std::time::Instant>,
     document: Option<document::Document>,
     status: Option<String>,
     error: bool,
@@ -311,6 +315,7 @@ impl PickerPreview {
             prepared: None,
             script_task: None,
             due: None,
+            grace_due: None,
             document: None,
             status: None,
             error: false,
@@ -345,11 +350,21 @@ impl PickerPreview {
         self.prepared = None;
         self.script_task = None;
         self.due = None;
+        self.grace_due = None;
         self.document = None;
         self.status = None;
         self.error = false;
         self.scroll = 0;
         self.images.clear();
+    }
+
+    fn cancel_pending(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.task.take();
+        self.script_task = None;
+        self.due = None;
+        self.grace_due = None;
+        self.error = false;
     }
 
     pub(super) fn fits(&self, size: (u16, u16)) -> bool {
@@ -377,14 +392,21 @@ impl PickerPreview {
         if identity == self.selection.as_deref() {
             return;
         }
-        self.reset_selection();
-        if let Some(request) = request {
-            self.selection = Some(request.identity.clone());
+        let Some(request) = request else {
+            self.reset_selection();
+            return;
+        };
+        self.cancel_pending();
+        let now = std::time::Instant::now();
+        self.selection = Some(request.identity.clone());
+        self.due = Some(now + DEBOUNCE_DURATION);
+        if self.document.is_none() {
             self.package = request.owner.split(':').next().unwrap_or("").to_owned();
             self.status = Some("Loading preview…".into());
-            self.due = Some(std::time::Instant::now() + std::time::Duration::from_millis(80));
-            self.prepared = Some(request);
+        } else {
+            self.grace_due = Some(now + GRACE_PERIOD_DURATION);
         }
+        self.prepared = Some(request);
     }
 
     pub(super) fn set_content_size(&mut self, size: Option<(u16, u16)>) {
@@ -417,6 +439,9 @@ impl PickerPreview {
             match task.try_recv() {
                 Ok(TaskCompletion::Completed(document)) => self.install_document(document),
                 Ok(TaskCompletion::Failed(error)) => {
+                    self.grace_due = None;
+                    self.document = None;
+                    self.images.clear();
                     self.status = Some(error);
                     self.error = true;
                 }
@@ -425,6 +450,9 @@ impl PickerPreview {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => self.script_task = Some(task),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.grace_due = None;
+                    self.document = None;
+                    self.images.clear();
                     self.status = Some("preview worker disconnected".into());
                     self.error = true;
                 }
@@ -487,6 +515,11 @@ impl PickerPreview {
     }
 
     fn install_document(&mut self, document: Option<document::Document>) {
+        self.grace_due = None;
+        self.scroll = 0;
+        if let Some(prepared) = &self.prepared {
+            self.package = prepared.owner.split(':').next().unwrap_or("").to_owned();
+        }
         self.status = document.is_none().then(|| "(no preview)".into());
         let mut paths = Vec::new();
         if let Some(document) = &document {
@@ -558,19 +591,34 @@ impl PickerPreview {
     }
 
     pub(super) fn render_state(&self) -> PickerPreviewRenderState {
+        let grace_expired = self.grace_due.is_some_and(|due| std::time::Instant::now() >= due);
+        let (document, images, status, package) = if grace_expired {
+            let package = self
+                .prepared
+                .as_ref()
+                .map(|r| r.owner.split(':').next().unwrap_or("").to_owned())
+                .unwrap_or_default();
+            (None, Vec::new(), Some("Loading preview…".into()), package)
+        } else {
+            (
+                self.document.clone(),
+                self.images.clone(),
+                self.status
+                    .clone()
+                    .or_else(|| self.selection.is_none().then(|| "(no preview)".into())),
+                self.package.clone(),
+            )
+        };
         PickerPreviewRenderState {
             config: self.config.clone(),
             visible: self.visible,
             revision: self.revision,
-            images: self.images.clone(),
-            document: self.document.clone(),
-            status: self
-                .status
-                .clone()
-                .or_else(|| self.selection.is_none().then(|| "(no preview)".into())),
+            images,
+            document,
+            status,
             error: self.error,
-            package: self.package.clone(),
-            scroll: self.scroll,
+            package,
+            scroll: if grace_expired { 0 } else { self.scroll },
         }
     }
 }
