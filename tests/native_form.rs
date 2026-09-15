@@ -230,7 +230,6 @@ fn view_command_precedes_session_command_and_editor_even_when_form_is_invalid() 
         key = "ctrl+u"
         label = "View cancel"
         scope = "view"
-        requires = "input"
         type = "return"
         producer = "declared"
         handler = { value = "VIEW_COMMAND_WON" }

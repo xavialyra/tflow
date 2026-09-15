@@ -138,15 +138,9 @@ pub(crate) struct TerminalSize {
 pub(crate) enum ViewEvent {
     Lifecycle(LifecycleEvent),
     Input(InputEvent),
-    Command(CommandResult),
     Task(TaskEvent),
     Tick,
     Resize(TerminalSize),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CommandResult {
-    EditInput { value: String, cursor: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,37 +235,19 @@ pub(crate) enum EffectRequest {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ViewResultKind {
-    #[default]
-    Value,
-    CommandSelection,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ViewResult {
-    pub(crate) kind: ViewResultKind,
     pub(crate) value: Value,
 }
 
 impl ViewResult {
     pub(crate) fn new(value: Value) -> Self {
-        Self {
-            kind: ViewResultKind::Value,
-            value,
-        }
+        Self { value }
     }
 
     #[allow(dead_code)]
     pub(crate) fn text(value: impl Into<String>) -> Self {
         Self::new(Value::String(value.into()))
-    }
-
-    pub(crate) fn command_selection(value: Value) -> Self {
-        Self {
-            kind: ViewResultKind::CommandSelection,
-            value,
-        }
     }
 }
 
@@ -414,7 +390,6 @@ pub(crate) enum ViewDecision {
     Transition(TransitionRequest),
     Return(ViewResult),
     Effect(EffectRequest),
-    Command(CommandResult),
     Batch(Vec<ViewDecision>),
     Close,
     CloseToRoot,
@@ -428,7 +403,6 @@ impl ViewDecision {
             self,
             Self::Transition(_)
                 | Self::Return(_)
-                | Self::Command(_)
                 | Self::Close
                 | Self::CloseToRoot
                 | Self::CloseWithError(_)
@@ -1253,35 +1227,6 @@ impl Router {
                     }
                 }
             }
-            ViewDecision::Command(command) => {
-                let target = match source {
-                    Some(source) => self
-                        .stack
-                        .iter()
-                        .position(|entry| entry.id == source)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("command source {:?} is no longer mounted", source)
-                        })?,
-                    None => self.stack.len().checked_sub(1).ok_or_else(|| {
-                        anyhow::anyhow!("cannot deliver a command without a View")
-                    })?,
-                };
-                let source = self.stack[target].id;
-                let next = {
-                    let entry = &mut self.stack[target];
-                    match entry
-                        .view
-                        .event(ViewEvent::Command(command), &entry.context)
-                    {
-                        Ok(decision) => decision,
-                        Err(error) => {
-                            self.record_error(Some(source), &error);
-                            return Err(error);
-                        }
-                    }
-                };
-                self.process_decision_inner(next, executor, Some(source))?;
-            }
             ViewDecision::Close => {
                 self.pending_result = None;
                 self.result_committed = false;
@@ -1571,11 +1516,11 @@ mod tests {
         fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
             Ok(match event {
                 ViewEvent::Lifecycle(_) => ViewDecision::Stay,
-                ViewEvent::Command(CommandResult::EditInput { value, cursor }) => {
-                    self.runtime = serde_json::json!({
-                        "edited": value,
-                        "cursor": cursor,
-                    });
+                ViewEvent::Input(InputEvent::Key {
+                    key: Key::Char('m'),
+                    ..
+                }) => {
+                    self.runtime = serde_json::json!("modified");
                     ViewDecision::Invalidate
                 }
                 ViewEvent::Input(InputEvent::Eof) => ViewDecision::Exit,
@@ -2090,45 +2035,9 @@ mod tests {
     }
 
     #[test]
-    fn call_continuation_command_result_is_delivered_to_the_caller() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("root", "root");
-        routes.insert("child", "child");
-        let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
-        let root = router.push(request("root")).unwrap();
-        router
-            .call(
-                request("child"),
-                call_boundary(
-                    root,
-                    calls,
-                    ViewDecision::Command(CommandResult::EditInput {
-                        value: "continued".to_string(),
-                        cursor: 4,
-                    }),
-                ),
-            )
-            .unwrap();
-
-        router
-            .dispatch(ViewEvent::Input(InputEvent::Key {
-                key: Key::Enter,
-                raw: vec![b'\r'],
-            }))
-            .unwrap();
-        let active = router.active().unwrap();
-        assert_eq!(active.id, root);
-        assert_eq!(
-            active.view.command_snapshot().runtime,
-            serde_json::json!({"edited": "continued", "cursor": 4})
-        );
-    }
-
-    #[test]
     fn call_continuation_delivers_structured_command_selection_result_to_caller_handler() {
         struct TypedRecordingHandler {
-            received: Rc<RefCell<Option<(ViewResultKind, Value)>>>,
+            received: Rc<RefCell<Option<Value>>>,
         }
         impl CallReturnHandler for TypedRecordingHandler {
             fn resume(
@@ -2138,7 +2047,7 @@ mod tests {
                 _: &ViewCommandSnapshot,
                 result: &ViewResult,
             ) -> Result<ViewDecision> {
-                *self.received.borrow_mut() = Some((result.kind, result.value.clone()));
+                *self.received.borrow_mut() = Some(result.value.clone());
                 Ok(ViewDecision::Stay)
             }
         }
@@ -2149,7 +2058,7 @@ mod tests {
                 match event {
                     ViewEvent::Input(InputEvent::Key {
                         key: Key::Enter, ..
-                    }) => Ok(ViewDecision::Return(ViewResult::command_selection(
+                    }) => Ok(ViewDecision::Return(ViewResult::new(
                         serde_json::json!("app:run"),
                     ))),
                     _ => Ok(ViewDecision::Stay),
@@ -2206,10 +2115,7 @@ mod tests {
         assert_eq!(router.active().unwrap().id, root);
         assert_eq!(
             *received.borrow(),
-            Some((
-                ViewResultKind::CommandSelection,
-                serde_json::json!("app:run")
-            ))
+            Some(serde_json::json!("app:run"))
         );
     }
 
@@ -2254,14 +2160,10 @@ mod tests {
         let root = router.push(request("root")).unwrap();
         let mut executor = None;
         router
-            .process_decision_inner(
-                ViewDecision::Command(CommandResult::EditInput {
-                    value: "root query".into(),
-                    cursor: 4,
-                }),
-                &mut executor,
-                Some(root),
-            )
+            .dispatch(ViewEvent::Input(InputEvent::Key {
+                key: Key::Char('m'),
+                raw: vec![b'm'],
+            }))
             .unwrap();
         let snapshot = router.active().unwrap().view.command_snapshot().runtime;
         let child = router

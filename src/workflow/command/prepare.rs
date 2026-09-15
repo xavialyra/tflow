@@ -1,7 +1,7 @@
 use crate::execution::PreparedProcess;
 use crate::lifecycle::CancellationToken;
 use crate::workflow::command::{
-    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin, CommandRef,
+    CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     NavigationMode, NavigationRequest,
 };
 use crate::workflow::config::{
@@ -18,14 +18,8 @@ pub(crate) enum PreparedAction {
     },
     Call(CallRequest),
     Return {
-        kind: Option<String>,
         value: Value,
     },
-    EditInput {
-        value: String,
-        cursor: usize,
-    },
-    Invoke(CommandExecution),
     Execute {
         prepared: PreparedProcess,
         exit: bool,
@@ -209,9 +203,7 @@ fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
         CommandAction::Run { handler, .. }
         | CommandAction::Navigate { handler, .. }
         | CommandAction::Call { handler, .. }
-        | CommandAction::Return { handler, .. }
-        | CommandAction::EditInput { handler, .. }
-        | CommandAction::Invoke { handler, .. } => Ok(handler),
+        | CommandAction::Return { handler, .. } => Ok(handler),
         CommandAction::OpenCommands | CommandAction::OpenParameters => {
             bail!("built-in actions do not have a producer handler")
         }
@@ -267,8 +259,8 @@ fn prepare_protocol_operation(
                 return_processor,
             }))
         }
-        crate::protocol::ProtocolOperation::Return { kind, value } => {
-            Ok(PreparedAction::Return { kind, value })
+        crate::protocol::ProtocolOperation::Return { value } => {
+            Ok(PreparedAction::Return { value })
         }
         crate::protocol::ProtocolOperation::Run {
             argv,
@@ -282,24 +274,6 @@ fn prepare_protocol_operation(
                 exit,
                 success_message,
             })
-        }
-        crate::protocol::ProtocolOperation::EditInput { value, cursor } => {
-            let cursor = cursor
-                .map(usize::try_from)
-                .transpose()
-                .context("edit-input cursor does not fit in usize")?
-                .unwrap_or(value.len());
-            if cursor > value.len() || !value.is_char_boundary(cursor) {
-                bail!("edit-input cursor {cursor} is not a UTF-8 boundary in the new value");
-            }
-            Ok(PreparedAction::EditInput { value, cursor })
-        }
-        crate::protocol::ProtocolOperation::Invoke { command } => {
-            let invocation = resolve_visible_command(config, &context, &command)?;
-            Ok(PreparedAction::Invoke(CommandExecution {
-                invocation,
-                context,
-            }))
         }
     }
 }
@@ -402,56 +376,6 @@ pub(crate) fn collect_available_commands(
     Ok(commands)
 }
 
-pub(crate) fn resolve_visible_command(
-    config: &CompiledConfig,
-    context: &CommandContext,
-    reference: &CommandRef,
-) -> Result<CommandInvocation> {
-    let visible = collect_available_commands(config, &context.page.view_ref, true)?;
-    let is_visible = visible.values().any(|value| {
-        value.get("ref").is_some_and(|value| {
-            value.get("view").and_then(Value::as_str) == Some(reference.view.as_str())
-                && value.get("id").and_then(Value::as_str) == Some(reference.id.as_str())
-        })
-    });
-    if !is_visible {
-        bail!(
-            "command {}/{} is not available in the restored View context",
-            reference.view,
-            reference.id
-        );
-    }
-    if reference.view == "session" {
-        if let Some(cmd) = config.session_command(&reference.id) {
-            return Ok(CommandInvocation::session_command(
-                &context.page.view_ref,
-                &reference.id,
-                cmd,
-            ));
-        }
-    }
-    if let Some(command) = config
-        .view(&reference.view)
-        .and_then(|view| view.commands.get(&reference.id))
-        .cloned()
-    {
-        return Ok(CommandInvocation::view(reference.clone(), command));
-    }
-    if reference.view == context.page.view_ref {
-        if let Some(cmd) = config.session_command(&reference.id) {
-            return Ok(CommandInvocation::session_command(
-                &context.page.view_ref,
-                &reference.id,
-                cmd,
-            ));
-        }
-    }
-    bail!(
-        "command {:?} is not configured for view {:?}",
-        reference.id,
-        reference.view
-    );
-}
 
 #[cfg(test)]
 pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {

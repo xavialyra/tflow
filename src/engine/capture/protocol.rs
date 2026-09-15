@@ -446,9 +446,6 @@ impl View for CaptureProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Command(crate::view::CommandResult::EditInput { .. }) => Err(
-                crate::view::operation_failure("Capture does not provide an editable input"),
-            ),
             ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
                 let Some(action) = self.keymap.action(key) else {
                     return Ok(ViewDecision::Stay);

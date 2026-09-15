@@ -243,18 +243,6 @@ impl EditorBuffer {
         self.bump_revision();
     }
 
-    pub(crate) fn replaced_all(&self, raw: String, cursor: usize) -> Result<Self, BufferEditError> {
-        if cursor > raw.len() {
-            return Err(BufferEditError::RangeOutOfBounds);
-        }
-        if !raw.is_char_boundary(cursor) {
-            return Err(BufferEditError::NonCharBoundary);
-        }
-        let mut candidate = self.clone();
-        candidate.replace_all(raw, cursor);
-        Ok(candidate)
-    }
-
     fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }

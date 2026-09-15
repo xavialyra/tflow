@@ -378,11 +378,6 @@ impl View for FormView {
                     ViewDecision::Stay
                 }
             }
-            ViewEvent::Command(crate::view::CommandResult::EditInput { .. }) => {
-                return Err(crate::view::operation_failure(
-                    "Form query input is not editable; fields are engine drafts",
-                ));
-            }
             ViewEvent::Resize(size) => {
                 self.content_size = (size.width, size.height);
                 ViewDecision::Invalidate

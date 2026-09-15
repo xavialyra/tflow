@@ -87,9 +87,7 @@ fn producer_handler(action: &CommandAction) -> &toml::Value {
         CommandAction::Run { handler, .. }
         | CommandAction::Navigate { handler, .. }
         | CommandAction::Call { handler, .. }
-        | CommandAction::Return { handler, .. }
-        | CommandAction::EditInput { handler, .. }
-        | CommandAction::Invoke { handler, .. } => handler,
+        | CommandAction::Return { handler, .. } => handler,
         CommandAction::OpenCommands | CommandAction::OpenParameters => {
             unreachable!("built-in actions have no producer handler")
         }
@@ -120,7 +118,7 @@ fn validate_return_processor(
             anyhow::ensure!(
                 matches!(
                     processor.operation.as_str(),
-                    "navigate" | "call" | "return" | "run" | "edit-input" | "invoke"
+                    "navigate" | "call" | "return" | "run"
                 ),
                 "{owner} has unsupported operation {:?}",
                 processor.operation

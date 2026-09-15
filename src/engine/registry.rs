@@ -165,11 +165,11 @@ mod tests {
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let bound_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\npassthrough = true\ntype = 'return'\nproducer = 'declared'\n[commands.cancel.handler]\nvalue = 'cancel'",
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\ntype = 'return'\nproducer = 'declared'\n[commands.cancel.handler]\nvalue = 'cancel'",
         );
         registry
             .validate_config("bound-embedded", &bound_embedded)
-            .expect("passthrough View commands should be accepted");
+            .expect("embedded View commands should be accepted");
 
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());

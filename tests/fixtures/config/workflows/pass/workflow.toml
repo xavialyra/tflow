@@ -17,7 +17,6 @@ file = "scripts/items.py"
 [views.main.commands.copy]
 key = "enter"
 label = "Copy password"
-requires = "items"
 type = "call"
 producer = "script"
 
@@ -27,7 +26,6 @@ file = "scripts/copy.py"
 [views.main.commands.otp]
 key = "ctrl+o"
 label = "Copy OTP"
-requires = "items"
 type = "run"
 producer = "script"
 
@@ -69,7 +67,6 @@ EOF
 [views.unlock.commands.submit]
 key = "enter"
 label = "Unlock & Copy"
-requires = "input"
 type = "run"
 producer = "script"
 

@@ -95,7 +95,6 @@ Add a standard return command:
 key = "enter"
 label = "Submit"
 scope = "view"
-requires = "input"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }

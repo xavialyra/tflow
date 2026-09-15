@@ -77,7 +77,7 @@ producer = "script"
 file = "scripts/navigate-handler.sh"
 ```
 
-The supported operation types remain `navigate`, `call`, `return`, `run`, `edit-input`, and `invoke`. `type` restricts the response, not the script interpreter. A script response with a different `operation.type` fails validation.
+The supported operation types remain `navigate`, `call`, `return`, and `run`. `type` restricts the response, not the script interpreter. A script response with a different `operation.type` fails validation.
 
 Declared navigation remains simple:
 
@@ -194,7 +194,7 @@ NavigationRequest(target, query, presentation)
 
 The target receives only its own bound parameters; the host does not implicitly propagate source selection or evaluate query strings. Command handlers construct dynamic query values themselves. `call` uses this same parameter path and additionally records the caller return boundary.
 
-Validated output is necessary but not sufficient for an operation to execute: target availability, command visibility for `invoke`, Engine support for `edit-input`, and mounted-instance validity are still checked by the host at application time.
+Validated output is necessary but not sufficient for an operation to execute: target availability and mounted-instance validity are still checked by the host at application time.
 
 ### 6. Picker items producers
 

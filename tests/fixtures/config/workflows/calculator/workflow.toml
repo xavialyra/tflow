@@ -16,7 +16,6 @@ file = "scripts/items.py"
 [views.main.commands.copy]
 key = "enter"
 label = "Copy result"
-requires = "items"
 type = "run"
 producer = "script"
 

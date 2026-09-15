@@ -69,7 +69,6 @@ commands = { type = "array<object>", default = [] }
 key = "enter"
 label = "Select"
 scope = "selection"
-requires = "items"
 type = "return"
 producer = "script"
 [views.commands.commands.accept.handler]
@@ -92,7 +91,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "return",
-        "kind": "command-selection",
         "value": command,
     },
 }, sys.stdout, separators=(",", ":"))
@@ -181,7 +179,6 @@ payload = { type = "string", default = "" }
 key = "enter"
 label = "Apply"
 scope = "selection"
-requires = "input"
 type = "return"
 producer = "script"
 [views.form.commands.accept.handler]
@@ -217,7 +214,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "return",
-        "kind": "parameter-selection",
         "value": {"target": target, "parameters": parameters_value},
     },
 }, sys.stdout, separators=(",", ":"))

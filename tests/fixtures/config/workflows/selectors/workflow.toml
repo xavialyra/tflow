@@ -27,7 +27,6 @@ commands = { type = "array<object>", default = [] }
 key = "enter"
 label = "Select"
 scope = "selection"
-requires = "items"
 type = "return"
 producer = "script"
 [views.commands.commands.accept.handler]

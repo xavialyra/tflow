@@ -37,7 +37,6 @@ handler = { file = "scripts/content.py" }
 [views.input.commands.submit]
 key = "enter"
 scope = "view"
-requires = "input"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
@@ -87,6 +86,6 @@ The processor receives the submitted object in `request["result"]`. A cancelled 
 ## Troubleshooting
 
 - Keep diagnostics off stdout when returning JSON; stdout must contain one JSON value.
-- Use `scope = "view"` and `requires = "input"` for form commands that operate on the active form.
+- Use `scope = "view"` for form commands that operate on the active form.
 - A required field or a field with an invalid type prevents submission until corrected.
 - Dynamic content scripts must return a version 1 `content` response and should derive fields from the request context.

@@ -1,7 +1,7 @@
 use crate::execution::{ensure_script_success, run_resolved_script_with_stdin_outcome_with_limit};
 use crate::lifecycle::CancellationStatus;
 use crate::view::ViewResult;
-use crate::workflow::command::{CommandOwnerContext, CommandRef};
+use crate::workflow::command::CommandOwnerContext;
 use crate::workflow::config::{ResolvedScriptSource, ViewPresentation};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -24,7 +24,6 @@ pub(crate) enum ProtocolOperation {
         presentation: ViewPresentation,
     },
     Return {
-        kind: Option<String>,
         value: Value,
     },
     Run {
@@ -32,13 +31,6 @@ pub(crate) enum ProtocolOperation {
         argv: Vec<String>,
         exit: bool,
         success_message: Option<String>,
-    },
-    EditInput {
-        value: String,
-        cursor: Option<u64>,
-    },
-    Invoke {
-        command: CommandRef,
     },
 }
 
@@ -49,8 +41,6 @@ impl ProtocolOperation {
             Self::Call { .. } => "call",
             Self::Return { .. } => "return",
             Self::Run { .. } => "run",
-            Self::EditInput { .. } => "edit-input",
-            Self::Invoke { .. } => "invoke",
         }
     }
 }
@@ -82,8 +72,6 @@ enum RawOperation {
         presentation: ViewPresentation,
     },
     Return {
-        #[serde(default)]
-        kind: Option<String>,
         value: Value,
     },
     Run {
@@ -93,14 +81,6 @@ enum RawOperation {
         exit: bool,
         #[serde(default)]
         success_message: Option<String>,
-    },
-    EditInput {
-        value: String,
-        #[serde(default)]
-        cursor: Option<u64>,
-    },
-    Invoke {
-        command: CommandRef,
     },
 }
 
@@ -144,7 +124,7 @@ pub(crate) fn parse_response(
             query,
             presentation,
         },
-        RawOperation::Return { kind, value } => ProtocolOperation::Return { kind, value },
+        RawOperation::Return { value } => ProtocolOperation::Return { value },
         RawOperation::Run {
             mode,
             argv,
@@ -156,8 +136,6 @@ pub(crate) fn parse_response(
             exit,
             success_message,
         },
-        RawOperation::EditInput { value, cursor } => ProtocolOperation::EditInput { value, cursor },
-        RawOperation::Invoke { command } => ProtocolOperation::Invoke { command },
     };
     if let Some(expected_operation) = expected_operation {
         if operation.operation_type() != expected_operation {
@@ -222,18 +200,7 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                 );
             }
         }
-        ProtocolOperation::EditInput { value, cursor } => {
-            if let Some(cursor) = cursor {
-                let cursor =
-                    usize::try_from(*cursor).context("edit-input cursor does not fit in usize")?;
-                anyhow::ensure!(
-                    cursor <= value.len() && value.is_char_boundary(cursor),
-                    "{} edit-input cursor is not a UTF-8 boundary in the new value",
-                    source_label
-                );
-            }
-        }
-        ProtocolOperation::Return { .. } | ProtocolOperation::Invoke { .. } => {}
+        ProtocolOperation::Return { .. } => {}
     }
     Ok(())
 }
@@ -628,7 +595,6 @@ mod tests {
             null,
             ProtocolOperation::Return {
                 value: Value::Null,
-                ..
             }
         ));
     }
@@ -650,7 +616,7 @@ mod tests {
             let parsed =
                 parse_response(&serde_json::to_vec(&response).unwrap(), Some("return"), "test").unwrap();
             assert!(
-                matches!(parsed, ProtocolOperation::Return { value: parsed_value, .. } if parsed_value == value)
+                matches!(parsed, ProtocolOperation::Return { value: parsed_value } if parsed_value == value)
             );
         }
     }

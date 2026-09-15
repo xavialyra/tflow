@@ -59,11 +59,6 @@ impl ProtocolCommandService {
             .as_ref()
             .is_some_and(|p| p.ready && !p.current.is_null());
 
-        let definitely_no_items = snapshot
-            .publication
-            .as_ref()
-            .is_some_and(|p| p.ready && p.current.is_null());
-
         if has_item {
             if let Some(owner) = &snapshot.owner_view {
                 if owner != target {
@@ -78,11 +73,6 @@ impl ProtocolCommandService {
             };
             for (id, cmd) in &view.commands {
                 if scope != crate::command::CommandScope::View {
-                    continue;
-                }
-                if cmd.requires == crate::workflow::config::CommandRequirement::Items
-                    && definitely_no_items
-                {
                     continue;
                 }
                 let key = match &cmd.key {
@@ -222,9 +212,6 @@ impl CommandService for ProtocolCommandService {
                 let processor_registry = std::sync::Arc::clone(&registry_clone);
                 let result_processor: CallResultProcessor =
                     std::sync::Arc::new(move |_source, caller, snapshot, result| {
-                        if result.kind != crate::view::ViewResultKind::CommandSelection {
-                            return Ok(ViewDecision::Stay);
-                        }
                         if active_caller != ViewInstanceId(0) && caller.instance != active_caller {
                             return Ok(ViewDecision::Stay);
                         }
@@ -576,40 +563,9 @@ pub(crate) fn map_prepared_action(
                 continuation: crate::view::Continuation::Call(boundary),
             }))
         }
-        PreparedAction::Return { kind, value } => {
-            let is_command_selection = kind.as_deref() == Some("command-selection")
-                || value.get("kind").and_then(|v| v.as_str()) == Some("command-selection")
-                || value.get("ref").is_some()
-                || (value.is_object() && value.get("id").is_some() && value.get("view").is_some());
-            if is_command_selection {
-                let actual_value =
-                    if value.get("kind").and_then(|v| v.as_str()) == Some("command-selection") {
-                        value.get("value").cloned().unwrap_or(value)
-                    } else {
-                        value
-                    };
-                Ok(ViewDecision::Return(ViewResult::command_selection(
-                    actual_value,
-                )))
-            } else {
-                Ok(ViewDecision::Return(ViewResult::new(value)))
-            }
+        PreparedAction::Return { value } => {
+            Ok(ViewDecision::Return(ViewResult::new(value)))
         }
-        PreparedAction::EditInput { value, cursor } => Ok(ViewDecision::Command(
-            crate::view::CommandResult::EditInput { value, cursor },
-        )),
-        PreparedAction::Invoke(execution) => map_prepared_action(
-            config,
-            invocation,
-            cancellation,
-            crate::workflow::command::prepare_command_action(
-                config,
-                invocation,
-                execution,
-                cancellation,
-            )?,
-            caller,
-        ),
         PreparedAction::Execute {
             prepared,
             exit,

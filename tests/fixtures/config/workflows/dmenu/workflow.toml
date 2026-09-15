@@ -32,7 +32,6 @@ nth-delimiter = { type = "string", nullable = true }
 [views.main.commands.accept]
 key = "enter"
 label = "Accept"
-requires = "input"
 type = "return"
 producer = "script"
 [views.main.commands.accept.handler]
@@ -40,7 +39,6 @@ file = "scripts/result.sh"
 
 [views.main.commands.copy]
 label = "Copy selection"
-requires = "input"
 type = "return"
 producer = "script"
 [views.main.commands.copy.handler]

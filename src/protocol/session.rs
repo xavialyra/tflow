@@ -1,6 +1,4 @@
 use super::command_adapter::CommandService;
-#[cfg(test)]
-use super::command_adapter::map_prepared_action;
 use crate::command::{ChromeSnapshot, CommandRegistry, CommandScope};
 use crate::input::InputEvent;
 use crate::protocol::contracts::{TaskEvent, ViewInstanceId};
@@ -764,15 +762,6 @@ mod tests {
                             ))
                         }
                         InputEvent::Key {
-                            key: crate::input::Key::Char('z'),
-                            ..
-                        } => Ok(ViewDecision::Command(
-                            crate::view::CommandResult::EditInput {
-                                value: "edited".to_string(),
-                                cursor: 2,
-                            },
-                        )),
-                        InputEvent::Key {
                             key: crate::input::Key::Char('q'),
                             ..
                         } => {
@@ -809,14 +798,6 @@ mod tests {
                         InputEvent::Eof => Ok(ViewDecision::Exit),
                         _ => Ok(ViewDecision::Invalidate),
                     }
-                }
-                ViewEvent::Command(crate::view::CommandResult::EditInput { value, cursor }) => {
-                    self.runtime = serde_json::json!({
-                        "edited": value,
-                        "cursor": cursor,
-                    });
-                    self.revision = self.revision.wrapping_add(1);
-                    Ok(ViewDecision::Invalidate)
                 }
                 ViewEvent::Task(task) => {
                     self.publication = Some(crate::view::ViewPublication::new(
@@ -922,50 +903,6 @@ mod tests {
             }),
         );
         (session, events, effects)
-    }
-
-    #[test]
-    fn command_edit_completion_is_delivered_to_its_source_view() {
-        let (mut session, _, _) = session();
-        session.start_root(request("root")).unwrap();
-        session
-            .input(InputEvent::Key {
-                key: crate::input::Key::Char('z'),
-                raw: vec![b'z'],
-            })
-            .unwrap();
-        assert_eq!(
-            session
-                .router()
-                .active()
-                .unwrap()
-                .view
-                .command_snapshot()
-                .runtime,
-            serde_json::json!({"edited": "edited", "cursor": 2})
-        );
-
-        assert_eq!(
-            {
-                let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
-                let invocation = test_invocation(&config, "core:default");
-                map_prepared_action(
-                    &config,
-                    &invocation,
-                    &crate::lifecycle::CancellationToken::new(),
-                    crate::workflow::command::PreparedAction::EditInput {
-                        value: "mapped".to_string(),
-                        cursor: 3,
-                    },
-                    ViewInstanceId(1),
-                )
-                .unwrap()
-            },
-            ViewDecision::Command(crate::view::CommandResult::EditInput {
-                value: "mapped".to_string(),
-                cursor: 3,
-            })
-        );
     }
 
     #[test]
@@ -1378,7 +1315,7 @@ mod tests {
                 &crate::view::ViewLocation::new("__selectors:commands"),
                 &caller,
                 &snapshot,
-                &ViewResult::command_selection(selected_command),
+                &ViewResult::new(selected_command),
             )
             .unwrap();
         let ViewDecision::Return(result) = continued else {
@@ -1394,7 +1331,7 @@ mod tests {
                 &crate::view::ViewLocation::new("__selectors:commands"),
                 &caller,
                 &snapshot,
-                &ViewResult::command_selection(unknown_command),
+                &ViewResult::new(unknown_command),
             )
             .unwrap();
         assert!(matches!(continued_unknown, ViewDecision::Stay));

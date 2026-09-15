@@ -214,9 +214,6 @@ impl CompiledConfig {
         ))
     }
 
-    pub(crate) fn session_command(&self, id: &str) -> Option<Command> {
-        self.session_commands().get(id).cloned()
-    }
 
     pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
         let mut globals = self.commands.bindings.clone();

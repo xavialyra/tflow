@@ -222,14 +222,6 @@ pub(crate) struct ReturnProcessor {
     pub(crate) handler: toml::Value,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum CommandRequirement {
-    Input,
-    #[default]
-    Items,
-}
-
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
@@ -255,14 +247,6 @@ pub enum CommandAction {
         producer: ProducerKind,
         handler: toml::Value,
     },
-    EditInput {
-        producer: ProducerKind,
-        handler: toml::Value,
-    },
-    Invoke {
-        producer: ProducerKind,
-        handler: toml::Value,
-    },
 }
 
 impl CommandAction {
@@ -272,9 +256,7 @@ impl CommandAction {
             CommandAction::Run { producer, .. }
             | CommandAction::Navigate { producer, .. }
             | CommandAction::Call { producer, .. }
-            | CommandAction::Return { producer, .. }
-            | CommandAction::EditInput { producer, .. }
-            | CommandAction::Invoke { producer, .. } => Some(*producer),
+            | CommandAction::Return { producer, .. } => Some(*producer),
         }
     }
 
@@ -286,8 +268,6 @@ impl CommandAction {
             CommandAction::Navigate { .. } => "navigate",
             CommandAction::Call { .. } => "call",
             CommandAction::Return { .. } => "return",
-            CommandAction::EditInput { .. } => "edit-input",
-            CommandAction::Invoke { .. } => "invoke",
         }
     }
 }
@@ -410,8 +390,6 @@ impl CommandBinding {
             key: self.key(id).map(str::to_string),
             label: self.label(id)?.to_string(),
             scope: None,
-            requires: CommandRequirement::Input,
-            passthrough: false,
             action: self.command_action(id)?,
         })
     }
@@ -426,10 +404,6 @@ pub struct Command {
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
     pub scope: Option<String>,
-    #[serde(default)]
-    pub requires: CommandRequirement,
-    #[serde(default)]
-    pub passthrough: bool,
     #[serde(flatten)]
     pub action: CommandAction,
 }

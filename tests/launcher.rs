@@ -1330,57 +1330,6 @@ fn view_commands_accept_unreserved_control_bindings() {
 }
 
 #[test]
-fn edit_input_command_updates_the_picker_owned_editor() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = [{display = "Item", value = "value"}]
-
-        [workflows.core.views.default.commands.rewrite]
-        key = "ctrl+r"
-        label = "Rewrite"
-        requires = "input"
-        type = "edit-input"
-
-        producer = "declared"
-        handler = { value = "rewritten", cursor = 3 }
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher_with_args(&config, &[]);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"draft").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "draft█")
-    });
-    process.master.write_all(b"\x12").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "rewritten") && visible.contains("Commands")
-    });
-    let output = String::from_utf8_lossy(&output);
-    assert!(
-        output.lines().any(|line| line.trim() == "rewritten"),
-        "edit-input did not update the Picker surface"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn view_command_overrides_printable_picker_binding() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1497,7 +1446,6 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         key = "enter"
         label = "Inspect"
         scope = "view"
-        requires = "input"
         type = "run"
 
         producer = "declared"
@@ -1598,7 +1546,6 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
-        requires = "input"
         type = "run"
         producer = "script"
         [workflows.core.views.default.commands.accept.handler]

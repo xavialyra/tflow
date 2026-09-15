@@ -22,8 +22,6 @@ escape-cancels = true
 key = "tab"
 label = "Next resource"
 scope = "view"
-requires = "input"
-passthrough = true
 type = "navigate"
 producer = "script"
 
@@ -33,8 +31,6 @@ file = "scripts/next.sh"
 [views.main.commands.reset]
 label = "Reset monitor"
 scope = "view"
-requires = "input"
-passthrough = true
 type = "navigate"
 producer = "declared"
 

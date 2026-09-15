@@ -94,7 +94,7 @@ if not state["valid"]:
 response = {"version": 1, "operation": {"type": "return", "value": state["values"]}}
 ```
 
-`edit-input` is not supported by Form: its query is launch input, and its fields are independent drafts. Submit, call/return, and navigation use the existing [command protocol](workflow-toml.md#commands).
+Submit, call/return, and navigation use the existing [command protocol](workflow-toml.md#commands).
 
 ## Keyboard Behavior
 

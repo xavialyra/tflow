@@ -22,7 +22,6 @@ fields = [
 key = "enter"
 label = "Submit"
 scope = "view"
-requires = "input"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
@@ -41,7 +40,6 @@ handler = { file = "scripts/content.py" }
 key = "enter"
 label = "Submit"
 scope = "view"
-requires = "input"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
@@ -50,7 +48,6 @@ handler = { file = "scripts/submit.py" }
 key = "ctrl+l"
 label = "Edit details"
 scope = "view"
-requires = "input"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:dynamic" }
@@ -64,7 +61,6 @@ handler = { file = "scripts/returned.py" }
 key = "ctrl+t"
 label = "String form"
 scope = "view"
-requires = "input"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
@@ -86,7 +82,6 @@ handler = { file = "scripts/string-content.py" }
 [views.string.commands.submit]
 label = "Submit string values"
 scope = "view"
-requires = "input"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }

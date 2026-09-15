@@ -17,7 +17,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "return",
-        "kind": "command-selection",
         "value": command,
     },
 }, sys.stdout, separators=(",", ":"))

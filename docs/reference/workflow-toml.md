@@ -171,7 +171,7 @@ Producer scripts receive runtime data through their documented JSON request on s
 
 ## Commands
 
-Commands are attached to a View and use one of `navigate`, `call`, `return`, `run`, `edit-input`, or `invoke`:
+Commands are attached to a View and use one of `navigate`, `call`, `return`, or `run`:
 
 ```toml
 [views.main.commands.open]
@@ -196,8 +196,6 @@ The following fields are supported in declared handlers:
 - `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
 - `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
 - `run`: `mode = "foreground"`, non-empty `argv`, optional `exit` boolean, and optional `success_message` string. After successful execution, the host records this message at `INFO` level and displays it in the source View's footer (or popup bottom border) if that View remains active. Failed or cancelled execution does not emit the success message. With `exit = true`, the message is logged before exit; the UI does not pause to display it. Errors take display priority. Informational messages expire after 3 seconds; the next input or a change of active View clears them earlier. Each new informational message replaces the previous one and restarts the timeout. Expiration only clears the display; recorded logs are retained.
-- `edit-input`: `value` string and optional non-negative `cursor` byte offset at a UTF-8 boundary.
-- `invoke`: `command` object containing the opaque command reference `{ view = "...", id = "..." }`.
 
 Popup presentation is declared in the operation handler:
 

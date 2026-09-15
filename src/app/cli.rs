@@ -351,7 +351,6 @@ fn view_contract(view_ref: &str, view: &crate::workflow::config::View) -> serde_
                 "key": cmd.key,
                 "label": cmd.label,
                 "scope": "view",
-                "requires": cmd.requires,
             })
         }).collect::<Vec<_>>(),
     })

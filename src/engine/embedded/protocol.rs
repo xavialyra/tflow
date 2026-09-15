@@ -391,9 +391,6 @@ impl View for EmbeddedProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Command(crate::view::CommandResult::EditInput { .. }) => Err(
-                crate::view::operation_failure("Embedded does not provide an editable input"),
-            ),
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
                 if self.keymap_action(key).is_some() {
                     return self.action(context, ActionId::new("embedded.cancel"));

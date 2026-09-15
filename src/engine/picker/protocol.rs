@@ -952,13 +952,6 @@ impl View for PickerProtocolView {
                 self.route_transition_pending = false;
                 Ok(ViewDecision::Stay)
             }
-            ViewEvent::Command(crate::view::CommandResult::EditInput { value, cursor }) => {
-                self.editor = self
-                    .editor
-                    .replaced_all(value, cursor)
-                    .map_err(crate::view::operation_failure)?;
-                self.edit_changed(context)
-            }
             ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
                 // Completion is a local input mode. Its accept/cancel keys own
                 // the event before projected commands while the mode is open.
@@ -1430,10 +1423,6 @@ mod tests {
             target,
             ParsedQuery::new(target, "query", Value::String(String::new())),
         )
-    }
-
-    fn config(services: PickerViewServices) -> PickerProtocolConfig {
-        config_with_tasks(services, TaskRuntime::new())
     }
 
     fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> PickerProtocolConfig {
@@ -2042,74 +2031,6 @@ mod tests {
         }
         drop(view);
         tasks.shutdown_and_wait();
-    }
-
-    #[test]
-    fn command_edit_updates_the_private_editor_and_rendered_cursor() {
-        let mut routes = MapRouteCatalog::default();
-        routes.insert("core:default", "core:default");
-        let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
-        let services = crate::engine::picker::PickerRuntimeServices::new(
-            Arc::clone(&fixture),
-            MountTaskStarter::from_lease(&TaskRuntime::new(), MountTaskLease::new(ViewMountId(1))),
-            "core:default",
-        )
-        .view_services();
-        let mut picker_config = config(services);
-        picker_config.query_prefix = Some("app".to_string());
-        let mut view = create_protocol_view(
-            picker_config,
-            &request("core:default"),
-            ViewInstanceId(1),
-            &routes,
-        )
-        .unwrap();
-        let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
-            .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
-        view.event(
-            ViewEvent::Command(crate::view::CommandResult::EditInput {
-                value: "rewritten".to_string(),
-                cursor: 3,
-            }),
-            &mut context,
-        )
-        .unwrap();
-
-        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
-        terminal
-            .draw(|frame| {
-                let rendered = view
-                    .render(
-                        frame,
-                        frame.area(),
-                        &RenderContext::for_terminal(crate::view::TerminalSize {
-                            width: 20,
-                            height: 5,
-                        }),
-                    )
-                    .unwrap();
-                assert!(rendered.cursor.is_none());
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let query = buffer.content[0..20]
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        let divider = buffer.content[20..40]
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(query.starts_with("app rewritten"), "query row: {query:?}");
-        let cursor_cell = buffer.cell((7, 0)).unwrap();
-        assert_eq!(cursor_cell.symbol(), "r");
-        assert!(divider.chars().all(|character| character == '─'));
     }
 
     #[test]
