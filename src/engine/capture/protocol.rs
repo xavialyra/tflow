@@ -101,6 +101,11 @@ fn create_protocol_view_state(
         0,
     );
     let identity = config.identity.clone();
+    let initial_output = config
+        .engine
+        .field("output")
+        .and_then(|output| output.as_str())
+        .map(|s| s.to_string());
     let has_async_work = config
         .engine
         .field("output")
@@ -127,6 +132,7 @@ fn create_protocol_view_state(
     );
     let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id));
     let input_raw = parameters.raw_input().to_string();
+    let output_text = std::sync::Arc::new(std::sync::RwLock::new(initial_output));
     Ok(CaptureProtocolView {
         runtime,
         renderer,
@@ -149,6 +155,7 @@ fn create_protocol_view_state(
         content_size: (0, 0),
         status: None,
         error: None,
+        output_text,
     })
 }
 
@@ -174,6 +181,7 @@ struct CaptureProtocolView {
     content_size: (u16, u16),
     status: Option<String>,
     error: Option<String>,
+    output_text: std::sync::Arc<std::sync::RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +277,9 @@ impl CaptureProtocolView {
 
     fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
         if let Some(publication) = emission.publication() {
+            if let Some(val) = publication.current().get("value").and_then(|v| v.as_str()) {
+                *self.output_text.write().unwrap() = Some(val.to_string());
+            }
             self.publication = Some(ViewPublication::new(
                 publication.current().clone(),
                 publication.ready,
@@ -370,6 +381,9 @@ impl CaptureProtocolView {
             self.apply_notice(&notice);
         }
         if let Some(publication) = publication {
+            if let Some(val) = publication.current.get("value").and_then(|v| v.as_str()) {
+                *self.output_text.write().unwrap() = Some(val.to_string());
+            }
             self.publication = Some(ViewPublication::new(publication.current, publication.ready));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
@@ -386,6 +400,38 @@ impl CaptureProtocolView {
 }
 
 impl View for CaptureProtocolView {
+    fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        let mut entries = Vec::new();
+        for (key, action) in self.keymap.bindings() {
+            let (id, label) = match action {
+                super::CaptureAction::Copy => ("capture.copy", "Copy"),
+                super::CaptureAction::Back => ("capture.back", "Back"),
+            };
+            entries.push(crate::command::CommandEntry::for_event(
+                id,
+                Some(label.to_string()),
+                Some(key),
+                crate::command::CommandScope::Engine,
+            ));
+        }
+        entries
+    }
+
+    fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
+        match id {
+            "capture.copy" => {
+                let text = self.output_text.read().unwrap().clone();
+                if let Some(text) = text {
+                    Ok(ViewDecision::Effect(crate::view::EffectRequest::CopyToClipboard(text)))
+                } else {
+                    Ok(ViewDecision::Stay)
+                }
+            }
+            "capture.back" => Ok(ViewDecision::Close),
+            _ => self.action(context, ActionId::new(id)),
+        }
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
@@ -446,15 +492,8 @@ impl View for CaptureProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
-                let Some(action) = self.keymap.action(key) else {
-                    return Ok(ViewDecision::Stay);
-                };
-                let id = match action {
-                    super::CaptureAction::Copy => "capture.copy",
-                    super::CaptureAction::Back => "capture.back",
-                };
-                self.action(context, ActionId::new(id))
+            ViewEvent::Input(InputEvent::Key { key, raw }) => {
+                self.dispatch_key_event(key, &raw, context)
             }
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
             ViewEvent::Task(task) => {

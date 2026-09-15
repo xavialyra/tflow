@@ -1,5 +1,5 @@
 use super::command_adapter::CommandService;
-use crate::command::{ChromeSnapshot, CommandRegistry, CommandScope};
+use crate::command::{ChromeSnapshot, CommandHandler, CommandRegistry, CommandScope};
 use crate::input::InputEvent;
 use crate::protocol::contracts::{TaskEvent, ViewInstanceId};
 #[cfg(test)]
@@ -270,10 +270,10 @@ impl ProtocolSession {
         let mut executed_command = false;
         let mut command_decision = ViewDecision::Stay;
 
-        if let ViewEvent::Input(InputEvent::Key { key, .. }) = &event {
+        if let ViewEvent::Input(InputEvent::Key { key, raw }) = &event {
             let entry_opt = self.registry.read().unwrap().resolve(*key).cloned();
             if let Some(entry) = entry_opt {
-                if entry.scope != CommandScope::Host {
+                if entry.scope == CommandScope::View {
                     let is_loading = self.router.active().is_some_and(|a| {
                         let snapshot = a.view.command_snapshot();
                         snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
@@ -285,10 +285,30 @@ impl ProtocolSession {
                     }
                 }
                 executed_command = true;
-                command_decision = entry.action.execute()?;
+                command_decision = match entry.handler {
+                    CommandHandler::Action(action) => action.execute()?,
+                    CommandHandler::Event => {
+                        if let Some(active_instance) = self.router.active_mut() {
+                            let context = &active_instance.context;
+                            active_instance.view.on_command(&entry.id, context)?
+                        } else {
+                            ViewDecision::Stay
+                        }
+                    }
+                };
                 if let Some(source) = active {
                     self.router
                         .process_with_effects(command_decision.clone(), source, effects)?;
+                }
+            } else if let Some(active_instance) = self.router.active_mut() {
+                let context = &active_instance.context;
+                if let Some(receiver) = active_instance.view.fallback_receiver() {
+                    executed_command = true;
+                    command_decision = receiver.on_unbound_key(*key, raw, context)?;
+                    if let Some(source) = active {
+                        self.router
+                            .process_with_effects(command_decision.clone(), source, effects)?;
+                    }
                 }
             }
         }
@@ -387,14 +407,15 @@ impl ProtocolSession {
         let (view_entries, engine_entries) = if let Some(active) = self.router.active() {
             let context = &active.context;
             let snapshot = active.view.command_snapshot();
-            let view_entries = if let Some(custom) = active.view.engine_commands(context) {
+            let view_entries = if let Some(custom) = active.view.custom_view_commands(context) {
                 custom
             } else {
                 let mut view_entries = self.commands.build_view_commands(context, &snapshot)?;
                 view_entries.extend(active.view.view_commands(context));
                 view_entries
             };
-            (view_entries, Vec::new())
+            let engine_entries = active.view.engine_commands(context);
+            (view_entries, engine_entries)
         } else {
             (Vec::new(), Vec::new())
         };
@@ -1232,7 +1253,7 @@ mod tests {
             .find(|entry| entry.id == "accept")
             .expect("view commands must contain accept");
         assert!(matches!(
-            accept_cmd.action.execute().unwrap(),
+            accept_cmd.execute_action().unwrap(),
             ViewDecision::Return(_)
         ));
     }
@@ -1304,7 +1325,7 @@ mod tests {
                 .with_active_instance(Some(caller.instance));
 
         let cmd_entry = host_cmds.into_iter().find(|e| e.id == "commands").unwrap();
-        let call_decision = cmd_entry.action.execute().unwrap();
+        let call_decision = cmd_entry.execute_action().unwrap();
         let ViewDecision::Transition(crate::view::TransitionRequest::Call {
             request: _req,
             continuation: crate::view::Continuation::Call(boundary),
@@ -1862,5 +1883,261 @@ mod tests {
                 .resolve_id("local")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn session_reconciles_engine_commands_from_active_view() {
+        struct EngineCmdView;
+        impl View for EngineCmdView {
+            fn engine_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
+                vec![
+                    CommandEntry::new(
+                        "engine.copy",
+                        Some("Copy".to_string()),
+                        Some(crate::input::Key::Enter),
+                        CommandScope::Engine,
+                        Arc::new(|| Ok(ViewDecision::Stay)),
+                    ),
+                    CommandEntry::new(
+                        "engine.back",
+                        Some("Back".to_string()),
+                        Some(crate::input::Key::Escape),
+                        CommandScope::Engine,
+                        Arc::new(|| Ok(ViewDecision::Close)),
+                    ),
+                ]
+            }
+
+            fn event(&mut self, _: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+                Ok(ViewDecision::Stay)
+            }
+
+            fn render(
+                &self,
+                _frame: &mut Frame,
+                _area: Rect,
+                _context: &RenderContext,
+            ) -> Result<RenderResult> {
+                Ok(RenderResult {
+                    cursor: None,
+                    metadata: ViewMetadata::default(),
+                })
+            }
+        }
+
+        #[derive(Clone)]
+        struct EngineFactory;
+        impl ViewFactory for EngineFactory {
+            fn create(
+                &self,
+                _: &NavigationRequest,
+                _: ViewInstanceId,
+                _: &ViewServices<'_>,
+            ) -> Result<Box<dyn View>> {
+                Ok(Box::new(EngineCmdView))
+            }
+        }
+
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("engine_view", "engine_view");
+        let router = Router::new(Box::new(routes), Box::new(EngineFactory));
+        let effects = Rc::new(RefCell::new(Vec::new()));
+        let mut session = ProtocolSession::new(
+            router,
+            Box::new(Effects {
+                calls: Rc::clone(&effects),
+            }),
+        );
+        session.start_root(request("engine_view")).unwrap();
+
+        let registry = session.registry.read().unwrap();
+        assert_eq!(
+            registry.resolve(crate::input::Key::Enter).unwrap().id,
+            "engine.copy"
+        );
+        assert_eq!(
+            registry.resolve(crate::input::Key::Escape).unwrap().id,
+            "engine.back"
+        );
+        assert_eq!(
+            registry.resolve(crate::input::Key::Enter).unwrap().scope,
+            CommandScope::Engine
+        );
+    }
+
+    #[test]
+    fn session_dispatches_to_fallback_receiver_when_key_unbound() {
+        use crate::input::Key;
+        use crate::view::FallbackInputReceiver;
+
+        struct Receiver(Rc<RefCell<Vec<(Key, Vec<u8>)>>>);
+        impl FallbackInputReceiver for Receiver {
+            fn on_unbound_key(
+                &mut self,
+                key: Key,
+                raw: &[u8],
+                _context: &ViewContext,
+            ) -> Result<ViewDecision> {
+                self.0.borrow_mut().push((key, raw.to_vec()));
+                Ok(ViewDecision::Stay)
+            }
+        }
+
+        struct FallbackView {
+            receiver: Receiver,
+        }
+        impl View for FallbackView {
+            fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
+                Some(&mut self.receiver)
+            }
+
+            fn event(&mut self, _: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+                Ok(ViewDecision::Stay)
+            }
+
+            fn render(
+                &self,
+                _frame: &mut Frame,
+                _area: Rect,
+                _context: &RenderContext,
+            ) -> Result<RenderResult> {
+                Ok(RenderResult {
+                    cursor: None,
+                    metadata: ViewMetadata::default(),
+                })
+            }
+        }
+
+        #[derive(Clone)]
+        struct FallbackFactory(Rc<RefCell<Vec<(Key, Vec<u8>)>>>);
+        impl ViewFactory for FallbackFactory {
+            fn create(
+                &self,
+                _: &NavigationRequest,
+                _: ViewInstanceId,
+                _: &ViewServices<'_>,
+            ) -> Result<Box<dyn View>> {
+                Ok(Box::new(FallbackView {
+                    receiver: Receiver(Rc::clone(&self.0)),
+                }))
+            }
+        }
+
+        let unbound_log = Rc::new(RefCell::new(Vec::new()));
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("fallback_view", "fallback_view");
+        let router = Router::new(
+            Box::new(routes),
+            Box::new(FallbackFactory(Rc::clone(&unbound_log))),
+        );
+        let effects = Rc::new(RefCell::new(Vec::new()));
+        let mut session = ProtocolSession::new(
+            router,
+            Box::new(Effects {
+                calls: Rc::clone(&effects),
+            }),
+        );
+        session.start_root(request("fallback_view")).unwrap();
+
+        let decision = session
+            .input(InputEvent::Key {
+                key: Key::Char('z'),
+                raw: b"z".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(decision, ViewDecision::Stay);
+
+        let captured = unbound_log.borrow();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0, Key::Char('z'));
+        assert_eq!(captured[0].1, b"z");
+    }
+
+    #[test]
+    fn session_dispatches_view_handler_command_directly_to_view_on_command() {
+        use crate::command::CommandEntry;
+        use crate::input::Key;
+
+        struct CommandReceiverView {
+            received: Rc<RefCell<Vec<(String, String)>>>,
+        }
+
+        impl View for CommandReceiverView {
+            fn engine_commands(&self, _context: &ViewContext) -> Vec<CommandEntry> {
+                vec![CommandEntry::for_view(
+                    "custom.action",
+                    Some("Custom Action".to_string()),
+                    Some(Key::Down),
+                    CommandScope::Engine,
+                )]
+            }
+
+            fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
+                self.received
+                    .borrow_mut()
+                    .push((id.to_string(), context.location.target.clone()));
+                Ok(ViewDecision::Invalidate)
+            }
+
+            fn event(&mut self, _: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+                Ok(ViewDecision::Stay)
+            }
+
+            fn render(
+                &self,
+                _frame: &mut Frame,
+                _area: Rect,
+                _context: &RenderContext,
+            ) -> Result<RenderResult> {
+                Ok(RenderResult {
+                    cursor: None,
+                    metadata: ViewMetadata::default(),
+                })
+            }
+        }
+
+        #[derive(Clone)]
+        struct CommandReceiverFactory(Rc<RefCell<Vec<(String, String)>>>);
+        impl ViewFactory for CommandReceiverFactory {
+            fn create(
+                &self,
+                _: &NavigationRequest,
+                _: ViewInstanceId,
+                _: &ViewServices<'_>,
+            ) -> Result<Box<dyn View>> {
+                Ok(Box::new(CommandReceiverView {
+                    received: Rc::clone(&self.0),
+                }))
+            }
+        }
+
+        let received_log = Rc::new(RefCell::new(Vec::new()));
+        let mut routes = MapRouteCatalog::default();
+        routes.insert("cmd_view", "cmd_view");
+        let router = Router::new(
+            Box::new(routes),
+            Box::new(CommandReceiverFactory(Rc::clone(&received_log))),
+        );
+        let effects = Rc::new(RefCell::new(Vec::new()));
+        let mut session = ProtocolSession::new(
+            router,
+            Box::new(Effects {
+                calls: Rc::clone(&effects),
+            }),
+        );
+        session.start_root(request("cmd_view")).unwrap();
+
+        let decision = session
+            .input(InputEvent::Key {
+                key: Key::Down,
+                raw: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(decision, ViewDecision::Invalidate);
+
+        let received = received_log.borrow();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].0, "custom.action");
+        assert_eq!(received[0].1, "cmd_view");
     }
 }

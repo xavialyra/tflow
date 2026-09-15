@@ -35,12 +35,27 @@ where
 }
 
 #[derive(Clone)]
+pub(crate) enum CommandHandler {
+    Action(Arc<dyn CommandAction>),
+    Event,
+}
+
+impl std::fmt::Debug for CommandHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Action(_) => f.write_str("Action(...)"),
+            Self::Event => f.write_str("Event"),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct CommandEntry {
     pub(crate) id: String,
     pub(crate) label: Option<String>,
     pub(crate) key: Option<Key>,
     pub(crate) scope: CommandScope,
-    pub(crate) action: Arc<dyn CommandAction>,
+    pub(crate) handler: CommandHandler,
 }
 
 impl CommandEntry {
@@ -56,7 +71,43 @@ impl CommandEntry {
             label,
             key,
             scope,
-            action,
+            handler: CommandHandler::Action(action),
+        }
+    }
+
+    pub(crate) fn for_event(
+        id: impl Into<String>,
+        label: Option<String>,
+        key: Option<Key>,
+        scope: CommandScope,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label,
+            key,
+            scope,
+            handler: CommandHandler::Event,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn for_view(
+        id: impl Into<String>,
+        label: Option<String>,
+        key: Option<Key>,
+        scope: CommandScope,
+    ) -> Self {
+        Self::for_event(id, label, key, scope)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn execute_action(&self) -> Result<ViewDecision> {
+        match &self.handler {
+            CommandHandler::Action(action) => action.execute(),
+            CommandHandler::Event => anyhow::bail!(
+                "command {:?} targets event handling directly and cannot be executed as standalone action",
+                self.id
+            ),
         }
     }
 
@@ -71,6 +122,11 @@ impl CommandEntry {
             && self.label == other.label
             && self.key.map(|k| k.binding_identity()) == other.key.map(|k| k.binding_identity())
             && self.scope == other.scope
+            && match (&self.handler, &other.handler) {
+                (CommandHandler::Action(_), CommandHandler::Action(_)) => true,
+                (CommandHandler::Event, CommandHandler::Event) => true,
+                _ => false,
+            }
     }
 }
 
@@ -81,6 +137,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("label", &self.label)
             .field("key", &self.key)
             .field("scope", &self.scope)
+            .field("handler", &self.handler)
             .finish()
     }
 }
@@ -193,7 +250,13 @@ impl CommandRegistry {
             .resolve_id(id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("command {:?} is no longer available", id))?;
-        entry.action.execute()
+        match entry.handler {
+            CommandHandler::Action(action) => action.execute(),
+            CommandHandler::Event => anyhow::bail!(
+                "command {:?} targets event handling directly and cannot be executed via dispatch_id",
+                id
+            ),
+        }
     }
 
     /// Returns the effective command set at the current revision.
@@ -478,5 +541,27 @@ mod tests {
         assert_eq!(entries[3].0.id, "parameters");
         assert_eq!(entries[3].0.scope, CommandScope::Host);
         assert_eq!(entries[3].1, Some(key_host));
+    }
+
+    #[test]
+    fn command_entry_for_event_creates_event_handler_and_dispatch_id_errors() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .replace_scope(
+                CommandScope::Engine,
+                vec![CommandEntry::for_event(
+                    "picker.select_next",
+                    Some("Select Next".into()),
+                    Some(Key::Down),
+                    CommandScope::Engine,
+                )],
+            )
+            .unwrap();
+
+        let entry = registry.resolve(Key::Down).unwrap();
+        assert_eq!(entry.id, "picker.select_next");
+        assert!(matches!(entry.handler, CommandHandler::Event));
+
+        assert!(registry.dispatch_id("picker.select_next").is_err());
     }
 }

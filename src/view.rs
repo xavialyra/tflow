@@ -473,6 +473,15 @@ fn validate_batch(decisions: &[ViewDecision]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) trait FallbackInputReceiver {
+    fn on_unbound_key(
+        &mut self,
+        key: Key,
+        raw: &[u8],
+        context: &ViewContext,
+    ) -> Result<ViewDecision>;
+}
+
 pub(crate) trait View {
     fn preferred_top_inset(&self) -> u16 {
         0
@@ -482,7 +491,42 @@ pub(crate) trait View {
         Vec::new()
     }
 
-    fn engine_commands(&self, _context: &ViewContext) -> Option<Vec<crate::command::CommandEntry>> {
+    fn custom_view_commands(
+        &self,
+        _context: &ViewContext,
+    ) -> Option<Vec<crate::command::CommandEntry>> {
+        None
+    }
+
+    fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        Vec::new()
+    }
+
+    fn on_command(&mut self, _id: &str, _context: &ViewContext) -> Result<ViewDecision> {
+        Ok(ViewDecision::Stay)
+    }
+
+    fn dispatch_key_event(
+        &mut self,
+        key: Key,
+        raw: &[u8],
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        for cmd in self.engine_commands(context) {
+            if cmd.matches_binding(key) {
+                return match cmd.handler {
+                    crate::command::CommandHandler::Action(action) => action.execute(),
+                    crate::command::CommandHandler::Event => self.on_command(&cmd.id, context),
+                };
+            }
+        }
+        if let Some(receiver) = self.fallback_receiver() {
+            return receiver.on_unbound_key(key, raw, context);
+        }
+        Ok(ViewDecision::Stay)
+    }
+
+    fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
         None
     }
 
@@ -673,6 +717,10 @@ impl Router {
 
     pub(crate) fn active(&self) -> Option<&ViewInstance> {
         self.stack.last()
+    }
+
+    pub(crate) fn active_mut(&mut self) -> Option<&mut ViewInstance> {
+        self.stack.last_mut()
     }
 
     fn pop_view(&mut self) -> Option<ViewInstance> {

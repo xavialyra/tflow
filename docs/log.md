@@ -2,6 +2,11 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-16
+
+- Refined ADR 0004 (`docs/adr/0004-scoped-command-registration.md`): renamed `CommandHandler::View` to `CommandHandler::Event` to precisely represent the event-driven dispatch model (`Action` closure execution vs `Event` message dispatch to `View::on_command(&mut self, id, context)`); registered `FormView`'s discrete navigation bindings (`Tab` / `Down` -> `form.focus_next`, `BackTab` / `Up` -> `form.focus_prev`, `Escape` -> `form.cancel`, `Ctrl-C`/`Ctrl-D` -> `form.exit`) as discrete `CommandScope::Engine` Event commands; and restricted `FallbackInputReceiver` strictly to continuous, free-form text typing and inline buffer editing.
+- Updated ADR 0004 (`docs/adr/0004-scoped-command-registration.md`): specified `CommandRegistry` as the exclusive input forwarding channel for all keyboard interactions; introduced the **Hybrid Command Target Model** (`CommandHandler::Action` vs `CommandHandler::Event`) allowing stateful View commands to mutate `&mut self` without lock overhead; migrated `FormView`, `PickerProtocolView`, `CaptureProtocolView`, and `EmbeddedProtocolView` to register all discrete keybindings into `CommandScope::Engine`; introduced the `FallbackInputReceiver` trait contract for unmapped raw input streams (Embedded PTY byte streams, Picker/Form text typing and editing); and defined active `Enter` resolution across `View > Engine > Host` precedence in the Chrome Footer.
+
 ## 2026-09-13
 
 - Refined ADR 0004 with stable CommandRef and scope generations, deterministic same-scope conflict handling, unified enabled-state queries, and explicit dispatcher/task boundaries.

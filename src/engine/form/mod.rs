@@ -16,8 +16,8 @@ use crate::task::{
 };
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    LifecycleEvent, NavigationRequest, View, ViewChrome, ViewCommandSnapshot, ViewContext,
-    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    FallbackInputReceiver, LifecycleEvent, NavigationRequest, View, ViewChrome,
+    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::config::{
     ProducerKind, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
@@ -256,50 +256,134 @@ impl FormView {
         if self.fields.is_empty() {
             return ViewDecision::Stay;
         }
+        let draft = &mut self.fields[self.focus];
+        let buffer = &mut draft.buffer;
         match key {
-            Key::Tab | Key::Down => self.focus = (self.focus + 1) % self.fields.len(),
-            Key::BackTab | Key::Up => {
-                self.focus = (self.focus + self.fields.len() - 1) % self.fields.len()
+            Key::Char(' ') if draft.field.kind == FieldType::Boolean => {
+                let text = if buffer.raw.trim() == "true" {
+                    "false"
+                } else {
+                    "true"
+                };
+                buffer.replace_all(text.to_string(), text.len());
             }
-            _ => {
-                let draft = &mut self.fields[self.focus];
-                let buffer = &mut draft.buffer;
-                match key {
-                    Key::Char(' ') if draft.field.kind == FieldType::Boolean => {
-                        let text = if buffer.raw.trim() == "true" {
-                            "false"
-                        } else {
-                            "true"
-                        };
-                        buffer.replace_all(text.to_string(), text.len());
-                    }
-                    Key::Char(c) if !c.is_control() => buffer.insert(c),
-                    Key::Left => buffer.move_left(),
-                    Key::Right => buffer.move_right(),
-                    Key::Home | Key::Ctrl('a') => buffer.move_home(),
-                    Key::End | Key::Ctrl('e') => buffer.move_end(),
-                    Key::Backspace => {
-                        buffer.delete_backward();
-                    }
-                    Key::Delete => {
-                        buffer.delete_forward();
-                    }
-                    Key::Ctrl('u') => {
-                        buffer.clear();
-                    }
-                    Key::Ctrl('w') => {
-                        buffer.delete_word();
-                    }
-                    _ => return ViewDecision::Stay,
-                }
+            Key::Char(c) if !c.is_control() => buffer.insert(c),
+            Key::Left => buffer.move_left(),
+            Key::Right => buffer.move_right(),
+            Key::Home | Key::Ctrl('a') => buffer.move_home(),
+            Key::End | Key::Ctrl('e') => buffer.move_end(),
+            Key::Backspace => {
+                buffer.delete_backward();
             }
+            Key::Delete => {
+                buffer.delete_forward();
+            }
+            Key::Ctrl('u') => {
+                buffer.clear();
+            }
+            Key::Ctrl('w') => {
+                buffer.delete_word();
+            }
+            _ => return ViewDecision::Stay,
         }
         self.publish();
         ViewDecision::Invalidate
     }
 }
 
+impl FallbackInputReceiver for FormView {
+    fn on_unbound_key(
+        &mut self,
+        key: Key,
+        _raw: &[u8],
+        _context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        if self.active && self.publication.ready {
+            Ok(self.edit(key))
+        } else {
+            Ok(ViewDecision::Stay)
+        }
+    }
+}
+
 impl View for FormView {
+    fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        vec![
+            crate::command::CommandEntry::for_event(
+                "form.focus_next",
+                Some("Next Field".to_string()),
+                Some(Key::Tab),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.focus_next",
+                Some("Next Field".to_string()),
+                Some(Key::Down),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.focus_prev",
+                Some("Previous Field".to_string()),
+                Some(Key::BackTab),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.focus_prev",
+                Some("Previous Field".to_string()),
+                Some(Key::Up),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.cancel",
+                Some("Cancel".to_string()),
+                Some(Key::Escape),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.exit",
+                Some("Exit".to_string()),
+                Some(Key::Ctrl('c')),
+                crate::command::CommandScope::Engine,
+            ),
+            crate::command::CommandEntry::for_event(
+                "form.exit",
+                Some("Exit".to_string()),
+                Some(Key::Ctrl('d')),
+                crate::command::CommandScope::Engine,
+            ),
+        ]
+    }
+
+    fn on_command(&mut self, id: &str, _context: &ViewContext) -> Result<ViewDecision> {
+        match id {
+            "form.focus_next" => {
+                if !self.fields.is_empty() {
+                    self.focus = (self.focus + 1) % self.fields.len();
+                    self.publish();
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    Ok(ViewDecision::Stay)
+                }
+            }
+            "form.focus_prev" => {
+                if !self.fields.is_empty() {
+                    self.focus = (self.focus + self.fields.len() - 1) % self.fields.len();
+                    self.publish();
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    Ok(ViewDecision::Stay)
+                }
+            }
+            "form.cancel" => Ok(ViewDecision::Close),
+            "form.exit" => Ok(ViewDecision::Exit),
+            _ => Ok(ViewDecision::Stay),
+        }
+    }
+
+    fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
+        Some(self)
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         Some(&self.publication)
     }
@@ -361,12 +445,9 @@ impl View for FormView {
             }
             ViewEvent::Task(task) if self.registry.accepts(&task) => self.poll(),
             ViewEvent::Input(InputEvent::Eof) => ViewDecision::Exit,
-            ViewEvent::Input(InputEvent::Key { key, .. }) if self.active => match key {
-                Key::Escape => ViewDecision::Close,
-                Key::Ctrl('c' | 'd') => ViewDecision::Exit,
-                _ if self.publication.ready => self.edit(key),
-                _ => ViewDecision::Stay,
-            },
+            ViewEvent::Input(InputEvent::Key { key, raw }) if self.active => {
+                self.dispatch_key_event(key, &raw, context)?
+            }
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..
             }) if self.active && self.publication.ready => {

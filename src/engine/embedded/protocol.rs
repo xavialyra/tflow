@@ -3,7 +3,7 @@
 //! The PTY and terminal implementation remain owned by the existing
 //! Embedded Engine runtime. This adapter only translates the runtime's
 
-use super::{EmbeddedAction, create_input_bindings, create_renderer, create_view};
+use super::{create_input_bindings, create_renderer, create_view};
 use crate::engine::{
     ActionId, EngineActionInput, EngineDecision, EngineEmission, EngineNavigationRequest,
     EngineRuntime, EngineRuntimeSnapshot, EngineTick, ExternalTickAction, ExternalTickResult,
@@ -327,6 +327,34 @@ impl RawInputReceiver for EmbeddedProtocolView {
 }
 
 impl View for EmbeddedProtocolView {
+    fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        let mut entries = Vec::new();
+        for binding in &self.bindings {
+            if !binding.enabled {
+                continue;
+            }
+            if let crate::workflow::command::ResolvedInputAction::Engine(action) = &binding.action {
+                if action.as_str() == "embedded.cancel" {
+                    entries.push(crate::command::CommandEntry::for_event(
+                        "embedded.cancel",
+                        Some("Cancel".to_string()),
+                        Some(binding.key),
+                        crate::command::CommandScope::Engine,
+                    ));
+                }
+            }
+        }
+        entries
+    }
+
+    fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
+        self.action(context, ActionId::new(id))
+    }
+
+    fn fallback_receiver(&mut self) -> Option<&mut dyn crate::view::FallbackInputReceiver> {
+        Some(self)
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
@@ -392,11 +420,7 @@ impl View for EmbeddedProtocolView {
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                if self.keymap_action(key).is_some() {
-                    return self.action(context, ActionId::new("embedded.cancel"));
-                }
-                self.push_raw(&raw)?;
-                Ok(ViewDecision::Invalidate)
+                self.dispatch_key_event(key, &raw, context)
             }
             ViewEvent::Input(InputEvent::Paste { raw, .. })
             | ViewEvent::Input(InputEvent::Bytes(raw)) => {
@@ -455,27 +479,24 @@ impl View for EmbeddedProtocolView {
 }
 
 impl EmbeddedProtocolView {
-    fn keymap_action(&self, key: crate::input::Key) -> Option<EmbeddedAction> {
-        self.bindings
-            .iter()
-            .find(|binding| {
-                binding.enabled && binding.key.binding_identity() == key.binding_identity()
-            })
-            .and_then(|binding| match &binding.action {
-                crate::workflow::command::ResolvedInputAction::Engine(action)
-                    if action.as_str() == "embedded.cancel" =>
-                {
-                    Some(EmbeddedAction::Cancel)
-                }
-                _ => None,
-            })
-    }
 
     fn push_raw(&mut self, raw: &[u8]) -> Result<()> {
         self.runtime
             .raw_receiver()
             .context("embedded runtime does not provide a raw input receiver")?
             .push_input(raw)
+    }
+}
+
+impl crate::view::FallbackInputReceiver for EmbeddedProtocolView {
+    fn on_unbound_key(
+        &mut self,
+        _key: crate::input::Key,
+        raw: &[u8],
+        _context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        self.push_raw(raw)?;
+        Ok(ViewDecision::Invalidate)
     }
 }
 

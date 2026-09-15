@@ -21,9 +21,9 @@ use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    EffectRequest, LifecycleEvent, NavigationRequest, ParsedQuery, RenderContext, RenderResult,
-    RouteCandidate, RouteCatalog, TransitionRequest, View, ViewCommandSnapshot, ViewContext,
-    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    EffectRequest, FallbackInputReceiver, LifecycleEvent, NavigationRequest, ParsedQuery,
+    RenderContext, RenderResult, RouteCandidate, RouteCatalog, TransitionRequest, View,
+    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
 use anyhow::{Context, Result};
@@ -799,49 +799,6 @@ impl PickerProtocolView {
             _ => Ok(ViewDecision::Stay),
         }
     }
-
-    fn map_action(&mut self, context: &ViewContext, key: Key) -> Result<Option<ViewDecision>> {
-        let Some(action) = self.keymap.action(key) else {
-            return Ok(None);
-        };
-        let id = match action {
-            super::keymap::PickerAction::Exit => "picker.exit",
-            super::keymap::PickerAction::Back => "picker.back",
-            super::keymap::PickerAction::SelectPrevious => "picker.select_previous",
-            super::keymap::PickerAction::SelectNext => "picker.select_next",
-            super::keymap::PickerAction::TogglePreview => "picker.toggle_preview",
-            super::keymap::PickerAction::PreviewScrollUp => "picker.preview_scroll_up",
-            super::keymap::PickerAction::PreviewScrollDown => "picker.preview_scroll_down",
-            super::keymap::PickerAction::DeleteBackward => {
-                return Ok(Some(self.apply_key(context, Key::Backspace)?));
-            }
-            super::keymap::PickerAction::ClearInput => {
-                self.editor.clear();
-                return Ok(Some(self.edit_changed(context)?));
-            }
-            super::keymap::PickerAction::DeleteWord => {
-                self.editor.delete_word();
-                return Ok(Some(self.edit_changed(context)?));
-            }
-        };
-        Ok(Some(match id {
-            "picker.select_previous" => {
-                if self.completion_move(-1) {
-                    ViewDecision::Invalidate
-                } else {
-                    self.action(context, id)?
-                }
-            }
-            "picker.select_next" => {
-                if self.completion_move(1) {
-                    ViewDecision::Invalidate
-                } else {
-                    self.action(context, id)?
-                }
-            }
-            _ => self.action(context, id)?,
-        }))
-    }
 }
 
 impl View for PickerProtocolView {
@@ -873,12 +830,103 @@ impl View for PickerProtocolView {
         })
     }
 
-    fn engine_commands(&self, _context: &ViewContext) -> Option<Vec<crate::command::CommandEntry>> {
+    fn custom_view_commands(
+        &self,
+        _context: &ViewContext,
+    ) -> Option<Vec<crate::command::CommandEntry>> {
         if self.completion.is_some() {
             Some(Vec::new())
         } else {
             None
         }
+    }
+
+    fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
+        let mut entries = Vec::new();
+        for (key, action) in self.keymap.bindings() {
+            let (id, label) = match action {
+                super::keymap::PickerAction::Exit => ("picker.exit", "Exit"),
+                super::keymap::PickerAction::Back => ("picker.back", "Back"),
+                super::keymap::PickerAction::SelectPrevious => {
+                    ("picker.select_previous", "Select Previous")
+                }
+                super::keymap::PickerAction::SelectNext => ("picker.select_next", "Select Next"),
+                super::keymap::PickerAction::TogglePreview => {
+                    ("picker.toggle_preview", "Toggle Preview")
+                }
+                super::keymap::PickerAction::PreviewScrollUp => {
+                    ("picker.preview_scroll_up", "Scroll Preview Up")
+                }
+                super::keymap::PickerAction::PreviewScrollDown => {
+                    ("picker.preview_scroll_down", "Scroll Preview Down")
+                }
+                super::keymap::PickerAction::ClearInput => ("picker.clear_input", "Clear Input"),
+                super::keymap::PickerAction::DeleteWord => {
+                    ("picker.delete_word", "Delete Word")
+                }
+                super::keymap::PickerAction::DeleteBackward => {
+                    ("picker.delete_backward", "Delete")
+                }
+            };
+
+            entries.push(crate::command::CommandEntry::for_event(
+                id,
+                Some(label.to_string()),
+                Some(key),
+                crate::command::CommandScope::Engine,
+            ));
+        }
+
+        entries
+    }
+
+    fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
+        Some(self)
+    }
+
+    fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
+        self.rebuild_context(context);
+        let result = match id {
+            "picker.exit" => Ok(ViewDecision::Exit),
+            "picker.back" => {
+                if self.completion.is_some() {
+                    self.completion = None;
+                    self.state_revision = self.state_revision.wrapping_add(1);
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    self.action(context, "picker.back")
+                }
+            }
+            "picker.select_previous" => {
+                if self.completion_move(-1) {
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    self.action(context, "picker.select_previous")
+                }
+            }
+            "picker.select_next" => {
+                if self.completion_move(1) {
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    self.action(context, "picker.select_next")
+                }
+            }
+            "picker.toggle_preview" => self.action(context, "picker.toggle_preview"),
+            "picker.preview_scroll_up" => self.action(context, "picker.preview_scroll_up"),
+            "picker.preview_scroll_down" => self.action(context, "picker.preview_scroll_down"),
+            "picker.clear_input" => {
+                self.editor.clear();
+                self.edit_changed(context)
+            }
+            "picker.delete_word" => {
+                self.editor.delete_word();
+                self.edit_changed(context)
+            }
+            "picker.delete_backward" => self.apply_key(context, Key::Backspace),
+            _ => Ok(ViewDecision::Stay),
+        };
+        self.sync_auxiliary_size();
+        result
     }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
@@ -952,41 +1000,8 @@ impl View for PickerProtocolView {
                 self.route_transition_pending = false;
                 Ok(ViewDecision::Stay)
             }
-            ViewEvent::Input(InputEvent::Key { key, raw: _ }) => {
-                // Completion is a local input mode. Its accept/cancel keys own
-                // the event before projected commands while the mode is open.
-                if (key == Key::Tab || key == Key::Enter)
-                    && self.completion.is_some()
-                    && self.keymap.action(key).is_none()
-                {
-                    return self.completion_accept(context);
-                }
-                if key == Key::Escape
-                    && self.completion.is_some()
-                    && !self.disabled_keys.contains(&key.binding_identity())
-                {
-                    self.completion = None;
-                    self.state_revision = self.state_revision.wrapping_add(1);
-                    return Ok(ViewDecision::Invalidate);
-                }
-                if self.disabled_keys.contains(&key.binding_identity()) {
-                    return Ok(ViewDecision::Stay);
-                }
-                if key == Key::Tab && self.keymap.action(key).is_none() {
-                    self.open_completion();
-                    return Ok(ViewDecision::Invalidate);
-                }
-                if key == Key::Enter
-                    && self.completion.is_none()
-                    && self.keymap.action(key).is_none()
-                    && let Some(decision) = self.route_submission()?
-                {
-                    return Ok(decision);
-                }
-                if let Some(decision) = self.map_action(context, key)? {
-                    return Ok(decision);
-                }
-                self.apply_key(context, key)
+            ViewEvent::Input(InputEvent::Key { key, raw }) => {
+                self.dispatch_key_event(key, &raw, context)
             }
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..
@@ -1176,6 +1191,38 @@ impl View for PickerProtocolView {
                 bindings: None,
             },
         })
+    }
+}
+
+impl FallbackInputReceiver for PickerProtocolView {
+    fn on_unbound_key(
+        &mut self,
+        key: Key,
+        _raw: &[u8],
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        self.rebuild_context(context);
+        let result = (|| {
+            if self.disabled_keys.contains(&key.binding_identity()) {
+                return Ok(ViewDecision::Stay);
+            }
+            if (key == Key::Tab || key == Key::Enter) && self.completion.is_some() {
+                return self.completion_accept(context);
+            }
+            if key == Key::Tab {
+                self.open_completion();
+                return Ok(ViewDecision::Invalidate);
+            }
+            if key == Key::Enter
+                && self.completion.is_none()
+                && let Some(decision) = self.route_submission()?
+            {
+                return Ok(decision);
+            }
+            self.apply_key(context, key)
+        })();
+        self.sync_auxiliary_size();
+        result
     }
 }
 

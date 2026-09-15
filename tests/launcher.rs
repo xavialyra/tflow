@@ -2727,7 +2727,7 @@ fn capture_keeps_session_commands_available() {
         default_view = "core:default"
 
         [defaults.capture.bindings]
-        copy = ["ctrl+k"]
+        copy = ["ctrl+y"]
 
         [commands.bindings.details]
         key = "ctrl+k"

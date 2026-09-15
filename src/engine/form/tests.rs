@@ -514,3 +514,43 @@ fn password_field_renders_masked_in_form() {
     assert!(!rendered_text.contains("secret123"));
     assert!(rendered_text.contains("*********"));
 }
+
+#[test]
+fn form_discrete_navigation_and_exit_commands() {
+    let mut form = declared(json!([
+        {"name": "first", "value": "1"},
+        {"name": "second", "value": "2"},
+        {"name": "third", "value": "3"}
+    ]));
+
+    let cmds = form.engine_commands(&context());
+    assert_eq!(cmds.len(), 7);
+    assert!(cmds.iter().all(|c| matches!(c.handler, crate::command::CommandHandler::Event)));
+
+    assert_eq!(form.publication.current["focused"], "first");
+
+    // Test Down arrow navigates to next
+    assert_eq!(key(&mut form, Key::Down), ViewDecision::Invalidate);
+    assert_eq!(form.publication.current["focused"], "second");
+
+    // Test Tab navigates to next
+    assert_eq!(key(&mut form, Key::Tab), ViewDecision::Invalidate);
+    assert_eq!(form.publication.current["focused"], "third");
+
+    // Test Up arrow navigates to previous
+    assert_eq!(key(&mut form, Key::Up), ViewDecision::Invalidate);
+    assert_eq!(form.publication.current["focused"], "second");
+
+    // Test BackTab navigates to previous
+    assert_eq!(key(&mut form, Key::BackTab), ViewDecision::Invalidate);
+    assert_eq!(form.publication.current["focused"], "first");
+
+    // Test Escape produces Close
+    assert_eq!(key(&mut form, Key::Escape), ViewDecision::Close);
+
+    // Test Ctrl-C produces Exit
+    assert_eq!(key(&mut form, Key::Ctrl('c')), ViewDecision::Exit);
+
+    // Test Ctrl-D produces Exit
+    assert_eq!(key(&mut form, Key::Ctrl('d')), ViewDecision::Exit);
+}

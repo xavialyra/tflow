@@ -241,6 +241,7 @@ impl<A: KeymapAction + 'static> ActionBindings<A> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn action(&self, key: Key) -> Option<A> {
         self.bindings.get(&key.binding_identity()).copied()
     }
