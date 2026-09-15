@@ -226,11 +226,11 @@ producer = "script"
 file = "scripts/open.sh"
 ```
 
-The request contains a `command` object and unified `context` fields: `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
+The request contains unified `context` fields: `context.command` is `{id, type}` identifying the invoked command, `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
 
 For an aggregate Picker, a command with a physical `key` from the View that owns the current selected feed item is projected into the aggregate command area. The projected command receives that feed owner's bound parameter snapshot in `context.parameters`; a command declared by the aggregate Picker View receives the aggregate View's parameters instead. The public `context.engine.state.item` remains the normalized selected item in both cases. Owner and feed identifiers are host-owned and are not added to the script request. The host revalidates the current result and provenance before dispatching a projected command.
 
-A script response must have this shape:
+A script response must return an operation or an error feedback object:
 
 ```json
 {
@@ -244,7 +244,7 @@ A script response must have this shape:
 }
 ```
 
-The response operation type must match the command's declared `type`. Command scripts do not write interactive terminal output; generated `run` operations enter the existing foreground execution path.
+The response operation type must match the command's declared `type`. Command scripts do not write interactive terminal output; generated `run` operations enter the existing foreground execution path. Alternatively, a command can return `{"version": 1, "error": {"message": "...", "level": "warning"}}` to provide non-fatal feedback without transitioning or terminating.
 
 ### Return Processors
 
@@ -268,7 +268,7 @@ producer = "script"
 file = "scripts/process-result.sh"
 ```
 
-The processor script receives a `return` request. Its `result` is raw protocol data:
+The processor script receives a `return` request. Its child return value is available under `context.result`:
 
 ```json
 {
@@ -277,9 +277,9 @@ The processor script receives a `return` request. Its `result` is raw protocol d
   "context": {
     "parameters": {},
     "input": {"stdin":{"path":null,"length":0,"is_tty":true}},
-    "engine": {"type":"picker","state":{"input":"","item":{"text":"Show date","value":"date","metadata":{}},"text":"Show date","value":"date","metadata":{},"selected_index":0}}
-  },
-  "result": {"text":"Show date","value":"date","metadata":{}}
+    "engine": {"type":"picker","state":{"input":"","item":{"text":"Show date","value":"date","metadata":{}},"text":"Show date","value":"date","metadata":{},"selected_index":0}},
+    "result": {"text":"Show date","value":"date","metadata":{}}
+  }
 }
 ```
 

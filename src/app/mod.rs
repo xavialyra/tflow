@@ -110,6 +110,7 @@ impl EffectExecutor for ProtocolEffects<'_> {
                 self.pipeline.discard_pending();
                 run_foreground_effect(self.terminal, prepared, self.cancellation)
             }
+            EffectRequest::ShowFeedback { .. } => Ok(EffectResult::Complete),
         }
     }
 }

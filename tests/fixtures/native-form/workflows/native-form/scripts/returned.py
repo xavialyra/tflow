@@ -16,7 +16,7 @@ json.dump({
         "type": "return",
         "value": {
             "caller": request["context"]["engine"]["state"]["values"],
-            "child": request["result"],
+            "child": request["context"]["result"],
         },
     },
 }, sys.stdout)

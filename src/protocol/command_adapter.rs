@@ -581,6 +581,12 @@ pub(crate) fn map_prepared_action(
                 effect
             })
         }
+        PreparedAction::Feedback { message, level } => {
+            Ok(ViewDecision::Effect(crate::view::EffectRequest::ShowFeedback {
+                message,
+                level,
+            }))
+        }
     }
 }
 

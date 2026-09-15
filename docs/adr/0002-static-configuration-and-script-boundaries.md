@@ -134,8 +134,8 @@ A command script receives one request on stdin:
 {
   "version": 1,
   "entrypoint": "command",
-  "command": {"id": "open", "type": "navigate"},
   "context": {
+    "command": {"id": "open", "type": "navigate"},
     "parameters": {"mode": "normal"},
     "input": {
       "stdin": {"path": null, "length": 0, "is_tty": true}
@@ -161,7 +161,7 @@ A command script receives one request on stdin:
 
 The context rules are fixed:
 
-- `command.id` and `command.type` identify the host-selected command and its declared operation type.
+- `context.command.id` and `context.command.type` identify the host-selected command and its declared operation type.
 - `context.parameters` contains the command owner's bound parameters. For an independently mounted Picker command, this is the mounted View's parameter snapshot. For a command projected from the selected feed owner into an aggregate Picker, this is that feed's independent parameter snapshot.
 - `context.input` contains the explicitly published launch input descriptor.
 - `context.engine` identifies the carrying Engine and exposes its public state projection. For Picker, selection is the normalized `state.item`; no selected item is represented as `null`.
@@ -367,15 +367,15 @@ Example request:
         "metadata": {},
         "selected_index": 0
       }
-    }
-  },
-  "result": {"text": "Show date", "value": "date", "metadata": {}}
+    },
+    "result": {"text": "Show date", "value": "date", "metadata": {}}
+  }
 }
 ```
 
-Return processors receive raw JSON in `result`. A selected value may be part of an item object, but a processor can also receive any other JSON value, including an explicit `null`. Missing return values are invalid, and close/cancel decisions produce no result.
+Return processors receive raw JSON in `context.result`. A selected value may be part of an item object, but a processor can also receive any other JSON value, including an explicit `null`. Missing return values are invalid, and close/cancel decisions produce no result.
 
-The processor returns the same versioned `operation` envelope used by commands. `result` is an explicit JSON request field, not a namespace resolved by the host.
+The processor returns the same versioned `operation` envelope used by commands. `context.result` is an explicit JSON context field, not a namespace resolved by the host.
 
 Return semantics:
 

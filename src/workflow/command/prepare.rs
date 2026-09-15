@@ -25,6 +25,10 @@ pub(crate) enum PreparedAction {
         exit: bool,
         success_message: Option<String>,
     },
+    Feedback {
+        message: String,
+        level: crate::protocol::FeedbackLevel,
+    },
 }
 
 pub(crate) fn prepare_command_action(
@@ -87,12 +91,15 @@ fn prepare_producer_action(
         command_invocation.source_view(),
         command_invocation.id()
     );
-    let operation = match producer {
-        ProducerKind::Declared => crate::protocol::parse_declared_operation(
-            action.operation_type(),
-            handler,
-            &source_label,
-        )?,
+    let outcome = match producer {
+        ProducerKind::Declared => {
+            let operation = crate::protocol::parse_declared_operation(
+                action.operation_type(),
+                handler,
+                &source_label,
+            )?;
+            crate::protocol::ProtocolOutcome::Operation(operation)
+        }
         ProducerKind::Script => {
             let root = command_invocation
                 .view_reference()
@@ -112,25 +119,32 @@ fn prepare_producer_action(
                 root,
                 &source,
                 &request,
-                None,
+                Some(action.operation_type()),
                 cancellation,
             )?
         }
     };
-    prepare_protocol_operation(
-        config,
-        invocation,
-        match action {
-            CommandAction::Call {
-                return_processor, ..
-            } => return_processor.clone(),
-            _ => None,
-        },
-        command_invocation,
-        context,
-        operation,
-        cancellation,
-    )
+    match outcome {
+        crate::protocol::ProtocolOutcome::Operation(operation) => {
+            prepare_protocol_operation(
+                config,
+                invocation,
+                match action {
+                    CommandAction::Call {
+                        return_processor, ..
+                    } => return_processor.clone(),
+                    _ => None,
+                },
+                command_invocation,
+                context,
+                operation,
+                cancellation,
+            )
+        }
+        crate::protocol::ProtocolOutcome::Feedback { message, level } => {
+            Ok(PreparedAction::Feedback { message, level })
+        }
+    }
 }
 
 pub(crate) fn prepare_return_processor(
@@ -157,12 +171,15 @@ pub(crate) fn prepare_return_processor(
         command_invocation.source_view(),
         command_invocation.id()
     );
-    let operation = match processor.producer {
-        ProducerKind::Declared => crate::protocol::parse_declared_operation(
-            &processor.operation,
-            &processor.handler,
-            &source_label,
-        )?,
+    let outcome = match processor.producer {
+        ProducerKind::Declared => {
+            let operation = crate::protocol::parse_declared_operation(
+                &processor.operation,
+                &processor.handler,
+                &source_label,
+            )?;
+            crate::protocol::ProtocolOutcome::Operation(operation)
+        }
         ProducerKind::Script => {
             let root = command_invocation
                 .view_reference()
@@ -182,20 +199,27 @@ pub(crate) fn prepare_return_processor(
                 root,
                 &source,
                 &request,
-                None,
+                Some(&processor.operation),
                 cancellation,
             )?
         }
     };
-    prepare_protocol_operation(
-        config,
-        invocation,
-        None,
-        command_invocation,
-        context,
-        operation,
-        cancellation,
-    )
+    match outcome {
+        crate::protocol::ProtocolOutcome::Operation(operation) => {
+            prepare_protocol_operation(
+                config,
+                invocation,
+                None,
+                command_invocation,
+                context,
+                operation,
+                cancellation,
+            )
+        }
+        crate::protocol::ProtocolOutcome::Feedback { message, level } => {
+            Ok(PreparedAction::Feedback { message, level })
+        }
+    }
 }
 
 fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {

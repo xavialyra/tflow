@@ -11,7 +11,7 @@ if request["entrypoint"] == "return":
         "operation": {
             "type": "navigate",
             "target": "form:result",
-            "query": {"result": request["result"]},
+            "query": {"result": request["context"]["result"]},
         },
     }
 elif request["entrypoint"] == "capture-output":

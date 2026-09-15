@@ -25,19 +25,21 @@ The host sends one JSON request to a producer and validates one complete version
 
 | Entry point | Request data | Response |
 | :--- | :--- | :--- |
-| Command | `command` plus `context.parameters`, `context.input`, and `context.engine` | One operation matching the command's declared `type` |
+| Command | `context.command` plus `context.parameters`, `context.input`, and `context.engine` | One operation matching the command's declared `type`, or an `error` feedback object |
 | Picker items | `context.parameters`, `context.input`, and `context.engine` | Complete `items` array |
 | Picker preview | `context.parameters`, `context.input`, and Picker `context.engine.state.input/item` | `preview` document or null |
 | Capture output | `context.parameters`, `context.input`, and `context.engine` | `output` string |
 | Form content | `context.parameters`, `context.input`, and `context.engine` | `content` object with an ordered `fields` array |
-| Return processor | `context.parameters`, `context.input`, `context.engine`, and raw `result` | One operation matching the processor's declared `type` |
+| Return processor | `context.parameters`, `context.input`, `context.engine`, and `context.result` | One operation matching the processor's declared `type`, or an `error` feedback object |
 
 The public context fields are:
 
 - `context.parameters`: bound parameters for the command owner or provider feed;
 - `context.input`: the explicit launch input descriptor;
 - `context.engine.type`: the carrying Engine type;
-- `context.engine.state`: the Engine's public state projection. Picker exposes the current query as `state.input` and the normalized selected item as `state.item`. Form exposes edited `values`, raw `drafts`, `valid`, `errors`, `dirty`, and `focused`; its launch parameters remain unchanged. See [Form Content and State](form.md).
+- `context.engine.state`: the Engine's public state projection. Picker exposes the current query as `state.input` and the normalized selected item as `state.item`. Form exposes edited `values`, raw `drafts`, `valid`, `errors`, `dirty`, and `focused`; its launch parameters remain unchanged. See [Form Content and State](form.md);
+- `context.command`: `{ id, type }` identifying the command for `command` entry points;
+- `context.result`: the raw JSON value returned by the child View for `return` entry points.
 
 When an aggregate Picker projects a command from the selected feed owner, `context.parameters` is that feed's independent parameter snapshot. A command declared by the aggregate Picker View receives the aggregate View's parameters. Feed IDs, owner View names, mounted instance identity, task generations, cancellation handles, and scheduling data remain host-owned.
 
@@ -63,6 +65,31 @@ A `run` operation may include `"success_message": "Copied to clipboard"`. The ho
 Built-in clipboard effects use the same host success-feedback path with `Copied to clipboard`. External copy workflows retain their own backend, including binary clipboard formats. Commands that exit immediately record the message without holding the UI open.
 
 Informational feedback in the footer or popup bottom border expires after 3 seconds, including while the UI is idle. Input or a change of active View clears it earlier. A new informational message replaces the previous message and restarts the timeout. Errors retain display priority and their existing lifecycle; expiration does not remove recorded logs.
+
+## Error and Feedback Responses
+
+A command or return processor producer may return a structured error response instead of an operation:
+
+```json
+{
+  "version": 1,
+  "error": {
+    "message": "Item could not be processed",
+    "level": "warning"
+  }
+}
+```
+
+Or a shorthand string message:
+
+```json
+{
+  "version": 1,
+  "error": "Item could not be processed"
+}
+```
+
+`level` accepts `warning` (default), `info`, or `error`. Warning and info messages display expiring feedback in the active View's footer or popup bottom border and keep the View open and responsive without terminating or transitioning. An error level records a View error. Non-empty error messages are required. A response cannot define both `operation` and `error`.
 
 ## Configuration Ownership
 

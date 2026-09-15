@@ -81,7 +81,7 @@ producer = "script"
 file = "scripts/received.py"
 ```
 
-The processor receives the submitted object in `request["result"]`. A cancelled call skips the return processor and restores the caller.
+The processor receives the submitted object in `request["context"]["result"]`. A cancelled call skips the return processor and restores the caller.
 
 ## Troubleshooting
 

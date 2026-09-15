@@ -233,6 +233,10 @@ pub(crate) enum EffectRequest {
         prepared: crate::execution::PreparedProcess,
         success_message: Option<String>,
     },
+    ShowFeedback {
+        message: String,
+        level: crate::protocol::FeedbackLevel,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1197,9 +1201,10 @@ impl Router {
                     EffectRequest::RunPrepared {
                         success_message, ..
                     } => success_message.clone(),
+                    EffectRequest::ShowFeedback { .. } => None,
                 };
                 let result = match executor.as_mut() {
-                    Some(executor) => match (**executor).execute(effect, &context) {
+                    Some(executor) => match (**executor).execute(effect.clone(), &context) {
                         Ok(result) => result,
                         Err(error) => {
                             self.record_error(Some(context.instance), &error);
@@ -1214,7 +1219,21 @@ impl Router {
                 };
                 match result {
                     EffectResult::Complete => {
-                        if let Some(message) = success_message {
+                        if let EffectRequest::ShowFeedback { message, level } = &effect {
+                            match level {
+                                crate::protocol::FeedbackLevel::Error => {
+                                    self.record_error(Some(context.instance), &anyhow::anyhow!("{message}"));
+                                }
+                                crate::protocol::FeedbackLevel::Warning
+                                | crate::protocol::FeedbackLevel::Info => {
+                                    self.pending_info = Some((
+                                        context.instance,
+                                        context.location.target.clone(),
+                                        message.clone(),
+                                    ));
+                                }
+                            }
+                        } else if let Some(message) = success_message {
                             self.pending_info =
                                 Some((context.instance, context.location.target.clone(), message));
                         }

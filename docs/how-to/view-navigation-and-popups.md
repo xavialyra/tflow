@@ -111,13 +111,13 @@ producer = "script"
 file = "scripts/process-action.py"
 ```
 
-The processor runs only after the child has closed and the recorded caller has been activated. Its request contains `entrypoint = "return"`, the caller's owner parameters captured at call time, the unified `context` object, and the raw JSON `result`. Its response is the same version-1 operation envelope as a command.
+The processor runs only after the child has closed and the recorded caller has been activated. Its request contains `entrypoint = "return"`, the caller's owner parameters captured at call time, and the unified `context` object containing `context.result`. Its response is the same version-1 operation or error envelope as a command.
 
 A processor may inspect a selected result like this:
 
 ```python
 request = json.load(sys.stdin)
-result = request["result"]
+result = request["context"]["result"]
 value = result.get("value") if isinstance(result, dict) else None
 if not isinstance(value, str):
     raise SystemExit("expected a selected item")

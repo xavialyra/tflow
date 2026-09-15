@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 const PROTOCOL_VERSION: u64 = 1;
 const MAX_ITEMS_PRODUCER_STDOUT: usize = 64 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ProtocolOperation {
     Navigate {
         target: String,
@@ -45,11 +45,53 @@ impl ProtocolOperation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ProtocolOutcome {
+    Operation(ProtocolOperation),
+    Feedback {
+        message: String,
+        level: FeedbackLevel,
+    },
+}
+
+impl ProtocolOutcome {
+    #[cfg(test)]
+    pub(crate) fn operation(&self) -> Option<&ProtocolOperation> {
+        match self {
+            Self::Operation(op) => Some(op),
+            Self::Feedback { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum FeedbackLevel {
+    #[default]
+    Warning,
+    Info,
+    Error,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawError {
+    Message(String),
+    Structured {
+        message: String,
+        #[serde(default)]
+        level: FeedbackLevel,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawResponse {
     version: u64,
-    operation: RawOperation,
+    #[serde(default)]
+    operation: Option<RawOperation>,
+    #[serde(default)]
+    error: Option<RawError>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,7 +130,7 @@ pub(crate) fn parse_response(
     stdout: &[u8],
     expected_operation: Option<&str>,
     source_label: &str,
-) -> Result<ProtocolOperation> {
+) -> Result<ProtocolOutcome> {
     let response: RawResponse = serde_json::from_slice(stdout).with_context(|| {
         format!(
             "{} producer must write exactly one valid JSON protocol response",
@@ -103,52 +145,80 @@ pub(crate) fn parse_response(
             PROTOCOL_VERSION
         );
     }
-    let operation = match response.operation {
-        RawOperation::Navigate {
-            target,
-            query,
-            presentation,
-            replace,
-        } => ProtocolOperation::Navigate {
-            target,
-            query,
-            presentation,
-            replace,
-        },
-        RawOperation::Call {
-            target,
-            query,
-            presentation,
-        } => ProtocolOperation::Call {
-            target,
-            query,
-            presentation,
-        },
-        RawOperation::Return { value } => ProtocolOperation::Return { value },
-        RawOperation::Run {
-            mode,
-            argv,
-            exit,
-            success_message,
-        } => ProtocolOperation::Run {
-            mode,
-            argv,
-            exit,
-            success_message,
-        },
-    };
-    if let Some(expected_operation) = expected_operation {
-        if operation.operation_type() != expected_operation {
+    match (response.operation, response.error) {
+        (Some(raw_op), None) => {
+            let operation = match raw_op {
+                RawOperation::Navigate {
+                    target,
+                    query,
+                    presentation,
+                    replace,
+                } => ProtocolOperation::Navigate {
+                    target,
+                    query,
+                    presentation,
+                    replace,
+                },
+                RawOperation::Call {
+                    target,
+                    query,
+                    presentation,
+                } => ProtocolOperation::Call {
+                    target,
+                    query,
+                    presentation,
+                },
+                RawOperation::Return { value } => ProtocolOperation::Return { value },
+                RawOperation::Run {
+                    mode,
+                    argv,
+                    exit,
+                    success_message,
+                } => ProtocolOperation::Run {
+                    mode,
+                    argv,
+                    exit,
+                    success_message,
+                },
+            };
+            if let Some(expected_operation) = expected_operation {
+                if operation.operation_type() != expected_operation {
+                    bail!(
+                        "{} producer returned operation {:?}, expected {:?}",
+                        source_label,
+                        operation.operation_type(),
+                        expected_operation
+                    );
+                }
+            }
+            validate_operation(&operation, source_label)?;
+            Ok(ProtocolOutcome::Operation(operation))
+        }
+        (None, Some(raw_error)) => {
+            let (message, level) = match raw_error {
+                RawError::Message(msg) => (msg, FeedbackLevel::Warning),
+                RawError::Structured { message, level } => (message, level),
+            };
+            anyhow::ensure!(
+                !message.trim().is_empty(),
+                "{} error message must not be empty",
+                source_label
+            );
+            Ok(ProtocolOutcome::Feedback { message, level })
+        }
+        (Some(_), Some(_)) => {
             bail!(
-                "{} producer returned operation {:?}, expected {:?}",
-                source_label,
-                operation.operation_type(),
-                expected_operation
+                "{} producer response cannot define both operation and error",
+                source_label
+            );
+        }
+        (None, None) => {
+            bail!(
+                "{} producer response must define either operation or error",
+                source_label
             );
         }
     }
-    validate_operation(&operation, source_label)?;
-    Ok(operation)
 }
 
 fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Result<()> {
@@ -230,7 +300,10 @@ pub(crate) fn parse_declared_operation(
         "operation": Value::Object(operation),
     });
     let bytes = serde_json::to_vec(&envelope)?;
-    parse_response(&bytes, Some(operation_type), source_label)
+    match parse_response(&bytes, Some(operation_type), source_label)? {
+        ProtocolOutcome::Operation(operation) => Ok(operation),
+        ProtocolOutcome::Feedback { .. } => unreachable!(),
+    }
 }
 
 pub(crate) fn run_script_response(
@@ -241,7 +314,7 @@ pub(crate) fn run_script_response(
     request: &Value,
     expected_operation: Option<&str>,
     cancellation: &dyn CancellationStatus,
-) -> Result<ProtocolOperation> {
+) -> Result<ProtocolOutcome> {
     let output = run_script_output(
         source_view,
         source_label,
@@ -527,16 +600,22 @@ pub(crate) fn command_request(
     engine_state: &Value,
     engine_type: &str,
 ) -> Value {
+    let mut context = producer_context(
+        owner.parameters.values(),
+        input,
+        engine_type,
+        engine_state,
+    );
+    if let Value::Object(ref mut map) = context {
+        map.insert(
+            "command".to_string(),
+            json!({"id": command_id, "type": operation_type}),
+        );
+    }
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "command",
-        "command": {"id": command_id, "type": operation_type},
-        "context": producer_context(
-            owner.parameters.values(),
-            input,
-            engine_type,
-            engine_state,
-        ),
+        "context": context,
     })
 }
 
@@ -573,11 +652,14 @@ pub(crate) fn return_request(
     engine_type: &str,
     engine_state: &Value,
 ) -> Value {
+    let mut context = producer_context(parameters, input, engine_type, engine_state);
+    if let Value::Object(ref mut map) = context {
+        map.insert("result".to_string(), result.value.clone());
+    }
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "return",
-        "context": producer_context(parameters, input, engine_type, engine_state),
-        "result": result.value,
+        "context": context,
     })
 }
 
@@ -593,9 +675,9 @@ mod tests {
         let null = parse_response(null, Some("return"), "test").unwrap();
         assert!(matches!(
             null,
-            ProtocolOperation::Return {
+            ProtocolOutcome::Operation(ProtocolOperation::Return {
                 value: Value::Null,
-            }
+            })
         ));
     }
 
@@ -616,7 +698,7 @@ mod tests {
             let parsed =
                 parse_response(&serde_json::to_vec(&response).unwrap(), Some("return"), "test").unwrap();
             assert!(
-                matches!(parsed, ProtocolOperation::Return { value: parsed_value } if parsed_value == value)
+                matches!(parsed, ProtocolOutcome::Operation(ProtocolOperation::Return { value: parsed_value }) if parsed_value == value)
             );
         }
     }
@@ -628,11 +710,6 @@ mod tests {
             "stdin": {"path": null, "length": 0, "is_tty": true}
         });
         let engine_state = json!({"input": "needle"});
-        let expected_context = json!({
-            "parameters": parameters,
-            "input": input,
-            "engine": {"type": "picker", "state": engine_state},
-        });
         let owner = CommandOwnerContext {
             view_ref: "core:main".to_string(),
             parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
@@ -653,14 +730,23 @@ mod tests {
             &engine_state,
         );
 
-        for request in [command, items, capture, returned.clone()] {
-            assert_eq!(request["context"], expected_context);
+        for request in [&command, &items, &capture, &returned] {
+            assert_eq!(request["context"]["parameters"], parameters);
+            assert_eq!(request["context"]["input"], input);
+            assert_eq!(request["context"]["engine"]["type"], "picker");
+            assert_eq!(request["context"]["engine"]["state"], engine_state);
             assert!(request.get("view").is_none());
             assert!(request.get("parameters").is_none());
             assert!(request.get("invocation").is_none());
             assert!(request.get("engine_output").is_none());
+            assert!(request.get("command").is_none());
+            assert!(request.get("result").is_none());
         }
-        assert_eq!(returned["result"], json!({"raw": true}));
+        assert_eq!(
+            command["context"]["command"],
+            json!({"id": "open", "type": "navigate"})
+        );
+        assert_eq!(returned["context"]["result"], json!({"raw": true}));
     }
 
     #[test]
@@ -675,10 +761,68 @@ mod tests {
     fn parse_response_allows_any_operation_when_expected_is_none() {
         let run = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["true"]}}"#;
         let parsed = parse_response(run, None, "test").unwrap();
-        assert_eq!(parsed.operation_type(), "run");
+        assert_eq!(parsed.operation().unwrap().operation_type(), "run");
         let call = br#"{"version":1,"operation":{"type":"call","target":"view:other"}}"#;
         let parsed = parse_response(call, None, "test").unwrap();
-        assert_eq!(parsed.operation_type(), "call");
+        assert_eq!(parsed.operation().unwrap().operation_type(), "call");
+    }
+
+    #[test]
+    fn parse_response_handles_error_feedback() {
+        let str_err = br#"{"version":1,"error":"simple warning"}"#;
+        let parsed = parse_response(str_err, Some("run"), "test").unwrap();
+        assert_eq!(
+            parsed,
+            ProtocolOutcome::Feedback {
+                message: "simple warning".to_string(),
+                level: FeedbackLevel::Warning,
+            }
+        );
+
+        let warning = br#"{"version":1,"error":{"message":"branch exists","level":"warning"}}"#;
+        let parsed = parse_response(warning, Some("navigate"), "test").unwrap();
+        assert_eq!(
+            parsed,
+            ProtocolOutcome::Feedback {
+                message: "branch exists".to_string(),
+                level: FeedbackLevel::Warning,
+            }
+        );
+
+        let error = br#"{"version":1,"error":{"message":"network timeout","level":"error"}}"#;
+        let parsed = parse_response(error, None, "test").unwrap();
+        assert_eq!(
+            parsed,
+            ProtocolOutcome::Feedback {
+                message: "network timeout".to_string(),
+                level: FeedbackLevel::Error,
+            }
+        );
+
+        let info = br#"{"version":1,"error":{"message":"already up to date","level":"info"}}"#;
+        let parsed = parse_response(info, None, "test").unwrap();
+        assert_eq!(
+            parsed,
+            ProtocolOutcome::Feedback {
+                message: "already up to date".to_string(),
+                level: FeedbackLevel::Info,
+            }
+        );
+    }
+
+    #[test]
+    fn response_rejects_both_or_neither_operation_and_error() {
+        let both = br#"{"version":1,"operation":{"type":"return","value":1},"error":"failed"}"#;
+        let err = parse_response(both, None, "test").unwrap_err();
+        assert!(err.to_string().contains("cannot define both operation and error"));
+
+        let neither = br#"{"version":1}"#;
+        let err = parse_response(neither, None, "test").unwrap_err();
+        assert!(err.to_string().contains("must define either operation or error"));
+
+        let empty_msg = br#"{"version":1,"error":""}"#;
+        let err = parse_response(empty_msg, None, "test").unwrap_err();
+        assert!(err.to_string().contains("error message must not be empty"));
     }
 
     #[test]

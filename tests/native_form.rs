@@ -126,7 +126,7 @@ fn native_form_call_return_scripts_receive_child_values_and_restored_caller_draf
         "From query"
     );
     assert_eq!(returned["entrypoint"], "return");
-    assert_eq!(returned["result"], child_values);
+    assert_eq!(returned["context"]["result"], child_values);
     assert_eq!(returned["context"]["engine"]["type"], "form");
     let caller = &returned["context"]["engine"]["state"];
     assert_eq!(caller["values"]["name"], "Caller é界");
@@ -187,7 +187,7 @@ fn string_convention_form_submits_through_palette_and_call_return() {
     let values = json!({"a":"String é界", "b":3.5});
     assert_eq!(submitted["context"]["engine"]["state"]["values"], values);
     assert_eq!(submitted["context"]["engine"]["state"]["valid"], true);
-    assert_eq!(returned["result"], values);
+    assert_eq!(returned["context"]["result"], values);
     fs::remove_dir_all(root).unwrap();
 }
 

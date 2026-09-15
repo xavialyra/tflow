@@ -3280,8 +3280,8 @@ import json
 import sys
 
 request = json.load(sys.stdin)
-result = request.get("result")
 context = request.get("context", {})
+result = context.get("result")
 if (
     request.get("entrypoint") != "return"
     or result != {"kind": "child", "value": 7}
@@ -3345,4 +3345,50 @@ fn command_selector_displays_keybindings_for_commands() {
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
+}
+
+#[test]
+fn script_command_producer_returns_structured_error_feedback() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+            default_view = "core:default"
+            [workflows.core.views.default]
+            [workflows.core.views.default.engine]
+            type = "picker"
+            [workflows.core.views.default.engine.config]
+            items = [{display = "Item", value = "value"}]
+
+            [workflows.core.views.default.commands.warn]
+            key = "enter"
+            type = "run"
+            producer = "script"
+
+            [workflows.core.views.default.commands.warn.handler]
+            file = "scripts/warn.sh"
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "core",
+        "scripts/warn.sh",
+        r#"#!/bin/sh
+printf '{"version":1,"error":{"message":"Custom branch warning","level":"warning"}}\n'
+"#,
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Custom branch warning");
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
 }
