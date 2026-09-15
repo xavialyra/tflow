@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -19,7 +20,7 @@ def find_passfile(entry):
 
 def copy_to_clipboard(text):
     clip_time = int(os.environ.get("PASSWORD_STORE_CLIP_TIME", "45"))
-    if os.environ.get("WAYLAND_DISPLAY"):
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
         subprocess.run(["wl-copy"], input=text.encode(), check=True)
         subprocess.Popen(
             ["bash", "-c", f"sleep {clip_time} && wl-copy --clear"],
@@ -27,7 +28,7 @@ def copy_to_clipboard(text):
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    elif os.environ.get("DISPLAY"):
+    elif os.environ.get("DISPLAY") and shutil.which("xclip"):
         subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
         subprocess.Popen(
             ["bash", "-c", f"sleep {clip_time} && (pkill -f 'xclip -selection clipboard' 2>/dev/null || true)"],

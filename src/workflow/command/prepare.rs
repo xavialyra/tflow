@@ -118,7 +118,7 @@ fn prepare_producer_action(
                 root,
                 &source,
                 &request,
-                action.operation_type(),
+                None,
                 cancellation,
             )?
         }
@@ -188,7 +188,7 @@ pub(crate) fn prepare_return_processor(
                 root,
                 &source,
                 &request,
-                &processor.operation,
+                None,
                 cancellation,
             )?
         }

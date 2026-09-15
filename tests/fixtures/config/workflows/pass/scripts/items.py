@@ -22,11 +22,14 @@ def main():
     tokens = query.casefold().split()
 
     configured_store = os.environ.get("PASSWORD_STORE_DIR")
-    store = (
-        Path(configured_store).expanduser()
-        if configured_store
-        else Path.home() / ".password-store"
-    )
+    if configured_store:
+        store = Path(configured_store).expanduser()
+    elif (Path.home() / ".password-store").is_dir():
+        store = Path.home() / ".password-store"
+    elif (Path.home() / ".local/share/password-store").is_dir():
+        store = Path.home() / ".local/share/password-store"
+    else:
+        store = Path.home() / ".password-store"
     if not store.is_dir():
         emit([])
         return

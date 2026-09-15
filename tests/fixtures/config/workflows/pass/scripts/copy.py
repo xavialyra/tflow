@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import json
+import os
+import shutil
+import subprocess
 import sys
 
 
@@ -12,8 +15,83 @@ def selected_entry(request):
     return entry
 
 
+def find_passfile(entry):
+    prefix = os.environ.get("PASSWORD_STORE_DIR", os.path.expanduser("~/.password-store"))
+    candidates = [
+        os.path.join(prefix, f"{entry}.gpg"),
+        os.path.expanduser(f"~/.local/share/password-store/{entry}.gpg"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return os.path.join(prefix, f"{entry}.gpg")
+
+
+def copy_to_clipboard(text):
+    clip_time = int(os.environ.get("PASSWORD_STORE_CLIP_TIME", "45"))
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+        subprocess.run(["wl-copy"], input=text.encode(), check=True)
+        subprocess.Popen(
+            ["bash", "-c", f"sleep {clip_time} && wl-copy --clear"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    elif os.environ.get("DISPLAY") and shutil.which("xclip"):
+        subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+        subprocess.Popen(
+            ["bash", "-c", f"sleep {clip_time} && (pkill -f 'xclip -selection clipboard' 2>/dev/null || true)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
 def main():
     entry = selected_entry(json.load(sys.stdin))
+    passfile = find_passfile(entry)
+
+    # Probe gpg-agent memory cache.
+    # With --pinentry-mode error, gpg decrypts immediately if cached in gpg-agent,
+    # or fails instantly without any GUI or terminal prompts if not cached.
+    if os.path.exists(passfile):
+        probe = subprocess.run(
+            [
+                "gpg",
+                "--batch",
+                "--quiet",
+                "--yes",
+                "--pinentry-mode",
+                "error",
+                "-d",
+                passfile,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if probe.returncode == 0:
+            lines = probe.stdout.splitlines()
+            secret = lines[0] if lines else ""
+            copy_to_clipboard(secret)
+            json.dump(
+                {
+                    "version": 1,
+                    "operation": {
+                        "type": "run",
+                        "mode": "foreground",
+                        "argv": ["true"],
+                        "exit": True,
+                        "success_message": f"Password for {entry} copied",
+                    },
+                },
+                sys.stdout,
+                separators=(",", ":"),
+            )
+            sys.stdout.write("\n")
+            return
+
+    # Not cached: invoke the pass:unlock form popup
     json.dump(
         {
             "version": 1,

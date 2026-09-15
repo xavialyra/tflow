@@ -106,7 +106,7 @@ enum RawOperation {
 
 pub(crate) fn parse_response(
     stdout: &[u8],
-    expected_operation: &str,
+    expected_operation: Option<&str>,
     source_label: &str,
 ) -> Result<ProtocolOperation> {
     let response: RawResponse = serde_json::from_slice(stdout).with_context(|| {
@@ -159,13 +159,15 @@ pub(crate) fn parse_response(
         RawOperation::EditInput { value, cursor } => ProtocolOperation::EditInput { value, cursor },
         RawOperation::Invoke { command } => ProtocolOperation::Invoke { command },
     };
-    if operation.operation_type() != expected_operation {
-        bail!(
-            "{} producer returned operation {:?}, expected {:?}",
-            source_label,
-            operation.operation_type(),
-            expected_operation
-        );
+    if let Some(expected_operation) = expected_operation {
+        if operation.operation_type() != expected_operation {
+            bail!(
+                "{} producer returned operation {:?}, expected {:?}",
+                source_label,
+                operation.operation_type(),
+                expected_operation
+            );
+        }
     }
     validate_operation(&operation, source_label)?;
     Ok(operation)
@@ -261,7 +263,7 @@ pub(crate) fn parse_declared_operation(
         "operation": Value::Object(operation),
     });
     let bytes = serde_json::to_vec(&envelope)?;
-    parse_response(&bytes, operation_type, source_label)
+    parse_response(&bytes, Some(operation_type), source_label)
 }
 
 pub(crate) fn run_script_response(
@@ -270,7 +272,7 @@ pub(crate) fn run_script_response(
     root: Option<&std::path::Path>,
     source: &ResolvedScriptSource,
     request: &Value,
-    expected_operation: &str,
+    expected_operation: Option<&str>,
     cancellation: &dyn CancellationStatus,
 ) -> Result<ProtocolOperation> {
     let output = run_script_output(
@@ -620,8 +622,8 @@ mod tests {
     fn return_response_requires_a_value_but_accepts_null() {
         let missing = br#"{"version":1,"operation":{"type":"return"}}"#;
         let null = br#"{"version":1,"operation":{"type":"return","value":null}}"#;
-        assert!(parse_response(missing, "return", "test").is_err());
-        let null = parse_response(null, "return", "test").unwrap();
+        assert!(parse_response(missing, Some("return"), "test").is_err());
+        let null = parse_response(null, Some("return"), "test").unwrap();
         assert!(matches!(
             null,
             ProtocolOperation::Return {
@@ -646,7 +648,7 @@ mod tests {
                 "operation": {"type": "return", "value": value.clone()},
             });
             let parsed =
-                parse_response(&serde_json::to_vec(&response).unwrap(), "return", "test").unwrap();
+                parse_response(&serde_json::to_vec(&response).unwrap(), Some("return"), "test").unwrap();
             assert!(
                 matches!(parsed, ProtocolOperation::Return { value: parsed_value, .. } if parsed_value == value)
             );
@@ -698,9 +700,19 @@ mod tests {
     #[test]
     fn response_rejects_unknown_fields_and_trailing_documents() {
         let unknown = br#"{"version":1,"operation":{"type":"return","extra":true}}"#;
-        assert!(parse_response(unknown, "return", "test").is_err());
+        assert!(parse_response(unknown, Some("return"), "test").is_err());
         let trailing = br#"{"version":1,"operation":{"type":"return","value":null}}{}"#;
-        assert!(parse_response(trailing, "return", "test").is_err());
+        assert!(parse_response(trailing, Some("return"), "test").is_err());
+    }
+
+    #[test]
+    fn parse_response_allows_any_operation_when_expected_is_none() {
+        let run = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["true"]}}"#;
+        let parsed = parse_response(run, None, "test").unwrap();
+        assert_eq!(parsed.operation_type(), "run");
+        let call = br#"{"version":1,"operation":{"type":"call","target":"view:other"}}"#;
+        let parsed = parse_response(call, None, "test").unwrap();
+        assert_eq!(parsed.operation_type(), "call");
     }
 
     #[test]
