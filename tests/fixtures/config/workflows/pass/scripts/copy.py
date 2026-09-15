@@ -18,11 +18,14 @@ def main():
         {
             "version": 1,
             "operation": {
-                "type": "run",
-                "mode": "foreground",
-                "argv": ["pass", "show", "--clip", entry],
-                "exit": True,
-                "success_message": "Password copied",
+                "type": "call",
+                "target": "pass:unlock",
+                "query": {"entry": entry},
+                "presentation": {
+                    "mode": "popup",
+                    "width": 60,
+                    "height": 7,
+                },
             },
         },
         sys.stdout,

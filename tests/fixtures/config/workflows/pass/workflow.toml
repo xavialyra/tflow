@@ -18,7 +18,7 @@ file = "scripts/items.py"
 key = "enter"
 label = "Copy password"
 requires = "items"
-type = "run"
+type = "call"
 producer = "script"
 
 [views.main.commands.copy.handler]
@@ -33,3 +33,45 @@ producer = "script"
 
 [views.main.commands.otp.handler]
 file = "scripts/otp.py"
+
+[views.unlock]
+alias = "unlock"
+
+[views.unlock.query]
+type = "object"
+input_order = ["entry"]
+entry = { type = "string" }
+
+[views.unlock.engine]
+type = "form"
+
+[views.unlock.engine.config.content]
+producer = "script"
+[views.unlock.engine.config.content.handler]
+script = '''#!/bin/sh
+cat << 'EOF'
+{
+  "version": 1,
+  "content": {
+    "fields": [
+      {
+        "name": "passphrase",
+        "label": "GPG Passphrase:",
+        "type": "password",
+        "required": true
+      }
+    ]
+  }
+}
+EOF
+'''
+
+[views.unlock.commands.submit]
+key = "enter"
+label = "Unlock & Copy"
+requires = "input"
+type = "run"
+producer = "script"
+
+[views.unlock.commands.submit.handler]
+file = "scripts/unlock.py"
