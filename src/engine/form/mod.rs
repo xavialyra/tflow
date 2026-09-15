@@ -306,47 +306,52 @@ impl FallbackInputReceiver for FormView {
     }
 }
 
+pub(super) const CMD_FOCUS_NEXT: &str = "form.focus_next";
+pub(super) const CMD_FOCUS_PREV: &str = "form.focus_prev";
+pub(super) const CMD_CANCEL: &str = "form.cancel";
+pub(super) const CMD_EXIT: &str = "form.exit";
+
 impl View for FormView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         vec![
             crate::command::CommandEntry::for_event(
-                "form.focus_next",
+                CMD_FOCUS_NEXT,
                 Some("Next Field".to_string()),
                 Some(Key::Tab),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.focus_next",
+                CMD_FOCUS_NEXT,
                 Some("Next Field".to_string()),
                 Some(Key::Down),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.focus_prev",
+                CMD_FOCUS_PREV,
                 Some("Previous Field".to_string()),
                 Some(Key::BackTab),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.focus_prev",
+                CMD_FOCUS_PREV,
                 Some("Previous Field".to_string()),
                 Some(Key::Up),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.cancel",
+                CMD_CANCEL,
                 Some("Cancel".to_string()),
                 Some(Key::Escape),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.exit",
+                CMD_EXIT,
                 Some("Exit".to_string()),
                 Some(Key::Ctrl('c')),
                 crate::command::CommandScope::Engine,
             ),
             crate::command::CommandEntry::for_event(
-                "form.exit",
+                CMD_EXIT,
                 Some("Exit".to_string()),
                 Some(Key::Ctrl('d')),
                 crate::command::CommandScope::Engine,
@@ -356,7 +361,7 @@ impl View for FormView {
 
     fn on_command(&mut self, id: &str, _context: &ViewContext) -> Result<ViewDecision> {
         match id {
-            "form.focus_next" => {
+            CMD_FOCUS_NEXT => {
                 if !self.fields.is_empty() {
                     self.focus = (self.focus + 1) % self.fields.len();
                     self.publish();
@@ -365,7 +370,7 @@ impl View for FormView {
                     Ok(ViewDecision::Stay)
                 }
             }
-            "form.focus_prev" => {
+            CMD_FOCUS_PREV => {
                 if !self.fields.is_empty() {
                     self.focus = (self.focus + self.fields.len() - 1) % self.fields.len();
                     self.publish();
@@ -374,8 +379,8 @@ impl View for FormView {
                     Ok(ViewDecision::Stay)
                 }
             }
-            "form.cancel" => Ok(ViewDecision::Close),
-            "form.exit" => Ok(ViewDecision::Exit),
+            CMD_CANCEL => Ok(ViewDecision::Close),
+            CMD_EXIT => Ok(ViewDecision::Exit),
             _ => Ok(ViewDecision::Stay),
         }
     }

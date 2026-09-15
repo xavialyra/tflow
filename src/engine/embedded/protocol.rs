@@ -326,6 +326,8 @@ impl RawInputReceiver for EmbeddedProtocolView {
     }
 }
 
+pub(super) const CMD_CANCEL: &str = "embedded.cancel";
+
 impl View for EmbeddedProtocolView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
@@ -334,9 +336,9 @@ impl View for EmbeddedProtocolView {
                 continue;
             }
             if let crate::workflow::command::ResolvedInputAction::Engine(action) = &binding.action {
-                if action.as_str() == "embedded.cancel" {
+                if action.as_str() == CMD_CANCEL {
                     entries.push(crate::command::CommandEntry::for_event(
-                        "embedded.cancel",
+                        CMD_CANCEL,
                         Some("Cancel".to_string()),
                         Some(binding.key),
                         crate::command::CommandScope::Engine,
@@ -479,7 +481,6 @@ impl View for EmbeddedProtocolView {
 }
 
 impl EmbeddedProtocolView {
-
     fn push_raw(&mut self, raw: &[u8]) -> Result<()> {
         self.runtime
             .raw_receiver()

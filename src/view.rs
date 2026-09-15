@@ -487,17 +487,6 @@ pub(crate) trait View {
         0
     }
 
-    fn view_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
-        Vec::new()
-    }
-
-    fn custom_view_commands(
-        &self,
-        _context: &ViewContext,
-    ) -> Option<Vec<crate::command::CommandEntry>> {
-        None
-    }
-
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         Vec::new()
     }
@@ -1270,7 +1259,10 @@ impl Router {
                         if let EffectRequest::ShowFeedback { message, level } = &effect {
                             match level {
                                 crate::protocol::FeedbackLevel::Error => {
-                                    self.record_error(Some(context.instance), &anyhow::anyhow!("{message}"));
+                                    self.record_error(
+                                        Some(context.instance),
+                                        &anyhow::anyhow!("{message}"),
+                                    );
                                 }
                                 crate::protocol::FeedbackLevel::Warning
                                 | crate::protocol::FeedbackLevel::Info => {
@@ -2125,9 +2117,9 @@ mod tests {
                 match event {
                     ViewEvent::Input(InputEvent::Key {
                         key: Key::Enter, ..
-                    }) => Ok(ViewDecision::Return(ViewResult::new(
-                        serde_json::json!("app:run"),
-                    ))),
+                    }) => Ok(ViewDecision::Return(ViewResult::new(serde_json::json!(
+                        "app:run"
+                    )))),
                     _ => Ok(ViewDecision::Stay),
                 }
             }
@@ -2180,10 +2172,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(router.active().unwrap().id, root);
-        assert_eq!(
-            *received.borrow(),
-            Some(serde_json::json!("app:run"))
-        );
+        assert_eq!(*received.borrow(), Some(serde_json::json!("app:run")));
     }
 
     #[test]

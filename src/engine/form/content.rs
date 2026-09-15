@@ -90,28 +90,29 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
 impl Draft {
     pub(super) fn value(&self) -> std::result::Result<Value, String> {
         let raw = &self.buffer.raw;
-        let value = if self.field.kind == FieldType::String || self.field.kind == FieldType::Password {
-            Value::String(raw.clone())
-        } else if raw.trim().is_empty() {
-            Value::Null
-        } else {
-            let parsed = serde_json::from_str::<Value>(raw);
-            match (self.field.kind, parsed) {
-                (FieldType::Json, Ok(value)) => value,
-                (FieldType::Integer, Ok(value)) if value.is_i64() || value.is_u64() => value,
-                (FieldType::Number, Ok(value)) if value.is_number() => value,
-                (FieldType::Boolean, Ok(value)) if value.is_boolean() => value,
-                (kind, _) => {
-                    return Err(match kind {
-                        FieldType::Integer => "Enter an integer",
-                        FieldType::Number => "Enter a number",
-                        FieldType::Boolean => "Enter true or false",
-                        _ => "Enter valid JSON",
+        let value =
+            if self.field.kind == FieldType::String || self.field.kind == FieldType::Password {
+                Value::String(raw.clone())
+            } else if raw.trim().is_empty() {
+                Value::Null
+            } else {
+                let parsed = serde_json::from_str::<Value>(raw);
+                match (self.field.kind, parsed) {
+                    (FieldType::Json, Ok(value)) => value,
+                    (FieldType::Integer, Ok(value)) if value.is_i64() || value.is_u64() => value,
+                    (FieldType::Number, Ok(value)) if value.is_number() => value,
+                    (FieldType::Boolean, Ok(value)) if value.is_boolean() => value,
+                    (kind, _) => {
+                        return Err(match kind {
+                            FieldType::Integer => "Enter an integer",
+                            FieldType::Number => "Enter a number",
+                            FieldType::Boolean => "Enter true or false",
+                            _ => "Enter valid JSON",
+                        }
+                        .to_string());
                     }
-                    .to_string());
                 }
-            }
-        };
+            };
         if self.field.required
             && (value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty()))
         {

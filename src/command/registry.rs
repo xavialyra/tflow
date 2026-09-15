@@ -90,16 +90,6 @@ impl CommandEntry {
         }
     }
 
-    #[inline]
-    pub(crate) fn for_view(
-        id: impl Into<String>,
-        label: Option<String>,
-        key: Option<Key>,
-        scope: CommandScope,
-    ) -> Self {
-        Self::for_event(id, label, key, scope)
-    }
-
     #[allow(dead_code)]
     pub(crate) fn execute_action(&self) -> Result<ViewDecision> {
         match &self.handler {

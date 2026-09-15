@@ -399,13 +399,16 @@ impl CaptureProtocolView {
     }
 }
 
+pub(super) const CMD_COPY: &str = "capture.copy";
+pub(super) const CMD_BACK: &str = "capture.back";
+
 impl View for CaptureProtocolView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
         for (key, action) in self.keymap.bindings() {
             let (id, label) = match action {
-                super::CaptureAction::Copy => ("capture.copy", "Copy"),
-                super::CaptureAction::Back => ("capture.back", "Back"),
+                super::CaptureAction::Copy => (CMD_COPY, "Copy"),
+                super::CaptureAction::Back => (CMD_BACK, "Back"),
             };
             entries.push(crate::command::CommandEntry::for_event(
                 id,
@@ -419,15 +422,17 @@ impl View for CaptureProtocolView {
 
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
         match id {
-            "capture.copy" => {
+            CMD_COPY => {
                 let text = self.output_text.read().unwrap().clone();
                 if let Some(text) = text {
-                    Ok(ViewDecision::Effect(crate::view::EffectRequest::CopyToClipboard(text)))
+                    Ok(ViewDecision::Effect(
+                        crate::view::EffectRequest::CopyToClipboard(text),
+                    ))
                 } else {
                     Ok(ViewDecision::Stay)
                 }
             }
-            "capture.back" => Ok(ViewDecision::Close),
+            CMD_BACK => Ok(ViewDecision::Close),
             _ => self.action(context, ActionId::new(id)),
         }
     }

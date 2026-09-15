@@ -306,8 +306,11 @@ impl ProtocolSession {
                     executed_command = true;
                     command_decision = receiver.on_unbound_key(*key, raw, context)?;
                     if let Some(source) = active {
-                        self.router
-                            .process_with_effects(command_decision.clone(), source, effects)?;
+                        self.router.process_with_effects(
+                            command_decision.clone(),
+                            source,
+                            effects,
+                        )?;
                     }
                 }
             }
@@ -407,13 +410,7 @@ impl ProtocolSession {
         let (view_entries, engine_entries) = if let Some(active) = self.router.active() {
             let context = &active.context;
             let snapshot = active.view.command_snapshot();
-            let view_entries = if let Some(custom) = active.view.custom_view_commands(context) {
-                custom
-            } else {
-                let mut view_entries = self.commands.build_view_commands(context, &snapshot)?;
-                view_entries.extend(active.view.view_commands(context));
-                view_entries
-            };
+            let view_entries = self.commands.build_view_commands(context, &snapshot)?;
             let engine_entries = active.view.engine_commands(context);
             (view_entries, engine_entries)
         } else {
@@ -734,12 +731,12 @@ mod tests {
             if self.target == "zero_inset" { 0 } else { 1 }
         }
 
-        fn view_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
+        fn engine_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
             vec![CommandEntry::new(
                 "local",
                 Some("ok".to_string()),
                 Some(crate::input::Key::Enter),
-                CommandScope::View,
+                CommandScope::Engine,
                 Arc::new(|| Ok(ViewDecision::Stay)),
             )]
         }
@@ -2064,7 +2061,7 @@ mod tests {
 
         impl View for CommandReceiverView {
             fn engine_commands(&self, _context: &ViewContext) -> Vec<CommandEntry> {
-                vec![CommandEntry::for_view(
+                vec![CommandEntry::for_event(
                     "custom.action",
                     Some("Custom Action".to_string()),
                     Some(Key::Down),

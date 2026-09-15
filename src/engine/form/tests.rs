@@ -503,9 +503,11 @@ fn password_field_renders_masked_in_form() {
         {"name": "pass", "label": "Password", "type": "password", "value": "secret123"}
     ]));
     let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
-    terminal.draw(|f| {
-        form.render_form(f, f.area());
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            form.render_form(f, f.area());
+        })
+        .unwrap();
     let buffer = terminal.backend().buffer();
     let rendered_text = (0..5)
         .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
@@ -525,7 +527,10 @@ fn form_discrete_navigation_and_exit_commands() {
 
     let cmds = form.engine_commands(&context());
     assert_eq!(cmds.len(), 7);
-    assert!(cmds.iter().all(|c| matches!(c.handler, crate::command::CommandHandler::Event)));
+    assert!(
+        cmds.iter()
+            .all(|c| matches!(c.handler, crate::command::CommandHandler::Event))
+    );
 
     assert_eq!(form.publication.current["focused"], "first");
 

@@ -43,6 +43,17 @@ use std::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+pub(super) const CMD_EXIT: &str = "picker.exit";
+pub(super) const CMD_BACK: &str = "picker.back";
+pub(super) const CMD_SELECT_PREVIOUS: &str = "picker.select_previous";
+pub(super) const CMD_SELECT_NEXT: &str = "picker.select_next";
+pub(super) const CMD_TOGGLE_PREVIEW: &str = "picker.toggle_preview";
+pub(super) const CMD_PREVIEW_SCROLL_UP: &str = "picker.preview_scroll_up";
+pub(super) const CMD_PREVIEW_SCROLL_DOWN: &str = "picker.preview_scroll_down";
+pub(super) const CMD_CLEAR_INPUT: &str = "picker.clear_input";
+pub(super) const CMD_DELETE_WORD: &str = "picker.delete_word";
+pub(super) const CMD_DELETE_BACKWARD: &str = "picker.delete_backward";
+
 #[derive(Clone)]
 pub(crate) struct PickerProtocolConfig {
     pub(crate) identity: ViewIdentity,
@@ -830,43 +841,28 @@ impl View for PickerProtocolView {
         })
     }
 
-    fn custom_view_commands(
-        &self,
-        _context: &ViewContext,
-    ) -> Option<Vec<crate::command::CommandEntry>> {
-        if self.completion.is_some() {
-            Some(Vec::new())
-        } else {
-            None
-        }
-    }
-
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
         for (key, action) in self.keymap.bindings() {
             let (id, label) = match action {
-                super::keymap::PickerAction::Exit => ("picker.exit", "Exit"),
-                super::keymap::PickerAction::Back => ("picker.back", "Back"),
+                super::keymap::PickerAction::Exit => (CMD_EXIT, "Exit"),
+                super::keymap::PickerAction::Back => (CMD_BACK, "Back"),
                 super::keymap::PickerAction::SelectPrevious => {
-                    ("picker.select_previous", "Select Previous")
+                    (CMD_SELECT_PREVIOUS, "Select Previous")
                 }
-                super::keymap::PickerAction::SelectNext => ("picker.select_next", "Select Next"),
+                super::keymap::PickerAction::SelectNext => (CMD_SELECT_NEXT, "Select Next"),
                 super::keymap::PickerAction::TogglePreview => {
-                    ("picker.toggle_preview", "Toggle Preview")
+                    (CMD_TOGGLE_PREVIEW, "Toggle Preview")
                 }
                 super::keymap::PickerAction::PreviewScrollUp => {
-                    ("picker.preview_scroll_up", "Scroll Preview Up")
+                    (CMD_PREVIEW_SCROLL_UP, "Scroll Preview Up")
                 }
                 super::keymap::PickerAction::PreviewScrollDown => {
-                    ("picker.preview_scroll_down", "Scroll Preview Down")
+                    (CMD_PREVIEW_SCROLL_DOWN, "Scroll Preview Down")
                 }
-                super::keymap::PickerAction::ClearInput => ("picker.clear_input", "Clear Input"),
-                super::keymap::PickerAction::DeleteWord => {
-                    ("picker.delete_word", "Delete Word")
-                }
-                super::keymap::PickerAction::DeleteBackward => {
-                    ("picker.delete_backward", "Delete")
-                }
+                super::keymap::PickerAction::ClearInput => (CMD_CLEAR_INPUT, "Clear Input"),
+                super::keymap::PickerAction::DeleteWord => (CMD_DELETE_WORD, "Delete Word"),
+                super::keymap::PickerAction::DeleteBackward => (CMD_DELETE_BACKWARD, "Delete"),
             };
 
             entries.push(crate::command::CommandEntry::for_event(
@@ -887,8 +883,8 @@ impl View for PickerProtocolView {
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
         self.rebuild_context(context);
         let result = match id {
-            "picker.exit" => Ok(ViewDecision::Exit),
-            "picker.back" => {
+            CMD_EXIT => Ok(ViewDecision::Exit),
+            CMD_BACK => {
                 if self.completion.is_some() {
                     self.completion = None;
                     self.state_revision = self.state_revision.wrapping_add(1);
@@ -897,32 +893,32 @@ impl View for PickerProtocolView {
                     self.action(context, "picker.back")
                 }
             }
-            "picker.select_previous" => {
+            CMD_SELECT_PREVIOUS => {
                 if self.completion_move(-1) {
                     Ok(ViewDecision::Invalidate)
                 } else {
                     self.action(context, "picker.select_previous")
                 }
             }
-            "picker.select_next" => {
+            CMD_SELECT_NEXT => {
                 if self.completion_move(1) {
                     Ok(ViewDecision::Invalidate)
                 } else {
                     self.action(context, "picker.select_next")
                 }
             }
-            "picker.toggle_preview" => self.action(context, "picker.toggle_preview"),
-            "picker.preview_scroll_up" => self.action(context, "picker.preview_scroll_up"),
-            "picker.preview_scroll_down" => self.action(context, "picker.preview_scroll_down"),
-            "picker.clear_input" => {
+            CMD_TOGGLE_PREVIEW => self.action(context, "picker.toggle_preview"),
+            CMD_PREVIEW_SCROLL_UP => self.action(context, "picker.preview_scroll_up"),
+            CMD_PREVIEW_SCROLL_DOWN => self.action(context, "picker.preview_scroll_down"),
+            CMD_CLEAR_INPUT => {
                 self.editor.clear();
                 self.edit_changed(context)
             }
-            "picker.delete_word" => {
+            CMD_DELETE_WORD => {
                 self.editor.delete_word();
                 self.edit_changed(context)
             }
-            "picker.delete_backward" => self.apply_key(context, Key::Backspace),
+            CMD_DELETE_BACKWARD => self.apply_key(context, Key::Backspace),
             _ => Ok(ViewDecision::Stay),
         };
         self.sync_auxiliary_size();
@@ -930,14 +926,23 @@ impl View for PickerProtocolView {
     }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
+        let in_completion = self.completion.is_some();
         ViewCommandSnapshot {
             engine_type: self.engine_context.view_identity().engine_type.clone(),
             parameters: self.parameters.values().clone(),
             raw_input: self.editor.raw.clone(),
             runtime: self.runtime_snapshot.clone(),
-            publication: self.publication.clone(),
+            publication: if in_completion {
+                None
+            } else {
+                self.publication.clone()
+            },
             revision: self.state_revision,
-            owner_view: self.runtime.selected_item_owner(),
+            owner_view: if in_completion {
+                None
+            } else {
+                self.runtime.selected_item_owner()
+            },
         }
     }
 
