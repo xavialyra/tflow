@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub(super) enum FieldType {
     #[default]
     String,
+    Password,
     Integer,
     Number,
     Boolean,
@@ -61,7 +62,7 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
             ensure!(
                 value.is_null()
                     || match field.kind {
-                        FieldType::String => value.is_string(),
+                        FieldType::String | FieldType::Password => value.is_string(),
                         FieldType::Integer => value.is_i64() || value.is_u64(),
                         FieldType::Number => value.is_number(),
                         FieldType::Boolean => value.is_boolean(),
@@ -72,7 +73,7 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
             );
             let initial = if value.is_null() {
                 String::new()
-            } else if field.kind == FieldType::String {
+            } else if field.kind == FieldType::String || field.kind == FieldType::Password {
                 value.as_str().unwrap().to_string()
             } else {
                 value.to_string()
@@ -89,7 +90,7 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
 impl Draft {
     pub(super) fn value(&self) -> std::result::Result<Value, String> {
         let raw = &self.buffer.raw;
-        let value = if self.field.kind == FieldType::String {
+        let value = if self.field.kind == FieldType::String || self.field.kind == FieldType::Password {
             Value::String(raw.clone())
         } else if raw.trim().is_empty() {
             Value::Null

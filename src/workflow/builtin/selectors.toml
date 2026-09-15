@@ -150,7 +150,7 @@ elif query_type == "object":
         if not isinstance(definition, dict) or not isinstance(definition.get("type"), str):
             raise SystemExit(f"query field {name!r} is invalid")
         type_name = definition["type"]
-        if type_name in ("string", "integer", "number", "boolean"):
+        if type_name in ("string", "password", "integer", "number", "boolean"):
             field_type = type_name
         elif type_name == "object" or type_name.startswith("array<"):
             field_type = "json"

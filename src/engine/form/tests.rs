@@ -470,3 +470,47 @@ fn nullable_string_initializes_as_empty_and_evaluates_to_empty_string() {
     assert_eq!(state["values"]["nullable_str"], json!(""));
     assert_eq!(state["valid"], json!(true));
 }
+
+#[test]
+fn password_field_initializes_and_evaluates_correctly() {
+    let mut form = declared(json!([
+        {"name": "pass", "label": "Password", "type": "password", "required": true, "value": "secret"}
+    ]));
+    let snapshot = form.command_snapshot();
+    let state = &snapshot.publication.as_ref().unwrap().current;
+    assert_eq!(state["values"]["pass"], json!("secret"));
+    assert_eq!(state["drafts"]["pass"], json!("secret"));
+    assert_eq!(state["valid"], json!(true));
+
+    // Clear the field and check required validation
+    key(&mut form, Key::Ctrl('u'));
+    let snapshot = form.command_snapshot();
+    let state = &snapshot.publication.as_ref().unwrap().current;
+    assert_eq!(state["valid"], json!(false));
+    assert_eq!(state["errors"]["pass"], json!("Required"));
+
+    // Type a new password
+    paste(&mut form, "my_new_pass");
+    let snapshot = form.command_snapshot();
+    let state = &snapshot.publication.as_ref().unwrap().current;
+    assert_eq!(state["values"]["pass"], json!("my_new_pass"));
+    assert_eq!(state["valid"], json!(true));
+}
+
+#[test]
+fn password_field_renders_masked_in_form() {
+    let form = declared(json!([
+        {"name": "pass", "label": "Password", "type": "password", "value": "secret123"}
+    ]));
+    let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+    terminal.draw(|f| {
+        form.render_form(f, f.area());
+    }).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered_text = (0..5)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!rendered_text.contains("secret123"));
+    assert!(rendered_text.contains("*********"));
+}

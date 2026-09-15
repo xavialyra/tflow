@@ -71,14 +71,14 @@ fn visible_page(field_heights: &[u16], focus: usize, height: u16) -> (usize, usi
     (first, last, used)
 }
 
-fn window(text: &str, cursor: usize, width: u16) -> (String, u16) {
+fn window(text: &str, cursor: usize, width: u16, masked: bool) -> (String, u16) {
     // Walk backward only as far as the visible prefix and allocate only the
     // displayed window. Long pasted drafts never need repeated prefix copies.
     let width = usize::from(width.max(1));
     let mut start = cursor;
     let mut x = 0;
     for (index, grapheme) in text[..cursor].grapheme_indices(true).rev() {
-        let cells = display_width(grapheme);
+        let cells = if masked { 1 } else { display_width(grapheme) };
         if x + cells >= width {
             break;
         }
@@ -88,16 +88,20 @@ fn window(text: &str, cursor: usize, width: u16) -> (String, u16) {
     let mut output = String::new();
     let mut cells = 0;
     for grapheme in text[start..].graphemes(true) {
-        let next = display_width(grapheme);
+        let next = if masked { 1 } else { display_width(grapheme) };
         if cells + next > width {
             break;
         }
         cells += next;
-        output.extend(
-            grapheme
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c }),
-        );
+        if masked {
+            output.push('*');
+        } else {
+            output.extend(
+                grapheme
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c }),
+            );
+        }
     }
     (output, x as u16)
 }
@@ -191,7 +195,8 @@ impl FormView {
             };
             let draft = &self.fields[index];
             let cursor = if focused { draft.buffer.cursor } else { 0 };
-            let (text, x) = window(&draft.buffer.raw, cursor, editor.width);
+            let masked = draft.field.kind == super::content::FieldType::Password;
+            let (text, x) = window(&draft.buffer.raw, cursor, editor.width, masked);
             frame.render_widget(
                 Paragraph::new(text).style(if focused { theme.focused } else { theme.input }),
                 editor,
@@ -230,13 +235,25 @@ mod tests {
     fn long_unicode_drafts_render_only_the_visible_window() {
         let text = "界e\u{301}".repeat(100_000);
         for cursor in [0, text.len() / 2, text.len()] {
-            let (output, x) = window(&text, cursor, 20);
+            let (output, x) = window(&text, cursor, 20, false);
             assert!(UnicodeWidthStr::width(output.as_str()) <= 20);
             assert!(output.len() <= 60);
             assert!(x < 20);
             assert!(text.contains(&output));
         }
-        assert_eq!(window("a\nb", 2, 3), ("a b".into(), 2));
-        assert_eq!(window("界界", 6, 1), (String::new(), 0));
+        assert_eq!(window("a\nb", 2, 3, false), ("a b".into(), 2));
+        assert_eq!(window("界界", 6, 1, false), (String::new(), 0));
+    }
+
+    #[test]
+    fn masked_drafts_render_asterisks() {
+        let (output, x) = window("secret_pass", 6, 20, true);
+        assert_eq!(output, "***********");
+        assert_eq!(x, 6);
+
+        // Unicode characters masked as 1-cell asterisks
+        let (output, x) = window("密码123", 6, 20, true);
+        assert_eq!(output, "*****");
+        assert_eq!(x, 2);
     }
 }

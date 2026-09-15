@@ -64,11 +64,11 @@ Content has exactly one required property, `fields`, an ordered array. Empty arr
 | :--- | :--- | :--- |
 | `name` | string | Required stable key in published values and drafts. |
 | `label` | string or null | Uses `name` when absent or null. |
-| `type` | string | `string`; also accepts `integer`, `number`, `boolean`, and `json`. |
+| `type` | string | `string`; also accepts `password`, `integer`, `number`, `boolean`, and `json`. |
 | `value` | JSON value | Null when absent; initializes the editor. Non-null values must match the field type. |
 | `required` | boolean | False; rejects null and whitespace-only string values when true. |
 
-`string` fields retain text verbatim. An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null. An incomplete required field is valid content configuration and appears as an editable validation error.
+`string` and `password` fields retain text verbatim (`password` fields mask characters with `*` when rendered). An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null. An incomplete required field is valid content configuration and appears as an editable validation error.
 
 Fields use single-line editors in a vertical layout. The focused field remains visible as focus changes. Pasted content is retained verbatim, including newlines; control characters are displayed as spaces. JSON can therefore be pasted with formatting, although the editor displays it on one line.
 
