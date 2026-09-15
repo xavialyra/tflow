@@ -3348,6 +3348,49 @@ fn command_selector_displays_keybindings_for_commands() {
 }
 
 #[test]
+fn command_selector_can_open_edit_query_form_and_apply_parameters() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"sys ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
+
+    // Open command palette with Ctrl+K
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Edit Query");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(screen.contains("Edit Query"));
+    assert!(screen.contains("[host]"));
+
+    // Navigate down twice: Info -> Run -> Edit Query
+    process.master.write_all(b"\x1b[B").unwrap();
+    process.master.flush().unwrap();
+    process.master.write_all(b"\x1b[B").unwrap();
+    process.master.flush().unwrap();
+
+    // Select Edit Query and press Enter to open parameter form
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+
+    // Form popup should open
+    let form_output = wait_for_text(&process.master, "__selectors:form");
+    let form_screen = String::from_utf8_lossy(&form_output);
+    assert!(form_screen.contains("__selectors:form"));
+
+    // Cancel form with Escape
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Show date");
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
 fn script_command_producer_returns_structured_error_feedback() {
     let root = temporary_root();
     let config = root.join("config.toml");

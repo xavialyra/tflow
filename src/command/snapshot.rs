@@ -25,13 +25,12 @@ pub(crate) struct ChromeSnapshot {
 impl ChromeSnapshot {
     pub(crate) fn from_registry(registry: &CommandRegistry) -> Self {
         let entries = registry
-            .effective_entries()
+            .picker_entries()
             .into_iter()
-            .filter(|e| !(e.scope == CommandScope::Host && e.id == "parameters"))
-            .map(|e| ResolvedCommand {
+            .map(|(e, key)| ResolvedCommand {
                 id: e.id.clone(),
                 label: e.label.clone(),
-                key: e.key,
+                key,
                 scope: e.scope,
             })
             .collect();
@@ -92,12 +91,22 @@ impl ChromeSnapshot {
             .filter(|e| e.scope == CommandScope::View)
             .collect::<Vec<_>>();
 
-        let enter_entry = view_entries
-            .iter()
-            .find(|e| e.key.and_then(|k| k.binding_name()).as_deref() == Some("enter"));
+        let enter_entry = [
+            CommandScope::View,
+            CommandScope::Engine,
+            CommandScope::Host,
+        ]
+        .into_iter()
+        .find_map(|scope| {
+            self.entries.iter().find(|e| {
+                e.scope == scope
+                    && (e.key == Some(Key::Enter)
+                        || e.key.and_then(|k| k.binding_name()).as_deref() == Some("enter"))
+            })
+        });
 
-        let has_enter = enter_entry.is_some();
-        let has_more_view_commands = if has_enter {
+        let enter_in_view = enter_entry.is_some_and(|e| e.scope == CommandScope::View);
+        let has_more_view_commands = if enter_in_view {
             view_entries.len() > 1
         } else {
             !view_entries.is_empty()
@@ -131,7 +140,6 @@ impl ChromeSnapshot {
         let commands = self
             .entries
             .iter()
-            .filter(|e| e.scope == CommandScope::View)
             .map(|e| {
                 let key_name = e.key.and_then(|k| k.binding_name()).unwrap_or_default();
                 let label = e.label.as_deref().unwrap_or(&e.id);
@@ -142,8 +150,10 @@ impl ChromeSnapshot {
                         "id": e.id,
                         "revision": self.revision,
                     },
+                    "id": e.id,
                     "label": label,
                     "key": key_name,
+                    "scope": scope_name,
                     "owner": scope_name,
                 })
             })
@@ -244,5 +254,149 @@ mod tests {
         };
         let commands = snapshot.footer_commands();
         assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn footer_commands_shows_engine_enter_when_no_view_enter() {
+        let snapshot = ChromeSnapshot {
+            entries: vec![
+                host_commands_entry(),
+                ResolvedCommand {
+                    id: "submit".to_string(),
+                    label: Some("Submit".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Engine,
+                },
+            ],
+            ..Default::default()
+        };
+        let commands = snapshot.footer_commands();
+        assert_eq!(commands, vec![("enter".to_string(), "Submit".to_string())]);
+    }
+
+    #[test]
+    fn footer_commands_view_enter_overrides_engine_and_host_enter() {
+        let snapshot = ChromeSnapshot {
+            entries: vec![
+                ResolvedCommand {
+                    id: "host_default".to_string(),
+                    label: Some("Default".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Host,
+                },
+                ResolvedCommand {
+                    id: "engine_submit".to_string(),
+                    label: Some("Submit".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Engine,
+                },
+                ResolvedCommand {
+                    id: "view_open".to_string(),
+                    label: Some("Open".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::View,
+                },
+            ],
+            ..Default::default()
+        };
+        let commands = snapshot.footer_commands();
+        assert_eq!(commands, vec![("enter".to_string(), "Open".to_string())]);
+    }
+
+    #[test]
+    fn footer_commands_engine_enter_overrides_host_enter() {
+        let snapshot = ChromeSnapshot {
+            entries: vec![
+                ResolvedCommand {
+                    id: "host_default".to_string(),
+                    label: Some("Default".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Host,
+                },
+                ResolvedCommand {
+                    id: "engine_submit".to_string(),
+                    label: Some("Submit".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Engine,
+                },
+            ],
+            ..Default::default()
+        };
+        let commands = snapshot.footer_commands();
+        assert_eq!(commands, vec![("enter".to_string(), "Submit".to_string())]);
+    }
+
+    #[test]
+    fn footer_commands_shows_engine_enter_and_view_overflow() {
+        let snapshot = ChromeSnapshot {
+            entries: vec![
+                host_commands_entry(),
+                ResolvedCommand {
+                    id: "submit".to_string(),
+                    label: Some("Submit".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::Engine,
+                },
+                ResolvedCommand {
+                    id: "preview".to_string(),
+                    label: Some("Preview".to_string()),
+                    key: Some(Key::Ctrl('p')),
+                    scope: CommandScope::View,
+                },
+            ],
+            ..Default::default()
+        };
+        let commands = snapshot.footer_commands();
+        assert_eq!(
+            commands,
+            vec![
+                ("enter".to_string(), "Submit".to_string()),
+                ("ctrl+k".to_string(), "Commands".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn to_picker_parameters_orders_view_engine_host_with_metadata() {
+        let snapshot = ChromeSnapshot {
+            revision: 42,
+            entries: vec![
+                ResolvedCommand {
+                    id: "view_select".to_string(),
+                    label: Some("Select".to_string()),
+                    key: Some(Key::Enter),
+                    scope: CommandScope::View,
+                },
+                ResolvedCommand {
+                    id: "engine_filter".to_string(),
+                    label: Some("Filter".to_string()),
+                    key: None,
+                    scope: CommandScope::Engine,
+                },
+                ResolvedCommand {
+                    id: "parameters".to_string(),
+                    label: Some("Parameters".to_string()),
+                    key: Some(Key::Ctrl('g')),
+                    scope: CommandScope::Host,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let params = snapshot.to_picker_parameters();
+        let commands = params["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 3);
+
+        assert_eq!(commands[0]["id"], "view_select");
+        assert_eq!(commands[0]["scope"], "view");
+        assert_eq!(commands[0]["key"], "enter");
+
+        assert_eq!(commands[1]["id"], "engine_filter");
+        assert_eq!(commands[1]["scope"], "engine");
+        assert_eq!(commands[1]["key"], "");
+
+        assert_eq!(commands[2]["id"], "parameters");
+        assert_eq!(commands[2]["scope"], "host");
+        assert_eq!(commands[2]["key"], "ctrl+g");
     }
 }

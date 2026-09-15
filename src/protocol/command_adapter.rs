@@ -210,6 +210,7 @@ impl CommandService for ProtocolCommandService {
 
                 let processor_service = std::sync::Arc::clone(&service_clone);
                 let processor_registry = std::sync::Arc::clone(&registry_clone);
+                let processor_snapshot = std::sync::Arc::clone(&snapshot_clone);
                 let result_processor: CallResultProcessor =
                     std::sync::Arc::new(move |_source, caller, snapshot, result| {
                         if active_caller != ViewInstanceId(0) && caller.instance != active_caller {
@@ -237,6 +238,16 @@ impl CommandService for ProtocolCommandService {
                         registry.replace_scope(crate::command::CommandScope::View, view_cmds)?;
                         registry
                             .replace_scope(crate::command::CommandScope::Engine, engine_cmds)?;
+                        {
+                            let mut snap = processor_snapshot.write().unwrap();
+                            *snap = crate::command::ChromeSnapshot::from_registry(&registry)
+                                .with_active_instance(Some(caller.instance))
+                                .with_active_view(
+                                    Some(caller.location.target.clone()),
+                                    snapshot.parameters.clone(),
+                                    snapshot.raw_input.clone(),
+                                );
+                        }
                         match registry.dispatch_id(&command_id) {
                             Ok(decision) => Ok(decision),
                             Err(_) => Ok(ViewDecision::Stay),

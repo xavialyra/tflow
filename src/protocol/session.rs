@@ -1292,6 +1292,11 @@ mod tests {
         registry
             .write()
             .unwrap()
+            .replace_scope(CommandScope::Host, host_cmds.clone())
+            .unwrap();
+        registry
+            .write()
+            .unwrap()
             .replace_scope(CommandScope::Engine, engine_cmds)
             .unwrap();
         *shared_snapshot.write().unwrap() =
@@ -1335,6 +1340,24 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(continued_unknown, ViewDecision::Stay));
+
+        // Selected Host parameters command executes and transitions to form call
+        let parameters_command = serde_json::json!({"ref": {"id": "parameters"}});
+        let continued_params = boundary
+            .handler
+            .resume(
+                &crate::view::ViewLocation::new("__selectors:commands"),
+                &caller,
+                &snapshot,
+                &ViewResult::new(parameters_command),
+            )
+            .unwrap();
+        let ViewDecision::Transition(crate::view::TransitionRequest::Call { request, .. }) =
+            continued_params
+        else {
+            panic!("parameters command must transition to form call");
+        };
+        assert_eq!(request.target, "__selectors:form");
 
         std::fs::remove_file(stdin_path).unwrap();
     }

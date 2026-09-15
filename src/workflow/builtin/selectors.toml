@@ -31,29 +31,54 @@ query = state.get("input", "") if isinstance(state, dict) else ""
 if not isinstance(commands, list) or not isinstance(query, str):
     raise SystemExit("invalid command selector request")
 tokens = query.casefold().split()
-items = []
+
+filtered = []
 for command in commands:
     ref = command.get("ref")
     if not isinstance(ref, dict):
         continue
-    label = str(command.get("label", ref.get("id", "")))
+    cmd_id = str(command.get("id", ref.get("id", "")))
+    scope = str(command.get("scope", ref.get("view", "")))
+    if cmd_id == "commands":
+        continue
+    if scope != "view" and cmd_id != "parameters":
+        continue
+    if cmd_id == "parameters":
+        label = "Edit Query"
+    else:
+        label = str(command.get("label", cmd_id))
     key = str(command.get("key", ""))
     owner = str(command.get("owner", ""))
-    searchable = " ".join([label, key, owner]).casefold()
+    searchable = " ".join([label, key, scope, owner]).casefold()
     if not all(token in searchable for token in tokens):
         continue
-    item = {"value": key, "metadata": {"command": ref}}
-    if key:
+    filtered.append((command, ref, cmd_id, label, key, scope))
+
+max_key_len = max((len(item[4]) for item in filtered if item[4]), default=0)
+
+items = []
+for command, ref, cmd_id, label, key, scope in filtered:
+    scope_badge = f"[{scope}]"
+    item = {"value": key or cmd_id, "metadata": {"command": ref}}
+    if max_key_len > 0:
         item["display"] = {
-            "constraints": [{"Fill": 1}, {"Length": len(key)}],
+            "constraints": [{"Fill": 1}, {"Length": max_key_len}, {"Length": 8}],
             "cells": [
                 {"text": label},
                 {"text": key, "align": "right", "slot": "badge"},
+                {"text": scope_badge, "align": "right", "slot": "badge"},
             ],
         }
     else:
-        item["display"] = label
+        item["display"] = {
+            "constraints": [{"Fill": 1}, {"Length": 8}],
+            "cells": [
+                {"text": label},
+                {"text": scope_badge, "align": "right", "slot": "badge"},
+            ],
+        }
     items.append(item)
+
 json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 '

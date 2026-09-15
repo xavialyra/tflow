@@ -199,6 +199,7 @@ impl CommandRegistry {
     /// Returns the effective command set at the current revision.
     ///
     /// Deduplicates conflicting key bindings and duplicate IDs by scope priority (View > Engine > Host).
+    #[allow(dead_code)]
     pub(crate) fn effective_entries(&self) -> Vec<&CommandEntry> {
         let mut seen_keys = HashSet::new();
         let mut seen_ids = HashSet::new();
@@ -222,6 +223,35 @@ impl CommandRegistry {
             effective.push(entry);
         }
         effective
+    }
+
+    /// Returns all available command entries, ordered by View > Engine > Host.
+    ///
+    /// For entries whose key bindings conflict with higher-priority scopes,
+    /// the entry is retained but its key binding is cleared (unbound command).
+    /// Entries with duplicate IDs from lower-priority scopes are shadowed and skipped.
+    pub(crate) fn picker_entries(&self) -> Vec<(&CommandEntry, Option<Key>)> {
+        let mut seen_keys = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut result = Vec::new();
+
+        let all = self
+            .view_entries
+            .iter()
+            .chain(self.engine_entries.iter())
+            .chain(self.host_entries.iter());
+
+        for entry in all {
+            if !seen_ids.insert(entry.id.clone()) {
+                continue;
+            }
+            let key = match entry.key {
+                Some(k) if seen_keys.insert(k.binding_identity()) => Some(k),
+                _ => None,
+            };
+            result.push((entry, key));
+        }
+        result
     }
 }
 
@@ -373,5 +403,80 @@ mod tests {
             .unwrap();
         assert!(changed2.is_none());
         assert_eq!(registry.revision(), rev1);
+    }
+
+    #[test]
+    fn picker_entries_orders_view_engine_host_and_degrades_conflicting_keys() {
+        let mut registry = CommandRegistry::new();
+        let key_common = Key::Ctrl('p');
+        let key_host = Key::Ctrl('g');
+
+        registry
+            .replace_scope(
+                CommandScope::Host,
+                vec![
+                    CommandEntry::new(
+                        "host_print",
+                        Some("Host Print".into()),
+                        Some(key_common),
+                        CommandScope::Host,
+                        noop_action(),
+                    ),
+                    CommandEntry::new(
+                        "parameters",
+                        Some("Parameters".into()),
+                        Some(key_host),
+                        CommandScope::Host,
+                        noop_action(),
+                    ),
+                ],
+            )
+            .unwrap();
+
+        registry
+            .replace_scope(
+                CommandScope::Engine,
+                vec![CommandEntry::new(
+                    "engine_cmd",
+                    Some("Engine Cmd".into()),
+                    None,
+                    CommandScope::Engine,
+                    noop_action(),
+                )],
+            )
+            .unwrap();
+
+        registry
+            .replace_scope(
+                CommandScope::View,
+                vec![CommandEntry::new(
+                    "view_print",
+                    Some("View Print".into()),
+                    Some(key_common),
+                    CommandScope::View,
+                    noop_action(),
+                )],
+            )
+            .unwrap();
+
+        let entries = registry.picker_entries();
+        // 顺序应为 View -> Engine -> Host
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].0.id, "view_print");
+        assert_eq!(entries[0].0.scope, CommandScope::View);
+        assert_eq!(entries[0].1, Some(key_common));
+
+        assert_eq!(entries[1].0.id, "engine_cmd");
+        assert_eq!(entries[1].0.scope, CommandScope::Engine);
+        assert_eq!(entries[1].1, None);
+
+        // host_print 的 key_common 被 view_print 抢占，降级为 None，但条目保留
+        assert_eq!(entries[2].0.id, "host_print");
+        assert_eq!(entries[2].0.scope, CommandScope::Host);
+        assert_eq!(entries[2].1, None);
+
+        assert_eq!(entries[3].0.id, "parameters");
+        assert_eq!(entries[3].0.scope, CommandScope::Host);
+        assert_eq!(entries[3].1, Some(key_host));
     }
 }
