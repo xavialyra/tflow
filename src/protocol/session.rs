@@ -17,10 +17,22 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const INFO_MESSAGE_DURATION: Duration = Duration::from_secs(3);
+pub(crate) const NAVIGATION_GRACE_DURATION: Duration = Duration::from_millis(150);
 
 struct InfoMessage {
     label: String,
     expires_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) struct NavigationGrace {
+    #[allow(dead_code)]
+    pub(crate) from_instance: ViewInstanceId,
+    pub(crate) target_instance: ViewInstanceId,
+    pub(crate) expires_at: Instant,
+    pub(crate) cached_buffer: ratatui::buffer::Buffer,
+    pub(crate) cached_area: Rect,
+    pub(crate) cached_render_result: RenderResult,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +65,9 @@ pub(crate) struct ProtocolSession {
     active_info: Option<InfoMessage>,
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
+    last_rendered_base_instance: Option<ViewInstanceId>,
+    last_content_render: Option<(ViewInstanceId, ratatui::buffer::Buffer, Rect, RenderResult)>,
+    pub(crate) navigation_grace: Option<NavigationGrace>,
 }
 
 #[cfg(test)]
@@ -106,6 +121,9 @@ impl ProtocolSession {
             active_info: None,
             error_source: None,
             last_diagnostic: None,
+            last_rendered_base_instance: None,
+            last_content_render: None,
+            navigation_grace: None,
         }
     }
 
@@ -148,6 +166,9 @@ impl ProtocolSession {
             active_info: None,
             error_source,
             last_diagnostic: None,
+            last_rendered_base_instance: None,
+            last_content_render: None,
+            navigation_grace: None,
         }
     }
 
@@ -512,6 +533,54 @@ impl ProtocolSession {
         content_host.render_frame_background(frame, area, &self.theme);
 
         let base_index = content_host.visible_base_index(self.router.stack(), active_index);
+        let base_entry = base_index.and_then(|index| self.router.stack().get(index));
+        let base_instance_id = base_entry.map(|entry| entry.id);
+        let is_base_loading = base_entry.is_some_and(|entry| {
+            entry
+                .view
+                .command_snapshot()
+                .publication
+                .as_ref()
+                .is_some_and(|p| !p.ready)
+        });
+
+        if let Some(current_base_id) = base_instance_id {
+            if self.last_rendered_base_instance != Some(current_base_id) && is_base_loading {
+                if let Some((prev_id, cached_buffer, cached_area, cached_result)) =
+                    &self.last_content_render
+                {
+                    if *prev_id != current_base_id
+                        && self
+                            .navigation_grace
+                            .as_ref()
+                            .map(|g| g.target_instance)
+                            != Some(current_base_id)
+                    {
+                        self.navigation_grace = Some(NavigationGrace {
+                            from_instance: *prev_id,
+                            target_instance: current_base_id,
+                            expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
+                            cached_buffer: cached_buffer.clone(),
+                            cached_area: *cached_area,
+                            cached_render_result: cached_result.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut in_grace_period = false;
+        if let Some(grace) = &self.navigation_grace {
+            let expired = Instant::now() >= grace.expires_at;
+            let target_mismatch = Some(grace.target_instance) != base_instance_id;
+            let target_ready = !is_base_loading;
+            if expired || target_mismatch || target_ready {
+                self.navigation_grace = None;
+            } else {
+                in_grace_period = true;
+            }
+        }
+
         let top_padding = base_index
             .or(Some(0))
             .and_then(|index| self.router.stack().get(index))
@@ -527,9 +596,45 @@ impl ProtocolSession {
             |index, frame, rect, ctx| self.router.render_at(index, frame, rect, ctx),
         )?;
 
-        if active_render_area.width > 0
+        let effective_view = if in_grace_period && let Some(grace) = &self.navigation_grace {
+            let copy_width = grace.cached_area.width.min(content_area.width);
+            let copy_height = grace.cached_area.height.min(content_area.height);
+            for y in 0..copy_height {
+                for x in 0..copy_width {
+                    let src_x = grace.cached_area.x + x;
+                    let src_y = grace.cached_area.y + y;
+                    let dst_x = content_area.x + x;
+                    let dst_y = content_area.y + y;
+                    if let (Some(src), Some(dst)) = (
+                        grace.cached_buffer.cell((src_x, src_y)),
+                        frame.buffer_mut().cell_mut((dst_x, dst_y)),
+                    ) {
+                        *dst = src.clone();
+                    }
+                }
+            }
+            let mut result = grace.cached_render_result.clone();
+            if let Some(cursor) = &mut result.cursor {
+                cursor.visible = false;
+            }
+            result
+        } else {
+            if !is_base_loading && let Some(base_id) = base_instance_id {
+                self.last_content_render = Some((
+                    base_id,
+                    frame.buffer_mut().clone(),
+                    content_area,
+                    view.clone(),
+                ));
+                self.last_rendered_base_instance = Some(base_id);
+            }
+            view
+        };
+
+        if !in_grace_period
+            && active_render_area.width > 0
             && active_render_area.height > 0
-            && let Some(cursor) = &view.cursor
+            && let Some(cursor) = &effective_view.cursor
         {
             let x = active_render_area.x.saturating_add(cursor.x).min(
                 active_render_area
@@ -546,7 +651,7 @@ impl ProtocolSession {
             }
         }
 
-        let metadata = view.metadata.clone();
+        let metadata = effective_view.metadata.clone();
         let footer = FooterModel {
             location: footer_location,
             status: chrome_snapshot.status.or(metadata.status),
@@ -563,7 +668,10 @@ impl ProtocolSession {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);
         }
 
-        Ok(ProtocolRenderResult { view, footer })
+        Ok(ProtocolRenderResult {
+            view: effective_view,
+            footer,
+        })
     }
 
     fn surface_diagnostic(

@@ -188,11 +188,16 @@ use super::*;
             services: &ViewServices<'_>,
         ) -> Result<Box<dyn View>> {
             let _ = services.routes.query_schema(&request.query.target);
+            let publication = if request.target.starts_with("async_") {
+                Some(crate::view::ViewPublication::new(Value::Null, false))
+            } else {
+                None
+            };
             Ok(Box::new(SyntheticView {
                 target: request.target.clone(),
                 events: Rc::clone(&self.events),
                 runtime: Value::Null,
-                publication: None,
+                publication,
                 revision: 0,
             }))
         }
@@ -226,6 +231,7 @@ use super::*;
         routes.insert("child", "child");
         routes.insert("grandchild", "grandchild");
         routes.insert("zero_inset", "zero_inset");
+        routes.insert("async_target", "async_target");
         let router = Router::new(
             Box::new(routes),
             Box::new(Factory {
@@ -1454,4 +1460,125 @@ use super::*;
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].0, "custom.action");
         assert_eq!(received[0].1, "cmd_view");
+    }
+
+    #[test]
+    fn navigation_grace_retains_previous_content_during_loading() {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        // 1. Initial render shows "root"
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..4)
+            .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+            .collect();
+        assert_eq!(content, "root");
+
+        // 2. Navigate to an async loading view (publication.ready == false)
+        session.router.push(request("async_target")).unwrap();
+        session.sync_active_commands().unwrap();
+
+        // Render during grace period: screen still displays cached "root" content
+        terminal
+            .draw(|frame| {
+                let result = session.render(frame, frame.area(), None).unwrap();
+                assert_eq!(result.footer.location.label(), "async_target");
+            })
+            .unwrap();
+        assert!(session.navigation_grace.is_some());
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..4)
+            .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+            .collect();
+        assert_eq!(content, "root", "Grace period must retain previous content");
+    }
+
+    #[test]
+    fn navigation_grace_clears_immediately_when_target_becomes_ready() {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        let target_id = session.router.push(request("async_target")).unwrap();
+        session.sync_active_commands().unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        assert!(session.navigation_grace.is_some());
+
+        // Target completes async loading and becomes ready
+        session
+            .task(TaskEvent {
+                task: TaskId(1),
+                instance: target_id,
+                generation: 1,
+                outcome: TaskOutcome::Completed(Value::Null),
+            })
+            .unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        assert!(session.navigation_grace.is_none());
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..12)
+            .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+            .collect();
+        assert_eq!(content, "async_target");
+    }
+
+    #[test]
+    fn navigation_grace_expires_after_timeout() {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        session.router.push(request("async_target")).unwrap();
+        session.sync_active_commands().unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        assert!(session.navigation_grace.is_some());
+
+        // Expire grace period
+        session.navigation_grace.as_mut().unwrap().expires_at =
+            Instant::now() - Duration::from_millis(1);
+
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+        assert!(session.navigation_grace.is_none());
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..12)
+            .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+            .collect();
+        assert_eq!(content, "async_target");
     }
