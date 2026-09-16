@@ -117,6 +117,8 @@ pub(crate) struct FormTheme {
     pub(crate) label: Style,
     pub(crate) input: Style,
     pub(crate) focused: Style,
+    pub(crate) border: Style,
+    pub(crate) focused_border: Style,
     pub(crate) error: Style,
 }
 
@@ -383,6 +385,18 @@ impl ResolvedTheme {
                     "form.focused",
                 )?
                 .normal,
+                border: resolve_component(
+                    raw.form.border.as_ref(),
+                    default_raw.form.border.as_ref().unwrap(),
+                    "form.border",
+                )?
+                .normal,
+                focused_border: resolve_component(
+                    raw.form.focused_border.as_ref(),
+                    default_raw.form.focused_border.as_ref().unwrap(),
+                    "form.focused_border",
+                )?
+                .normal,
                 error: resolve_component(
                     raw.form.error.as_ref(),
                     default_raw.form.error.as_ref().unwrap(),
@@ -480,7 +494,11 @@ impl ResolvedTheme {
 
     fn resolve_builtin_slot(&self, slot: &crate::engine::SlotToken, selected: bool) -> Style {
         use crate::engine::SlotToken;
-        use ratatui::style::Modifier;
+        use ratatui::style::{Color, Modifier};
+
+        let success_color = self.scheme.get("success").copied().unwrap_or(Color::Green);
+        let warning_color = self.scheme.get("warning").copied().unwrap_or(Color::Yellow);
+        let error_color = self.scheme.get("error").copied().unwrap_or(Color::Red);
 
         if selected {
             let base = self.picker.selected;
@@ -490,9 +508,9 @@ impl ResolvedTheme {
                 SlotToken::Muted => self.picker.selected_muted.add_modifier(Modifier::DIM),
                 SlotToken::Accent => base.add_modifier(Modifier::BOLD),
                 SlotToken::Badge => self.picker.badge_selected,
-                SlotToken::Success => base,
-                SlotToken::Warning => self.chrome.error,
-                SlotToken::Error => self.chrome.error,
+                SlotToken::Success => base.fg(success_color).add_modifier(Modifier::BOLD),
+                SlotToken::Warning => base.fg(warning_color).add_modifier(Modifier::BOLD),
+                SlotToken::Error => base.fg(error_color).add_modifier(Modifier::BOLD),
                 SlotToken::Custom(_) => base,
             }
         } else {
@@ -502,9 +520,9 @@ impl ResolvedTheme {
                 SlotToken::Muted => self.picker.muted.add_modifier(Modifier::DIM),
                 SlotToken::Accent => self.picker.text.add_modifier(Modifier::BOLD),
                 SlotToken::Badge => self.picker.badge,
-                SlotToken::Success => self.picker.text,
-                SlotToken::Warning => self.chrome.error,
-                SlotToken::Error => self.chrome.error,
+                SlotToken::Success => self.picker.text.fg(success_color),
+                SlotToken::Warning => self.picker.text.fg(warning_color),
+                SlotToken::Error => self.picker.text.fg(error_color),
                 SlotToken::Custom(_) => self.picker.text,
             }
         }
@@ -686,6 +704,8 @@ pub(super) struct RawFormTheme {
     pub(super) label: Option<RawStyleBinding>,
     pub(super) input: Option<RawStyleBinding>,
     pub(super) focused: Option<RawStyleBinding>,
+    pub(super) border: Option<RawStyleBinding>,
+    pub(super) focused_border: Option<RawStyleBinding>,
     pub(super) error: Option<RawStyleBinding>,
 }
 
@@ -701,6 +721,10 @@ mod form_tests {
             accent = "#123456"
             [form.focused]
             background = "#654321"
+            [form.border]
+            foreground = "#aabbcc"
+            [form.focused_border]
+            foreground = "#ddeeff"
         "##,
         )
         .unwrap();
@@ -713,6 +737,32 @@ mod form_tests {
             theme.form.focused.bg,
             Some(ratatui::style::Color::Rgb(0x65, 0x43, 0x21))
         );
+        assert_eq!(
+            theme.form.border.fg,
+            Some(ratatui::style::Color::Rgb(0xaa, 0xbb, 0xcc))
+        );
+        assert_eq!(
+            theme.form.focused_border.fg,
+            Some(ratatui::style::Color::Rgb(0xdd, 0xee, 0xff))
+        );
         assert_eq!(theme.form.input.fg, ResolvedTheme::terminal().form.input.fg);
+    }
+
+    #[test]
+    fn resolves_semantic_state_slots() {
+        use crate::engine::SlotToken;
+        let theme = ResolvedTheme::terminal();
+        let success_style = theme.resolve_slot("", &SlotToken::Success, false);
+        assert_eq!(success_style.fg, Some(ratatui::style::Color::Green));
+
+        let warning_style = theme.resolve_slot("", &SlotToken::Warning, false);
+        assert_eq!(warning_style.fg, Some(ratatui::style::Color::Yellow));
+
+        let error_style = theme.resolve_slot("", &SlotToken::Error, false);
+        assert_eq!(error_style.fg, Some(ratatui::style::Color::Red));
+
+        let sel_success = theme.resolve_slot("", &SlotToken::Success, true);
+        assert_eq!(sel_success.fg, Some(ratatui::style::Color::Green));
+        assert!(sel_success.sub_modifier.contains(ratatui::style::Modifier::BOLD) || sel_success.add_modifier.contains(ratatui::style::Modifier::BOLD));
     }
 }

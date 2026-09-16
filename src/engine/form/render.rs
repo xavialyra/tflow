@@ -185,8 +185,8 @@ impl FormView {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(if focused { theme.label } else { theme.input })
-                    .title(visible(&label));
+                    .border_style(if focused { theme.focused_border } else { theme.border })
+                    .title(ratatui::text::Line::from(visible(&label)).style(theme.label));
                 let inner = block.inner(bounds);
                 frame.render_widget(block, bounds);
                 inner

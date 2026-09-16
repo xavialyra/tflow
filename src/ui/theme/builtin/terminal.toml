@@ -11,9 +11,10 @@ accent = "ansi:yellow"
 surface = "ansi:black"
 border = "ansi:yellow"
 selection = "ansi:reset"
-on-selection = "ansi:reset"
+success = "ansi:green"
+warning = "ansi:yellow"
+info = "ansi:cyan"
 error = "ansi:red"
-on-error = "ansi:white"
 
 # -----------------------------------------------------------------------------
 # Chrome / Outer Framing Component Styles
@@ -49,7 +50,7 @@ background = "scheme:surface"
 bold = true
 
 [chrome.error]
-foreground = "scheme:on-error"
+foreground = "scheme:background"
 background = "scheme:error"
 bold = true
 
@@ -65,7 +66,7 @@ foreground = "scheme:muted"
 background = "scheme:background"
 
 [picker.selected]
-foreground = "scheme:on-selection"
+foreground = "scheme:foreground"
 background = "scheme:selection"
 bold = true
 
@@ -112,7 +113,7 @@ foreground = "scheme:border"
 background = "scheme:background"
 
 [picker.preview.error]
-foreground = "scheme:on-error"
+foreground = "scheme:background"
 background = "scheme:error"
 
 # -----------------------------------------------------------------------------
@@ -134,7 +135,17 @@ background = "scheme:background"
 [form.focused]
 foreground = "scheme:foreground"
 background = "scheme:selection"
+bold = true
+
+[form.border]
+foreground = "scheme:border"
+background = "scheme:background"
+
+[form.focused_border]
+foreground = "scheme:accent"
+background = "scheme:background"
+bold = true
 
 [form.error]
-foreground = "scheme:on-error"
+foreground = "scheme:background"
 background = "scheme:error"

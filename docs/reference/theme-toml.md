@@ -36,11 +36,12 @@ ANSI names are case-insensitive and include the 16 terminal colors: `black`, `re
 | `surface` | `ansi:black` |
 | `border` | `ansi:yellow` |
 | `selection` | `ansi:reset` |
-| `on-selection` | `ansi:reset` |
+| `success` | `ansi:green` |
+| `warning` | `ansi:yellow` |
+| `info` | `ansi:cyan` |
 | `error` | `ansi:red` |
-| `on-error` | `ansi:white` |
 
-Normal surfaces use `background` and `foreground`; secondary text uses `muted`. Dividers, borders, and scrollbars use `border`. Markers, cursors, and footer titles use `accent`. Input prefixes and shortcut keys use `accent` foregrounds on `surface` backgrounds. Selected rows use `selection` backgrounds and `on-selection` primary text; selected secondary text and badges retain `muted` foregrounds. Both selection colors default to terminal reset, preserving the normal background and primary text color. Bold text and the accent marker distinguish the active row without adding a background highlight. Error styles use `error` and `on-error`.
+Normal surfaces use `background` and `foreground`; secondary text uses `muted`. Dividers, borders, and scrollbars use `border`. Markers, cursors, and footer titles use `accent`. Input prefixes and shortcut keys use `accent` foregrounds on `surface` backgrounds. Selected rows use `selection` backgrounds and `foreground` primary text; selected secondary text and badges retain `muted` foregrounds. Selection background defaults to terminal reset, preserving the normal background and primary text color. Bold text and the accent marker distinguish the active row without adding a background highlight. Semantic status styles use `success`, `warning`, `info`, and `error`. Banner errors use `error` backgrounds with `background` foregrounds.
 
 The [built-in theme](../../src/ui/theme/builtin/terminal.toml) defines all component bindings and modifier defaults.
 
@@ -79,7 +80,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[chrome]` | `footer_key` | Keyboard shortcut badges (e.g. `Enter`, `Ctrl+K`). |
 | `[chrome]` | `error` | Global error notification banner. |
 | `[capture]` | `text` | Captured subprocess output text. |
-| `[form]` | `label`, `input`, `focused`, `error` | Field labels, normal and focused editors, and validation errors. |
+| `[form]` | `label`, `input`, `focused`, `border`, `focused_border`, `error` | Field labels, normal and focused editors, field borders, and validation errors. |
 
 The picker cursor is a styled cell in the render buffer. Cursor blink is not a theme field. Themes control presentation only; they do not configure keys or application behavior.
 
