@@ -653,7 +653,7 @@ use super::*;
         let continued = boundary
             .handler
             .resume(
-                &crate::view::ViewLocation::new("__selectors:commands"),
+                &crate::view::ViewLocation::new("__commands:main"),
                 &caller,
                 &snapshot,
                 &ViewResult::new(selected_command),
@@ -669,7 +669,7 @@ use super::*;
         let continued_unknown = boundary
             .handler
             .resume(
-                &crate::view::ViewLocation::new("__selectors:commands"),
+                &crate::view::ViewLocation::new("__commands:main"),
                 &caller,
                 &snapshot,
                 &ViewResult::new(unknown_command),
@@ -682,7 +682,7 @@ use super::*;
         let continued_params = boundary
             .handler
             .resume(
-                &crate::view::ViewLocation::new("__selectors:commands"),
+                &crate::view::ViewLocation::new("__commands:main"),
                 &caller,
                 &snapshot,
                 &ViewResult::new(parameters_command),
@@ -693,7 +693,7 @@ use super::*;
         else {
             panic!("parameters command must transition to form call");
         };
-        assert_eq!(request.target, "__selectors:form");
+        assert_eq!(request.target, "__form:main");
 
         std::fs::remove_file(stdin_path).unwrap();
     }

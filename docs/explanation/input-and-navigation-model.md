@@ -55,7 +55,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 ### The `call` and `return` Boundary
 - When a command uses `type = "call"`, the Router establishes a return frame on the View stack. A producer call may return a typed operation from a literal or JSON protocol handler.
 - When the target View invokes `type = "return"`, the active child View is popped and its result is delivered to the recorded caller. A producer `return_processor` runs only after the child is closed and the caller is active.
-- The built-in command palette is the ordinary Popup Picker View at `__selectors:commands`. The host opens it with command descriptors in its navigation parameters, then resolves its returned `CommandRef` against the current registry after the popup closes. Parameter editing uses the separate native Form View at `__selectors:form`; submitting it replaces the target View through the normal query-schema validation path.
+- The built-in command palette is the ordinary Popup Picker View at `__commands:main`. The host opens it with command descriptors in its navigation parameters, then resolves its returned `CommandRef` against the current registry after the popup closes. Parameter editing uses the separate native Form View at `__form:main`; submitting it replaces the target View through the normal query-schema validation path.
 
 ### Task Correlation and Cancellation
 - Asynchronous tasks (such as background script feeds or PTY streams) are tagged with unique task IDs associated with their owning view.

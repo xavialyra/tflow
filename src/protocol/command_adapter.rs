@@ -184,8 +184,8 @@ impl CommandService for ProtocolCommandService {
             let label = cmd.label.clone();
             let target = self
                 .config
-                .resolve_view("__selectors:commands")
-                .unwrap_or_else(|_| "__selectors:commands".to_string());
+                .resolve_view("__commands:main")
+                .unwrap_or_else(|_| "__commands:main".to_string());
 
             let config_clone = std::sync::Arc::clone(&self.config);
             let snapshot_clone = std::sync::Arc::clone(&shared_snapshot);
@@ -526,7 +526,7 @@ pub(crate) fn map_prepared_action(
             }))
         }
         PreparedAction::Call(call) => {
-            let is_parameter_form = call.request.view_ref == "__selectors:form";
+            let is_parameter_form = call.request.view_ref == "__form:main";
             let request = protocol_navigation_request(config, call.request)?;
             let result_processor = is_parameter_form.then(|| {
                 let config = std::sync::Arc::clone(config);

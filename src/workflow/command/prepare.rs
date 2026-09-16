@@ -327,7 +327,7 @@ fn prepare_builtin_commands(
     command_invocation: CommandInvocation,
     context: CommandContext,
 ) -> Result<PreparedAction> {
-    let target = config.resolve_view("__selectors:commands")?;
+    let target = config.resolve_view("__commands:main")?;
     let commands = collect_available_commands(config, &context.page.view_ref, true)?
         .into_values()
         .collect::<Vec<_>>();
@@ -351,7 +351,7 @@ fn prepare_builtin_parameters(
     command_invocation: CommandInvocation,
     context: CommandContext,
 ) -> Result<PreparedAction> {
-    let target = config.resolve_view("__selectors:form")?;
+    let target = config.resolve_view("__form:main")?;
     let payload = serde_json::to_string(&json!({
         "target": context.page.view_ref,
         "query": config.query_definition(&context.page.view_ref)?,

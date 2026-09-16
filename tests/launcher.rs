@@ -1767,7 +1767,7 @@ fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
     wait_for_text(&process.master, "name");
     send_bytes(&mut process, b"changed\r");
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("changed") && !screen.contains("__selectors:form")
+        screen.contains("changed") && !screen.contains("__form:main")
     });
     send_bytes(&mut process, b"\x03");
     let (status, output) = wait_for_launcher_exit(&mut process);
@@ -3375,9 +3375,9 @@ fn command_selector_can_open_edit_query_form_and_apply_parameters() {
     process.master.flush().unwrap();
 
     // Form popup should open
-    let form_output = wait_for_text(&process.master, "__selectors:form");
+    let form_output = wait_for_text(&process.master, "__form:main");
     let form_screen = String::from_utf8_lossy(&form_output);
-    assert!(form_screen.contains("__selectors:form"));
+    assert!(form_screen.contains("__form:main"));
 
     // Cancel form with Escape
     process.master.write_all(b"\x1b").unwrap();

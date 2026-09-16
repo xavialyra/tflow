@@ -1,0 +1,124 @@
+[workflow]
+api = 1
+name = "Built-in Commands"
+
+[views.main]
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+show_input = false
+show_divider = false
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+script = '''#!/bin/sh
+set -eu
+
+exec python3 -c '
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+commands = parameters.get("commands", []) if isinstance(parameters, dict) else []
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+query = state.get("input", "") if isinstance(state, dict) else ""
+if not isinstance(commands, list) or not isinstance(query, str):
+    raise SystemExit("invalid command selector request")
+tokens = query.casefold().split()
+
+filtered = []
+for command in commands:
+    ref = command.get("ref")
+    if not isinstance(ref, dict):
+        continue
+    cmd_id = str(command.get("id", ref.get("id", "")))
+    scope = str(command.get("scope", ref.get("view", "")))
+    if cmd_id == "commands":
+        continue
+    if scope != "view" and cmd_id != "parameters":
+        continue
+    if cmd_id == "parameters":
+        label = "Edit Query"
+    else:
+        label = str(command.get("label", cmd_id))
+    key = str(command.get("key", ""))
+    owner = str(command.get("owner", ""))
+    searchable = " ".join([label, key, scope, owner]).casefold()
+    if not all(token in searchable for token in tokens):
+        continue
+    filtered.append((command, ref, cmd_id, label, key, scope))
+
+max_key_len = max((len(item[4]) for item in filtered if item[4]), default=0)
+
+items = []
+for command, ref, cmd_id, label, key, scope in filtered:
+    scope_badge = f"[{scope}]"
+    item = {"value": key or cmd_id, "metadata": {"command": ref}}
+    if max_key_len > 0:
+        item["display"] = {
+            "constraints": [{"Fill": 1}, {"Length": max_key_len}, {"Length": 8}],
+            "cells": [
+                {"text": label},
+                {"text": key, "align": "right", "slot": "badge"},
+                {"text": scope_badge, "align": "right", "slot": "badge"},
+            ],
+        }
+    else:
+        item["display"] = {
+            "constraints": [{"Fill": 1}, {"Length": 8}],
+            "cells": [
+                {"text": label},
+                {"text": scope_badge, "align": "right", "slot": "badge"},
+            ],
+        }
+    items.append(item)
+
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'
+'''
+
+[views.main.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+commands = { type = "array<object>", default = [] }
+
+[views.main.commands.accept]
+key = "enter"
+label = "Select"
+scope = "selection"
+type = "return"
+producer = "script"
+[views.main.commands.accept.handler]
+script = '''#!/bin/sh
+set -eu
+
+exec python3 -c '
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+item = state.get("item") if isinstance(state, dict) else None
+command = item.get("metadata", {}).get("command") if isinstance(item, dict) else None
+if not isinstance(command, dict) or not isinstance(command.get("view"), str) or not isinstance(command.get("id"), str):
+    raise SystemExit("command selector result has no command reference")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "return",
+        "value": command,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'
+'''

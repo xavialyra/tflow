@@ -228,14 +228,14 @@ impl CompiledConfig {
             && !globals
                 .values()
                 .any(|binding| binding_uses_key(binding, "ctrl+k"));
-        if commands_binding_is_available && self.view("__selectors:commands").is_some() {
+        if commands_binding_is_available && self.view("__commands:main").is_some() {
             globals.insert("commands".to_string(), CommandBinding::builtin_commands());
         }
         let parameters_binding_is_available = !globals.contains_key("parameters")
             && !globals
                 .values()
                 .any(|binding| binding_uses_key(binding, "ctrl+g"));
-        if parameters_binding_is_available && self.view("__selectors:form").is_some() {
+        if parameters_binding_is_available && self.view("__form:main").is_some() {
             globals.insert(
                 "parameters".to_string(),
                 CommandBinding::builtin_parameters(),
@@ -469,7 +469,7 @@ mod tests {
         let error = compiled
             .validate_with_engines(&EngineRegistry::new())
             .expect_err("built-in commands need their selector view");
-        assert!(error.to_string().contains("__selectors:commands"));
+        assert!(error.to_string().contains("__commands:main"));
     }
 
     #[test]
@@ -483,11 +483,11 @@ mod tests {
             producer = "declared"
             handler = { value = "custom" }
 
-            [workflows.__selectors.views.form.engine]
+            [workflows.__form.views.main.engine]
             type = "form"
-            [workflows.__selectors.views.form.engine.config.content]
+            [workflows.__form.views.main.engine.config.content]
             producer = "declared"
-            [workflows.__selectors.views.form.engine.config.content.handler]
+            [workflows.__form.views.main.engine.config.content.handler]
             fields = []
             "#,
         );

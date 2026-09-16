@@ -140,9 +140,37 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
 
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(
-        stderr.contains("workflow ID \"__selectors\" is reserved for built-in selectors"),
+        stderr.contains("workflow ID \"__selectors\" is reserved for built-in workflows; user workflow IDs cannot start with '__'"),
         "stderr: {stderr}"
     );
+
+    // Also verify single-file workflows with __ prefix are rejected
+    fs::remove_file(&manifest).unwrap();
+    let single_file = root.join("workflows/__custom.toml");
+    fs::write(
+        &single_file,
+        r#"
+        [workflow]
+        api = 1
+        name = "User custom"
+
+        [views.main.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+    let output2 = launcher_command()
+        .args(["--check", "--config"])
+        .arg(&config)
+        .output()
+        .expect("could not validate single-file reserved workflow ID");
+    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+    assert!(!output2.status.success(), "stderr: {stderr2}");
+    assert!(
+        stderr2.contains("workflow ID \"__custom\" is reserved for built-in workflows; user workflow IDs cannot start with '__'"),
+        "stderr: {stderr2}"
+    );
+
     fs::remove_dir_all(root).unwrap();
 }
 

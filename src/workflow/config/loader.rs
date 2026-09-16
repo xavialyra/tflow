@@ -47,12 +47,14 @@ impl CompiledConfig {
             table.remove("disabled_workflows");
         }
         let mut merged = toml::Value::Table(toml::map::Map::new());
-        let (_, builtin_selectors) = parse_workflow_package(
-            super::builtin::SELECTORS_TOML,
-            "built-in __selectors",
-            "__selectors",
-        )?;
-        merge_values(&mut merged, builtin_selectors);
+        for &(id, source) in super::builtin::BUILTIN_WORKFLOWS {
+            let (_, package) = parse_workflow_package(
+                source,
+                &format!("built-in {id}"),
+                id,
+            )?;
+            merge_values(&mut merged, package);
+        }
         let workflow_directory = user_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -317,9 +319,9 @@ pub(super) fn merge_values(base: &mut toml::Value, overlay: toml::Value) {
 }
 
 fn ensure_user_workflow_id_available(workflow_id: &str) -> Result<()> {
-    if workflow_id == "__selectors" {
+    if workflow_id.starts_with("__") {
         bail!(
-            "workflow ID {:?} is reserved for built-in selectors",
+            "workflow ID {:?} is reserved for built-in workflows; user workflow IDs cannot start with '__'",
             workflow_id
         );
     }

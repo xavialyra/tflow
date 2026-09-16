@@ -207,8 +207,8 @@ impl CompiledConfig {
                     "session command binding \"commands\" is built in"
                 );
                 anyhow::ensure!(
-                    self.view("__selectors:commands").is_some(),
-                    "session command binding \"commands\" requires view \"__selectors:commands\""
+                    self.view("__commands:main").is_some(),
+                    "session command binding \"commands\" requires view \"__commands:main\""
                 );
             }
             let key = binding
