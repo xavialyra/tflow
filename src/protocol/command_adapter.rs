@@ -608,6 +608,17 @@ fn protocol_navigation_request(
     let mut state = config.instantiate_parameters(&request.view_ref)?;
     config.sanitize_initial_parameter_values(&mut state)?;
 
+    let focus = request.parameters.as_ref().and_then(|parameters| {
+        parameters.as_object().and_then(|object| {
+            object
+                .get("__engine")
+                .and_then(|engine| engine.get("focus"))
+                .or_else(|| object.get("__focus"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+    });
+
     let editable = if let Some(parameters) = request.parameters.as_ref() {
         if !parameters.is_null() {
             config.update_sanitized_initial_parameter_values(&mut state, parameters)?;
@@ -642,6 +653,9 @@ fn protocol_navigation_request(
         protocol_request = protocol_request.with_input(text, cursor)?;
     }
     protocol_request.presentation = request.presentation;
+    if let Some(focus) = focus {
+        protocol_request = protocol_request.with_focus(focus);
+    }
     Ok(protocol_request)
 }
 

@@ -261,6 +261,7 @@ pub(crate) struct NavigationRequest {
     pub(crate) query: ParsedQuery,
     pub(crate) input: Option<ViewInputSeed>,
     pub(crate) presentation: ViewPresentation,
+    pub(crate) focus: Option<String>,
 }
 
 impl NavigationRequest {
@@ -270,6 +271,7 @@ impl NavigationRequest {
             query,
             input: None,
             presentation: ViewPresentation::default(),
+            focus: None,
         }
     }
 
@@ -280,6 +282,11 @@ impl NavigationRequest {
         }
         self.input = Some(ViewInputSeed { text, cursor });
         Ok(self)
+    }
+
+    pub(crate) fn with_focus(mut self, focus: impl Into<String>) -> Self {
+        self.focus = Some(focus.into());
+        self
     }
 }
 

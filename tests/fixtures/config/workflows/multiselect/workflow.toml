@@ -1,0 +1,77 @@
+[workflow]
+api = 1
+name = "Multi-Select Picker"
+
+[styles.checked]
+foreground = "scheme:accent"
+bold = true
+
+[styles.checked.selected]
+foreground = "scheme:accent"
+bold = true
+
+[styles.unchecked]
+dim = true
+
+[styles.summary]
+foreground = "scheme:accent"
+bold = true
+
+[views.main]
+alias = "multiselect"
+
+[views.main.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+selected = { type = "array<string>", default = [] }
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+preview_ratio = 0.4
+preview_min_width = 24
+preview_default_open = true
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
+
+[views.main.commands.toggle]
+key = "tab"
+label = "Toggle select"
+type = "navigate"
+producer = "script"
+[views.main.commands.toggle.handler]
+file = "scripts/toggle.py"
+
+[views.main.commands.select_all]
+key = "ctrl+a"
+label = "Select all"
+type = "navigate"
+producer = "script"
+[views.main.commands.select_all.handler]
+file = "scripts/select_all.py"
+
+[views.main.commands.clear_all]
+key = "ctrl+r"
+label = "Clear all"
+type = "navigate"
+producer = "script"
+[views.main.commands.clear_all.handler]
+file = "scripts/clear.py"
+
+[views.main.commands.submit]
+key = "enter"
+label = "Confirm selection"
+type = "run"
+producer = "script"
+[views.main.commands.submit.handler]
+file = "scripts/submit.py"

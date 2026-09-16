@@ -174,6 +174,7 @@ pub(crate) struct PickerState {
     items_task_state: ItemsTaskState,
     preview_visible: bool,
     initial_load_completed: bool,
+    initial_focus: Option<String>,
 }
 
 #[derive(Clone)]
@@ -233,6 +234,7 @@ impl PickerView {
                 items_task_state: ItemsTaskState::Idle,
                 preview_visible: false,
                 initial_load_completed: false,
+                initial_focus: None,
             },
             services,
             items_task: None,
@@ -240,6 +242,10 @@ impl PickerView {
             preview: PickerPreview::new(preview),
             preview_content_size: None,
         }
+    }
+
+    pub(crate) fn set_initial_focus(&mut self, focus: Option<String>) {
+        self.state.initial_focus = focus;
     }
 
     pub(crate) fn current(&self) -> &PickerFrame {
@@ -532,6 +538,13 @@ impl PickerView {
                 self.frame.query = query;
                 self.feed_instances = Arc::new(result.contexts);
                 self.frame.selection.replace(result.items);
+                if let Some(target) = self.initial_focus.take() {
+                    if let Some(pos) = self.frame.selection.items.iter().position(|item| {
+                        item.value.as_deref() == Some(&target) || item.text == target
+                    }) {
+                        self.frame.selection.selected = pos;
+                    }
+                }
                 self.frame.results = ResultsState::Ready(input);
                 let pending_selection = std::mem::take(&mut self.frame.pending_selection);
                 self.move_selection(pending_selection);

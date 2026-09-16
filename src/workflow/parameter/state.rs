@@ -329,7 +329,7 @@ impl ParameterRegistry {
             .as_object()
             .context("object query expects a JSON object")?;
         for name in object.keys() {
-            if !schema.fields.contains_key(name) {
+            if !schema.fields.contains_key(name) && !name.starts_with("__") {
                 bail!("query contains unknown parameter {:?}", name);
             }
         }
@@ -373,12 +373,15 @@ impl ParameterRegistry {
             .as_object()
             .context("object query expects a JSON object")?;
         for name in object.keys() {
-            if !schema.fields.contains_key(name) {
+            if !schema.fields.contains_key(name) && !name.starts_with("__") {
                 bail!("query contains unknown parameter {:?}", name);
             }
         }
         let mut values = state.values.clone();
         for (name, value) in object {
+            if name.starts_with("__") {
+                continue;
+            }
             let field = schema
                 .fields
                 .get(name)
@@ -548,12 +551,16 @@ impl ParameterBinding {
             && let Some(object) = value.as_object()
         {
             for name in object.keys() {
-                if !self.schema.fields.contains_key(name) {
+                if !self.schema.fields.contains_key(name) && !name.starts_with("__") {
                     bail!("query contains unknown parameter {:?}", name);
                 }
             }
         }
-        let value = sanitize_parameter_value(value);
+        let mut clean_value = value.clone();
+        if let Some(object) = clean_value.as_object_mut() {
+            object.retain(|k, _| !k.starts_with("__"));
+        }
+        let value = sanitize_parameter_value(&clean_value);
         self.registry.update_initial_value(state, &value)
     }
 
@@ -590,7 +597,7 @@ impl ParameterBinding {
                 .as_object()
                 .context("object query snapshot must be a JSON object")?;
             for name in object.keys() {
-                if !self.schema.fields.contains_key(name) {
+                if !self.schema.fields.contains_key(name) && !name.starts_with("__") {
                     bail!("query contains unknown parameter {:?}", name);
                 }
             }

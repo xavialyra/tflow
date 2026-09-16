@@ -111,6 +111,9 @@ pub(crate) fn create_protocol_view(
     let mut runtime =
         PickerView::new_with_preview(&config.identity.view_ref, runtime_services, preview);
     runtime.set_preview_visible(preview_visible);
+    if let Some(focus) = &request.focus {
+        runtime.set_initial_focus(Some(focus.clone()));
+    }
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
     let route_candidates = routes.complete("");
     let mut completion_prefixes = BTreeMap::from([(String::new(), route_candidates.clone())]);
