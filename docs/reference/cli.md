@@ -15,7 +15,9 @@ description: "Authoritative reference for tlaunch command-line options, environm
 
 ```text
 tlaunch [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
+tlaunch -w <WORKFLOW_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
 tlaunch inspect <VIEW>
+tlaunch inspect --all
 ```
 
 ## Global Options
@@ -25,8 +27,11 @@ Global options must precede the target view selector.
 | Option | Environment Variable | Description |
 | :--- | :--- | :--- |
 | `-c, --config <PATH>` | `TLAUNCH_CONFIG` | Path to the root `config.toml`. Overrides default search paths. |
+| `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Runs in isolated mode without requiring a global `config.toml`. |
+| `--theme <THEME>` | — | Explicit theme selector (`terminal` or custom name). Overrides configured theme. |
 | `--check` | — | Validates the configuration files and workflow manifests without launching the interactive TUI. Returns non-zero on error. |
 | `--inspect <VIEW>` | — | Prints view contract details (alias, engine, queries, commands) and exits. |
+| `--all` | — | Used with `inspect` to dump contracts for all configured views. |
 | `-h, --help` | — | Prints version and usage information. |
 | `-V, --version` | — | Prints the version of `tlaunch`. |
 
@@ -35,9 +40,55 @@ Global options must precede the target view selector.
 The launcher resolves the active configuration file in the following order:
 
 1. `--config PATH` argument.
-2. `TLAUNCH_CONFIG` environment variable.
+2. `TLAUNCH_CONFIG` environment variable (can point to a `.toml` file or a configuration directory).
 3. `$XDG_CONFIG_HOME/tlaunch/config.toml`.
 4. `$HOME/.config/tlaunch/config.toml`.
+
+When `-w, --workflow <PATH>` is passed without an explicit `--config` and no global `config.toml` exists on disk, `tlaunch` automatically falls back to an in-memory zero-configuration base (default terminal theme and keybindings).
+
+## Isolated Workflow Execution (`-w, --workflow`)
+
+The `-w, --workflow <PATH>` option allows executing an isolated workflow directly without installing it into the system or user configuration directory.
+
+### Target Formats
+
+1. **Single-file workflow (`.toml`)**:
+   - The file stem becomes the workflow ID (e.g. `dmenu.toml` -> workflow `dmenu`).
+   - The workflow root is set to the directory containing the `.toml` file.
+   - Scripts referenced by relative paths in the manifest are resolved relative to this directory.
+2. **Directory workflow package**:
+   - Points to a directory containing a `workflow.toml` (single workflow package) or a collection of workflow subdirectories.
+   - Sets `WORKFLOW_DIR` to the package directory.
+
+### Entry Point Resolution in Workflow Mode
+
+When invoked with `-w <PATH>`:
+- If a specific `[VIEW]` selector is provided (e.g. `tlaunch -w ./tool.toml search`), that view is resolved directly.
+- If no `[VIEW]` selector is provided, `tlaunch` looks for a view declared with `alias = "main"`.
+- If no view with `alias = "main"` is declared and no view argument is supplied, `tlaunch` fails gracefully with a list of available views to choose from:
+  ```text
+  Error: no default view with alias = "main" found in workflow; specify one of: view1, view2
+  ```
+
+### Shebang / Executable Script Integration
+
+Single-file workflows can be made directly executable by adding a `tlaunch -w` Shebang at the top of the file:
+
+```toml
+#!/usr/bin/env -S tlaunch -w
+[workflow]
+api = 1
+name = "quick-picker"
+
+[views.main]
+alias = "main"
+
+[views.main.engine]
+type = "picker"
+...
+```
+
+Make the file executable (`chmod +x quick-picker.toml`) and execute it directly: `./quick-picker.toml [ARGS...]`.
 
 ## Child Process Environment
 
@@ -50,7 +101,9 @@ Producer scripts receive query, selection, command, and return data as their doc
 
 ## Direct View Invocation
 
-You can open a specific view directly instead of the configured `default_view`:
+By default (when run without arguments), `tlaunch` resolves the view declared with `alias = "main"`. If no view declares `alias = "main"`, it falls back to the legacy `default_view` setting in `config.toml`.
+
+You can also open a specific view directly:
 
 ```bash
 tlaunch <workflow-id>:<view-name> [ARGUMENTS...]

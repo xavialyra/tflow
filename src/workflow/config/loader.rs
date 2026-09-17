@@ -1,8 +1,8 @@
 use super::{
-    CompiledConfig, RawConfig, WorkflowHeader,
     normalize::{normalize_view_keymaps, remove_disabled_workflows},
+    CompiledConfig, RawConfig, WorkflowHeader,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -48,11 +48,7 @@ impl CompiledConfig {
         }
         let mut merged = toml::Value::Table(toml::map::Map::new());
         for &(id, source) in super::builtin::BUILTIN_WORKFLOWS {
-            let (_, package) = parse_workflow_package(
-                source,
-                &format!("built-in {id}"),
-                id,
-            )?;
+            let (_, package) = parse_workflow_package(source, &format!("built-in {id}"), id)?;
             merge_values(&mut merged, package);
         }
         let workflow_directory = user_path
@@ -75,6 +71,110 @@ impl CompiledConfig {
             .log_file
             .as_deref()
             .map(|path| resolve_config_path(user_path, path));
+        Ok(LoadedConfig {
+            raw,
+            workflow_roots,
+            log_file,
+            theme_selector,
+        })
+    }
+
+    pub(crate) fn load_workflow_unvalidated(
+        workflow_path: &Path,
+        config_path: Option<&Path>,
+    ) -> Result<LoadedConfig> {
+        let (mut user_config, config_base) = if let Some(path) = config_path.filter(|p| p.is_file())
+        {
+            let source = fs::read_to_string(path)
+                .with_context(|| format!("could not read config {}", path.display()))?;
+            let parsed: toml::Value = toml::from_str(&source)
+                .with_context(|| format!("cannot parse config {}", path.display()))?;
+            reject_inline_workflows(&parsed)?;
+            (
+                parsed,
+                path.parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf(),
+            )
+        } else {
+            (
+                toml::Value::Table(toml::map::Map::new()),
+                workflow_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf(),
+            )
+        };
+
+        if let Some(table) = user_config.as_table_mut() {
+            table.remove("disabled_workflows");
+            table.remove("default_view");
+        }
+
+        let mut merged = toml::Value::Table(toml::map::Map::new());
+        for &(id, source) in super::builtin::BUILTIN_WORKFLOWS {
+            let (_, package) = parse_workflow_package(source, &format!("built-in {id}"), id)?;
+            merge_values(&mut merged, package);
+        }
+
+        let mut workflow_roots = BTreeMap::new();
+        if workflow_path.is_file() {
+            let id = workflow_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .with_context(|| {
+                    format!(
+                        "workflow file {:?} has no valid name",
+                        workflow_path.display()
+                    )
+                })?
+                .to_string();
+            validate_workflow_id(&id)?;
+            ensure_user_workflow_id_available(&id)?;
+            let (_, package) = read_workflow_package(workflow_path, &id)?;
+            merge_values(&mut merged, package);
+            if let Some(parent) = workflow_path.parent() {
+                workflow_roots.insert(id, parent.to_path_buf());
+            }
+        } else if workflow_path.is_dir() {
+            let manifest = workflow_path.join("workflow.toml");
+            if manifest.is_file() {
+                let id = workflow_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .with_context(|| {
+                        format!(
+                            "workflow directory {:?} has no valid name",
+                            workflow_path.display()
+                        )
+                    })?
+                    .to_string();
+                validate_workflow_id(&id)?;
+                ensure_user_workflow_id_available(&id)?;
+                let (_, package) = read_workflow_package(&manifest, &id)?;
+                merge_values(&mut merged, package);
+                workflow_roots.insert(id, workflow_path.to_path_buf());
+            } else {
+                let roots = load_workflow_packages(&mut merged, workflow_path, &BTreeSet::new())?;
+                workflow_roots.extend(roots);
+            }
+        } else {
+            bail!("workflow path {:?} does not exist", workflow_path);
+        }
+
+        merge_values(&mut merged, user_config);
+
+        let raw: RawConfig = merged.try_into().with_context(|| {
+            format!(
+                "workflow configuration from {} does not match the launcher schema",
+                workflow_path.display()
+            )
+        })?;
+        let theme_selector = raw.theme.clone();
+        let log_file = raw
+            .log_file
+            .as_deref()
+            .map(|path| resolve_config_path(&config_base, path));
         Ok(LoadedConfig {
             raw,
             workflow_roots,

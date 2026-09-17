@@ -27,6 +27,10 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
+    /// Path to a workflow file or directory to run.
+    #[arg(short, long)]
+    workflow: Option<PathBuf>,
+
     /// Named or builtin theme; overrides the configured theme.
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
@@ -84,7 +88,12 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     let exe = iter.next().unwrap();
 
     while let Some(arg) = iter.next() {
-        if arg == "--config" || arg == "-c" || arg == "--theme" {
+        if arg == "--config"
+            || arg == "-c"
+            || arg == "--workflow"
+            || arg == "-w"
+            || arg == "--theme"
+        {
             global_prefix.push(arg);
             if let Some(val) = iter.next() {
                 global_prefix.push(val);
@@ -123,6 +132,24 @@ impl CompiledConfig {
         })
     }
 
+    pub(crate) fn load_workflow_app(
+        workflow_path: &Path,
+        config_path: Option<&Path>,
+        options: &ThemeLoadOptions,
+    ) -> Result<LoadedApp> {
+        let engines = EngineRegistry::new();
+        let loaded = Self::load_workflow_unvalidated(workflow_path, config_path)?;
+        let theme_base = config_path.unwrap_or(workflow_path);
+        let mut theme = theme::load(theme_base, loaded.theme_selector(), options)?;
+        let config = loaded.compile()?;
+        config.validate_with_engines(&engines)?;
+        theme.register_all_workflow_defaults(config.workflows())?;
+        Ok(LoadedApp {
+            config: std::sync::Arc::new(config),
+            theme,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn load_with_engines<V>(user_path: &Path, engines: &V) -> Result<Self>
     where
@@ -144,10 +171,21 @@ impl CompiledConfig {
 pub(crate) fn run() -> Result<i32> {
     let cli_args = effective_cli_args();
     let args = Args::parse_from(cli_args);
+    let explicit_config = args.config.is_some();
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
     let selector = args.theme.map(theme::cli_named_theme);
     let theme_options = ThemeLoadOptions { selector };
-    let loaded = CompiledConfig::load_app(&config_path, &theme_options)?;
+
+    let loaded = if let Some(workflow_path) = &args.workflow {
+        let optional_config = if explicit_config || config_path.is_file() {
+            Some(config_path.as_path())
+        } else {
+            None
+        };
+        CompiledConfig::load_workflow_app(workflow_path, optional_config, &theme_options)?
+    } else {
+        CompiledConfig::load_app(&config_path, &theme_options)?
+    };
     let config = loaded.config;
     let image_protocol = match config.image_protocol {
         ConfigImageProtocol::Halfblocks => TerminalImageProtocol::Halfblocks,
@@ -165,7 +203,12 @@ pub(crate) fn run() -> Result<i32> {
         if args.inspect.is_some() || args.all {
             bail!("--check cannot be combined with inspection options");
         }
-        println!("configuration is valid: {}", config_path.display());
+        let target_display = if let Some(wf) = &args.workflow {
+            wf.display().to_string()
+        } else {
+            config_path.display().to_string()
+        };
+        println!("configuration is valid: {target_display}");
         return Ok(0);
     }
 
@@ -210,12 +253,10 @@ pub(crate) fn run() -> Result<i32> {
     }
 
     let explicit_view = args.view.is_some();
-    let root_view = match args.view {
-        Some(selector) => config.resolve_view(&selector)?,
-        None => config
-            .default_view
-            .clone()
-            .context("no default_view configured; specify a View on the command line")?,
+    let root_view = if args.workflow.is_some() {
+        resolve_workflow_root_view(&config, args.view.as_deref())?
+    } else {
+        resolve_global_root_view(&config, args.view.as_deref())?
     };
     let mut parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
     config.sanitize_initial_parameter_values(&mut parameters)?;
@@ -446,6 +487,39 @@ fn default_config_path() -> PathBuf {
         return PathBuf::from(home).join(".config/tlaunch/config.toml");
     }
     PathBuf::from("config.toml")
+}
+
+fn resolve_workflow_root_view(config: &CompiledConfig, view_arg: Option<&str>) -> Result<String> {
+    if let Some(selector) = view_arg {
+        return config.resolve_view(selector);
+    }
+    if let Ok(main_view) = config.resolve_view("main") {
+        return Ok(main_view);
+    }
+    let public_views = config
+        .iter_public_views()
+        .map(|(r, _)| r.as_str())
+        .collect::<Vec<_>>();
+    if public_views.is_empty() {
+        bail!("no public views found in the specified workflow");
+    }
+    bail!(
+        "no default view with alias = \"main\" found in workflow; specify one of: {}",
+        public_views.join(", ")
+    );
+}
+
+fn resolve_global_root_view(config: &CompiledConfig, view_arg: Option<&str>) -> Result<String> {
+    if let Some(selector) = view_arg {
+        return config.resolve_view(selector);
+    }
+    if let Ok(main_view) = config.resolve_view("main") {
+        return Ok(main_view);
+    }
+    if let Some(default_view) = &config.default_view {
+        return config.resolve_view(default_view);
+    }
+    bail!("no default view found; define a view with alias = \"main\" or specify a View on the command line");
 }
 
 #[cfg(test)]

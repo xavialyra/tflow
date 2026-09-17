@@ -2,6 +2,10 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-17
+
+- Updated the CLI Reference (`docs/reference/cli.md`): documented `-w, --workflow <PATH>` for running single-file workflows (`.toml`) and directory packages in isolated mode; documented zero-configuration in-memory fallback when global `config.toml` is absent; specified entry point resolution prioritizing `alias = "main"` globally and requiring `alias = "main"` or explicit view selection in isolated workflow mode; documented the `--theme <THEME>` flag; and documented Shebang integration for executable workflow files (`#!/usr/bin/env -S tlaunch -w`).
+
 ## 2026-09-16
 
 - Refined ADR 0004 (`docs/adr/0004-scoped-command-registration.md`): renamed `CommandHandler::View` to `CommandHandler::Event` to precisely represent the event-driven dispatch model (`Action` closure execution vs `Event` message dispatch to `View::on_command(&mut self, id, context)`); registered `FormView`'s discrete navigation bindings (`Tab` / `Down` -> `form.focus_next`, `BackTab` / `Up` -> `form.focus_prev`, `Escape` -> `form.cancel`, `Ctrl-C`/`Ctrl-D` -> `form.exit`) as discrete `CommandScope::Engine` Event commands; and restricted `FallbackInputReceiver` strictly to continuous, free-form text typing and inline buffer editing.

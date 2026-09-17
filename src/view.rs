@@ -389,7 +389,7 @@ impl std::error::Error for ViewOperationFailure {}
 
 pub(crate) fn operation_failure(error: impl std::fmt::Display) -> anyhow::Error {
     ViewOperationFailure {
-        message: error.to_string(),
+        message: format!("{error:#}"),
     }
     .into()
 }
