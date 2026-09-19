@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "recipe"
+entrypoint = "recipe"
 
 [views.recipe]
-alias = "recipe"
 
 [views.recipe.engine]
 type = "picker"

@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "Native form example"
+entrypoint = "input"
 
 [views.main]
-alias = "form-demo"
 
 [views.main.engine]
 type = "picker"
@@ -32,7 +32,6 @@ file = "scripts/received.py"
 
 [views.input]
 cancel_exit_code = 1
-alias = "form"
 
 [views.input.query]
 type = "object"

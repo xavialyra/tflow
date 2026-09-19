@@ -6,9 +6,245 @@ use support::{
     spawn_launcher_with_args_and_env, temporary_root, wait_for_fresh_screen, wait_for_launcher_exit,
 };
 
-fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-form/config.toml")
+fn setup_fixture(root: &std::path::Path) -> PathBuf {
+    let suite = root.join("suite.toml");
+    let wf_dir = root.join("workflows/native-form");
+    let scripts_dir = wf_dir.join("scripts");
+    let sel_dir = root.join("workflows/selectors");
+    fs::create_dir_all(&scripts_dir).unwrap();
+    fs::create_dir_all(&sel_dir).unwrap();
+
+    fs::write(
+        &suite,
+        r#"[suite]
+api = 1
+name = "Native Form Fixtures"
+entrypoint = "native-form:main"
+
+[workflows]
+native-form = { dir = "./workflows/native-form" }
+selectors = { dir = "./workflows/selectors" }
+
+[aliases]
+native-form = "native-form:main"
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        sel_dir.join("workflow.toml"),
+        r#"[workflow]
+api = 1
+name = "Native form command selector"
+entrypoint = "commands"
+
+[views.commands.query]
+type = "object"
+commands = { type = "array<object>", default = [] }
+
+[views.commands.engine]
+type = "picker"
+[views.commands.engine.config]
+show_input = false
+[views.commands.engine.config.items]
+producer = "script"
+[views.commands.engine.config.items.handler]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+items = [{"display": command["label"], "metadata": {"command": command["ref"]}}
+         for command in request["context"]["parameters"]["commands"]]
+json.dump({"version": 1, "items": items}, sys.stdout)
+'''
+
+[views.commands.commands.accept]
+key = "enter"
+label = "Select"
+type = "return"
+producer = "script"
+[views.commands.commands.accept.handler]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+reference = request["context"]["engine"]["state"]["item"]["metadata"]["command"]
+json.dump({"version": 1, "operation": {"type": "return", "value": reference}}, sys.stdout)
+'''
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        wf_dir.join("workflow.toml"),
+        r#"[workflow]
+api = 1
+name = "Native form fixture"
+entrypoint = "main"
+
+[views.main]
+[views.main.engine]
+type = "form"
+[views.main.engine.config.content]
+producer = "declared"
+[views.main.engine.config.content.handler]
+fields = [
+    { name = "name", label = "Project name", required = true },
+    { name = "count", label = "Count", type = "integer", value = 2 },
+    { name = "enabled", label = "Enabled", type = "boolean", value = false },
+    { name = "options", label = "Options", type = "json", value = { tags = [] } },
+]
+[views.main.commands.submit]
+key = "enter"
+label = "Submit"
+scope = "view"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.dynamic.query]
+type = "object"
+spec = { type = "object", default = { fields = [{ name = "message", label = "Dynamic message", value = "From query", required = true }, { name = "data", type = "json", value = { count = 1 } }] } }
+[views.dynamic.engine]
+type = "form"
+[views.dynamic.engine.config.content]
+producer = "script"
+handler = { file = "scripts/content.py" }
+[views.dynamic.commands.submit]
+key = "enter"
+label = "Submit"
+scope = "view"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.main.commands.details]
+key = "ctrl+l"
+label = "Edit details"
+scope = "view"
+type = "call"
+producer = "declared"
+handler = { target = "native-form:dynamic" }
+[views.main.commands.details.return_processor]
+type = "return"
+producer = "script"
+handler = { file = "scripts/returned.py" }
+
+[views.main.commands.string_form]
+key = "ctrl+t"
+label = "String form"
+scope = "view"
+type = "call"
+producer = "declared"
+handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
+[views.main.commands.string_form.return_processor]
+type = "return"
+producer = "script"
+handler = { file = "scripts/returned.py" }
+
+[views.string.query]
+type = "string"
+[views.string.engine]
+type = "form"
+[views.string.engine.config.content]
+producer = "script"
+handler = { file = "scripts/string-content.py" }
+[views.string.commands.submit]
+label = "Submit string values"
+scope = "view"
+type = "return"
+producer = "script"
+handler = { file = "scripts/submit.py" }
+
+[views.failed.engine]
+type = "form"
+[views.failed.engine.config.content]
+producer = "script"
+[views.failed.engine.config.content.handler]
+script = '''#!/bin/sh
+printf '%s' '{"version":2,"content":{"fields":[]}}'
+'''
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        scripts_dir.join("content.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+assert request["entrypoint"] == "form-content"
+assert request["context"]["engine"]["type"] == "form"
+content = request["context"]["parameters"]["spec"]
+json.dump({"version": 1, "content": content}, sys.stdout)
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        scripts_dir.join("returned.py"),
+        r#"#!/usr/bin/env python3
+import json, os, sys
+request = json.load(sys.stdin)
+assert request["entrypoint"] == "return"
+if path := os.environ.get("NATIVE_FORM_RETURN"):
+    with open(path, "w") as result:
+        json.dump(request, result)
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "return",
+        "value": {
+            "caller": request["context"]["engine"]["state"]["values"],
+            "child": request["context"]["result"],
+        },
+    },
+}, sys.stdout)
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        scripts_dir.join("string-content.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+fields = []
+for declaration in request["context"]["parameters"].split(","):
+    name, kind, initial = declaration.split(":", 2)
+    value = initial if kind == "string" else json.loads(initial)
+    fields.append({"name": name, "label": f"{name} ({kind})", "type": kind, "value": value})
+json.dump({"version": 1, "content": {"fields": fields}}, sys.stdout)
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        scripts_dir.join("submit.py"),
+        r#"#!/usr/bin/env python3
+import json, os, sys
+request = json.load(sys.stdin)
+state = request["context"]["engine"]["state"]
+if not state["valid"]:
+    raise SystemExit("Please correct the form fields")
+if path := os.environ.get("NATIVE_FORM_RESULT"):
+    with open(path, "w") as result:
+        json.dump(request, result)
+json.dump({"version": 1, "operation": {"type": "return", "value": state["values"]}}, sys.stdout)
+"#,
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        for script in ["content.py", "returned.py", "string-content.py", "submit.py"] {
+            fs::set_permissions(scripts_dir.join(script), perms.clone()).unwrap();
+        }
+    }
+
+    suite
 }
+
 fn send(process: &mut support::LauncherProcess, bytes: &[u8]) {
     process.master.write_all(bytes).unwrap();
     process.master.flush().unwrap();
@@ -17,9 +253,10 @@ fn send(process: &mut support::LauncherProcess, bytes: &[u8]) {
 #[test]
 fn native_form_commands_receive_validated_drafts_after_popup_and_paste() {
     let root = temporary_root();
+    let fixture = setup_fixture(&root);
     let result = root.join("result.json");
     let mut process = spawn_launcher_with_args_and_env(
-        &fixture(),
+        &fixture,
         &[],
         &[("NATIVE_FORM_RESULT", result.to_str().unwrap())],
     );
@@ -56,9 +293,10 @@ fn native_form_commands_receive_validated_drafts_after_popup_and_paste() {
 #[test]
 fn native_form_script_interprets_object_query_and_commands_keep_original_parameters() {
     let root = temporary_root();
+    let fixture = setup_fixture(&root);
     let result = root.join("result.json");
     let mut process = spawn_launcher_with_args_and_env(
-        &fixture(),
+        &fixture,
         &["native-form:dynamic"],
         &[("NATIVE_FORM_RESULT", result.to_str().unwrap())],
     );
@@ -83,10 +321,11 @@ fn native_form_script_interprets_object_query_and_commands_keep_original_paramet
 #[test]
 fn native_form_call_return_scripts_receive_child_values_and_restored_caller_drafts() {
     let root = temporary_root();
+    let fixture = setup_fixture(&root);
     let submitted = root.join("submitted.json");
     let returned = root.join("returned.json");
     let mut process = spawn_launcher_with_args_and_env(
-        &fixture(),
+        &fixture,
         &[],
         &[
             ("NATIVE_FORM_RESULT", submitted.to_str().unwrap()),
@@ -142,10 +381,11 @@ fn native_form_call_return_scripts_receive_child_values_and_restored_caller_draf
 #[test]
 fn string_convention_form_submits_through_palette_and_call_return() {
     let root = temporary_root();
+    let fixture = setup_fixture(&root);
     let submitted = root.join("submitted.json");
     let returned = root.join("returned.json");
     let mut process = spawn_launcher_with_args_and_env(
-        &fixture(),
+        &fixture,
         &[],
         &[
             ("NATIVE_FORM_RESULT", submitted.to_str().unwrap()),
@@ -193,17 +433,20 @@ fn string_convention_form_submits_through_palette_and_call_return() {
 
 #[test]
 fn native_form_content_failure_is_visible_and_can_be_cancelled() {
-    let mut process = spawn_launcher_with_args_and_env(&fixture(), &["native-form:failed"], &[]);
+    let root = temporary_root();
+    let fixture = setup_fixture(&root);
+    let mut process = spawn_launcher_with_args_and_env(&fixture, &["native-form:failed"], &[]);
     wait_for_fresh_screen(&process.master, |s| {
         s.contains("unsupported form-content protocol version 2")
     });
     send(&mut process, b"\x1b");
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "{}", String::from_utf8_lossy(&output));
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn view_command_precedes_session_command_and_editor_even_when_form_is_invalid() {
+fn view_command_precedes_workflow_command_and_editor_even_when_form_is_invalid() {
     use std::io::Read;
 
     let root = temporary_root();
@@ -213,7 +456,7 @@ fn view_command_precedes_session_command_and_editor_even_when_form_is_invalid() 
         r#"
         default_view = "example:form"
 
-        [commands.bindings.cancel]
+        [workflows.example.commands.cancel]
         key = "ctrl+u"
         label = "Session cancel"
         type = "return"

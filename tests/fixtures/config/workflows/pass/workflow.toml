@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "pass"
+entrypoint = "main"
 
 [views.main]
-alias = "pass"
 
 [views.main.engine]
 type = "picker"
@@ -33,7 +33,6 @@ producer = "script"
 file = "scripts/otp.py"
 
 [views.unlock]
-alias = "unlock"
 
 [views.unlock.query]
 type = "object"

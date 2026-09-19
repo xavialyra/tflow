@@ -42,7 +42,7 @@ This documentation is organized into four core categories following the **Diáta
 ### 3. [Reference](reference/index.md)
 *Authoritative, technical specifications and syntax references.*
 - [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
-- [config.toml Specification](reference/config-toml.md) — Root configuration format, theme selection, and session command overrides.
+- [settings.toml and Suite Specification](reference/settings-toml.md) — Root configuration format, theme selection, and session command overrides.
 - [Theme TOML Specification](reference/theme-toml.md) — Flat scheme colors, built-in defaults, and style merge rules.
 - [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
 - [Picker Preview](reference/picker-preview.md) — Preview sources, feed ownership, nested documents, scrolling, and limits.
@@ -63,3 +63,5 @@ This documentation is organized into four core categories following the **Diáta
   - [ADR 0001: Decentralized Workflow Extensions](adr/0001-decentralized-workflow-extensions.md) — Decentralized workflow package layout, dual-mode storage, inline scripts, and CLI multiplexing.
   - [ADR 0002: Static Configuration and Script Boundaries](adr/0002-static-configuration-and-script-boundaries.md) — Static configuration, typed operations, restricted data providers, and explicit navigation and return protocols.
   - [ADR 0003: Unified Action Registration and Host-Owned Command Folding](adr/0003-unified-action-registration-and-host-folding.md) — One dispatch registry for View and Engine actions, View-only business-command presentation, and host-owned folding across normal and popup views.
+  - [ADR 0004: Scoped Command Registration](adr/0004-scoped-command-registration.md) — Scoped command ownership and registration boundaries.
+  - [ADR 0005: Manifest-Driven Workflow Suites and Self-Contained Workflows](adr/0005-manifest-driven-suites-and-self-contained-workflows.md) — Explicit suite orchestration, self-contained workflows, strict two-tier loading, and settings separation.

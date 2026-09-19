@@ -29,9 +29,7 @@ Create `~/.config/tlaunch/workflows/notes.toml`:
 [workflow]
 api = 1
 name = "Notes Manager"
-
-[views.main]
-alias = "notes"
+entrypoint = "main"
 
 [views.main.engine]
 type = "picker"
@@ -78,8 +76,8 @@ sys.stdout.write("\n")
 Run validation and launch it:
 
 ```bash
-tlaunch --check
-tlaunch notes
+tlaunch -w ~/.config/tlaunch/workflows/notes.toml --check
+tlaunch -w ~/.config/tlaunch/workflows/notes.toml
 ```
 
 The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tlaunch`.
@@ -156,9 +154,7 @@ Create `~/.config/tlaunch/workflows/notes/workflow.toml`:
 [workflow]
 api = 1
 name = "Notes Manager"
-
-[views.main]
-alias = "notes"
+entrypoint = "main"
 
 [views.main.engine]
 type = "picker"
@@ -182,8 +178,8 @@ file = "scripts/open_note.py"
 Validate and run:
 
 ```bash
-tlaunch --check
-tlaunch notes:main
+tlaunch -w ~/.config/tlaunch/workflows/notes --check
+tlaunch -w ~/.config/tlaunch/workflows/notes
 ```
 
 ## Next Steps

@@ -19,10 +19,14 @@ workflow_dir = os.environ.get("WORKFLOW_DIR")
 if not workflow_dir:
     raise SystemExit("view selector requires WORKFLOW_DIR")
 config_root = os.path.abspath(os.path.join(workflow_dir, os.pardir, os.pardir))
-config_path = os.path.join(config_root, "config.toml")
+suite_path = os.path.join(config_root, "default.toml")
+if not os.path.exists(suite_path):
+    suite_path = os.path.join(config_root, "suite.toml")
+if not os.path.exists(suite_path):
+    suite_path = os.path.join(config_root, "config.toml")
 try:
     inspected = subprocess.run(
-        ["tlaunch", "--config", config_path, "inspect", "--all"],
+        ["tlaunch", "--suite", suite_path, "inspect", "--all"],
         check=True,
         capture_output=True,
         text=True,

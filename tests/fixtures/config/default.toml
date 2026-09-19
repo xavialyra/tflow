@@ -1,0 +1,35 @@
+[suite]
+api = 1
+name = "Development Fixtures"
+entrypoint = "core:default"
+
+[workflows]
+apps = { dir = "./workflows/apps" }
+btop = { dir = "./workflows/btop" }
+calculator = { dir = "./workflows/calculator" }
+clipboard = { dir = "./workflows/clipboard" }
+core = { dir = "./workflows/core" }
+dmenu = { dir = "./workflows/dmenu" }
+echo = { file = "./workflows/echo.toml" }
+form = { dir = "./workflows/form" }
+images = { dir = "./workflows/images" }
+multiselect = { dir = "./workflows/multiselect" }
+pass = { dir = "./workflows/pass" }
+recipe = { file = "./workflows/recipe.toml" }
+selectors = { dir = "./workflows/selectors" }
+shell = { dir = "./workflows/shell" }
+sys = { dir = "./workflows/sys" }
+trans = { dir = "./workflows/trans" }
+wiremix = { dir = "./workflows/wiremix" }
+
+[aliases]
+app = "apps:main"
+form-demo = "form:main"
+form = "form:input"
+unlock = "pass:unlock"
+commands = "selectors:commands"
+view = "selectors:views"
+tr = "trans:main"
+sys = "sys:main"
+echo = "echo:main"
+calc = "calculator:main"

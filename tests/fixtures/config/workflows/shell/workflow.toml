@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "shell"
+entrypoint = "menu"
 
 [views.menu]
-alias = "shell"
 
 [views.menu.engine]
 type = "picker"

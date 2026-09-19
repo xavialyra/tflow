@@ -392,11 +392,7 @@ fn report_or_propagate_protocol_error(
     error: anyhow::Error,
     report: impl FnOnce(&str),
 ) -> Result<()> {
-    if error.downcast_ref::<FatalHostError>().is_some()
-        || error
-            .downcast_ref::<crate::view::ViewOperationFailure>()
-            .is_some()
-    {
+    if error.downcast_ref::<FatalHostError>().is_some() {
         return Err(error);
     }
     report(&error.to_string());

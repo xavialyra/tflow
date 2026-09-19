@@ -4,6 +4,17 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 ## 2026-09-19
 
+- Removed redundant fixture trees `tests/fixtures/native-form/` and `tests/fixtures/preview/`; consolidated documentation and integration tests on the canonical `tests/fixtures/config/` suite and self-contained temporary test fixtures.
+- Finalized ADR 0005 implementation: renamed `config-toml.md` to `settings-toml.md`, transitioned test fixtures to explicit `default.toml` suites and `settings.toml` host environments, eliminated dead backwards-compatibility code and shims, and verified non-fatal error reporting for unresolvable sibling routes.
+- Documented workflow-local command defaults; suite and settings command registration is rejected.
+- Documented rejection of suite host-environment fields and conflicting member aliases.
+- Updated form, preview, and embedded-form commands to select suite fixtures explicitly; theme instructions now use settings.toml.
+- Migrated getting-started and first-workflow tutorials to required local entrypoints, explicit default suite mounts, and standalone `-w` invocation.
+- Updated CLI, workflow, and settings references for ADR 0005 explicit manifests and settings separation.
+- Linked ADR 0004 and ADR 0005 from the bundle root governance index.
+
+## 2026-09-19
+
 - Added accepted ADR 0005 (`docs/adr/0005-manifest-driven-suites-and-self-contained-workflows.md`):
   - Defined manifest-driven workflow suite orchestration (`[suite]`), strict two-tier non-nesting, and 100% self-contained atomic workflow contracts (`[workflow]`).
   - Disambiguated CLI dispatch semantics: `-w, --workflow <PATH>` for single atomic workflows vs `-s, --suite <PATH>` for multi-workflow suite manifests.

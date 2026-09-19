@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "btop resource monitor"
+entrypoint = "main"
 
 [views.main]
-alias = "btop"
 
 [views.main.query]
 type = "object"

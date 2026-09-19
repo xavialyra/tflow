@@ -47,14 +47,14 @@ The query schema supplies typed defaults and `input_order` controls the position
 To invoke the example directly:
 
 ```sh
-cargo run --quiet -- --config tests/fixtures/config/config.toml \
+cargo run --quiet -- --suite tests/fixtures/config/default.toml \
   form:input --name="Ada's project" --environment=prod --enabled=false
 ```
 
 The successful JSON result is written to stdout. Redirect it when calling the launcher from a shell:
 
 ```sh
-cargo run --quiet -- --config tests/fixtures/config/config.toml \
+cargo run --quiet -- --suite tests/fixtures/config/default.toml \
   form:input --name="Ada's project" --environment=prod --enabled=false \
   > /tmp/tlaunch-form-result.json
 ```

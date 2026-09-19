@@ -454,8 +454,8 @@ fn static_display_options_reach_picker_rendering_and_input() {
     ));
     std::fs::create_dir_all(root.join("workflows")).unwrap();
     std::fs::write(
-        root.join("config.toml"),
-        "default_view = \"core:default\"\n",
+        root.join("suite.toml"),
+        "[suite]\napi = 1\nname = \"Display test\"\nentrypoint = \"core:default\"\n[workflows]\ncore = { file = \"workflows/core.toml\" }\n",
     )
     .unwrap();
     for (fields, show_input, show_divider) in [
@@ -468,12 +468,15 @@ fn static_display_options_reach_picker_rendering_and_input() {
         std::fs::write(
                 root.join("workflows/core.toml"),
                 format!(
-                    "[workflow]\napi = 1\nname = \"Display options test\"\n[views.default.engine]\ntype = \"picker\"\n[views.default.engine.config]\nitems = []\n{fields}\n"
+                    "[workflow]\napi = 1\nname = \"Display options test\"\nentrypoint = \"default\"\n[views.default.engine]\ntype = \"picker\"\n[views.default.engine.config]\nitems = []\n{fields}\n"
                 ),
             )
             .unwrap();
         let fixture = Arc::new(
-            crate::workflow::config::CompiledConfig::load_unvalidated(&root.join("config.toml"))
+            crate::workflow::config::CompiledConfig::load_suite_unvalidated(
+                &root.join("suite.toml"),
+                None,
+            )
                 .unwrap()
                 .compile()
                 .unwrap(),
@@ -823,13 +826,9 @@ mod preview_correlation_tests {
     use super::*;
     #[test]
     fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
-        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/preview/config.toml"),
-        )
-        .unwrap()
-        .compile()
-        .unwrap();
+        let temp =
+            std::env::temp_dir().join(format!("tlaunch-proto-preview-{}", std::process::id()));
+        let config = crate::engine::picker::create_preview_test_suite(&temp);
         let engines = crate::engine::EngineRegistry::new();
         let tasks = TaskRuntime::new();
         let instance = ViewInstanceId(901);
@@ -949,5 +948,6 @@ mod preview_correlation_tests {
             .unwrap();
         drop(view);
         tasks.shutdown_and_wait();
+        std::fs::remove_dir_all(temp).unwrap();
     }
 }

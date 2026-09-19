@@ -8,7 +8,8 @@ rust = { version = "1.97.1", profile = "default" }
 tokei = "latest"
 
 [env]
-TLAUNCH_CONFIG = "{{config_root}}/tests/fixtures/config/config.toml"
+TLAUNCH_SUITE = "{{config_root}}/tests/fixtures/config/default.toml"
+TLAUNCH_SETTINGS = "{{config_root}}/tests/fixtures/config/settings.toml"
 _.path = [
   "{{config_root}}/target/debug",
   "{{config_root}}/target/release",

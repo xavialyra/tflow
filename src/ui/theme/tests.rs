@@ -672,3 +672,43 @@ fn picker_input_prefix_and_chrome_footer_title_resolve() {
             .contains(Modifier::DIM)
     );
 }
+
+#[test]
+fn suite_and_settings_style_overrides_merge_individual_fields() {
+    use crate::engine::SlotToken;
+    use crate::workflow::config::WorkflowMetadata;
+
+    let raw: RawTheme = toml::from_str("[scheme]\naccent = 'ansi:blue'\n").unwrap();
+    let mut theme = ResolvedTheme::from_raw(&raw, "global").unwrap();
+    let defaults: RawStyleBinding =
+        toml::from_str("foreground = 'scheme:accent'\nbold = true\nitalic = true\n").unwrap();
+    let suite: RawStyleBinding = toml::from_str("bold = false\nunderline = true\n").unwrap();
+    let settings: RawStyleBinding = toml::from_str("italic = false\ndim = true\n").unwrap();
+    let workflows = BTreeMap::from([(
+        "git".into(),
+        WorkflowMetadata {
+            name: "Git".into(),
+            entrypoint: Some("main".into()),
+            styles: BTreeMap::from([("staged".into(), defaults)]),
+        },
+    )]);
+    theme
+        .register_all_workflow_defaults_with_overrides(
+            &workflows,
+            &BTreeMap::from([("git".into(), BTreeMap::from([("staged".into(), suite)]))]),
+            &BTreeMap::from([("git".into(), BTreeMap::from([("staged".into(), settings)]))]),
+        )
+        .unwrap();
+    let style = theme.resolve_slot("git", &SlotToken::from("staged"), false);
+    assert_eq!(style.fg, Some(Color::Blue));
+    assert!(
+        style
+            .add_modifier
+            .contains(Modifier::UNDERLINED | Modifier::DIM)
+    );
+    assert!(
+        !style
+            .add_modifier
+            .intersects(Modifier::BOLD | Modifier::ITALIC)
+    );
+}

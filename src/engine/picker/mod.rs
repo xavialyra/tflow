@@ -553,6 +553,153 @@ fn validate_declared_items_handler(value: &toml::Value) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn create_preview_test_suite(
+    temp: &std::path::Path,
+) -> crate::workflow::config::CompiledConfig {
+    let wf_dir = temp.join("workflows");
+    let browser_dir = wf_dir.join("browser");
+    let library_dir = wf_dir.join("library");
+    let library_scripts = library_dir.join("scripts");
+    let browser_scripts = browser_dir.join("scripts");
+    std::fs::create_dir_all(&browser_scripts).unwrap();
+    std::fs::create_dir_all(&library_scripts).unwrap();
+
+    std::fs::write(
+        temp.join("suite.toml"),
+        r#"[suite]
+api = 1
+name = "Preview Fixtures"
+entrypoint = "browser:main"
+
+[workflows]
+browser = { dir = "./workflows/browser" }
+library = { dir = "./workflows/library" }
+
+[aliases]
+preview = "browser:main"
+library = "library:main"
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        browser_dir.join("workflow.toml"),
+        r#"[workflow]
+api = 1
+name = "Preview browser"
+entrypoint = "main"
+
+[views.main]
+[views.main.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+owner = { type = "string", default = "browser" }
+[views.main.engine]
+type = "picker"
+[views.main.engine.config]
+feeds = [{ view = "library:main" }]
+preview_ratio = 0.35
+preview_min_width = 24
+
+[views.override.engine.config]
+feeds = [{ view = "library:main" }]
+[views.override.engine.config.preview]
+producer = "script"
+[views.override.engine.config.preview.handler]
+file = "scripts/preview.py"
+
+[views.declared.engine]
+type = "picker"
+[views.declared.engine.config]
+items = [{ display = "Static document" }]
+[views.declared.engine.config.preview]
+producer = "declared"
+document = { type = "paragraph", text = "This document is declared in TOML.", border = true, title = "About" }
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        library_dir.join("workflow.toml"),
+        r#"[workflow]
+api = 1
+name = "Preview library"
+entrypoint = "main"
+
+[views.main]
+[views.main.query]
+type = "object"
+input_order = ["search"]
+search = { type = "string", default = "" }
+owner = { type = "string", default = "library" }
+[views.main.engine]
+type = "picker"
+[views.main.engine.config]
+items = [
+  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
+  { display = "Empty preview", value = "empty", metadata = {} },
+]
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
+[views.main.keymap]
+"ctrl+p" = "toggle_preview"
+"alt+k" = "preview_scroll_up"
+"alt+j" = "preview_scroll_down"
+"#,
+    )
+    .unwrap();
+
+    image::DynamicImage::new_rgb8(2, 2)
+        .save(library_dir.join("art.png"))
+        .unwrap();
+
+    let preview_script = r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = request.get("context", {}).get("engine", {}).get("state", {}).get("item", {})
+preview = None
+if item.get("value") != "empty":
+    preview = {
+        "type": "layout",
+        "direction": "vertical",
+        "constraints": [{"Length": 2}, {"Length": 1}, {"Length": 8}, {"Fill": 1}],
+        "children": [
+            {"type": "display", "display": {"rows": [
+                {"cells": [{"text": item.get("text", "")}]},
+            ]}},
+            {"type": "separator"},
+            {"type": "paragraph", "border": True, "title": "Details", "text": item.get("metadata", {}).get("summary", "Ready")},
+            {"type": "paragraph", "text": "Line 1: generated preview content\nLine 2: more"},
+        ],
+    }
+json.dump({"version": 1, "preview": preview}, sys.stdout)
+sys.stdout.write("\n")
+"#;
+
+    std::fs::write(library_scripts.join("preview.py"), preview_script).unwrap();
+    std::fs::write(browser_scripts.join("preview.py"), preview_script).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(library_scripts.join("preview.py"), perms.clone()).unwrap();
+        std::fs::set_permissions(browser_scripts.join("preview.py"), perms).unwrap();
+    }
+
+    crate::workflow::config::CompiledConfig::load_suite_unvalidated(
+        &temp.join("suite.toml"),
+        None,
+    )
+    .unwrap()
+    .compile()
+    .unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

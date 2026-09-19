@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "translation"
+entrypoint = "main"
 
 [views.main]
-alias = "tr"
 
 [views.main.engine]
 type = "picker"

@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "Multi-Select Picker"
+entrypoint = "main"
 
 [styles.checked]
 foreground = "scheme:accent"
@@ -18,7 +19,6 @@ foreground = "scheme:accent"
 bold = true
 
 [views.main]
-alias = "multiselect"
 
 [views.main.query]
 type = "object"

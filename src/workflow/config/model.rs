@@ -15,6 +15,7 @@ fn default_workflow_api() -> u32 {
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowMetadata {
     pub name: String,
+    pub entrypoint: Option<String>,
     pub styles: BTreeMap<String, crate::ui::theme::RawStyleBinding>,
 }
 
@@ -421,17 +422,93 @@ pub(super) struct RawConfig {
     #[serde(default)]
     pub(super) default_view: Option<String>,
     #[serde(default)]
+    pub(super) entrypoint: Option<String>,
+    #[serde(default)]
     pub(super) image_protocol: ImageProtocol,
     #[serde(default)]
     pub(super) log_file: Option<PathBuf>,
     #[serde(default)]
     pub(super) commands: CommandConfig,
     #[serde(default)]
-    pub(super) theme: Option<String>,
+    pub(super) aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(super) view_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) workflows: BTreeMap<String, Workflow>,
     #[serde(default)]
     pub(super) defaults: Defaults,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSettings {
+    #[serde(default)]
+    pub(crate) image_protocol: ImageProtocol,
+    #[serde(default)]
+    pub(crate) theme: Option<String>,
+    #[serde(default)]
+    pub(crate) log_file: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) defaults: Defaults,
+    #[serde(default)]
+    pub(crate) styles: BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
+}
+
+pub(crate) fn validate_settings_purity(table: &toml::Table, path: &Path) -> Result<()> {
+    for forbidden in [
+        "default_view",
+        "disabled_workflows",
+        "workflows",
+        "views",
+        "suite",
+        "workflow",
+    ] {
+        if table.contains_key(forbidden) {
+            bail!(
+                "settings file {} violates purity invariant: contains forbidden field {:?}; settings.toml is strictly reserved for passive host environment configuration (ADR 0005)",
+                path.display(),
+                forbidden
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SuiteHeader {
+    #[serde(default = "default_workflow_api")]
+    pub(super) api: u32,
+    pub(super) name: String,
+    pub(super) entrypoint: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorkflowMountSpec {
+    #[serde(default)]
+    pub(super) file: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(super) enum WorkflowMount {
+    Table(WorkflowMountSpec),
+    String(PathBuf),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawSuiteManifest {
+    pub(super) suite: SuiteHeader,
+    #[serde(default)]
+    pub(super) workflows: BTreeMap<String, WorkflowMount>,
+    #[serde(default)]
+    pub(super) aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(super) styles: BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -439,6 +516,8 @@ pub(super) struct RawConfig {
 pub(super) struct Workflow {
     #[serde(default)]
     pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) entrypoint: Option<String>,
     #[serde(default)]
     pub(super) views: BTreeMap<String, View>,
     #[serde(default)]
@@ -451,6 +530,7 @@ pub(super) struct WorkflowHeader {
     #[serde(default = "default_workflow_api")]
     pub(super) api: u32,
     pub(super) name: String,
+    pub(super) entrypoint: String,
 }
 
 #[cfg(test)]

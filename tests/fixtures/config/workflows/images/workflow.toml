@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "images"
+entrypoint = "menu"
 
 [views.menu]
-alias = "images"
 
 [views.menu.engine]
 type = "picker"

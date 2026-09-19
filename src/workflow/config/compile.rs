@@ -10,18 +10,25 @@ use std::{
 };
 
 impl CompiledConfig {
+    #[allow(clippy::too_many_arguments)]
     fn build(
         views: BTreeMap<ViewRef, View>,
         workflows: BTreeMap<String, WorkflowMetadata>,
         defaults: Defaults,
         workflow_roots: BTreeMap<String, PathBuf>,
         parameter_registry: ParameterRegistry,
+        entrypoint: ViewRef,
+        aliases: BTreeMap<String, ViewRef>,
+        view_aliases: BTreeMap<ViewRef, String>,
     ) -> Result<Self> {
         Ok(Self {
-            default_view: None,
+            entrypoint: entrypoint.clone(),
+            default_view: Some(entrypoint),
             image_protocol: super::ImageProtocol::default(),
             log_file: None,
             commands: super::CommandConfig::default(),
+            aliases,
+            view_aliases,
             views,
             workflows,
             defaults,
@@ -46,12 +53,12 @@ impl CompiledConfig {
             })
             .collect::<Vec<_>>();
         let parameter_registry = ParameterRegistry::compile_view_queries(parameter_queries)?;
-        let default_view = raw.default_view;
         let mut views = BTreeMap::new();
         let mut workflows = BTreeMap::new();
         for (package_id, workflow) in raw.workflows {
             let metadata = WorkflowMetadata {
                 name: workflow.name.unwrap_or_else(|| package_id.clone()),
+                entrypoint: workflow.entrypoint,
                 styles: workflow.styles,
             };
             for (view_name, mut view) in workflow.views {
@@ -68,18 +75,63 @@ impl CompiledConfig {
             workflows.insert(package_id, metadata);
         }
         expand_feed_patterns(&mut views)?;
+
+        let aliases = raw.aliases;
+        let entrypoint = if let Some(ep) = raw.entrypoint.or(raw.default_view) {
+            if views.contains_key(&ep) {
+                ep
+            } else if let Some(target) = aliases.get(&ep) {
+                target.clone()
+            } else if !ep.contains(':') {
+                let matches: Vec<_> = views
+                    .keys()
+                    .filter(|k| k.split_once(':').is_some_and(|(_, v)| v == ep))
+                    .cloned()
+                    .collect();
+                if matches.len() == 1 {
+                    matches[0].clone()
+                } else {
+                    bail!("entrypoint {:?} cannot be resolved", ep);
+                }
+            } else {
+                bail!("entrypoint {:?} does not exist in configured views", ep);
+            }
+        } else if let Some((wf_id, wf_meta)) =
+            workflows.iter().find(|(id, _)| !id.starts_with("__"))
+            && let Some(ep) = &wf_meta.entrypoint
+        {
+            let view_ref = format!("{wf_id}:{ep}");
+            if views.contains_key(&view_ref) {
+                view_ref
+            } else {
+                views.keys().next().cloned().unwrap_or_default()
+            }
+        } else {
+            views
+                .keys()
+                .find(|k| !k.starts_with("__"))
+                .cloned()
+                .unwrap_or_else(|| views.keys().next().cloned().unwrap_or_default())
+        };
+
         let compiled = CompiledConfig::build(
             views,
             workflows,
             raw.defaults,
             workflow_roots,
             parameter_registry,
+            entrypoint,
+            aliases,
+            raw.view_aliases,
         )?;
         Ok(Self {
-            default_view,
+            entrypoint: compiled.entrypoint.clone(),
+            default_view: compiled.default_view.clone(),
             image_protocol: raw.image_protocol,
             log_file: raw.log_file,
             commands: raw.commands,
+            aliases: compiled.aliases,
+            view_aliases: compiled.view_aliases,
             views: compiled.views,
             workflows: compiled.workflows,
             defaults: compiled.defaults,

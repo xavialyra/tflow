@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "system"
+entrypoint = "main"
 
 [views.main]
-alias = "sys"
 
 [views.main.engine]
 type = "picker"

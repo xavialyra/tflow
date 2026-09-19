@@ -45,7 +45,7 @@ Full documentation is organized using the **Diátaxis** framework and structured
   - [Custom Themes](docs/how-to/custom-themes.md)
 - **[Technical Reference](docs/reference/index.md)**
   - [CLI Reference](docs/reference/cli.md)
-  - [config.toml Specification](docs/reference/config-toml.md)
+  - [settings.toml and Suite Specification](docs/reference/settings-toml.md)
   - [workflow.toml Specification](docs/reference/workflow-toml.md)
   - [Producer Protocol](docs/reference/producer-protocol.md)
 - **[Architecture & Concepts (Explanation)](docs/explanation/index.md)**

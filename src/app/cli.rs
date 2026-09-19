@@ -5,8 +5,6 @@ use crate::engine::EngineRegistry;
 use crate::lifecycle::SignalGuard;
 use crate::terminal::{ImageProtocol as TerminalImageProtocol, Terminal};
 use crate::ui::theme::{self, ThemeLoadOptions};
-#[cfg(test)]
-use crate::workflow::config::EngineConfigValidator;
 use crate::workflow::config::{CompiledConfig, ImageProtocol as ConfigImageProtocol};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -23,13 +21,17 @@ use std::path::{Path, PathBuf};
     about = "A generic TUI workflow host for View-based CLI workflows"
 )]
 struct Args {
-    /// Path to a TOML configuration file.
-    #[arg(short, long)]
-    config: Option<PathBuf>,
+    /// Path to a passive host settings file.
+    #[arg(short = 'c', long = "settings", alias = "config")]
+    settings: Option<PathBuf>,
 
-    /// Path to a workflow file or directory to run.
-    #[arg(short, long)]
+    /// Path to a workflow file or directory to run (or - for stdin).
+    #[arg(short = 'w', long = "workflow", conflicts_with = "suite")]
     workflow: Option<PathBuf>,
+
+    /// Path to a suite manifest to mount and run.
+    #[arg(short = 's', long = "suite", conflicts_with = "workflow")]
+    suite: Option<PathBuf>,
 
     /// Named or builtin theme; overrides the configured theme.
     #[arg(long, value_name = "NAME")]
@@ -88,10 +90,13 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     let exe = iter.next().unwrap();
 
     while let Some(arg) = iter.next() {
-        if arg == "--config"
+        if arg == "--settings"
+            || arg == "--config"
             || arg == "-c"
             || arg == "--workflow"
             || arg == "-w"
+            || arg == "--suite"
+            || arg == "-s"
             || arg == "--theme"
         {
             global_prefix.push(arg);
@@ -113,19 +118,24 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
 }
 
 impl CompiledConfig {
-    #[cfg(test)]
-    pub(crate) fn load(user_path: &Path) -> Result<Self> {
+    pub(crate) fn load_suite_app(
+        suite_path: &Path,
+        settings_path: Option<&Path>,
+        options: &ThemeLoadOptions,
+    ) -> Result<LoadedApp> {
         let engines = EngineRegistry::new();
-        Self::load_with_engines(user_path, &engines)
-    }
-
-    pub(crate) fn load_app(user_path: &Path, options: &ThemeLoadOptions) -> Result<LoadedApp> {
-        let engines = EngineRegistry::new();
-        let loaded = Self::load_unvalidated(user_path)?;
-        let mut theme = theme::load(user_path, loaded.theme_selector(), options)?;
+        let loaded = Self::load_suite_unvalidated(suite_path, settings_path)?;
+        let theme_base = loaded.settings_file.as_deref().unwrap_or(suite_path);
+        let mut theme = theme::load(theme_base, loaded.theme_selector(), options)?;
+        let suite_styles = loaded.suite_styles().clone();
+        let settings_styles = loaded.settings_styles().clone();
         let config = loaded.compile()?;
         config.validate_with_engines(&engines)?;
-        theme.register_all_workflow_defaults(config.workflows())?;
+        theme.register_all_workflow_defaults_with_overrides(
+            config.workflows(),
+            &suite_styles,
+            &settings_styles,
+        )?;
         Ok(LoadedApp {
             config: std::sync::Arc::new(config),
             theme,
@@ -134,57 +144,92 @@ impl CompiledConfig {
 
     pub(crate) fn load_workflow_app(
         workflow_path: &Path,
-        config_path: Option<&Path>,
+        settings_path: Option<&Path>,
         options: &ThemeLoadOptions,
     ) -> Result<LoadedApp> {
         let engines = EngineRegistry::new();
-        let loaded = Self::load_workflow_unvalidated(workflow_path, config_path)?;
-        let theme_base = config_path.unwrap_or(workflow_path);
+        let loaded = Self::load_workflow_unvalidated(workflow_path, settings_path)?;
+        let theme_base = loaded.settings_file.as_deref().unwrap_or(workflow_path);
         let mut theme = theme::load(theme_base, loaded.theme_selector(), options)?;
+        let suite_styles = loaded.suite_styles().clone();
+        let settings_styles = loaded.settings_styles().clone();
         let config = loaded.compile()?;
         config.validate_with_engines(&engines)?;
-        theme.register_all_workflow_defaults(config.workflows())?;
+        theme.register_all_workflow_defaults_with_overrides(
+            config.workflows(),
+            &suite_styles,
+            &settings_styles,
+        )?;
         Ok(LoadedApp {
             config: std::sync::Arc::new(config),
             theme,
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn load_with_engines<V>(user_path: &Path, engines: &V) -> Result<Self>
-    where
-        V: EngineConfigValidator,
-    {
-        let loaded = Self::load_unvalidated(user_path)?;
-        let mut theme = theme::load(
-            user_path,
-            loaded.theme_selector(),
-            &ThemeLoadOptions::default(),
-        )?;
+    pub(crate) fn load_workflow_from_str(
+        source: &str,
+        workflow_id: &str,
+        settings_path: Option<&Path>,
+        options: &ThemeLoadOptions,
+    ) -> Result<LoadedApp> {
+        let engines = EngineRegistry::new();
+        let loaded = Self::load_workflow_from_str_unvalidated(source, workflow_id, settings_path)?;
+        let fallback_path = loaded
+            .settings_file
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."));
+        let mut theme = theme::load(fallback_path, loaded.theme_selector(), options)?;
+        let suite_styles = loaded.suite_styles().clone();
+        let settings_styles = loaded.settings_styles().clone();
         let config = loaded.compile()?;
-        theme.register_all_workflow_defaults(config.workflows())?;
-        config.validate_with_engines(engines)?;
-        Ok(config)
+        config.validate_with_engines(&engines)?;
+        theme.register_all_workflow_defaults_with_overrides(
+            config.workflows(),
+            &suite_styles,
+            &settings_styles,
+        )?;
+        Ok(LoadedApp {
+            config: std::sync::Arc::new(config),
+            theme,
+        })
     }
 }
 
 pub(crate) fn run() -> Result<i32> {
     let cli_args = effective_cli_args();
     let args = Args::parse_from(cli_args);
-    let explicit_config = args.config.is_some();
-    let config_path = args.config.clone().unwrap_or_else(default_config_path);
+    let settings_path = args.settings.as_deref();
     let selector = args.theme.map(theme::cli_named_theme);
     let theme_options = ThemeLoadOptions { selector };
 
-    let loaded = if let Some(workflow_path) = &args.workflow {
-        let optional_config = if explicit_config || config_path.is_file() {
-            Some(config_path.as_path())
-        } else {
-            None
-        };
-        CompiledConfig::load_workflow_app(workflow_path, optional_config, &theme_options)?
+    let is_stdin_workflow = args.workflow.as_ref().is_some_and(|p| p == Path::new("-"));
+    let mut streamed_stdin_source = None;
+    if is_stdin_workflow {
+        use std::io::Read;
+        let mut source = String::new();
+        io::stdin()
+            .read_to_string(&mut source)
+            .context("could not read workflow from stdin")?;
+        streamed_stdin_source = Some(source);
+    }
+
+    let (loaded, target_display) = if let Some(source) = streamed_stdin_source {
+        let app =
+            CompiledConfig::load_workflow_from_str(&source, "main", settings_path, &theme_options)?;
+        (app, "<stdin>".to_string())
+    } else if let Some(workflow_path) = &args.workflow {
+        let app = CompiledConfig::load_workflow_app(workflow_path, settings_path, &theme_options)?;
+        let display = workflow_path.display().to_string();
+        (app, display)
+    } else if let Some(suite_path) = &args.suite {
+        let app = CompiledConfig::load_suite_app(suite_path, settings_path, &theme_options)?;
+        let display = suite_path.display().to_string();
+        (app, display)
     } else {
-        CompiledConfig::load_app(&config_path, &theme_options)?
+        let default_suite = default_suite_path()?;
+        let app = CompiledConfig::load_suite_app(&default_suite, settings_path, &theme_options)?;
+        let display = default_suite.display().to_string();
+        (app, display)
     };
     let config = loaded.config;
     let image_protocol = match config.image_protocol {
@@ -203,11 +248,6 @@ pub(crate) fn run() -> Result<i32> {
         if args.inspect.is_some() || args.all {
             bail!("--check cannot be combined with inspection options");
         }
-        let target_display = if let Some(wf) = &args.workflow {
-            wf.display().to_string()
-        } else {
-            config_path.display().to_string()
-        };
         println!("configuration is valid: {target_display}");
         return Ok(0);
     }
@@ -224,7 +264,7 @@ pub(crate) fn run() -> Result<i32> {
             }
             let views = config
                 .iter_public_views()
-                .map(|(view_ref, view)| view_contract(view_ref, view))
+                .map(|(view_ref, view)| view_contract(&config, view_ref, view))
                 .collect::<Vec<_>>();
             let output = serde_json::json!({ "views": views });
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -247,20 +287,24 @@ pub(crate) fn run() -> Result<i32> {
         let view = config.view(&view_ref).context("view disappeared")?;
         println!(
             "{}",
-            serde_json::to_string_pretty(&view_contract(&view_ref, view))?
+            serde_json::to_string_pretty(&view_contract(&config, &view_ref, view))?
         );
         return Ok(0);
     }
 
     let explicit_view = args.view.is_some();
-    let root_view = if args.workflow.is_some() {
-        resolve_workflow_root_view(&config, args.view.as_deref())?
+    let root_view = if let Some(target) = args.view.as_deref() {
+        config.resolve_view(target)?
     } else {
-        resolve_global_root_view(&config, args.view.as_deref())?
+        config.entrypoint.clone()
     };
     let mut parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
     config.sanitize_initial_parameter_values(&mut parameters)?;
-    let input = InputArtifact::capture()?;
+    let input = if is_stdin_workflow {
+        InputArtifact::empty()
+    } else {
+        InputArtifact::capture()?
+    };
     let invocation = std::sync::Arc::new(crate::workflow::InvocationContext::new(
         root_view.clone(),
         input.value(),
@@ -380,10 +424,14 @@ pub(crate) fn run() -> Result<i32> {
     Ok(result.exit_code)
 }
 
-fn view_contract(view_ref: &str, view: &crate::workflow::config::View) -> serde_json::Value {
+fn view_contract(
+    config: &CompiledConfig,
+    view_ref: &str,
+    view: &crate::workflow::config::View,
+) -> serde_json::Value {
     serde_json::json!({
         "view": view_ref,
-        "alias": view.alias,
+        "alias": config.alias_for_view(view_ref),
         "engine": view.selected_engine_type(),
         "query": view.query,
         "commands": view.commands.iter().map(|(id, cmd)| {
@@ -476,52 +524,17 @@ fn write_final_output(
     write_result
 }
 
-fn default_config_path() -> PathBuf {
-    if let Some(path) = env::var_os("TLAUNCH_CONFIG") {
-        return PathBuf::from(path);
+fn default_suite_path() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("TLAUNCH_SUITE") {
+        return Ok(PathBuf::from(path));
     }
     if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("tlaunch/config.toml");
+        return Ok(PathBuf::from(path).join("tlaunch/default.toml"));
     }
     if let Some(home) = env::var_os("HOME") {
-        return PathBuf::from(home).join(".config/tlaunch/config.toml");
+        return Ok(PathBuf::from(home).join(".config/tlaunch/default.toml"));
     }
-    PathBuf::from("config.toml")
-}
-
-fn resolve_workflow_root_view(config: &CompiledConfig, view_arg: Option<&str>) -> Result<String> {
-    if let Some(selector) = view_arg {
-        return config.resolve_view(selector);
-    }
-    if let Ok(main_view) = config.resolve_view("main") {
-        return Ok(main_view);
-    }
-    let public_views = config
-        .iter_public_views()
-        .map(|(r, _)| r.as_str())
-        .collect::<Vec<_>>();
-    if public_views.is_empty() {
-        bail!("no public views found in the specified workflow");
-    }
-    bail!(
-        "no default view with alias = \"main\" found in workflow; specify one of: {}",
-        public_views.join(", ")
-    );
-}
-
-fn resolve_global_root_view(config: &CompiledConfig, view_arg: Option<&str>) -> Result<String> {
-    if let Some(selector) = view_arg {
-        return config.resolve_view(selector);
-    }
-    if let Ok(main_view) = config.resolve_view("main") {
-        return Ok(main_view);
-    }
-    if let Some(default_view) = &config.default_view {
-        return config.resolve_view(default_view);
-    }
-    bail!(
-        "no default view found; define a view with alias = \"main\" or specify a View on the command line"
-    );
+    bail!("cannot locate default suite: set XDG_CONFIG_HOME or use -s <PATH>");
 }
 
 #[cfg(test)]

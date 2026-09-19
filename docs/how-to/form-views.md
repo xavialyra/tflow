@@ -19,27 +19,18 @@ Collect structured values in a native terminal form whose fields depend on launc
 From the repository root:
 
 ```sh
-cargo run -- --config tests/fixtures/native-form/config.toml
+cargo run -- --suite tests/fixtures/config/default.toml form:input
 ```
 
 Enter a project name, use Tab to move between fields, and press Enter to submit. Space toggles a boolean field; Ctrl+U clears the current field. Esc returns to the preserved draft.
 
-Run the object-parameter example:
+Run the form example with structured arguments:
 
 ```sh
-cargo run -- --config tests/fixtures/native-form/config.toml native-form:dynamic
+cargo run -- --suite tests/fixtures/config/default.toml form:input --environment=prod --enabled=false
 ```
 
-The View's fixed `spec` object parameter supplies content to its script. To provide different fields:
-
-```sh
-cargo run -- --config tests/fixtures/native-form/config.toml native-form:dynamic \
-  '--spec:={"fields":[{"name":"path","value":"/tmp"},{"name":"limit","type":"integer","value":20}]}'
-```
-
-The fixture also implements the compact string convention discussed below. From the main form, press Ctrl+T to open `a:string:dd,b:number:null`. Edit the fields, open the command menu with Ctrl+O, select **Submit string values**, and press Enter. The command returns typed values to the caller's return processor. Esc cancels without running the return processor.
-
-The runnable files are in [the native form fixture](../../tests/fixtures/native-form/workflows/native-form/workflow.toml).
+The runnable files are in [the form fixture](../../tests/fixtures/config/workflows/form/workflow.toml).
 
 ## Generate Content from a Fixed Query
 

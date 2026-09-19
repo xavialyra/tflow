@@ -16,6 +16,7 @@ description: "Authoritative reference for tlaunch command-line options, environm
 ```text
 tlaunch [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
 tlaunch -w <WORKFLOW_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
+tlaunch -s <SUITE_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
 tlaunch inspect <VIEW>
 tlaunch inspect --all
 ```
@@ -26,8 +27,9 @@ Global options must precede the target view selector.
 
 | Option | Environment Variable | Description |
 | :--- | :--- | :--- |
-| `-c, --config <PATH>` | `TLAUNCH_CONFIG` | Path to the root `config.toml`. Overrides default search paths. |
-| `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Runs in isolated mode without requiring a global `config.toml`. |
+| `-c, --settings <PATH>` | `TLAUNCH_SETTINGS` | Passive host settings; `--config` is an alias for this flag. |
+| `-s, --suite <PATH>` | `TLAUNCH_SUITE` | Explicit suite manifest; mutually exclusive with `-w`. |
+| `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Uses its local entrypoint and inherits host settings. `-` reads a workflow from stdin. |
 | `--theme <THEME>` | — | Explicit theme selector (`terminal` or custom name). Overrides configured theme. |
 | `--check` | — | Validates the configuration files and workflow manifests without launching the interactive TUI. Returns non-zero on error. |
 | `--inspect <VIEW>` | — | Prints view contract details (alias, engine, queries, commands) and exits. |
@@ -37,14 +39,14 @@ Global options must precede the target view selector.
 
 ## Configuration Search Precedence
 
-The launcher resolves the active configuration file in the following order:
+Settings resolve from `--settings`, then `TLAUNCH_SETTINGS`, then
+`$XDG_CONFIG_HOME/tlaunch/settings.toml` (or `$HOME/.config/tlaunch/settings.toml`
+when XDG_CONFIG_HOME is unset). Absent default settings use built-in defaults.
 
-1. `--config PATH` argument.
-2. `TLAUNCH_CONFIG` environment variable (can point to a `.toml` file or a configuration directory).
-3. `$XDG_CONFIG_HOME/tlaunch/config.toml`.
-4. `$HOME/.config/tlaunch/config.toml`.
-
-When `-w, --workflow <PATH>` is passed without an explicit `--config` and no global `config.toml` exists on disk, `tlaunch` automatically falls back to an in-memory zero-configuration base (default terminal theme and keybindings).
+Without `-w` or `-s`, the launcher loads `TLAUNCH_SUITE` when set, otherwise
+`$XDG_CONFIG_HOME/tlaunch/default.toml` (or `$HOME/.config/tlaunch/default.toml`).
+Workflow directories are never scanned for implicit membership. Suite manifests
+explicitly mount their members; suites cannot mount suites.
 
 ## Isolated Workflow Execution (`-w, --workflow`)
 
@@ -57,18 +59,18 @@ The `-w, --workflow <PATH>` option allows executing an isolated workflow directl
    - The workflow root is set to the directory containing the `.toml` file.
    - Scripts referenced by relative paths in the manifest are resolved relative to this directory.
 2. **Directory workflow package**:
-   - Points to a directory containing a `workflow.toml` (single workflow package) or a collection of workflow subdirectories.
+   - Points to a directory containing a `workflow.toml` for one atomic workflow.
    - Sets `WORKFLOW_DIR` to the package directory.
 
 ### Entry Point Resolution in Workflow Mode
 
-When invoked with `-w <PATH>`:
-- If a specific `[VIEW]` selector is provided (e.g. `tlaunch -w ./tool.toml search`), that view is resolved directly.
-- If no `[VIEW]` selector is provided, `tlaunch` looks for a view declared with `alias = "main"`.
-- If no view with `alias = "main"` is declared and no view argument is supplied, `tlaunch` fails gracefully with a list of available views to choose from:
-  ```text
-  Error: no default view with alias = "main" found in workflow; specify one of: view1, view2
-  ```
+An explicit view selector overrides `[workflow].entrypoint`. Without a selector,
+the required workflow-local `entrypoint` names the initial view. Workflow views
+cannot declare aliases; suites own `[aliases]` and member shorthand routes.
+
+`-w` rejects suite manifests and `-s` rejects atomic workflows, with a corrective
+flag hint. `-w -` reads TOML into memory; interactive rendering and keyboard input
+use `/dev/tty`. Invocation results go to stdout.
 
 ### Shebang / Executable Script Integration
 
@@ -79,9 +81,7 @@ Single-file workflows can be made directly executable by adding a `tlaunch -w` S
 [workflow]
 api = 1
 name = "quick-picker"
-
-[views.main]
-alias = "main"
+entrypoint = "main"
 
 [views.main.engine]
 type = "picker"
@@ -101,7 +101,7 @@ Producer scripts receive query, selection, command, and return data as their doc
 
 ## Direct View Invocation
 
-By default (when run without arguments), `tlaunch` resolves the view declared with `alias = "main"`. If no view declares `alias = "main"`, it falls back to the legacy `default_view` setting in `config.toml`.
+Without an explicit view, suite execution uses `[suite].entrypoint`. A member key resolves to that member’s workflow entrypoint. Explicit aliases are declared in the suite’s `[aliases]` table.
 
 You can also open a specific view directly:
 

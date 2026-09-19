@@ -204,8 +204,41 @@ fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
 
 #[test]
 fn preview_fixture_script_roundtrip_decodes_its_workflow_relative_image() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/preview/workflows/library");
+    let root =
+        std::env::temp_dir().join(format!("tlaunch-preview-roundtrip-{}", std::process::id()));
+    let scripts = root.join("scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    image::DynamicImage::new_rgb8(2, 2)
+        .save(root.join("art.png"))
+        .unwrap();
+    std::fs::write(
+        scripts.join("preview.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = request["context"]["engine"]["state"]["item"]
+preview = {
+    "type": "layout",
+    "direction": "horizontal",
+    "children": [
+        {"type": "image", "path": item["metadata"]["image"]},
+        {"type": "paragraph", "text": item["metadata"]["summary"]},
+    ],
+}
+json.dump({"version": 1, "preview": preview}, sys.stdout)
+sys.stdout.write("\n")
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            scripts.join("preview.py"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
     let source = parse_source(
         json!({"producer":"script","handler":{"file":"scripts/preview.py"}}),
         Some(&root),
@@ -215,7 +248,7 @@ fn preview_fixture_script_roundtrip_decodes_its_workflow_relative_image() {
         source,
         json!({"summary":"Fixture roundtrip", "image":"art.png"}),
     );
-    request.root = Some(root);
+    request.root = Some(root.clone());
     request.request["context"]["parameters"]["owner"] = json!("library");
     let (tasks, starter) = runtime();
     let mut preview = preview();
@@ -240,6 +273,7 @@ fn preview_fixture_script_roundtrip_decodes_its_workflow_relative_image() {
     ));
     preview.deactivate();
     tasks.shutdown_and_wait();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

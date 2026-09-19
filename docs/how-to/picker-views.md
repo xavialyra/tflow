@@ -159,11 +159,11 @@ For fixed content, replace the preview source with `preview = { producer = "decl
 
 For an aggregate page, omit its `preview` field to use the selected feed's provider, falling back to built-in details when the feed has no provider. Preview sizing is controlled by `preview_ratio` and `preview_min_width`; the pane starts collapsed unless `preview_default_open = true`. Add an explicit page provider to override the content. For scripts and declared documents, the selected provider's workflow supplies its parameters, relative script/image paths, and custom styles. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for declared documents and nested layouts.
 
-Run the complete mixed text/image fixture from the repository root:
+Run the preview example from the repository root:
 
 ```sh
-cargo run -- --config tests/fixtures/preview/config.toml --check
-cargo run -- --config tests/fixtures/preview/config.toml
+cargo run -- --suite tests/fixtures/config/default.toml --check
+cargo run -- --suite tests/fixtures/config/default.toml images:menu
 ```
 
 Press `Ctrl+P` and select **Mixed preview** to see display rows, rich wrapped text, an image, and scrollable content. Select **Empty preview** to exercise a null response. The fixture's `browser:override` View demonstrates a page-owned provider and `browser:declared` demonstrates a static document.

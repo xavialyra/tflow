@@ -297,18 +297,104 @@ pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
     let workflows = config
         .as_table_mut()
         .and_then(|table| table.remove("workflows"));
-    let Some(workflows) = workflows else {
-        return fs::write(path, toml::to_string(&config).map_err(io::Error::other)?);
-    };
-    let toml::Value::Table(workflows) = workflows else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "test workflows must be a TOML table",
-        ));
-    };
+
     let config_root = path.parent().unwrap_or_else(|| Path::new("."));
-    for (workflow_id, workflow) in workflows {
-        materialize_test_workflow(config_root, &workflow_id, workflow)?;
+    let mut suite_aliases = BTreeMap::new();
+    let mut mounted_workflows = BTreeMap::new();
+
+    if let Some(table) = config.as_table()
+        && let Some(aliases_val) = table.get("aliases").and_then(toml::Value::as_table)
+    {
+        for (k, v) in aliases_val {
+            if let Some(target) = v.as_str() {
+                suite_aliases.insert(k.clone(), target.to_string());
+            }
+        }
+    }
+
+    let default_view_str = config
+        .as_table()
+        .and_then(|t| t.get("default_view").and_then(toml::Value::as_str))
+        .map(str::to_string);
+
+    if let Some(toml::Value::Table(workflows)) = workflows {
+        for (workflow_id, workflow) in workflows {
+            let aliases = materialize_test_workflow(
+                config_root,
+                &workflow_id,
+                workflow,
+                default_view_str.as_deref(),
+            )?;
+            for (alias, target) in aliases {
+                suite_aliases.insert(alias, target);
+            }
+            let mut m = toml::map::Map::new();
+            m.insert(
+                "dir".to_string(),
+                toml::Value::String(format!("./workflows/{workflow_id}")),
+            );
+            mounted_workflows.insert(workflow_id.clone(), toml::Value::Table(m));
+        }
+    }
+
+    // Now turn config into a valid suite manifest if it has default_view or workflows
+    if let Some(table) = config.as_table_mut() {
+        if let Some(dv) = table.remove("default_view") {
+            let dv_str = dv.as_str().unwrap_or("core:default").to_string();
+            let mut suite_header = toml::map::Map::new();
+            suite_header.insert("api".to_string(), toml::Value::Integer(1));
+            suite_header.insert(
+                "name".to_string(),
+                toml::Value::String("Test Suite".to_string()),
+            );
+            suite_header.insert("entrypoint".to_string(), toml::Value::String(dv_str));
+            table.insert("suite".to_string(), toml::Value::Table(suite_header));
+        } else if !mounted_workflows.is_empty() && !table.contains_key("suite") {
+            let mut suite_header = toml::map::Map::new();
+            suite_header.insert("api".to_string(), toml::Value::Integer(1));
+            suite_header.insert(
+                "name".to_string(),
+                toml::Value::String("Test Suite".to_string()),
+            );
+            let first_entry = mounted_workflows
+                .keys()
+                .next()
+                .map(|k| format!("{k}:main"))
+                .unwrap_or_else(|| "core:default".to_string());
+            suite_header.insert("entrypoint".to_string(), toml::Value::String(first_entry));
+            table.insert("suite".to_string(), toml::Value::Table(suite_header));
+        }
+
+        if !mounted_workflows.is_empty() {
+            table.insert(
+                "workflows".to_string(),
+                toml::Value::Table(mounted_workflows.into_iter().collect()),
+            );
+        }
+
+        if !suite_aliases.is_empty() {
+            let mut aliases_table = table
+                .remove("aliases")
+                .and_then(|v| v.as_table().cloned())
+                .unwrap_or_default();
+            for (k, v) in suite_aliases {
+                aliases_table.insert(k, toml::Value::String(v));
+            }
+            table.insert("aliases".to_string(), toml::Value::Table(aliases_table));
+        }
+    }
+
+    let mut settings = toml::Table::new();
+    for key in ["image_protocol", "log_file", "defaults"] {
+        if let Some(value) = config.as_table_mut().unwrap().remove(key) {
+            settings.insert(key.to_string(), value);
+        }
+    }
+    if !settings.is_empty() {
+        fs::write(
+            config_root.join("settings.toml"),
+            toml::to_string(&settings).map_err(io::Error::other)?,
+        )?;
     }
     let config_source = toml::to_string(&config).map_err(io::Error::other)?;
     fs::write(path, config_source)
@@ -318,7 +404,8 @@ fn materialize_test_workflow(
     config_root: &Path,
     workflow_id: &str,
     workflow: toml::Value,
-) -> io::Result<()> {
+    default_view_hint: Option<&str>,
+) -> io::Result<Vec<(String, String)>> {
     let toml::Value::Table(workflow) = workflow else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -341,6 +428,46 @@ fn materialize_test_workflow(
             format!("test workflow manifest {manifest_path:?} must be a TOML table"),
         )
     })?;
+    if let Some(commands) = workflow.get("commands") {
+        manifest_table.insert("commands".into(), commands.clone());
+    }
+    let views = workflow
+        .get("views")
+        .cloned()
+        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+    let manifest_views = manifest_table
+        .entry("views".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    merge_test_values(manifest_views, views);
+
+    let mut collected_aliases = Vec::new();
+    let mut first_view_name = None;
+    let mut matched_entrypoint = None;
+
+    if let Some(views_table) = manifest_views.as_table_mut() {
+        for (view_name, view_val) in views_table.iter_mut() {
+            if first_view_name.is_none() {
+                first_view_name = Some(view_name.clone());
+            }
+            if let Some(hint) = default_view_hint
+                && (hint == format!("{workflow_id}:{view_name}") || hint == view_name.as_str())
+            {
+                matched_entrypoint = Some(view_name.clone());
+            }
+            if let Some(view_tbl) = view_val.as_table_mut()
+                && let Some(alias_val) = view_tbl.remove("alias")
+                && let Some(alias_str) = alias_val.as_str()
+            {
+                collected_aliases
+                    .push((alias_str.to_string(), format!("{workflow_id}:{view_name}")));
+            }
+        }
+    }
+
+    let entrypoint = matched_entrypoint
+        .or(first_view_name)
+        .unwrap_or_else(|| "main".to_string());
+
     let header = manifest_table
         .entry("workflow".to_string())
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
@@ -360,18 +487,11 @@ fn materialize_test_workflow(
             .entry("name".to_string())
             .or_insert_with(|| toml::Value::String(workflow_id.to_string()));
     }
-
-    let views = workflow
-        .get("views")
-        .cloned()
-        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
-    let manifest_views = manifest_table
-        .entry("views".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    merge_test_values(manifest_views, views);
+    header.insert("entrypoint".to_string(), toml::Value::String(entrypoint));
 
     let manifest_source = toml::to_string(&manifest).map_err(io::Error::other)?;
-    fs::write(manifest_path, manifest_source)
+    fs::write(manifest_path, manifest_source)?;
+    Ok(collected_aliases)
 }
 
 fn merge_test_values(base: &mut toml::Value, overlay: toml::Value) {
@@ -403,7 +523,7 @@ pub fn run_dmenu_steps(extra_args: &[&str], input: &[u8], key_steps: &[&[u8]]) -
     let _guard = lock_dmenu_tests();
     let config = fixture_config();
     let config = config.to_str().expect("fixture config path is not UTF-8");
-    let mut args = vec!["--config", config, "dmenu:main"];
+    let mut args = vec!["--suite", config, "dmenu:main"];
     args.extend_from_slice(extra_args);
     run_invocation_steps(&args, input, key_steps)
 }
@@ -422,7 +542,7 @@ pub fn run_dmenu_steps_waiting_for_text(
     let _guard = lock_dmenu_tests();
     let config = fixture_config();
     let config = config.to_str().expect("fixture config path is not UTF-8");
-    let mut args = vec!["--config", config, "dmenu:main"];
+    let mut args = vec!["--suite", config, "dmenu:main"];
     args.extend_from_slice(extra_args);
 
     let mut process = spawn(&args);
@@ -460,7 +580,7 @@ pub fn run_tty_dmenu(keys: &[u8]) -> RunResult {
     let _guard = lock_dmenu_tests();
     let config = fixture_config();
     let config = config.to_str().expect("fixture config path is not UTF-8");
-    run_tty_invocation_with_redirected_stdout(&["--config", config, "dmenu:main"], keys)
+    run_tty_invocation_with_redirected_stdout(&["--suite", config, "dmenu:main"], keys)
 }
 
 pub fn run_invocation(args: &[&str], input: &[u8], keys: &[u8]) -> RunResult {
@@ -558,9 +678,14 @@ pub fn spawn_launcher_with_args_and_env(
     let binary = binary_path();
     let mut arguments = vec![
         binary.to_string_lossy().into_owned(),
-        "--config".to_string(),
+        "--suite".to_string(),
         config.to_string_lossy().into_owned(),
     ];
+    let settings = config.with_file_name("settings.toml");
+    if settings.is_file() {
+        arguments.push("--settings".to_string());
+        arguments.push(settings.to_string_lossy().into_owned());
+    }
     arguments.extend(extra_args.iter().map(|argument| (*argument).to_string()));
     let prepared = prepare_exec(arguments, environment);
     let state_home = prepared.state_home.clone();
@@ -622,9 +747,14 @@ pub fn spawn_launcher_with_args_and_redirected_stdout(
     let binary = binary_path();
     let mut arguments = vec![
         binary.to_string_lossy().into_owned(),
-        "--config".to_string(),
+        "--suite".to_string(),
         config.to_string_lossy().into_owned(),
     ];
+    let settings = config.with_file_name("settings.toml");
+    if settings.is_file() {
+        arguments.push("--settings".to_string());
+        arguments.push(settings.to_string_lossy().into_owned());
+    }
     arguments.extend(extra_args.iter().map(|argument| (*argument).to_string()));
     let prepared = prepare_exec(arguments, &[]);
     let state_home = prepared.state_home.clone();
@@ -1209,7 +1339,7 @@ pub fn binary_path() -> PathBuf {
 }
 
 pub fn fixture_config() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/default.toml")
 }
 
 pub fn quick_picker_fixture() -> PathBuf {

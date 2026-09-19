@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "applications"
+entrypoint = "main"
 
 [views.main]
-alias = "app"
 
 [views.main.engine]
 type = "picker"

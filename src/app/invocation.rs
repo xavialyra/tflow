@@ -19,6 +19,14 @@ pub(crate) struct InputArtifact {
 }
 
 impl InputArtifact {
+    pub(crate) fn empty() -> Self {
+        Self {
+            path: None,
+            length: 0,
+            is_tty: false,
+        }
+    }
+
     pub(crate) fn capture() -> Result<Self> {
         let is_tty = unsafe { libc::isatty(io::stdin().as_raw_fd()) } == 1;
         if is_tty {

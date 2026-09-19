@@ -35,7 +35,7 @@ impl Router {
             .iter_views()
             .map(|(view_ref, _)| view_ref.clone())
             .collect::<BTreeSet<_>>();
-        let mut aliases = BTreeMap::<String, ViewRef>::new();
+        let aliases = config.aliases().clone();
         let mut display = BTreeMap::new();
         let mut candidates = Vec::with_capacity(config.view_count());
         for (view_ref, view) in config.iter_public_views() {
@@ -47,19 +47,17 @@ impl Router {
                 .workflow_display_name(workflow)
                 .unwrap_or(workflow)
                 .to_string();
-            if let Some(alias) = &view.alias {
-                aliases.insert(alias.clone(), view_ref.clone());
-            }
+            let alias = config.alias_for_view(view_ref).map(str::to_string);
             display.insert(
                 view_ref.clone(),
                 RouteDisplay {
                     view_ref: view_ref.clone(),
-                    alias: view.alias.clone(),
+                    alias: alias.clone(),
                 },
             );
             candidates.push(ViewCandidate {
                 view_ref: view_ref.clone(),
-                alias: view.alias.clone(),
+                alias,
                 workflow_name,
                 engine_type: view.selected_engine_type().to_string(),
             });
@@ -78,7 +76,19 @@ impl Router {
             return (valid_view_ref(selector) && self.views.contains(selector))
                 .then(|| selector.to_string());
         }
-        self.aliases.get(selector).cloned()
+        if let Some(target) = self.aliases.get(selector) {
+            return Some(target.clone());
+        }
+        let matches: Vec<_> = self
+            .views
+            .iter()
+            .filter(|k| k.split_once(':').is_some_and(|(_, v)| v == selector))
+            .cloned()
+            .collect();
+        if matches.len() == 1 {
+            return Some(matches[0].clone());
+        }
+        None
     }
 
     pub(crate) fn complete_views(&self, query: &str, current_view_ref: &str) -> Vec<ViewCandidate> {
@@ -206,7 +216,7 @@ mod tests {
         assert_eq!(aliased.alias.as_deref(), Some("sys"));
         assert_eq!(aliased.label(), "sys");
         let canonical = router.display("core:default");
-        assert_eq!(canonical.alias, None);
-        assert_eq!(canonical.label(), "core:default");
+        assert_eq!(canonical.alias.as_deref(), Some("core"));
+        assert_eq!(canonical.label(), "core");
     }
 }

@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "Clipboard History"
+entrypoint = "default"
 
 [styles.history_icon]
 foreground = "scheme:accent"
@@ -11,7 +12,6 @@ foreground = "scheme:accent"
 bold = true
 
 [views.default]
-alias = "clipboard"
 
 [views.default.engine]
 type = "picker"

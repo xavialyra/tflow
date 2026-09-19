@@ -2,9 +2,9 @@
 [workflow]
 api = 1
 name = "quick-picker"
+entrypoint = "main"
 
 [views.main]
-alias = "main"
 
 [views.main.query]
 type = "object"

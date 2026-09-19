@@ -864,13 +864,9 @@ mod preview_provider_tests {
 
     #[test]
     fn preview_uses_raw_route_input_with_object_parameters_and_stays_suspended_in_background() {
-        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/preview/config.toml"),
-        )
-        .unwrap()
-        .compile()
-        .unwrap();
+        let temp =
+            std::env::temp_dir().join(format!("tlaunch-session-preview-1-{}", std::process::id()));
+        let config = crate::engine::picker::create_preview_test_suite(&temp);
         let tasks = TaskRuntime::new();
         let mount = crate::input::ViewMountId(1001);
         let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount));
@@ -969,17 +965,14 @@ mod preview_provider_tests {
         assert!(picker.preview.prepared_request().is_none());
         picker.deactivate();
         tasks.shutdown_and_wait();
+        std::fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
     fn preview_feed_owner_and_page_override_keep_parameters_input_and_paths_in_owner_workflow() {
-        let config = crate::workflow::config::CompiledConfig::load_unvalidated(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/preview/config.toml"),
-        )
-        .unwrap()
-        .compile()
-        .unwrap();
+        let temp =
+            std::env::temp_dir().join(format!("tlaunch-session-preview-2-{}", std::process::id()));
+        let config = crate::engine::picker::create_preview_test_suite(&temp);
         let engines = crate::engine::EngineRegistry::new();
         config.validate_with_engines(&engines).unwrap();
         let tasks = TaskRuntime::new();
@@ -1132,5 +1125,6 @@ mod preview_provider_tests {
             assert!(picker.preview.prepared_request().is_none());
         }
         tasks.shutdown_and_wait();
+        std::fs::remove_dir_all(temp).unwrap();
     }
 }

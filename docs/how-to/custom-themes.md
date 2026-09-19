@@ -18,7 +18,7 @@ You want the launcher to match your terminal or desktop colors, with specific st
 
 ### 1. Create a Theme File
 
-Create `themes/nord.toml` beside your `config.toml` (normally under `~/.config/tlaunch/`):
+Create `themes/nord.toml` beside your `settings.toml` (normally under `~/.config/tlaunch/`):
 
 ```toml
 # themes/nord.toml
@@ -64,7 +64,7 @@ You can start with just `[scheme]` and one entry. The launcher merges your file 
 
 ### 2. Activate and Check the Theme
 
-Set the theme name in `config.toml`:
+Set the theme name in `settings.toml`:
 
 ```toml
 theme = "nord"

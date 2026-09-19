@@ -33,10 +33,13 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 /// Launch-specific data deliberately lives in `workflow::InvocationContext`.
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledConfig {
+    pub entrypoint: ViewRef,
     pub default_view: Option<ViewRef>,
     pub(crate) image_protocol: ImageProtocol,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) commands: CommandConfig,
+    pub(crate) aliases: BTreeMap<String, ViewRef>,
+    pub(crate) view_aliases: BTreeMap<ViewRef, String>,
     views: BTreeMap<ViewRef, View>,
     workflows: BTreeMap<String, WorkflowMetadata>,
     defaults: Defaults,
@@ -100,7 +103,7 @@ impl PickerItemsProjection {
             views.insert(
                 view_ref.clone(),
                 PickerItemsView {
-                    alias: view.alias.clone(),
+                    alias: config.alias_for_view(&view_ref).map(str::to_string),
                     feeds: view
                         .selected_feeds()
                         .iter()
@@ -308,12 +311,37 @@ impl CompiledConfig {
         if self.views.contains_key(selector) {
             return Ok(selector.to_string());
         }
-        for (view_ref, view) in &self.views {
-            if view.alias.as_deref() == Some(selector) {
-                return Ok(view_ref.clone());
+        if let Some(target) = self.aliases.get(selector) {
+            return Ok(target.clone());
+        }
+        if !selector.contains(':') {
+            let matches: Vec<_> = self
+                .views
+                .keys()
+                .filter(|k| k.split_once(':').is_some_and(|(_, v)| v == selector))
+                .cloned()
+                .collect();
+            if matches.len() == 1 {
+                return Ok(matches[0].clone());
             }
         }
-        bail!("unknown view {:?}", selector);
+        let mut available: Vec<&str> = self.aliases.keys().map(String::as_str).collect();
+        available.extend(self.iter_public_views().map(|(r, _)| r.as_str()));
+        available.sort();
+        available.dedup();
+        bail!(
+            "unknown view {:?}; available views: {}",
+            selector,
+            available.join(", ")
+        );
+    }
+
+    pub(crate) fn alias_for_view(&self, view_ref: &str) -> Option<&str> {
+        self.view_aliases.get(view_ref).map(String::as_str)
+    }
+
+    pub(crate) fn aliases(&self) -> &BTreeMap<String, ViewRef> {
+        &self.aliases
     }
 
     pub fn view_engine_type(&self, view_ref: &str) -> Result<&str> {
@@ -369,8 +397,13 @@ impl CompiledConfig {
 
 #[cfg(test)]
 pub(crate) fn load_test_fixture() -> Result<CompiledConfig> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml");
-    CompiledConfig::load(&path)
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/default.toml");
+    let settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/settings.toml");
+    let loaded = CompiledConfig::load_suite_unvalidated(&path, Some(&settings))?;
+    let config = loaded.compile()?;
+    let engines = crate::engine::EngineRegistry::new();
+    config.validate_with_engines(&engines)?;
+    Ok(config)
 }
 
 pub(crate) fn package_id(view_ref: &str) -> &str {

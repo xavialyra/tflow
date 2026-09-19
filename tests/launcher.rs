@@ -114,7 +114,7 @@ json.dump(
 __import__("sys").stdout.write("\n")
 "#,
     );
-    let args = ["--config", config.to_str().unwrap()];
+    let args = ["--suite", config.to_str().unwrap()];
     let result = run_tty_invocation_with_blocked_stdout_signal(&args, b"\r", libc::SIGTERM);
     assert_eq!(
         result.status,
@@ -186,13 +186,26 @@ fn signal_exit_terminates_capture_script_source() {
     let workflow = root.join("workflows/custom");
     let pid_file = root.join("capture.pid");
     fs::create_dir_all(workflow.join("scripts")).unwrap();
-    fs::write(&config, "default_view = \"custom:main\"\n").unwrap();
+    fs::write(
+        &config,
+        r#"
+        [suite]
+        api = 1
+        name = "custom"
+        entrypoint = "custom:main"
+
+        [workflows]
+        custom = { dir = "./workflows/custom" }
+        "#,
+    )
+    .unwrap();
     fs::write(
         workflow.join("workflow.toml"),
         r#"
         [workflow]
         api = 1
         name = "custom"
+        entrypoint = "main"
         [views.main.engine]
         type = "capture"
         [views.main.engine.config.output]
@@ -232,7 +245,13 @@ fn signal_exit_waits_for_items_worker_cleanup() {
     fs::write(
         &config,
         r#"
-        default_view = "custom:main"
+        [suite]
+        api = 1
+        name = "custom"
+        entrypoint = "custom:main"
+
+        [workflows]
+        custom = { dir = "./workflows/custom" }
         "#,
     )
     .unwrap();
@@ -242,6 +261,7 @@ fn signal_exit_waits_for_items_worker_cleanup() {
         [workflow]
         api = 1
         name = "custom"
+        entrypoint = "main"
         [views.main.engine]
         type = "picker"
         [views.main.engine.config.items]
@@ -1820,7 +1840,7 @@ sys.stdout.write("\n")
     .unwrap();
 
     let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "dynamic:main");
+    wait_for_text(&process.master, "dynamic");
     send_bytes(&mut process, b"\x07");
     wait_for_fresh_screen(&process.master, |screen| {
         let field_position = |label: &str| {
@@ -1886,7 +1906,7 @@ fn ctrl_g_builds_a_single_query_field_for_a_string_view() {
     .unwrap();
 
     let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "dynamic:main");
+    wait_for_text(&process.master, "dynamic");
     send_bytes(&mut process, b"initial");
     send_bytes(&mut process, b"\x07");
     wait_for_fresh_screen(&process.master, |screen| {
@@ -1962,9 +1982,6 @@ fn command_palette_opens_for_an_empty_aggregate_view() {
         &config,
         r#"
         default_view = "core:default"
-
-        [commands.bindings.commands]
-        key = "ctrl+k"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -2718,7 +2735,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
 }
 
 #[test]
-fn capture_keeps_session_commands_available() {
+fn capture_keeps_workflow_commands_available() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2729,7 +2746,7 @@ fn capture_keeps_session_commands_available() {
         [defaults.capture.bindings]
         copy = ["ctrl+y"]
 
-        [commands.bindings.details]
+        [workflows.core.commands.details]
         key = "ctrl+k"
         label = "Details"
         type = "call"
@@ -3024,7 +3041,8 @@ fn ctrl_k_in_embedded_view_displays_embedded_commands() {
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    wait_for_text(&process.master, "core:default");
+    // ADR5 displays the suite member shorthand alias in the picker footer.
+    wait_for_text(&process.master, "core");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -3433,5 +3451,35 @@ printf '{"version":1,"error":{"message":"Custom branch warning","level":"warning
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_sibling_route_reports_error_and_keeps_workflow_usable() {
+    let root = temporary_root();
+    let config = root.join("suite.toml");
+    write_test_config(
+        &config,
+        r#"
+default_view = "tool:main"
+[workflows.tool.views.main.engine]
+type = "picker"
+[workflows.tool.views.main.engine.config]
+items = [{display = "Still usable", value = "ok"}]
+[workflows.tool.views.main.commands.sibling]
+key = "ctrl+o"
+type = "navigate"
+producer = "declared"
+handler = {target = "missing:main"}
+"#,
+    )
+    .unwrap();
+    let mut process = spawn_launcher(&config);
+    wait_for_text(&process.master, "Still usable");
+    send_bytes(&mut process, b"\x0f");
+    wait_for_text(&process.master, "ERROR");
+    send_bytes(&mut process, b"\x03");
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "{}", String::from_utf8_lossy(&output));
     fs::remove_dir_all(root).unwrap();
 }

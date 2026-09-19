@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "Built-in Commands"
+entrypoint = "main"
 
 [views.main]
 

@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "echo"
+entrypoint = "main"
 
 [views.main]
-alias = "echo"
 
 [views.main.query]
 type = "object"

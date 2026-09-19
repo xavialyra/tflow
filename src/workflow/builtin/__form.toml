@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "Built-in Form"
+entrypoint = "main"
 
 [views.main]
 [views.main.engine]

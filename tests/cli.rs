@@ -15,7 +15,10 @@ fn check_rejects_unknown_root_plugins_field() {
     fs::write(
         &config,
         r#"
-        default_view = "unknown:main"
+        [suite]
+        api = 1
+        name = "Invalid plugins"
+        entrypoint = "unknown:main"
 
         [plugins.unknown.views.main.engine]
         type = "picker"
@@ -24,7 +27,7 @@ fn check_rejects_unknown_root_plugins_field() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate unknown root field");
@@ -51,6 +54,7 @@ fn check_rejects_unknown_workflow_manifest_fields() {
         [workflow]
         api = 1
         name = "Unknown"
+        entrypoint = "main"
 
         [views.main.engine]
         type = "picker"
@@ -62,8 +66,8 @@ fn check_rejects_unknown_workflow_manifest_fields() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
+        .args(["--check", "--workflow"])
+        .arg(&manifest)
         .output()
         .expect("could not validate workflow manifest");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -77,7 +81,7 @@ fn check_rejects_unknown_workflow_manifest_fields() {
 }
 
 #[test]
-fn check_rejects_builtin_session_command_action_overrides() {
+fn check_rejects_suite_command_registration() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -97,14 +101,13 @@ fn check_rejects_builtin_session_command_action_overrides() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate the session command override");
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("session command \"commands\" is built in; configure only its key"),
+        String::from_utf8_lossy(&output.stderr).contains("unknown field `commands`"),
         "stderr: {:?}",
         output.stderr
     );
@@ -132,8 +135,8 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
+        .args(["--check", "--workflow"])
+        .arg(manifest.parent().unwrap())
         .output()
         .expect("could not validate the reserved workflow ID");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -160,8 +163,8 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
     )
     .unwrap();
     let output2 = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
+        .args(["--check", "--workflow"])
+        .arg(&single_file)
         .output()
         .expect("could not validate single-file reserved workflow ID");
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
@@ -211,8 +214,10 @@ fn check_rejects_unknown_defaults_fields() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
+            .arg("--settings")
+            .arg(root.join("settings.toml"))
             .output()
             .expect("could not run tlaunch --check");
 
@@ -245,8 +250,10 @@ fn check_rejects_picker_binding_conflicts_with_defaults() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(root.join("settings.toml"))
         .output()
         .expect("could not run tlaunch --check");
 
@@ -279,8 +286,10 @@ fn check_rejects_capture_binding_conflicts_with_defaults() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(root.join("settings.toml"))
         .output()
         .expect("could not run tlaunch --check");
 
@@ -302,7 +311,7 @@ fn cli_theme_selection_does_not_require_an_existing_current_directory() {
             .current_dir(&current_dir)
             .args(["-c", "rmdir \"$PWD\" && exec \"$@\"", "tlaunch"])
             .arg(binary_path())
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(fixture_config())
             .args(["--theme", theme])
             .output()
@@ -334,7 +343,7 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
     .unwrap();
 
     let positional = launcher_command()
-        .arg("--config")
+        .arg("--suite")
         .arg(&config)
         .args(["core:default", "message"])
         .output()
@@ -345,7 +354,7 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
     );
 
     let unknown = launcher_command()
-        .arg("--config")
+        .arg("--suite")
         .arg(&config)
         .args(["core:default", "--unknown=value"])
         .output()
@@ -389,7 +398,7 @@ fn check_rejects_picker_preview_field_shape_mismatches() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not validate picker preview field shape");
@@ -453,7 +462,7 @@ fn check_validates_static_producer_sources_without_running_them() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate static producer sources");
@@ -497,7 +506,7 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
     std::fs::write(scripts.join("run.sh"), "printf 'ok\\n'\\n").unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate file-backed handler");
@@ -531,7 +540,7 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate inline run script");
@@ -575,7 +584,7 @@ fn check_rejects_invalid_run_handler_sources() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not validate run handler source");
@@ -611,7 +620,7 @@ fn check_rejects_unknown_run_command_args() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate unknown run arguments");
@@ -644,7 +653,7 @@ fn check_validates_static_return_handler_targets() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate return handler target");
@@ -680,7 +689,7 @@ fn check_validates_items_shape_before_runtime() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not validate items shape");
@@ -710,7 +719,7 @@ fn check_validates_items_shape_before_runtime() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not reject invalid items shape");
@@ -777,7 +786,7 @@ fn check_rejects_unknown_producer_fields() {
         .unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not validate producer fields");
@@ -810,7 +819,7 @@ fn check_accepts_inline_script_handlers() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
         .output()
         .expect("could not validate a literal script handler");
@@ -858,7 +867,7 @@ fn check_rejects_invalid_items_producers() {
         std::fs::write(scripts.join("items.sh"), "printf '[]\\n'\n").unwrap();
 
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
             .output()
             .expect("could not validate rejected items source");
@@ -880,10 +889,12 @@ fn check_rejects_invalid_items_producers() {
 fn check_loads_a_named_theme_from_the_config_directory() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let settings = root.join("settings.toml");
+    fs::write(&settings, r##"theme = "work""##).unwrap();
     write_test_config(
         &config,
         r#"
-        theme = "work"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -899,8 +910,10 @@ fn check_loads_a_named_theme_from_the_config_directory() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(&settings)
         .output()
         .expect("could not validate a named theme");
 
@@ -912,10 +925,12 @@ fn check_loads_a_named_theme_from_the_config_directory() {
 fn check_rejects_invalid_theme_colors_and_references() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let settings = root.join("settings.toml");
+    fs::write(&settings, r##"theme = "work""##).unwrap();
     write_test_config(
         &config,
         r#"
-        theme = "work"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -933,8 +948,10 @@ fn check_rejects_invalid_theme_colors_and_references() {
     ] {
         std::fs::write(root.join("themes/work.toml"), source).unwrap();
         let output = launcher_command()
-            .args(["--check", "--config"])
+            .args(["--check", "--suite"])
             .arg(&config)
+            .arg("--settings")
+            .arg(&settings)
             .output()
             .expect("could not validate theme");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -949,13 +966,21 @@ fn check_rejects_invalid_theme_colors_and_references() {
 fn check_rejects_an_inline_theme_value() {
     let root = temporary_root();
     let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r##"
-        [theme]
+    let settings = root.join("settings.toml");
+    fs::write(
+        &settings,
+        r##"        [theme]
         base = { foreground = "terminal", background = "#102030" }
         accent = { foreground = "cyan" }
         highlight = { foreground = "yellow", background = "blue", bold = true }
+
+"##,
+    )
+    .unwrap();
+    write_test_config(
+        &config,
+        r##"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -965,8 +990,10 @@ fn check_rejects_an_inline_theme_value() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(&settings)
         .output()
         .expect("could not validate an inline theme");
 
@@ -983,10 +1010,12 @@ fn check_rejects_an_inline_theme_value() {
 fn cli_theme_replaces_the_root_configuration() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let settings = root.join("settings.toml");
+    fs::write(&settings, r##"theme = "missing-root-theme""##).unwrap();
     write_test_config(
         &config,
         r#"
-        theme = "missing-root-theme"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -996,8 +1025,10 @@ fn cli_theme_replaces_the_root_configuration() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(&settings)
         .args(["--theme", "terminal"])
         .output()
         .expect("could not validate theme precedence");
@@ -1010,10 +1041,11 @@ fn cli_theme_replaces_the_root_configuration() {
 fn missing_theme_is_reported_during_startup() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let settings = root.join("settings.toml");
+    fs::write(&settings, r##"theme = "work""##).unwrap();
     write_test_config(
         &config,
         r#"
-        theme = "work"
         default_view = "core:default"
 
         [workflows.core.views.default]
@@ -1024,8 +1056,10 @@ fn missing_theme_is_reported_during_startup() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(&settings)
         .output()
         .expect("could not validate missing theme");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1043,10 +1077,12 @@ fn missing_theme_is_reported_during_startup() {
 fn missing_named_theme_reports_the_theme_path() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let settings = root.join("settings.toml");
+    fs::write(&settings, r##"theme = "work""##).unwrap();
     write_test_config(
         &config,
         r#"
-        theme = "work"
+        default_view = "core:default"
 
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
@@ -1056,8 +1092,10 @@ fn missing_named_theme_reports_the_theme_path() {
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
+        .args(["--check", "--suite"])
         .arg(&config)
+        .arg("--settings")
+        .arg(&settings)
         .output()
         .expect("could not validate a theme reference typo");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1088,6 +1126,7 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
         [workflow]
         api = 1
         name = "demo"
+        entrypoint = "main"
         [views.main.engine]
         type = "picker"
         [views.main.commands.run]
@@ -1100,8 +1139,8 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
     .unwrap();
 
     let output = launcher_command()
-        .args(["--check", "--config"])
-        .arg(&config)
+        .args(["--check", "--workflow"])
+        .arg(root.join("workflows/demo.toml"))
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {:?}", output.stderr);
@@ -1111,7 +1150,7 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
 #[test]
 fn single_file_workflow_fixture_inspect_and_query_mapping() {
     let inspect = launcher_command()
-        .args(["--config"])
+        .args(["--suite"])
         .arg(fixture_config())
         .args(["inspect", "echo"])
         .output()
@@ -1132,7 +1171,7 @@ fn single_file_workflow_fixture_inspect_and_query_mapping() {
 #[test]
 fn fixture_inspect_all_returns_sorted_view_contracts() {
     let inspect = launcher_command()
-        .args(["--config"])
+        .args(["--suite"])
         .arg(fixture_config())
         .args(["inspect", "--all"])
         .output()
@@ -1180,7 +1219,7 @@ fn fixture_inspect_all_returns_sorted_view_contracts() {
 #[test]
 fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
     let with_view = launcher_command()
-        .args(["--config"])
+        .args(["--suite"])
         .arg(fixture_config())
         .args(["inspect", "--all", "echo"])
         .output()
@@ -1189,7 +1228,7 @@ fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
     assert!(String::from_utf8_lossy(&with_view.stderr).contains("View argument"));
 
     let without_inspect = launcher_command()
-        .args(["--config"])
+        .args(["--suite"])
         .arg(fixture_config())
         .args(["--all"])
         .output()
@@ -1198,10 +1237,300 @@ fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
     assert!(String::from_utf8_lossy(&without_inspect.stderr).contains("requires `inspect`"));
 
     let with_check = launcher_command()
-        .args(["--check", "--all", "--config"])
+        .args(["--check", "--all", "--suite"])
         .arg(fixture_config())
         .output()
         .expect("could not run invalid check command");
     assert!(!with_check.status.success());
     assert!(String::from_utf8_lossy(&with_check.stderr).contains("inspection options"));
+}
+
+#[test]
+fn discovered_settings_resolve_themes_from_the_settings_directory() {
+    let root = temporary_root();
+    let settings_dir = root.join("xdg/tlaunch");
+    fs::create_dir_all(settings_dir.join("themes")).unwrap();
+    fs::write(settings_dir.join("settings.toml"), "theme = 'global'\n").unwrap();
+    fs::write(
+        settings_dir.join("themes/global.toml"),
+        "[scheme]\naccent = 'ansi:blue'\n",
+    )
+    .unwrap();
+    let workflow = root.join("tool.toml");
+    fs::write(&workflow, "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    let output = launcher_command()
+        .env_remove("TLAUNCH_SETTINGS")
+        .env("XDG_CONFIG_HOME", root.join("xdg"))
+        .args(["--check", "--workflow"])
+        .arg(&workflow)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(
+        settings_dir.join("settings.toml"),
+        "[suite]\nname = 'invalid settings'\n",
+    )
+    .unwrap();
+    let output = launcher_command()
+        .env_remove("TLAUNCH_SETTINGS")
+        .env("XDG_CONFIG_HOME", root.join("xdg"))
+        .args(["--check", "--workflow"])
+        .arg(&workflow)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("purity"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn manifest_dispatch_rejects_wrong_types_and_nested_suites() {
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    fs::write(&workflow, "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    let suite = root.join("suite.toml");
+    fs::write(&suite, "[suite]\napi = 1\nname = 'Suite'\nentrypoint = 'tool:main'\n[workflows]\ntool = { file = 'tool.toml' }\n").unwrap();
+    for (flag, path, tip) in [
+        ("--workflow", &suite, "use -s/--suite"),
+        ("--suite", &workflow, "use -w/--workflow"),
+    ] {
+        let output = launcher_command()
+            .args(["--check", flag])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(tip));
+    }
+    let outer = root.join("outer.toml");
+    fs::write(&outer, "[suite]\napi = 1\nname = 'Outer'\nentrypoint = 'nested:main'\n[workflows]\nnested = { file = 'suite.toml' }\n").unwrap();
+    let output = launcher_command()
+        .args(["--check", "--suite"])
+        .arg(&outer)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("suites cannot be nested"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn default_launch_uses_only_manifest_members() {
+    let root = temporary_root();
+    let config_dir = root.join("tlaunch");
+    fs::create_dir_all(config_dir.join("workflows")).unwrap();
+    fs::write(config_dir.join("workflows/tool.toml"), "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    // Invalid unmounted files must not affect an explicitly mounted session.
+    fs::write(
+        config_dir.join("workflows/unmounted.toml"),
+        "not valid TOML!",
+    )
+    .unwrap();
+    fs::write(config_dir.join("default.toml"), "[suite]\napi = 1\nname = 'Default'\nentrypoint = 'tool:main'\n[workflows]\ntool = { file = 'workflows/tool.toml' }\n").unwrap();
+    let output = launcher_command()
+        .env_remove("TLAUNCH_SUITE")
+        .env_remove("TLAUNCH_SETTINGS")
+        .env("XDG_CONFIG_HOME", &root)
+        .args(["inspect", "--all"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let views = catalog["views"].as_array().unwrap();
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0]["view"], "tool:main");
+    assert_eq!(views[0]["alias"], "tool");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn suite_alias_cannot_redirect_a_member_shorthand() {
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    fs::write(&workflow, "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[views.other.engine]\ntype='picker'\n").unwrap();
+    let suite = root.join("suite.toml");
+    fs::write(&suite, "[suite]\napi=1\nname='Suite'\nentrypoint='tool:main'\n[workflows]\ntool={file='tool.toml'}\n[aliases]\ntool='tool:other'\nz='tool'\n").unwrap();
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&suite)
+        .args(["--inspect", "z"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicts with member shorthand"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn suites_reject_host_environment_fields() {
+    let root = temporary_root();
+    let suite = root.join("suite.toml");
+    for field in [
+        "theme = 'private'",
+        "image_protocol = 'kitty'",
+        "log_file = '/tmp/private.log'",
+        "defaults = {}",
+    ] {
+        fs::write(
+            &suite,
+            format!(
+                "{field}\n[suite]\napi = 1\nname = 'Invalid suite'\nentrypoint = 'tool:main'\n"
+            ),
+        )
+        .unwrap();
+        let output = launcher_command()
+            .args(["--suite"])
+            .arg(&suite)
+            .arg("--check")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "accepted {field}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unknown field"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn workflow_commands_are_local_defaults_overridden_by_view_commands() {
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    fs::write(
+        &workflow,
+        r#"
+[workflow]
+api=1
+name="Tool"
+entrypoint="main"
+[commands.accept]
+key="enter"
+label="Shared accept"
+type="return"
+producer="declared"
+handler={value="shared"}
+[views.main.engine]
+type="picker"
+[views.other.engine]
+type="picker"
+[views.other.commands.accept]
+key="enter"
+label="Local accept"
+type="return"
+producer="declared"
+handler={value="local"}
+"#,
+    )
+    .unwrap();
+    let output = launcher_command()
+        .args(["-w"])
+        .arg(&workflow)
+        .args(["inspect", "--all"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(catalog["views"][0]["commands"][0]["label"], "Shared accept");
+    assert_eq!(catalog["views"][1]["commands"][0]["label"], "Local accept");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_cannot_register_business_commands() {
+    let root = temporary_root();
+    let settings = root.join("settings.toml");
+    fs::write(&settings, "[commands.bindings.open]\nkey='f1'\ntype='navigate'\nproducer='declared'\nhandler={target='external:main'}\n").unwrap();
+    let output = launcher_command()
+        .args(["-w"])
+        .arg(support::quick_picker_fixture())
+        .arg("--settings")
+        .arg(&settings)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field `commands`"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_settings_environment_path_must_exist() {
+    let root = temporary_root();
+    let output = launcher_command()
+        .env("TLAUNCH_SETTINGS", root.join("missing.toml"))
+        .args(["--workflow"])
+        .arg(support::quick_picker_fixture())
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not read settings file"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn atomic_workflows_reject_dependency_and_global_alias_declarations() {
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    let base =
+        "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n";
+    for extra in [
+        "\n[dependencies]\nother='other.toml'\n",
+        "\n[imports]\nother='other.toml'\n",
+        "\n[workflows]\nother={file='other.toml'}\n",
+        "\n[aliases]\nglobal='tool:main'\n",
+    ] {
+        fs::write(&workflow, format!("{base}{extra}")).unwrap();
+        let output = launcher_command()
+            .args(["--check", "--workflow"])
+            .arg(&workflow)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "accepted {extra}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported fields"));
+    }
+    fs::write(&workflow, format!("{base}\n[views.main]\nalias='global'\n")).unwrap();
+    let output = launcher_command()
+        .args(["--check", "--workflow"])
+        .arg(&workflow)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot declare alias"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn standalone_workflow_defers_sibling_navigation_until_runtime() {
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    for kind in ["navigate", "call"] {
+        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[views.main.commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
+        let output = launcher_command()
+            .args(["--workflow"])
+            .arg(&workflow)
+            .arg("--check")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }

@@ -13,7 +13,7 @@ description: "Authoritative reference for workflow manifests, static View config
 
 # workflow.toml Specification
 
-Workflows define custom Views, keybindings, actions, and Engines. They reside under `$XDG_CONFIG_HOME/tlaunch/workflows/` and support two physical layouts:
+Workflows define custom Views, keybindings, actions, and Engines. They are mounted explicitly by a suite or run directly with `-w`, and support two physical layouts:
 
 1. **Single-file workflow**: `workflows/<id>.toml`. The workflow ID is the file stem. Relative external script files are not allowed; use inline producer scripts or absolute host binaries.
 2. **Directory workflow**: `workflows/<id>/workflow.toml`. The directory is the workflow root. Relative script files are confined to that root, and `$WORKFLOW_DIR` is provided to child processes.
@@ -24,10 +24,20 @@ Workflows define custom Views, keybindings, actions, and Engines. They reside un
 [workflow]
 api = 1
 name = "Applications"
+entrypoint = "main"
 ```
 
 - `api` is an optional integer and defaults to `1`.
 - `name` is the required human-readable workflow name.
+- `entrypoint` is required and names a view within this workflow.
+- Workflow imports, dependencies, and global aliases are prohibited.
+
+## Workflow Commands
+
+`[commands.<id>]` uses the same schema as `[views.<name>.commands.<id>]`.
+These commands are defaults for every view in this workflow. A view-local
+command with the same ID replaces the workflow default. Commands keep their
+workflow script root and do not register commands in sibling workflows.
 
 ## Style Slots
 
@@ -39,14 +49,13 @@ A workflow defines one or more Views referenced as `<workflow-id>:<name>`:
 
 ```toml
 [views.main]
-alias = "apps"
 
 [views.main.query]
 type = "object"
 mode = { type = "string", default = "normal" }
 ```
 
-`alias` is optional and must be globally unique. Query fields are validated before a target View is mounted.
+`alias` is prohibited on workflow views; suite `[aliases]` owns public shorthand routes. Query fields are validated before a target View is mounted.
 
 ## Engine Configuration
 
@@ -332,4 +341,4 @@ Configuration without a producer is static: its values are deserialized and vali
 
 Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tlaunch/scripts/` (falling back to `$XDG_CACHE_HOME/tlaunch/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
 
-For root configuration, see [config.toml Specification](config-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).
+For root configuration, see [settings.toml Specification](settings-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).

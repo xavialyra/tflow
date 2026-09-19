@@ -31,7 +31,8 @@ The binary is `target/release/tlaunch`. Add it to your `$PATH` or invoke it by i
 
 ```text
 $XDG_CONFIG_HOME/tlaunch/
-├── config.toml
+├── settings.toml  # optional host settings
+├── default.toml   # explicit suite manifest
 └── workflows/
     ├── hello.toml
     └── git/
@@ -53,9 +54,7 @@ Create `~/.config/tlaunch/workflows/hello.toml`:
 [workflow]
 api = 1
 name = "Hello Launcher"
-
-[views.main]
-alias = "hello"
+entrypoint = "main"
 
 [views.main.engine]
 type = "picker"
@@ -98,12 +97,18 @@ sys.stdout.write("\n")
 
 The handler reads the selected item from `context.engine.state` and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
 
-## 4. Set the Default View
+## 4. Create the Default Suite
 
-Create `~/.config/tlaunch/config.toml`:
+Create `~/.config/tlaunch/default.toml`:
 
 ```toml
-default_view = "hello:main"
+[suite]
+api = 1
+name = "My tools"
+entrypoint = "hello:main"
+
+[workflows]
+hello = { file = "./workflows/hello.toml" }
 ```
 
 ## 5. Validate and Launch

@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "wiremix"
+entrypoint = "main"
 
 [views.main.engine]
 type = "embedded"

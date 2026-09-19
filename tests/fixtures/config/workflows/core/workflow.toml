@@ -1,6 +1,7 @@
 [workflow]
 api = 1
 name = "core"
+entrypoint = "default"
 
 [views.default.engine]
 type = "picker"

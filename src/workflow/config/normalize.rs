@@ -1,17 +1,6 @@
 use crate::input::Key;
 use anyhow::Context;
-use std::collections::{BTreeMap, BTreeSet};
-
-pub(super) fn remove_disabled_workflows(value: &mut toml::Value, disabled: &BTreeSet<String>) {
-    if let Some(workflows) = value
-        .get_mut("workflows")
-        .and_then(toml::Value::as_table_mut)
-    {
-        for workflow_id in disabled {
-            workflows.remove(workflow_id);
-        }
-    }
-}
+use std::collections::BTreeMap;
 
 pub(super) fn normalize_view_keymaps(
     value: &mut toml::Value,

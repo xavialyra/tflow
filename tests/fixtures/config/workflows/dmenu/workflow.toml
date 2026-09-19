@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "dmenu"
+entrypoint = "main"
 
 [views.main]
-alias = "dmenu"
 cancel_exit_code = 1
 
 [views.main.engine]

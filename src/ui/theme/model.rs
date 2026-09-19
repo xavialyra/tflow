@@ -410,6 +410,7 @@ impl ResolvedTheme {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn register_workflow_defaults(
         &mut self,
         workflow_id: &str,
@@ -440,13 +441,63 @@ impl ResolvedTheme {
         Ok(())
     }
 
-    pub(crate) fn register_all_workflow_defaults(
+    pub(crate) fn register_all_workflow_defaults_with_overrides(
         &mut self,
         workflows: &BTreeMap<String, crate::workflow::config::WorkflowMetadata>,
+        suite_styles: &BTreeMap<String, BTreeMap<String, RawStyleBinding>>,
+        settings_styles: &BTreeMap<String, BTreeMap<String, RawStyleBinding>>,
     ) -> Result<()> {
-        for (workflow_id, metadata) in workflows {
-            self.register_workflow_defaults(workflow_id, &metadata.styles)?;
+        use std::collections::BTreeSet;
+        let mut all_workflow_ids: BTreeSet<String> = workflows.keys().cloned().collect();
+        all_workflow_ids.extend(suite_styles.keys().cloned());
+        all_workflow_ids.extend(settings_styles.keys().cloned());
+
+        let mut custom_styles = (*self.custom_styles).clone();
+        for workflow_id in all_workflow_ids {
+            let empty_styles = BTreeMap::new();
+            let wf_styles = workflows
+                .get(&workflow_id)
+                .map(|m| &m.styles)
+                .unwrap_or(&empty_styles);
+            let suite_wf_styles = suite_styles.get(&workflow_id);
+            let settings_wf_styles = settings_styles.get(&workflow_id);
+
+            let mut all_slots = BTreeSet::new();
+            all_slots.extend(wf_styles.keys().cloned());
+            if let Some(s) = suite_wf_styles {
+                all_slots.extend(s.keys().cloned());
+            }
+            if let Some(s) = settings_wf_styles {
+                all_slots.extend(s.keys().cloned());
+            }
+
+            for slot_name in all_slots {
+                let default_binding = wf_styles.get(&slot_name).cloned().unwrap_or_default();
+                let mut merged =
+                    if let Some(suite_override) = suite_wf_styles.and_then(|s| s.get(&slot_name)) {
+                        suite_override.merge_with(&default_binding)
+                    } else {
+                        default_binding
+                    };
+                if let Some(settings_override) = settings_wf_styles.and_then(|s| s.get(&slot_name))
+                {
+                    merged = settings_override.merge_with(&merged);
+                }
+                let key = (workflow_id.clone(), slot_name.clone());
+                if let Some(theme_override) = self.raw_theme_overrides.get(&key) {
+                    merged = theme_override.merge_with(&merged);
+                }
+
+                let resolved = resolve_raw_style_binding(
+                    &merged,
+                    &self.scheme,
+                    &format!("style slot [{workflow_id}.{slot_name}]"),
+                    &format!("styles.{workflow_id}.{slot_name}"),
+                )?;
+                custom_styles.insert(key, resolved);
+            }
         }
+        self.custom_styles = Arc::new(custom_styles);
         Ok(())
     }
 

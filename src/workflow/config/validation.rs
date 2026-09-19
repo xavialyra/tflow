@@ -153,7 +153,18 @@ fn validate_operation_target(
         || views
             .values()
             .any(|view| view.alias.as_deref() == Some(target));
-    if !configured {
+    // A sibling route is a runtime integration point, not a package dependency.
+    // Standalone loading must still validate local targets, but cannot require
+    // another suite member to be installed.
+    let external_route = target.split_once(':').is_some_and(|(member, view)| {
+        !member.is_empty()
+            && !view.is_empty()
+            && !view.contains(':')
+            && view_ref
+                .split_once(':')
+                .is_some_and(|(owner, _)| owner != member)
+    });
+    if !configured && !external_route {
         bail!(
             "view {:?} command {:?} references missing {} target {:?}",
             view_ref,
@@ -178,8 +189,8 @@ impl CompiledConfig {
     where
         V: EngineConfigValidator,
     {
-        if let Some(default_view) = &self.default_view {
-            self.engine(default_view)?;
+        if !self.entrypoint.is_empty() {
+            self.engine(&self.entrypoint)?;
         }
         engines.validate_defaults(&self.defaults)?;
         for (package_id, workflow) in &self.workflows {
@@ -233,7 +244,11 @@ impl CompiledConfig {
                 overflow_commands += 1;
             }
             validate_command_action(
-                self.default_view.as_deref().unwrap_or("<root>"),
+                if self.entrypoint.is_empty() {
+                    "<root>"
+                } else {
+                    &self.entrypoint
+                },
                 &format!("session:command:{id}"),
                 &action,
                 &self.views,
@@ -245,24 +260,26 @@ impl CompiledConfig {
             bail!("session commands can define at most one overflow binding");
         }
 
-        let mut aliases = BTreeMap::<&str, &str>::new();
+        for (alias, target) in &self.aliases {
+            if alias.trim().is_empty()
+                || alias.contains(':')
+                || alias.chars().any(char::is_whitespace)
+            {
+                bail!("alias {:?} is invalid", alias);
+            }
+            if !self.views.contains_key(target) {
+                bail!("alias {:?} targets missing view {:?}", alias, target);
+            }
+        }
+
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
             if let Some(alias) = &view.alias {
-                if alias.trim().is_empty()
-                    || alias.contains(':')
-                    || alias.chars().any(char::is_whitespace)
-                {
-                    bail!("view {:?} has an invalid alias {:?}", view_ref, alias);
-                }
-                if let Some(previous) = aliases.insert(alias, view_ref) {
-                    bail!(
-                        "view alias {:?} is assigned to both {:?} and {:?}",
-                        alias,
-                        previous,
-                        view_ref
-                    );
-                }
+                bail!(
+                    "view {:?} cannot declare alias {:?}; ADR 0005 centralizes aliases in suite manifests ([aliases])",
+                    view_ref,
+                    alias
+                );
             }
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
             validate_view_commands(

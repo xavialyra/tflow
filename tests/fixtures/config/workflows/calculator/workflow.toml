@@ -1,9 +1,9 @@
 [workflow]
 api = 1
 name = "calculator"
+entrypoint = "main"
 
 [views.main]
-alias = "calculator"
 
 [views.main.engine]
 type = "picker"
