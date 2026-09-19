@@ -524,10 +524,6 @@ pub(crate) trait EngineRuntime {
     /// the mount leaves the active stack; cleanup must not fail.
     fn deactivate(&mut self) {}
 
-    fn selected_item_owner(&self) -> Option<String> {
-        None
-    }
-
     /// Returns the mount-owned raw receiver, when this runtime supports raw
     /// input. Session discovers this once after the initial Parameters dispatch
     /// and assigns the mount's stable `ReceiverId`; availability and logical

@@ -91,13 +91,15 @@ input_order = ["search"]
 search = { type = "string", default = "" }
 commands = { type = "array<object>", default = [] }
 
-[views.main.commands.accept]
-key = "enter"
+[views.main.keymap]
+enter = "accept"
+
+[commands.accept]
 label = "Select"
 scope = "selection"
 type = "return"
 producer = "script"
-[views.main.commands.accept.handler]
+[commands.accept.handler]
 script = '''#!/bin/sh
 set -eu
 

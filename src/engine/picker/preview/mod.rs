@@ -374,6 +374,7 @@ impl PickerPreview {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn document_scroll_state(&self) -> (bool, u16) {
         (self.document.is_some(), self.scroll)
     }
@@ -768,6 +769,7 @@ mod tests {
             display: super::super::display::ItemDisplayInput::Plain("Terminal".to_string()).into(),
             value: Some("terminal".to_string()),
             metadata: json!({"summary": "details"}),
+            bindings: std::collections::BTreeMap::new(),
             source_view: "apps:main".to_string(),
         };
         let value = item_value(&item);

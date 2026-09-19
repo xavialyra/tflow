@@ -228,12 +228,14 @@ fn isolated_workflow_runs_interactively_through_pty() {
             { display = "First Option", value = "first", metadata = {} }
         ]
 
-        [views.main.commands.run]
-        key = "enter"
+        [views.main.keymap]
+        enter = "run"
+
+        [commands.run]
         label = "Run"
         type = "return"
         producer = "script"
-        [views.main.commands.run.handler]
+        [commands.run.handler]
         script = '''#!/bin/sh
         printf '{"version":1,"operation":{"type":"return","value":{"result":"ran_standalone"}}}\n'
         '''
@@ -425,12 +427,13 @@ entrypoint = "choose"
 type = "picker"
 [views.choose.engine.config]
 items = [{ display = "Streamed choice", value = "chosen" }]
-[views.choose.commands.accept]
-key = "enter"
+[views.choose.keymap]
+enter = "accept"
+[commands.accept]
 type = "return"
 scope = "selection"
 producer = "script"
-[views.choose.commands.accept.handler]
+[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)

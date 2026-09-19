@@ -105,6 +105,25 @@ impl CommandService for TestCommandService {
     ) -> Result<Vec<crate::command::CommandEntry>> {
         Ok(Vec::new())
     }
+
+    fn dispatch_item_key(
+        &self,
+        _: &ViewContext,
+        _: &ViewCommandSnapshot,
+        _: crate::input::Key,
+    ) -> Result<Option<ViewDecision>> {
+        Ok(None)
+    }
+
+    fn compute_item_footer_commands(
+        &self,
+        _: &ViewContext,
+        _: &ViewCommandSnapshot,
+    ) -> Option<Vec<(String, String)>> {
+        None
+    }
+
+    fn update_active_snapshot(&self, _: &ViewCommandSnapshot) {}
 }
 
 impl ProtocolSession {
@@ -292,52 +311,72 @@ impl ProtocolSession {
             self.error_source = None;
             self.last_diagnostic = None;
         }
+        if let Some(active_instance) = self.router.active() {
+            let snapshot = active_instance.view.command_snapshot();
+            self.commands.update_active_snapshot(&snapshot);
+        }
         let active = self.router.active().map(|entry| entry.id);
 
         let mut executed_command = false;
         let mut command_decision = ViewDecision::Stay;
 
         if let ViewEvent::Input(InputEvent::Key { key, raw }) = &event {
-            let entry_opt = self.registry.read().unwrap().resolve(*key).cloned();
-            if let Some(entry) = entry_opt {
-                if entry.scope == CommandScope::View {
-                    let is_loading = self.router.active().is_some_and(|a| {
-                        let snapshot = a.view.command_snapshot();
-                        snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
-                            && snapshot.publication.as_ref().is_some_and(|p| !p.ready)
-                    });
-                    if is_loading {
-                        self.pending_key = Some(*key);
-                        return Ok(ViewDecision::Stay);
-                    }
-                }
+            let item_decision = if let Some(active_instance) = self.router.active() {
+                let snapshot = active_instance.view.command_snapshot();
+                self.commands
+                    .dispatch_item_key(&active_instance.context, &snapshot, *key)?
+            } else {
+                None
+            };
+            if let Some(decision) = item_decision {
                 executed_command = true;
-                command_decision = match entry.handler {
-                    CommandHandler::Action(action) => action.execute()?,
-                    CommandHandler::Event => {
-                        if let Some(active_instance) = self.router.active_mut() {
-                            let context = &active_instance.context;
-                            active_instance.view.on_command(&entry.id, context)?
-                        } else {
-                            ViewDecision::Stay
-                        }
-                    }
-                };
+                command_decision = decision;
                 if let Some(source) = active {
                     self.router
                         .process_with_effects(command_decision.clone(), source, effects)?;
                 }
-            } else if let Some(active_instance) = self.router.active_mut() {
-                let context = &active_instance.context;
-                if let Some(receiver) = active_instance.view.fallback_receiver() {
+            } else {
+                let entry_opt = self.registry.read().unwrap().resolve(*key).cloned();
+                if let Some(entry) = entry_opt {
+                    if entry.scope == CommandScope::View {
+                        let is_loading = self.router.active().is_some_and(|a| {
+                            let snapshot = a.view.command_snapshot();
+                            snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
+                                && snapshot.publication.as_ref().is_some_and(|p| !p.ready)
+                        });
+                        if is_loading {
+                            self.pending_key = Some(*key);
+                            return Ok(ViewDecision::Stay);
+                        }
+                    }
                     executed_command = true;
-                    command_decision = receiver.on_unbound_key(*key, raw, context)?;
+                    command_decision = match entry.handler {
+                        CommandHandler::Action(action) => action.execute()?,
+                        CommandHandler::Event => {
+                            if let Some(active_instance) = self.router.active_mut() {
+                                let context = &active_instance.context;
+                                active_instance.view.on_command(&entry.id, context)?
+                            } else {
+                                ViewDecision::Stay
+                            }
+                        }
+                    };
                     if let Some(source) = active {
-                        self.router.process_with_effects(
-                            command_decision.clone(),
-                            source,
-                            effects,
-                        )?;
+                        self.router
+                            .process_with_effects(command_decision.clone(), source, effects)?;
+                    }
+                } else if let Some(active_instance) = self.router.active_mut() {
+                    let context = &active_instance.context;
+                    if let Some(receiver) = active_instance.view.fallback_receiver() {
+                        executed_command = true;
+                        command_decision = receiver.on_unbound_key(*key, raw, context)?;
+                        if let Some(source) = active {
+                            self.router.process_with_effects(
+                                command_decision.clone(),
+                                source,
+                                effects,
+                            )?;
+                        }
                     }
                 }
             }
@@ -394,13 +433,13 @@ impl ProtocolSession {
     }
 
     pub(crate) fn sync_active_commands(&mut self) -> Result<()> {
+        if let Some(active_instance) = self.router.active() {
+            let snapshot = active_instance.view.command_snapshot();
+            self.commands.update_active_snapshot(&snapshot);
+        }
         let active_id = self.router.active().map(|entry| entry.id);
         let is_same_instance =
             self.chrome_snapshot.active_instance == active_id && active_id.is_some();
-        let is_loading = self.router.active().is_some_and(|a| {
-            let snapshot = a.view.command_snapshot();
-            snapshot.publication.as_ref().is_some_and(|p| !p.ready)
-        });
         let active_view = self
             .router
             .active()
@@ -416,7 +455,7 @@ impl ProtocolSession {
         let active_raw_input = active_metadata
             .map(|(_, raw_input)| raw_input)
             .unwrap_or_default();
-        if is_same_instance && is_loading {
+        if is_same_instance {
             if self.chrome_snapshot.active_view != active_view
                 || self.chrome_snapshot.active_parameters != active_parameters
                 || self.chrome_snapshot.active_raw_input != active_raw_input
@@ -657,12 +696,28 @@ impl ProtocolSession {
         }
 
         let metadata = effective_view.metadata.clone();
+        let footer_commands = if let Some(active_instance) = self.router.active() {
+            let snapshot = active_instance.view.command_snapshot();
+            if let Some(mut cmds) = self
+                .commands
+                .compute_item_footer_commands(&active_instance.context, &snapshot)
+            {
+                if let Some(overflow) = self.chrome_snapshot.overflow_command() {
+                    cmds.push(overflow);
+                }
+                cmds
+            } else {
+                self.chrome_snapshot.footer_commands()
+            }
+        } else {
+            self.chrome_snapshot.footer_commands()
+        };
         let footer = FooterModel {
             location: footer_location,
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
             info: self.active_info.as_ref().map(|info| info.label.clone()),
-            commands: self.chrome_snapshot.footer_commands(),
+            commands: footer_commands,
             overflow_command: self.chrome_snapshot.overflow_command(),
         };
         let footer_area = content_host.footer_area(area);

@@ -941,11 +941,6 @@ impl View for PickerProtocolView {
                 self.publication.clone()
             },
             revision: self.state_revision,
-            owner_view: if in_completion {
-                None
-            } else {
-                self.runtime.selected_item_owner()
-            },
         }
     }
 

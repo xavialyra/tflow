@@ -80,13 +80,15 @@ type = "object"
 input_order = ["payload"]
 payload = { type = "string", default = "" }
 
-[views.main.commands.accept]
-key = "enter"
+[views.main.keymap]
+enter = "accept"
+
+[commands.accept]
 label = "Apply"
 scope = "selection"
 type = "return"
 producer = "script"
-[views.main.commands.accept.handler]
+[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

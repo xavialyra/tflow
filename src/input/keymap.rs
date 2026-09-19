@@ -84,6 +84,9 @@ where
     let mut rebound = HashSet::new();
 
     for (source, value) in patch {
+        if source == "mode" || source.is_empty() {
+            continue;
+        }
         let key = Key::parse_binding(source)
             .with_context(|| format!("{label} keymap binding {:?}", source))?
             .binding_identity();
@@ -126,9 +129,11 @@ where
                 source
             )
         })?;
-        let action = parse_action(action_name)
-            .with_context(|| format!("unsupported {label} keymap action {:?}", action_name))?;
-        bindings.insert(key, action);
+        if let Some(action) = parse_action(action_name) {
+            bindings.insert(key, action);
+        } else {
+            bindings.remove(&key);
+        }
     }
 
     for key in tombstones {

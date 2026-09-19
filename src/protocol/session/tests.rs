@@ -67,7 +67,6 @@ impl View for SyntheticView {
             runtime: self.runtime.clone(),
             publication: self.publication.clone(),
             revision: self.revision,
-            owner_view: None,
         }
     }
 
@@ -559,7 +558,6 @@ fn passthrough_binding_still_prepares_its_command_decision() {
             }),
             true,
         )),
-        owner_view: None,
         revision: 0,
     };
 
@@ -593,13 +591,11 @@ fn command_call_records_caller_and_runs_non_null_return_continuation() {
                     "text": "first",
                     "value": "0",
                     "metadata": {},
-                    "owner_view": "dmenu:main"
                 },
                 "input": ""
             }),
             true,
         )),
-        owner_view: Some("dmenu:main".to_string()),
         revision: 2,
     };
 
@@ -920,7 +916,6 @@ fn view_diagnostic_clears_when_resolved_and_session_error_clears_on_input() {
                 raw_input: String::new(),
                 runtime: Value::Null,
                 publication: None,
-                owner_view: None,
                 revision: 0,
             }
         }

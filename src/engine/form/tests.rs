@@ -366,7 +366,7 @@ fn registry_accepts_form_and_rejects_picker_sources_or_custom_keymaps() {
     registry
         .validate_config("form", &toml::from_str(valid).unwrap())
         .unwrap();
-    for extra in ["[keymap]\nnext = ['tab']", "[engine.config]\nitems = []"] {
+    for extra in ["[engine.config]\nitems = []"] {
         assert!(
             registry
                 .validate_config("form", &toml::from_str(&format!("{valid}{extra}")).unwrap())

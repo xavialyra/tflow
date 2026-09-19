@@ -2149,7 +2149,7 @@ fn tab_opens_builtin_route_completion_and_escape_cancels_it() {
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    wait_for_fresh_text(&process.master, "app");
+    wait_for_fresh_text(&process.master, "Termius");
 
     process.master.write_all(b"sys\t").unwrap();
     process.master.flush().unwrap();
@@ -2220,7 +2220,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 }
 
 #[test]
-fn feeds_page_commands_remain_available_with_selected_owner_item() {
+fn view_keymap_dispatches_workflow_command_with_selected_item() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2228,45 +2228,23 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
         r#"
         default_view = "core:default"
 
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [workflows.core.views.default.commands.page]
-        key = "ctrl+r"
+        [workflows.core.commands.page]
         label = "Page"
         type = "run"
         producer = "declared"
         handler = { mode = "foreground", argv = ["sh", "-c", "printf 'page-command\\n'"], exit = true }
 
-        [workflows.apps.views.default]
-        [workflows.apps.views.default.engine]
+        [workflows.core.views.default]
+        [workflows.core.views.default.keymap]
+        "ctrl+r" = "core:page"
+
+        [workflows.core.views.default.engine]
         type = "picker"
-        [workflows.apps.views.default.engine.config]
+        [workflows.core.views.default.engine.config]
         items = [{display = "Row", value = "row"}]
-        [workflows.apps.views.default.commands.open]
-        key = "enter"
-        label = "Open"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-command\\n'"], exit = true }
         "#,
     )
     .unwrap();
-    write_workflow_script(
-        &root,
-        "core",
-        "scripts/page.sh",
-        "printf 'page-command\\n'\n",
-    );
-    write_workflow_script(
-        &root,
-        "apps",
-        "scripts/owner.sh",
-        "printf 'owner-command\\n'\n",
-    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -2284,7 +2262,7 @@ fn feeds_page_commands_remain_available_with_selected_owner_item() {
 }
 
 #[test]
-fn feed_owner_commands_are_projected_into_aggregate_picker() {
+fn item_bindings_dispatch_and_display_in_footer() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2292,41 +2270,23 @@ fn feed_owner_commands_are_projected_into_aggregate_picker() {
         r#"
         default_view = "core:default"
 
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [workflows.core.views.default.keymap]
-        space = "select_next"
-
-        [workflows.apps.views.default]
-        [workflows.apps.views.default.engine]
-        type = "picker"
-        [workflows.apps.views.default.engine.config]
-        items = [{display = "Row", value = "row"}]
-        [workflows.apps.views.default.commands.open]
-        key = "enter"
+        [workflows.core.commands.open]
         label = "Selection"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-selection-command:row\\n'"], exit = true }
-        [workflows.apps.views.default.commands.inspect]
-        key = "space"
-        label = "View"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'owner-view-command:row\\n'"], exit = true }
+        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"], exit = true }
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.keymap]
+        mode = "item"
+
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Row", value = "row", bindings = { enter = "core:open" }}]
         "#,
     )
     .unwrap();
-    write_workflow_script(
-        &root,
-        "apps",
-        "scripts/owner.sh",
-        "printf 'pending-owner-command:%s\\n' \"$1\"\n",
-    );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
@@ -2334,11 +2294,7 @@ fn feed_owner_commands_are_projected_into_aggregate_picker() {
     let footer = String::from_utf8_lossy(&footer);
     assert!(
         footer.contains("Selection"),
-        "owner selection command did not reach the footer: {footer:?}"
-    );
-    assert!(
-        footer.contains("Commands"),
-        "owner View command did not reach the footer: {footer:?}"
+        "item selection command did not reach the footer: {footer:?}"
     );
 
     process.master.write_all(b"\r").unwrap();
@@ -2347,8 +2303,8 @@ fn feed_owner_commands_are_projected_into_aggregate_picker() {
 
     assert_eq!(status, 0);
     assert!(
-        String::from_utf8_lossy(&output).contains("owner-selection-command:row"),
-        "owner selection command did not dispatch: {:?}",
+        String::from_utf8_lossy(&output).contains("item-selection-command:row"),
+        "item selection command did not dispatch: {:?}",
         output
     );
     fs::remove_dir_all(root).unwrap();
@@ -2366,8 +2322,6 @@ fn routed_picker_restores_alias_prefix_and_top_spacing() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
 
         [workflows.apps.views.default]
         alias = "app"
@@ -2416,10 +2370,7 @@ fn picker_back_returns_to_parent_without_clearing_routed_query() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "sys:default"
+        items = [{display = "Item", value = "value"}]
         [workflows.apps.views.default]
         alias = "app"
         [workflows.apps.views.default.engine]

@@ -14,6 +14,7 @@ use super::{
     RendererFactoryContext, RuntimeFactoryContext, ViewContextPublication, require_field,
     validate_fields,
 };
+use crate::input::keymap::KeymapAction;
 use crate::workflow::config::{
     Defaults, ProducerKind, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
 };
@@ -42,7 +43,7 @@ struct OutputProducerConfig {
 }
 
 fn reject_picker_sources(name: &str, view: &View) -> Result<()> {
-    if view.selected_items().is_some() || !view.selected_feeds().is_empty() {
+    if view.selected_items().is_some() {
         bail!(
             "view {:?} using engine {:?} cannot provide picker items",
             name,
@@ -95,10 +96,12 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
     CaptureKeymap::validate_values(bindings.as_ref(), None).context("capture bindings")
 }
 
-pub(super) fn validate_keymap(name: &str, view: &View) -> Result<()> {
-    let keymap = view.keymap.as_ref().map(toml_to_json).transpose()?;
-    CaptureKeymap::validate_values(None, keymap.as_ref())
-        .with_context(|| format!("view {:?} capture keymap", name))
+pub(super) fn validate_keymap(_name: &str, _view: &View) -> Result<()> {
+    Ok(())
+}
+
+pub(crate) fn is_capture_action(name: &str) -> bool {
+    self::keymap::CaptureAction::parse(name).is_some()
 }
 
 fn validate_declared_output(value: &toml::Value) -> Result<()> {

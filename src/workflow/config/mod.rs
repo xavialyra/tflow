@@ -5,7 +5,7 @@ use crate::workflow::parameter::{ParameterBinding, ParameterRegistry, ParameterS
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -35,11 +35,14 @@ pub const ENGINE_EMBEDDED: &str = "embedded";
 pub(crate) struct CompiledConfig {
     pub entrypoint: ViewRef,
     pub default_view: Option<ViewRef>,
+    pub(crate) entrypoint_query: Option<Value>,
+    pub(crate) suite_file: Option<PathBuf>,
     pub(crate) image_protocol: ImageProtocol,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) commands: CommandConfig,
     pub(crate) aliases: BTreeMap<String, ViewRef>,
     pub(crate) view_aliases: BTreeMap<ViewRef, String>,
+    pub(crate) all_commands: BTreeMap<String, Command>,
     views: BTreeMap<ViewRef, View>,
     workflows: BTreeMap<String, WorkflowMetadata>,
     defaults: Defaults,
@@ -47,23 +50,21 @@ pub(crate) struct CompiledConfig {
     parameter_registry: Arc<ParameterRegistry>,
 }
 
-/// The compiled, Picker-only configuration used to build feed definitions.
+/// The compiled, Picker-only configuration used to build presentation definitions.
 /// It contains no command, theme, or complete configuration owner and is safe to keep
 /// in a mount-owned loader after preparation.
 #[derive(Clone)]
 pub(crate) struct PickerItemsView {
     pub(crate) alias: Option<String>,
-    pub(crate) feeds: Vec<ViewRef>,
     pub(crate) items: Option<toml::Value>,
-    pub(crate) binding: ParameterBinding,
-    pub(crate) source_badge: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct PickerItemsProjection {
     input: Value,
-    views: BTreeMap<ViewRef, PickerItemsView>,
-    workflow_roots: BTreeMap<String, PathBuf>,
+    view_ref: ViewRef,
+    view: PickerItemsView,
+    workflow_root: Option<PathBuf>,
 }
 
 impl PickerItemsProjection {
@@ -72,90 +73,33 @@ impl PickerItemsProjection {
         input: &Value,
         root_view_ref: &str,
     ) -> Result<Self> {
-        let mut selected = BTreeSet::from([root_view_ref.to_string()]);
-        let mut pending = vec![root_view_ref.to_string()];
-        while let Some(view_ref) = pending.pop() {
-            let view = config
-                .views
-                .get(&view_ref)
-                .with_context(|| format!("view {:?} is not configured", view_ref))?;
-            for feed in view.selected_feeds() {
-                if selected.insert(feed.view.clone()) {
-                    pending.push(feed.view.clone());
-                }
-            }
-        }
-
-        let mut views = BTreeMap::new();
-        let mut workflow_roots = BTreeMap::new();
-        for view_ref in selected {
-            let view = config
-                .views
-                .get(&view_ref)
-                .with_context(|| format!("view {:?} is not configured", view_ref))?;
-            if let Some(root) = config.workflow_root(&view_ref) {
-                workflow_roots.insert(package_id(&view_ref).to_string(), root.to_path_buf());
-            }
-            let source_badge = match view.engine_field("source_badge") {
-                Some(toml::Value::Boolean(enabled)) => *enabled,
-                _ => !view.selected_feeds().is_empty(),
-            };
-            views.insert(
-                view_ref.clone(),
-                PickerItemsView {
-                    alias: config.alias_for_view(&view_ref).map(str::to_string),
-                    feeds: view
-                        .selected_feeds()
-                        .iter()
-                        .map(|feed| feed.view.clone())
-                        .collect(),
-                    items: view.selected_items().cloned(),
-                    binding: config.parameter_registry.parameter_binding(&view_ref)?,
-                    source_badge,
-                },
-            );
-        }
+        let view = config
+            .views
+            .get(root_view_ref)
+            .with_context(|| format!("view {:?} is not configured", root_view_ref))?;
+        let workflow_root = config.workflow_root(root_view_ref).map(Path::to_path_buf);
+        let items_view = PickerItemsView {
+            alias: config.alias_for_view(root_view_ref).map(str::to_string),
+            items: view.selected_items().cloned(),
+        };
         Ok(Self {
             input: input.clone(),
-            views,
-            workflow_roots,
+            view_ref: root_view_ref.to_string(),
+            view: items_view,
+            workflow_root,
         })
     }
 
-    pub(crate) fn feed_views(&self, view_ref: &str) -> Result<Vec<(String, &PickerItemsView)>> {
-        let view = self
-            .views
-            .get(view_ref)
-            .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        if view.feeds.is_empty() {
-            return Ok(vec![(view_ref.to_string(), view)]);
-        }
-        view.feeds
-            .iter()
-            .map(|feed| {
-                self.views
-                    .get(feed)
-                    .map(|source| (feed.clone(), source))
-                    .with_context(|| {
-                        format!("view {:?} references missing feed {:?}", view_ref, feed)
-                    })
-            })
-            .collect()
+    pub(crate) fn target_view(&self) -> (&str, &PickerItemsView) {
+        (&self.view_ref, &self.view)
     }
 
     pub(crate) fn input_value(&self) -> &Value {
         &self.input
     }
 
-    pub(crate) fn source_badge(&self, view_ref: &str) -> bool {
-        self.views
-            .get(view_ref)
-            .is_some_and(|view| view.source_badge)
-    }
-
-    pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
-        let package = package_id(view_ref);
-        self.workflow_roots.get(package).map(PathBuf::as_path)
+    pub(crate) fn workflow_root(&self) -> Option<&Path> {
+        self.workflow_root.as_deref()
     }
 }
 
@@ -287,6 +231,47 @@ impl CompiledConfig {
         self.views.get(view_ref)
     }
 
+    pub(crate) fn find_command(&self, current_workflow: &str, cmd_id: &str) -> Option<&Command> {
+        if cmd_id.contains(':') {
+            self.all_commands.get(cmd_id)
+        } else {
+            let fqid = format!("{current_workflow}:{cmd_id}");
+            self.all_commands
+                .get(&fqid)
+                .or_else(|| self.all_commands.get(cmd_id))
+        }
+    }
+
+    pub(crate) fn resolve_command_fqid(
+        &self,
+        current_workflow: &str,
+        cmd_id: &str,
+    ) -> Option<String> {
+        if cmd_id.contains(':') {
+            self.all_commands.contains_key(cmd_id).then(|| cmd_id.to_string())
+        } else {
+            let fqid = format!("{current_workflow}:{cmd_id}");
+            if self.all_commands.contains_key(&fqid) {
+                Some(fqid)
+            } else if self.all_commands.contains_key(cmd_id) {
+                Some(cmd_id.to_string())
+            } else {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn workflow_commands(&self, workflow_id: &str) -> BTreeMap<String, Command> {
+        let prefix = format!("{workflow_id}:");
+        let mut map = BTreeMap::new();
+        for (k, v) in &self.all_commands {
+            if k.starts_with(&prefix) {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        map
+    }
+
     pub(crate) fn iter_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
         self.views.iter()
     }
@@ -359,31 +344,6 @@ impl CompiledConfig {
     pub fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
         let workflow = package_id(view_ref);
         self.workflow_roots.get(workflow).map(PathBuf::as_path)
-    }
-
-    pub fn feed_views<'a>(&'a self, view_ref: &str) -> Result<Vec<(String, &'a View)>> {
-        let view = self
-            .views
-            .get(view_ref)
-            .with_context(|| format!("view {:?} is not configured", view_ref))?;
-        let feeds = view.selected_feeds();
-        if feeds.is_empty() {
-            return Ok(vec![(view_ref.to_string(), view)]);
-        }
-        feeds
-            .iter()
-            .map(|feed| {
-                self.views
-                    .get(&feed.view)
-                    .map(|source| (feed.view.clone(), source))
-                    .with_context(|| {
-                        format!(
-                            "view {:?} references missing feed {:?}",
-                            view_ref, feed.view
-                        )
-                    })
-            })
-            .collect()
     }
 
     pub(crate) fn picker_default_bindings(&self) -> Option<&toml::Value> {

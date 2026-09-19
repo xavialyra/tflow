@@ -49,17 +49,13 @@ fn send(process: &mut support::LauncherProcess, keys: &[u8]) {
 }
 
 #[test]
-fn default_preview_is_collapsed_and_resolves_page_feed_and_item_details() {
+fn default_preview_is_collapsed_and_resolves_page_and_item_details() {
     let items = r#"items = [{ display = "Selected item", value = "selected-value", metadata = { summary = "DETAILS_MARKER" } }]"#;
-    let feeds = r#"feeds = [{ view = "library:main" }]"#;
-    let feed_preview = r#"preview = { producer = "declared", document = "FEED_MARKER" }"#;
     let page_preview = r#"preview = { producer = "declared", document = "PAGE_MARKER" }"#;
-    for (source, page_config, feed_config, expected) in [
-        (items, "", "", "DETAILS_MARKER"),
-        (items, "preview = { inherit = true }", "", "DETAILS_MARKER"),
-        (feeds, "", "", "DETAILS_MARKER"),
-        (feeds, "", feed_preview, "FEED_MARKER"),
-        (feeds, page_preview, feed_preview, "PAGE_MARKER"),
+    for (page_config, expected) in [
+        ("", "DETAILS_MARKER"),
+        ("preview = { inherit = true }", "DETAILS_MARKER"),
+        (page_preview, "PAGE_MARKER"),
     ] {
         let root = temporary_root();
         let config = root.join("config.toml");
@@ -71,13 +67,8 @@ fn default_preview_is_collapsed_and_resolves_page_feed_and_item_details() {
             [workflows.sample.views.main.engine]
             type = "picker"
             [workflows.sample.views.main.engine.config]
-            {source}
-            {page_config}
-            [workflows.library.views.main.engine]
-            type = "picker"
-            [workflows.library.views.main.engine.config]
             {items}
-            {feed_config}
+            {page_config}
         "#
             ),
         )
@@ -86,7 +77,7 @@ fn default_preview_is_collapsed_and_resolves_page_feed_and_item_details() {
         let initial =
             wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected item"));
         let initial = String::from_utf8_lossy(&initial);
-        for marker in ["DETAILS_MARKER", "FEED_MARKER", "PAGE_MARKER"] {
+        for marker in ["DETAILS_MARKER", "PAGE_MARKER"] {
             assert!(
                 !initial.contains(marker),
                 "preview started expanded: {initial}"
@@ -101,8 +92,8 @@ fn default_preview_is_collapsed_and_resolves_page_feed_and_item_details() {
             })
         });
         let expanded = String::from_utf8_lossy(&expanded);
-        for marker in ["FEED_MARKER", "PAGE_MARKER"] {
-            assert_eq!(expanded.contains(marker), marker == expected, "{expanded}");
+        if expected == "PAGE_MARKER" {
+            assert!(expanded.contains("PAGE_MARKER"), "{expanded}");
         }
         if expected == "DETAILS_MARKER" {
             assert!(expanded.contains("selected-value"), "{expanded}");

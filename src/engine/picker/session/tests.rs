@@ -1,7 +1,7 @@
 use super::*;
-use crate::engine::picker::items::FeedDefinition;
 use crate::input::EditorBuffer;
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 fn test_picker(mount_id: u64) -> (Arc<crate::workflow::config::CompiledConfig>, PickerView) {
@@ -48,36 +48,8 @@ fn test_item(text: &str) -> Item {
         display: crate::engine::picker::ItemDisplayInput::Plain(text.to_string()).into(),
         value: Some(text.to_string()),
         metadata: Value::Null,
+        bindings: BTreeMap::new(),
         source_view: "core:default".to_string(),
-    }
-}
-
-fn test_feed_instance(
-    config: &crate::workflow::config::CompiledConfig,
-    page_view: &str,
-    owner_view: &str,
-    parameters: ParameterSnapshot,
-    _binding_raw: &str,
-) -> FeedInstance {
-    let projection = Arc::new(
-        crate::workflow::config::PickerItemsProjection::from_config(
-            config,
-            &Value::Null,
-            page_view,
-        )
-        .expect("test feed projection must compile"),
-    );
-    let definitions = FeedDefinition::collection(projection, page_view)
-        .expect("test feed definitions must compile");
-    let definition = definitions
-        .iter()
-        .find(|definition| definition.owner_view == owner_view)
-        .cloned()
-        .or_else(|| definitions.first().cloned())
-        .expect("test picker must have a feed definition");
-    FeedInstance {
-        definition,
-        parameters,
     }
 }
 
@@ -105,8 +77,8 @@ fn preview_scroll_invalidates_rendering_without_publishing_selection_or_readines
 }
 
 #[test]
-fn selected_feed_item_updates_publication_and_owner() {
-    let (config, mut picker) = test_picker(109);
+fn selected_item_updates_publication() {
+    let (_config, mut picker) = test_picker(109);
     let source = crate::input::InputSourceIdentity {
         frame: crate::input::ViewMountId(109),
         generation: 0,
@@ -124,19 +96,9 @@ fn selected_feed_item_updates_publication_and_owner() {
         display: crate::engine::picker::ItemDisplayInput::Plain("Application".to_string()).into(),
         value: Some("application".to_string()),
         metadata: Value::Null,
+        bindings: BTreeMap::new(),
         source_view: "apps:main".to_string(),
     }]);
-    Arc::make_mut(&mut picker.feed_instances).insert(
-        FeedId("apps:main".to_string()),
-        test_feed_instance(
-            &config,
-            "core:default",
-            "apps:main",
-            test_parameters("", source, 1),
-            "",
-        ),
-    );
-    assert_eq!(picker.selected_item_owner(), Some("apps:main"));
     let publication = picker.current_publication();
     let current = publication.current();
     assert_eq!(current["item"]["value"], "application");
@@ -173,7 +135,6 @@ fn background_items_completion_publishes_mount_current_without_runtime_update() 
         "background",
         Ok(crate::engine::picker::items::ItemsResult {
             items: vec![test_item("background")],
-            contexts: BTreeMap::new(),
             errors: Vec::new(),
         }),
     );
@@ -365,35 +326,17 @@ fn item_commands_are_disabled_when_results_have_no_selected_item() {
 }
 
 #[test]
-fn task_failure_clears_previous_items_and_feed_instances() {
-    let (config, mut picker) = test_picker(111);
+fn task_failure_clears_previous_items() {
+    let (_config, mut picker) = test_picker(111);
     picker.frame.results = ResultsState::Ready(String::new());
     picker.frame.query.clear();
     picker.frame.selection.replace(vec![test_item("stale")]);
-    Arc::make_mut(&mut picker.feed_instances).insert(
-        FeedId("core:default".to_string()),
-        test_feed_instance(
-            &config,
-            "core:default",
-            "apps:main",
-            test_parameters(
-                "",
-                crate::input::InputSourceIdentity {
-                    frame: crate::input::ViewMountId(111),
-                    generation: 0,
-                },
-                1,
-            ),
-            "",
-        ),
-    );
 
     picker
         .handle_task_failure("source failed".to_string())
         .unwrap();
 
     assert!(picker.frame.selection.items.is_empty());
-    assert!(picker.feed_instances.is_empty());
     assert!(matches!(picker.frame.results, ResultsState::Invalid));
     assert!(picker.frame.input_refresh.is_retry_requested());
 }
@@ -404,7 +347,7 @@ fn response_value(
     input: &str,
     result: std::result::Result<crate::engine::picker::items::ItemsResult, String>,
 ) -> ItemsResponse {
-    let identity = FeedRequestIdentity::new(
+    let identity = ItemsRequestIdentity::new(
         parameters.source().frame,
         parameters.source(),
         generation,
@@ -688,7 +631,6 @@ fn rejected_input_discards_completion_from_old_items_task() {
         "current",
         Ok(crate::engine::picker::items::ItemsResult {
             items: vec![test_item("stale completion")],
-            contexts: BTreeMap::new(),
             errors: Vec::new(),
         }),
     );
@@ -734,6 +676,7 @@ fn preview_decode_starts_only_during_prepared_auxiliary_work_start() {
         display: crate::engine::picker::ItemDisplayInput::Plain("item".to_string()).into(),
         value: None,
         metadata: serde_json::json!({"image": "/missing.png"}),
+        bindings: BTreeMap::new(),
         source_view: "core:default".to_string(),
     }]);
 
@@ -919,9 +862,9 @@ mod preview_provider_tests {
                     display: crate::engine::picker::ItemDisplayInput::Plain("Needle".into()).into(),
                     value: Some("needle".into()),
                     metadata: json!({"summary":"route item"}),
+                    bindings: BTreeMap::new(),
                     source_view: "library:main".into(),
                 }],
-                contexts: BTreeMap::new(),
                 errors: Vec::new(),
             }),
         };
@@ -964,166 +907,6 @@ mod preview_provider_tests {
         assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
         assert!(picker.preview.prepared_request().is_none());
         picker.deactivate();
-        tasks.shutdown_and_wait();
-        std::fs::remove_dir_all(temp).unwrap();
-    }
-
-    #[test]
-    fn preview_feed_owner_and_page_override_keep_parameters_input_and_paths_in_owner_workflow() {
-        let temp =
-            std::env::temp_dir().join(format!("tlaunch-session-preview-2-{}", std::process::id()));
-        let config = crate::engine::picker::create_preview_test_suite(&temp);
-        let engines = crate::engine::EngineRegistry::new();
-        config.validate_with_engines(&engines).unwrap();
-        let tasks = TaskRuntime::new();
-        for (page, owner, expected_parameter) in [
-            ("browser:main", "library:main", "library"),
-            ("browser:override", "browser:override", "browser"),
-        ] {
-            let mount = crate::input::ViewMountId(999);
-            let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(mount));
-            let input = json!({"stdin":{"path":"launch-input","length":9,"is_tty":false}});
-            let services = crate::engine::picker::mount_data(
-                &config,
-                &input,
-                page,
-                MountTaskLease::new(mount),
-            )
-            .unwrap();
-            assert!(services.workflow_root(page).unwrap().ends_with("browser"));
-            if page == "browser:main" {
-                assert!(
-                    services
-                        .workflow_root("library:main")
-                        .unwrap()
-                        .ends_with("library")
-                );
-            }
-            let view = config.view(page).unwrap();
-            let preview_ratio = view
-                .engine_field("preview_ratio")
-                .map(crate::workflow::config::toml_to_json)
-                .transpose()
-                .unwrap();
-            let preview_min_width = view
-                .engine_field("preview_min_width")
-                .map(crate::workflow::config::toml_to_json)
-                .transpose()
-                .unwrap();
-            let (preview_ratio, preview_min_width, _) = crate::engine::picker::preview_options(
-                preview_ratio.as_ref(),
-                preview_min_width.as_ref(),
-                None,
-            )
-            .unwrap();
-            let preview_config = crate::engine::picker::preview::parse(
-                preview_ratio,
-                preview_min_width,
-                view.engine_field("preview")
-                    .map(crate::workflow::config::toml_to_json)
-                    .transpose()
-                    .unwrap(),
-            )
-            .unwrap();
-            let mut picker = PickerView::new_with_preview(page, services, preview_config);
-            picker
-                .dispatch_action(ActionId::new("picker.toggle_preview"), None)
-                .unwrap();
-            let parameters = ParameterSnapshot::from_parts(
-                json!({"search":"","owner":"browser"}),
-                String::new(),
-                crate::input::InputSourceIdentity {
-                    frame: mount,
-                    generation: 1,
-                },
-                1,
-            );
-            picker.parameter_snapshot = Some(parameters.clone());
-            picker.request_items(page, "", "", parameters).unwrap();
-            picker.start_prepared_work(&starter);
-            for _ in 0..200 {
-                if picker.poll_work().unwrap().is_some() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            picker.sync_preview();
-            let request = picker.preview.prepared_request().unwrap();
-            assert_eq!(request.owner, owner);
-            assert_eq!(
-                request.request["context"]["parameters"]["owner"],
-                expected_parameter
-            );
-            assert_eq!(request.request["context"]["input"], input);
-            assert_eq!(
-                request.request["context"]["engine"]["state"]["item"]["value"],
-                "mixed"
-            );
-            assert!(
-                request.request["context"]["engine"]["state"]["item"]
-                    .get("source_view")
-                    .is_none()
-            );
-            assert_eq!(request.root.as_deref(), config.workflow_root(owner));
-            let identity = request.identity.clone();
-            // Same public value, new metadata must invalidate the prepared preview.
-            Arc::make_mut(&mut picker.frame.selection.items)[0].metadata["summary"] =
-                json!("updated metadata");
-            picker.sync_preview();
-            assert_ne!(
-                picker.preview.prepared_request().unwrap().identity,
-                identity
-            );
-            let identity = picker.preview.prepared_request().unwrap().identity.clone();
-            Arc::make_mut(&mut picker.frame.selection.items)[0].source_view =
-                "browser:override".into();
-            picker.sync_preview();
-            assert_ne!(
-                picker.preview.prepared_request().unwrap().identity,
-                identity
-            );
-            picker.preview_content_size = Some((1, 1));
-            picker.sync_preview();
-            assert!(picker.preview.prepared_request().is_none());
-            picker.preview_content_size = Some((80, 24));
-            picker.sync_preview();
-            assert!(picker.preview.prepared_request().is_some());
-            // Real session synchronization controls visibility, starts and authoritative scrolling.
-            picker.preview = crate::engine::picker::preview::PickerPreview::new(
-                crate::engine::picker::preview::parse(0.35, 24, Some(json!({"producer":"declared", "document":(0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")}))).unwrap()
-            );
-            for size in [(40, 0), (23, 3)] {
-                picker.set_auxiliary_content_size(size);
-                assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
-                let preview = &picker.preview;
-                assert!(preview.prepared_request().is_none());
-                assert!(!preview.render_state().visible);
-                assert!(!preview.document_scroll_state().0);
-            }
-            picker.set_auxiliary_content_size((40, 5));
-            picker.start_prepared_auxiliary_work(&starter);
-            assert!(picker.preview.document_scroll_state().0);
-            for _ in 0..100 {
-                picker
-                    .dispatch_action(ActionId::new("picker.preview_scroll_down"), None)
-                    .unwrap();
-            }
-            assert_eq!(picker.preview.document_scroll_state().1, 5);
-            picker
-                .dispatch_action(ActionId::new("picker.preview_scroll_up"), None)
-                .unwrap();
-            assert_eq!(picker.preview.document_scroll_state().1, 2);
-            picker.set_auxiliary_content_size((40, 10));
-            assert_eq!(picker.preview.document_scroll_state().1, 0);
-            picker.set_auxiliary_content_size((40, 5));
-            assert_eq!(picker.preview.document_scroll_state().1, 0);
-            picker
-                .dispatch_action(ActionId::new("picker.preview_scroll_up"), None)
-                .unwrap();
-            assert_eq!(picker.preview.document_scroll_state().1, 0);
-            picker.deactivate();
-            assert!(picker.preview.prepared_request().is_none());
-        }
         tasks.shutdown_and_wait();
         std::fs::remove_dir_all(temp).unwrap();
     }

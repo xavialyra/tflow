@@ -438,6 +438,7 @@ mod tests {
             display: display_input.into(),
             value: Some("open_file".to_string()),
             metadata: serde_json::Value::Null,
+            bindings: std::collections::BTreeMap::new(),
             source_view: "test".to_string(),
         };
 
@@ -486,6 +487,7 @@ mod tests {
             .into(),
             value: None,
             metadata: serde_json::Value::Null,
+            bindings: std::collections::BTreeMap::new(),
             source_view: "test".to_string(),
         };
         let state = PickerRenderState {

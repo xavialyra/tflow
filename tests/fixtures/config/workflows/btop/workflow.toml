@@ -18,22 +18,25 @@ type = "embedded"
 command = ["sh", "scripts/btop-entry.sh"]
 escape-cancels = true
 
-[views.main.commands.next]
-key = "tab"
+[views.main.keymap]
+tab = "next"
+"" = "reset"
+
+[commands.next]
 label = "Next resource"
 scope = "view"
 type = "navigate"
 producer = "script"
 
-[views.main.commands.next.handler]
+[commands.next.handler]
 file = "scripts/next.sh"
 
-[views.main.commands.reset]
+[commands.reset]
 label = "Reset monitor"
 scope = "view"
 type = "navigate"
 producer = "declared"
 
-[views.main.commands.reset.handler]
+[commands.reset.handler]
 target = "btop:main"
 replace = true

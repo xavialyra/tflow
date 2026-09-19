@@ -1129,10 +1129,10 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
         entrypoint = "main"
         [views.main.engine]
         type = "picker"
-        [views.main.commands.run]
+        [commands.run]
         type = "run"
         producer = "script"
-        [views.main.commands.run.handler]
+        [commands.run.handler]
         script = "foo.sh"
         "#,
     )
@@ -1204,9 +1204,8 @@ fn fixture_inspect_all_returns_sorted_view_contracts() {
         .expect("sys:main must be inspectable");
     assert_eq!(sys["alias"], "sys");
     assert_eq!(sys["engine"], "picker");
-    assert!(sys["commands"].as_array().unwrap().iter().any(|command| {
-        command["id"] == "run" && command["key"] == "enter" && command["label"] == "Run"
-    }));
+    assert_eq!(sys["commands"]["sys:run"]["label"], "Run");
+    assert_eq!(sys["keymap"]["enter"], "sys:run");
 
     let output_view = views
         .iter()
@@ -1403,7 +1402,7 @@ fn suites_reject_host_environment_fields() {
 }
 
 #[test]
-fn workflow_commands_are_local_defaults_overridden_by_view_commands() {
+fn view_level_commands_are_rejected_with_adr_0006_diagnostic() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
     fs::write(
@@ -1414,7 +1413,6 @@ api=1
 name="Tool"
 entrypoint="main"
 [commands.accept]
-key="enter"
 label="Shared accept"
 type="return"
 producer="declared"
@@ -1424,7 +1422,6 @@ type="picker"
 [views.other.engine]
 type="picker"
 [views.other.commands.accept]
-key="enter"
 label="Local accept"
 type="return"
 producer="declared"
@@ -1438,14 +1435,8 @@ handler={value="local"}
         .args(["inspect", "--all"])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(catalog["views"][0]["commands"][0]["label"], "Shared accept");
-    assert_eq!(catalog["views"][1]["commands"][0]["label"], "Local accept");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ADR 0006 promotes business commands"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1519,7 +1510,7 @@ fn standalone_workflow_defers_sibling_navigation_until_runtime() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
     for kind in ["navigate", "call"] {
-        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[views.main.commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
+        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
         let output = launcher_command()
             .args(["--workflow"])
             .arg(&workflow)
@@ -1534,3 +1525,108 @@ fn standalone_workflow_defers_sibling_navigation_until_runtime() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn items_query_mode_outputs_valid_json_array_exit_0() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [
+            { display = "Item 1", value = "val1" },
+            { display = "Item 2", value = "val2" }
+        ]
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&config)
+        .args(["--items", "core:default"])
+        .output()
+        .expect("could not run items query");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let items: serde_json::Value = serde_json::from_str(&stdout).expect("output must be valid JSON");
+    assert!(items.is_array());
+    assert_eq!(items.as_array().unwrap().len(), 2);
+    assert_eq!(items[0]["display"], "Item 1");
+    assert_eq!(items[1]["value"], "val2");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn items_query_mode_validation_failure_exit_1() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = []
+
+        [workflows.core.views.cap.engine]
+        type = "capture"
+        [workflows.core.views.cap.engine.config]
+        output = "hello"
+        "#,
+    )
+    .unwrap();
+
+    // 1. Missing view -> exit code 1
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&config)
+        .args(["--items", "core:missing"])
+        .output()
+        .expect("could not run items query");
+    assert_eq!(output.status.code(), Some(1));
+
+    // 2. Non-picker view -> exit code 1
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&config)
+        .args(["--items", "core:cap"])
+        .output()
+        .expect("could not run items query");
+    assert_eq!(output.status.code(), Some(1));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn items_query_mode_producer_script_failure_exit_2() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config.items]
+        producer = "script"
+        [workflows.core.views.default.engine.config.items.handler]
+        script = "echo 'not-json-array'; exit 1"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&config)
+        .args(["--items", "core:default"])
+        .output()
+        .expect("could not run items query");
+    assert_eq!(output.status.code(), Some(2));
+    fs::remove_dir_all(root).unwrap();
+}
+

@@ -56,7 +56,7 @@ pub(crate) fn project_binding_config(
     let view_keymap = config
         .view(view_ref)
         .and_then(|view| view.keymap.as_ref())
-        .map(toml_to_json)
+        .map(serde_json::to_value)
         .transpose()?;
     Ok(ProjectedBindingConfig {
         defaults,

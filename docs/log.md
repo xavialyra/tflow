@@ -4,6 +4,17 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 ## 2026-09-19
 
+- Added proposed ADR 0006 (`docs/adr/0006-feed-removal-workflow-scoped-commands-and-item-bindings.md`):
+  - Proposed complete abolition of legacy Picker feeds (`[[views.<name>.engine.config.feeds]]`), command projection, hidden item provenance, and internal `snapshot.owner_view` tracking.
+  - Formulated promotion of business commands from View tables to Workflow root level (`[commands.<id>]`), establishing Suite-level fully qualified command identifiers (`<workflow>:<command>`).
+  - Specified explicit binary View binding strategies (`mode = "static"` vs `mode = "item"`), with `mode = "static"` as the default for single-purpose workflows.
+  - Specified zero-lock dispatch-time late-binding for dynamic `mode = "item"` views, completely bypassing `CommandRegistry` write locks during cursor navigation.
+  - Decomposed headless aggregation into two orthogonal, non-mutating query interfaces: `tlaunch --items` (strict JSON array data stream with error propagation) and `tlaunch --inspect` (metadata/command contract inspection), leaving combinator logic explicitly to user scripts.
+  - Added query parameter injection for `[suite.entrypoint]` and sandboxed child process environment inheritance via `$TLAUNCH_SUITE`.
+  - Registered ADR 0006 as `Proposed` pending implementation milestones.
+
+## 2026-09-19
+
 - Removed redundant fixture trees `tests/fixtures/native-form/` and `tests/fixtures/preview/`; consolidated documentation and integration tests on the canonical `tests/fixtures/config/` suite and self-contained temporary test fixtures.
 - Finalized ADR 0005 implementation: renamed `config-toml.md` to `settings-toml.md`, transitioned test fixtures to explicit `default.toml` suites and `settings.toml` host environments, eliminated dead backwards-compatibility code and shims, and verified non-fatal error reporting for unresolvable sibling routes.
 - Documented workflow-local command defaults; suite and settings command registration is rejected.

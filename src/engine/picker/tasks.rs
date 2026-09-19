@@ -146,7 +146,7 @@ mod tests {
             source,
             7,
         );
-        let identity = super::super::items::FeedRequestIdentity::new(
+        let identity = super::super::items::ItemsRequestIdentity::new(
             mount_id,
             source,
             generation,

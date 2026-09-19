@@ -443,9 +443,41 @@ fn materialize_test_workflow(
     let mut collected_aliases = Vec::new();
     let mut first_view_name = None;
     let mut matched_entrypoint = None;
+    let mut promoted_commands = Vec::new();
 
     if let Some(views_table) = manifest_views.as_table_mut() {
         for (view_name, view_val) in views_table.iter_mut() {
+            if let Some(view_tbl) = view_val.as_table_mut() {
+                if let Some(view_cmds) = view_tbl.remove("commands") {
+                    if let Some(view_cmds_table) = view_cmds.as_table() {
+                        let keymap = view_tbl
+                            .entry("keymap".to_string())
+                            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                            .as_table_mut()
+                            .unwrap();
+                        for (cmd_id, cmd_val) in view_cmds_table {
+                            if let Some(cmd_table) = cmd_val.as_table() {
+                                if let Some(key) = cmd_table.get("key").and_then(toml::Value::as_str) {
+                                    keymap.insert(key.to_string(), toml::Value::String(cmd_id.clone()));
+                                }
+                            }
+                            promoted_commands.push((cmd_id.clone(), cmd_val.clone()));
+                        }
+                    }
+                }
+                if let Some(engine) = view_tbl.get_mut("engine").and_then(toml::Value::as_table_mut) {
+                    if let Some(config) = engine.get_mut("config").and_then(toml::Value::as_table_mut) {
+                        config.remove("feeds");
+                        config.remove("source_badge");
+                    }
+                }
+                if let Some(alias_val) = view_tbl.remove("alias")
+                    && let Some(alias_str) = alias_val.as_str()
+                {
+                    collected_aliases
+                        .push((alias_str.to_string(), format!("{workflow_id}:{view_name}")));
+                }
+            }
             if first_view_name.is_none() {
                 first_view_name = Some(view_name.clone());
             }
@@ -454,13 +486,17 @@ fn materialize_test_workflow(
             {
                 matched_entrypoint = Some(view_name.clone());
             }
-            if let Some(view_tbl) = view_val.as_table_mut()
-                && let Some(alias_val) = view_tbl.remove("alias")
-                && let Some(alias_str) = alias_val.as_str()
-            {
-                collected_aliases
-                    .push((alias_str.to_string(), format!("{workflow_id}:{view_name}")));
-            }
+        }
+    }
+
+    if !promoted_commands.is_empty() {
+        let wf_cmds = manifest_table
+            .entry("commands".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .unwrap();
+        for (cmd_id, cmd_val) in promoted_commands {
+            wf_cmds.insert(cmd_id, cmd_val);
         }
     }
 

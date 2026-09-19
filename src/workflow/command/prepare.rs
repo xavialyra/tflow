@@ -157,10 +157,10 @@ pub(crate) fn prepare_return_processor(
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
     let command = match &origin {
-        CommandOrigin::View(reference) => config
-            .view(&reference.view)
-            .and_then(|view| view.commands.get(&reference.id))
-            .cloned(),
+        CommandOrigin::View(reference) => {
+            let member_id = crate::workflow::config::package_id(&reference.view);
+            config.find_command(member_id, &reference.id).cloned()
+        }
         CommandOrigin::Session { definition, .. } => Some((**definition).clone()),
     }
     .context("return processor origin is not configured")?;
@@ -386,13 +386,13 @@ pub(crate) fn collect_available_commands(
             }
         }
     }
-    if let Some(page) = config.view(page_view) {
-        for (id, command) in &page.commands {
-            commands.insert(
-                format!("{page_view}/{id}"),
-                runtime_command_value(page_view, id, command)?,
-            );
-        }
+    let member_id = crate::workflow::config::package_id(page_view);
+    for (id, command) in config.workflow_commands(member_id) {
+        let local_id = id.strip_prefix(&format!("{member_id}:")).unwrap_or(&id);
+        commands.insert(
+            format!("{page_view}/{local_id}"),
+            runtime_command_value(page_view, local_id, &command)?,
+        );
     }
     Ok(commands)
 }

@@ -19,11 +19,13 @@ items = [
     { display = "Second Option", value = "second_option" },
 ]
 
-[views.main.commands.run]
-key = "enter"
+[views.main.keymap]
+enter = "run"
+
+[commands.run]
 label = "Run"
 type = "return"
 producer = "declared"
 
-[views.main.commands.run.handler]
+[commands.run.handler]
 value = "selected_option"

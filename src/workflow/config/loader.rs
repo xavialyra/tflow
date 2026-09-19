@@ -18,6 +18,8 @@ pub(crate) struct LoadedConfig {
     pub(crate) suite_styles: BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
     pub(crate) settings_styles:
         BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
+    pub(crate) entrypoint_query: Option<serde_json::Value>,
+    pub(crate) suite_file: Option<PathBuf>,
 }
 
 impl LoadedConfig {
@@ -42,11 +44,15 @@ impl LoadedConfig {
             raw,
             workflow_roots,
             log_file,
+            entrypoint_query,
+            suite_file,
             ..
         } = self;
         let mut config = CompiledConfig::from_raw(raw, workflow_roots)
             .context("could not compile static configuration")?;
         config.log_file = log_file;
+        config.entrypoint_query = entrypoint_query;
+        config.suite_file = suite_file;
         Ok(config)
     }
 }
@@ -145,7 +151,19 @@ pub(super) fn parse_atomic_workflow_package(
         .with_context(|| format!("workflow {:?} is missing [views.*]", workflow_id))?;
     normalize_view_keymaps(&mut views_value, workflow_id)?;
 
-    let mut views: BTreeMap<String, View> = views_value
+    if let Some(views_table) = views_value.as_table() {
+        for (view_name, view_table) in views_table {
+            if view_table.as_table().is_some_and(|t| t.contains_key("commands")) {
+                bail!(
+                    "view {:?} in workflow {:?} cannot define [commands]; ADR 0006 promotes business commands to workflow root [commands]",
+                    view_name,
+                    workflow_id
+                );
+            }
+        }
+    }
+
+    let views: BTreeMap<String, View> = views_value
         .try_into()
         .with_context(|| format!("invalid [views] in workflow manifest {source_name}"))?;
 
@@ -174,13 +192,6 @@ pub(super) fn parse_atomic_workflow_package(
             .with_context(|| format!("invalid [commands] in {source_name}"))?,
         None => BTreeMap::new(),
     };
-    for view in views.values_mut() {
-        for (id, command) in &commands {
-            view.commands
-                .entry(id.clone())
-                .or_insert_with(|| command.clone());
-        }
-    }
 
     let styles: BTreeMap<String, crate::ui::theme::RawStyleBinding> = match table.remove("styles") {
         Some(val) => val
@@ -202,6 +213,7 @@ pub(super) fn parse_atomic_workflow_package(
         name: Some(header.name.clone()),
         entrypoint: Some(header.entrypoint.clone()),
         views,
+        commands,
         styles,
     };
     Ok((header, workflow))
@@ -246,7 +258,12 @@ pub(super) fn parse_suite_manifest(source: &str, source_name: &str) -> Result<Ra
     if manifest.suite.name.trim().is_empty() {
         bail!("suite manifest name cannot be empty");
     }
-    if manifest.suite.entrypoint.trim().is_empty() {
+    let entrypoint = manifest
+        .suite
+        .entrypoint
+        .as_ref()
+        .with_context(|| format!("suite manifest {:?} is missing entrypoint", source_name))?;
+    if entrypoint.target().trim().is_empty() {
         bail!("suite manifest entrypoint cannot be empty");
     }
 
@@ -386,6 +403,8 @@ impl CompiledConfig {
             settings_file: settings_dir.map(|dir| dir.join("settings.toml")),
             suite_styles: BTreeMap::new(),
             settings_styles: settings.styles,
+            entrypoint_query: None,
+            suite_file: None,
         })
     }
 
@@ -575,14 +594,30 @@ impl CompiledConfig {
         }
 
         // Resolve suite entrypoint
-        let suite_entry = &manifest.suite.entrypoint;
+        let suite_entry_spec = manifest
+            .suite
+            .entrypoint
+            .as_ref()
+            .context("missing suite entrypoint")?;
+        let suite_entry = suite_entry_spec.target();
         let resolved_entrypoint = if suite_entry.contains(':') {
-            suite_entry.clone()
+            suite_entry.to_string()
         } else if let Some(target) = aliases.get(suite_entry) {
             target.clone()
         } else {
-            suite_entry.clone()
+            suite_entry.to_string()
         };
+        let entrypoint_query = suite_entry_spec
+            .query()
+            .map(|tbl| super::toml_to_json(&toml::Value::Table(tbl.clone())))
+            .transpose()?;
+
+        let canonical_suite = suite_file
+            .canonicalize()
+            .unwrap_or_else(|_| suite_file.clone());
+        unsafe {
+            std::env::set_var("TLAUNCH_SUITE", &canonical_suite);
+        }
 
         let (settings, settings_dir) = resolve_settings(settings_path)?;
         let log_file = settings.log_file.as_deref().map(|path| {
@@ -616,6 +651,8 @@ impl CompiledConfig {
             settings_file: settings_dir.map(|dir| dir.join("settings.toml")),
             suite_styles: manifest.styles,
             settings_styles: settings.styles,
+            entrypoint_query,
+            suite_file: Some(canonical_suite),
         })
     }
 }

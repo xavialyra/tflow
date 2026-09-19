@@ -14,13 +14,16 @@ items = [
     { display = "Recipe: Say Hello", value = "hello" },
 ]
 
-[views.recipe.commands.execute]
-key = "enter"
+[views.recipe.keymap]
+enter = "execute"
+"ctrl+r" = "run_inline"
+
+[commands.execute]
 label = "Execute Recipe"
 type = "return"
 producer = "script"
 
-[views.recipe.commands.execute.handler]
+[commands.execute.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -40,13 +43,12 @@ json.dump({
 sys.stdout.write("\n")
 '''
 
-[views.recipe.commands.run_inline]
-key = "ctrl+r"
+[commands.run_inline]
 label = "Run Inline Script"
 type = "run"
 producer = "script"
 
-[views.recipe.commands.run_inline.handler]
+[commands.run_inline.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

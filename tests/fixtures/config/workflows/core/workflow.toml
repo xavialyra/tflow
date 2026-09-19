@@ -7,12 +7,8 @@ entrypoint = "default"
 type = "picker"
 
 [views.default.engine.config]
-
-[[views.default.engine.config.feeds]]
-view = "calculator:main"
-
-[[views.default.engine.config.feeds]]
-view = "apps:main"
-
-[[views.default.engine.config.feeds]]
-view = "sys:main"
+items = [
+  { display = "Termius", value = "termius", bindings = { enter = "apps:open" } },
+  { display = "Calculator", value = "calculator", bindings = { enter = "calculator:copy" } },
+  { display = "Lock Screen", value = "lock", bindings = { enter = "sys:run" } },
+]

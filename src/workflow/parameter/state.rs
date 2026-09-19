@@ -302,17 +302,6 @@ impl ParameterRegistry {
         Ok(true)
     }
 
-    pub(crate) fn bind_feed_input(&self, state: &mut ParameterState, source: &str) -> Result<bool> {
-        if source.is_empty() {
-            return Ok(false);
-        }
-        let schema = &self.schema_for(&state.view_ref, state)?.schema;
-        if !schema.plain && schema.input_order.is_empty() {
-            bail!("non-empty feed binding cannot be parsed because query input_order is empty");
-        }
-        self.update_input(state, source)
-    }
-
     #[cfg(test)]
     pub(crate) fn update_value(&self, state: &mut ParameterState, value: &Value) -> Result<bool> {
         if value.is_null() {
@@ -655,16 +644,6 @@ impl ParameterBinding {
         self.registry.update_initial_input(state, source)
     }
 
-    pub(crate) fn bind_feed_input(&self, state: &mut ParameterState, source: &str) -> Result<bool> {
-        anyhow::ensure!(
-            state.view_ref() == self.view_ref,
-            "parameter binding for {:?} cannot update {:?}",
-            self.view_ref,
-            state.view_ref()
-        );
-        self.registry.bind_feed_input(state, source)
-    }
-
     pub(crate) fn render_input(&self, state: &ParameterState) -> Result<String> {
         anyhow::ensure!(
             state.view_ref() == self.view_ref,
@@ -687,6 +666,7 @@ impl ParameterBinding {
 }
 
 impl ParameterState {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
@@ -947,11 +927,6 @@ mod tests {
         let error = registry
             .update_input(&mut state, "needle")
             .expect_err("normal user input needs an ordered query field");
-        assert!(error.to_string().contains("input_order is empty"));
-
-        let error = registry
-            .bind_feed_input(&mut state, "needle")
-            .expect_err("non-empty binding needs an ordered query field");
         assert!(error.to_string().contains("input_order is empty"));
         assert_eq!(registry.parameter_values(&state).unwrap()["token"], "fixed");
     }

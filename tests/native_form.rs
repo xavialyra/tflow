@@ -57,12 +57,14 @@ items = [{"display": command["label"], "metadata": {"command": command["ref"]}}
 json.dump({"version": 1, "items": items}, sys.stdout)
 '''
 
-[views.commands.commands.accept]
-key = "enter"
+[views.commands.keymap]
+enter = "accept"
+
+[commands.accept]
 label = "Select"
 type = "return"
 producer = "script"
-[views.commands.commands.accept.handler]
+[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
@@ -92,13 +94,10 @@ fields = [
     { name = "enabled", label = "Enabled", type = "boolean", value = false },
     { name = "options", label = "Options", type = "json", value = { tags = [] } },
 ]
-[views.main.commands.submit]
-key = "enter"
-label = "Submit"
-scope = "view"
-type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+[views.main.keymap]
+enter = "submit"
+"ctrl+l" = "details"
+"ctrl+t" = "string_form"
 
 [views.dynamic.query]
 type = "object"
@@ -108,34 +107,34 @@ type = "form"
 [views.dynamic.engine.config.content]
 producer = "script"
 handler = { file = "scripts/content.py" }
-[views.dynamic.commands.submit]
-key = "enter"
-label = "Submit"
+[views.dynamic.keymap]
+enter = "submit"
+
+[commands.submit]
+label = "Submit string values"
 scope = "view"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
 
-[views.main.commands.details]
-key = "ctrl+l"
+[commands.details]
 label = "Edit details"
 scope = "view"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:dynamic" }
-[views.main.commands.details.return_processor]
+[commands.details.return_processor]
 type = "return"
 producer = "script"
 handler = { file = "scripts/returned.py" }
 
-[views.main.commands.string_form]
-key = "ctrl+t"
+[commands.string_form]
 label = "String form"
 scope = "view"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
-[views.main.commands.string_form.return_processor]
+[commands.string_form.return_processor]
 type = "return"
 producer = "script"
 handler = { file = "scripts/returned.py" }
@@ -147,12 +146,8 @@ type = "form"
 [views.string.engine.config.content]
 producer = "script"
 handler = { file = "scripts/string-content.py" }
-[views.string.commands.submit]
-label = "Submit string values"
-scope = "view"
-type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+[views.string.keymap]
+"" = "submit"
 
 [views.failed.engine]
 type = "form"
@@ -415,6 +410,7 @@ fn string_convention_form_submits_through_palette_and_call_return() {
     });
     send(&mut process, b"\x0b");
     wait_for_fresh_screen(&process.master, |s| s.contains("Submit string values"));
+    std::thread::sleep(std::time::Duration::from_millis(50));
     send(&mut process, b"\r");
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "{}", String::from_utf8_lossy(&output));

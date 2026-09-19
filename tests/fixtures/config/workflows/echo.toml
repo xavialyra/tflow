@@ -31,22 +31,26 @@ json.dump({"version": 1, "output": message}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 '''
 
-[views.main.commands.copy]
-key = "enter"
+[views.main.keymap]
+enter = "copy"
+"ctrl+r" = "inline_multiline"
+"ctrl+s" = "inline_single"
+"ctrl+y" = "inline_python"
+
+[commands.copy]
 label = "Copy & Exit"
 type = "return"
 producer = "declared"
 
-[views.main.commands.copy.handler]
+[commands.copy.handler]
 value = ""
 
-[views.main.commands.inline_multiline]
-key = "ctrl+r"
+[commands.inline_multiline]
 label = "Run Multi-line Script"
 type = "run"
 producer = "script"
 
-[views.main.commands.inline_multiline.handler]
+[commands.inline_multiline.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -66,13 +70,12 @@ json.dump({
 sys.stdout.write("\n")
 '''
 
-[views.main.commands.inline_single]
-key = "ctrl+s"
+[commands.inline_single]
 label = "Run Single-line Script"
 type = "run"
 producer = "script"
 
-[views.main.commands.inline_single.handler]
+[commands.inline_single.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -92,13 +95,12 @@ json.dump({
 sys.stdout.write("\n")
 '''
 
-[views.main.commands.inline_python]
-key = "ctrl+y"
+[commands.inline_python]
 label = "Run Python Script"
 type = "run"
 producer = "script"
 
-[views.main.commands.inline_python.handler]
+[commands.inline_python.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

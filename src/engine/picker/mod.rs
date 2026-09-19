@@ -11,7 +11,8 @@ mod tasks;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use self::display::ItemDisplayInput;
 pub(crate) use self::display::SlotToken;
-use self::items::{FeedDefinition, ItemsRequest, PickerItemsLoader};
+pub(crate) use self::items::run_items_producer_raw;
+use self::items::{ItemsRequest, PickerItemsDefinition, PickerItemsLoader};
 use self::keymap::PickerKeymap;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
@@ -21,14 +22,15 @@ use self::tasks::PickerItemsScheduler;
 use super::{
     EngineValidationContext, InputBindingFactoryContext, RendererFactoryContext, validate_fields,
 };
+use crate::input::keymap::KeymapAction;
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
-    CompiledConfig, Defaults, ENGINE_PICKER, ProducerKind, View, parse_producer_script_handler,
+    CompiledConfig, Defaults, ProducerKind, View, parse_producer_script_handler,
     toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -73,35 +75,27 @@ impl PickerViewServices {
 impl PickerViewServices {
     pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
-        let feed_views = config.feed_views(root_view_ref)?;
         services.page_commands.insert(
             root_view_ref.to_string(),
             crate::workflow::command::collect_available_commands(config, root_view_ref, false)?,
         );
 
-        let mut view_refs = feed_views
-            .into_iter()
-            .map(|(view_ref, _)| view_ref)
-            .collect::<BTreeSet<_>>();
-        view_refs.insert(root_view_ref.to_string());
-        for view_ref in view_refs {
-            if let Some(value) = config
-                .view(&view_ref)
-                .and_then(|view| view.engine_field("preview"))
-            {
-                services.preview_sources.insert(
-                    view_ref.clone(),
-                    preview::parse_source(toml_to_json(value)?, config.workflow_root(&view_ref))?,
-                );
-            }
-            if let Some(root) = config.workflow_root(&view_ref) {
-                let package = view_ref
-                    .split_once(':')
-                    .map_or(view_ref.as_str(), |(package, _)| package);
-                services
-                    .workflow_roots
-                    .insert(package.to_string(), root.to_path_buf());
-            }
+        if let Some(value) = config
+            .view(root_view_ref)
+            .and_then(|view| view.engine_field("preview"))
+        {
+            services.preview_sources.insert(
+                root_view_ref.to_string(),
+                preview::parse_source(toml_to_json(value)?, config.workflow_root(root_view_ref))?,
+            );
+        }
+        if let Some(root) = config.workflow_root(root_view_ref) {
+            let package = root_view_ref
+                .split_once(':')
+                .map_or(root_view_ref, |(package, _)| package);
+            services
+                .workflow_roots
+                .insert(package.to_string(), root.to_path_buf());
         }
         Ok(services)
     }
@@ -123,14 +117,14 @@ impl PickerViewServices {
 }
 
 struct PickerMountPlan {
-    // Definitions are compiled once while preparing the mount. The opaque
+    // Definition is compiled once while preparing the mount. The opaque
     // plan itself still has no scheduler authority.
-    definitions: Arc<Vec<Arc<FeedDefinition>>>,
+    definition: Arc<PickerItemsDefinition>,
     view_services: PickerViewServices,
 }
 
 struct ConfigPickerItemsLoader {
-    definitions: Arc<Vec<Arc<FeedDefinition>>>,
+    definition: Arc<PickerItemsDefinition>,
 }
 
 impl PickerItemsLoader for ConfigPickerItemsLoader {
@@ -139,9 +133,8 @@ impl PickerItemsLoader for ConfigPickerItemsLoader {
         request: &ItemsRequest,
         cancellation: &crate::lifecycle::CancellationToken,
     ) -> items::ItemsLoadOutcome {
-        items::load_items_for_definitions_with_outcome(
-            &self.definitions,
-            &request.view,
+        items::load_items_for_definition_with_outcome(
+            &self.definition,
             &request.identity.page_parameters,
             &request.identity.binding_raw,
             &request.engine_state,
@@ -162,7 +155,7 @@ pub(crate) fn mount_data(
     let mut view_services = PickerViewServices::from_config(config, view_ref)?;
     view_services.launch_input = input.clone();
     let plan = PickerMountPlan {
-        definitions: FeedDefinition::collection(Arc::clone(&projection), view_ref)?,
+        definition: PickerItemsDefinition::new(Arc::clone(&projection), view_ref)?,
         view_services,
     };
     let picker = PickerRuntimeServices::from_plan(plan, lease, view_ref);
@@ -171,7 +164,7 @@ pub(crate) fn mount_data(
 
 #[derive(Clone)]
 pub(crate) struct PickerRuntimeServices {
-    definitions: Arc<Vec<Arc<FeedDefinition>>>,
+    definition: Arc<PickerItemsDefinition>,
     scheduler: PickerItemsScheduler,
     view_services: PickerViewServices,
 }
@@ -191,19 +184,19 @@ impl PickerRuntimeServices {
             )
             .unwrap_or_else(|_| panic!("test config projection must compile")),
         );
-        let definitions = FeedDefinition::collection(Arc::clone(&projection), view_ref)
-            .unwrap_or_else(|_| panic!("test feed definitions must compile"));
+        let definition = PickerItemsDefinition::new(Arc::clone(&projection), view_ref)
+            .unwrap_or_else(|_| panic!("test presentation definition must compile"));
         let plan = PickerMountPlan {
-            definitions,
+            definition,
             view_services: PickerViewServices::from_config(&config, view_ref).unwrap_or_default(),
         };
         Self::from_plan(plan, MountTaskLease::new(starter.mount_id()), view_ref)
     }
 
     fn from_plan(plan: PickerMountPlan, lease: MountTaskLease, view_ref: &str) -> Self {
-        let definitions = plan.definitions;
+        let definition = plan.definition;
         Self {
-            definitions,
+            definition,
             scheduler: PickerItemsScheduler::new(lease, view_ref),
             view_services: plan.view_services,
         }
@@ -213,7 +206,7 @@ impl PickerRuntimeServices {
         let mut services = self.view_services.clone();
         services.task_services = Some(Arc::new(PickerTaskServices {
             loader: Arc::new(ConfigPickerItemsLoader {
-                definitions: Arc::clone(&self.definitions),
+                definition: Arc::clone(&self.definition),
             }),
             scheduler: self.scheduler.clone(),
         }));
@@ -310,12 +303,11 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
             "preview_min_width",
             "preview_default_open",
             "preview",
-            "source_badge",
             "show_input",
             "show_divider",
         ],
     )?;
-    for field in ["source_badge", "show_input", "show_divider"] {
+    for field in ["show_input", "show_divider"] {
         if let Some(value) = view.engine_field(field)
             && !matches!(value, toml::Value::Boolean(_))
         {
@@ -351,50 +343,7 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     Ok(())
 }
 
-pub(super) fn validate_relations(config: &CompiledConfig) -> Result<()> {
-    for (view_ref, view) in config.iter_views() {
-        if config.engine(view_ref)? != ENGINE_PICKER {
-            continue;
-        }
-        let feeds = view.selected_feeds();
-        if feeds.is_empty() {
-            continue;
-        }
-        if view.selected_items().is_some() {
-            bail!("feeds view {:?} cannot define items", view_ref);
-        }
-        let mut seen_feeds = BTreeSet::new();
-        for feed in feeds {
-            let feed_ref = &feed.view;
-            if !seen_feeds.insert(feed_ref.clone()) {
-                bail!(
-                    "view {:?} lists feed {:?} more than once",
-                    view_ref,
-                    feed_ref
-                );
-            }
-            let feed_view = config.view(feed_ref).with_context(|| {
-                format!("view {:?} references missing feed {:?}", view_ref, feed_ref)
-            })?;
-            if config.engine(feed_ref)? != ENGINE_PICKER {
-                bail!(
-                    "view {:?} feed {:?} does not use the picker engine",
-                    view_ref,
-                    feed_ref
-                );
-            }
-            if feed_view.is_feeds_page() {
-                bail!(
-                    "view {:?} cannot use feeds view {:?} as a feed",
-                    view_ref,
-                    feed_ref
-                );
-            }
-            if feed_view.selected_items().is_none() {
-                bail!("view {:?} feed {:?} must define items", view_ref, feed_ref);
-            }
-        }
-    }
+pub(super) fn validate_relations(_config: &CompiledConfig) -> Result<()> {
     Ok(())
 }
 
@@ -408,10 +357,12 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
     PickerKeymap::validate_values(bindings.as_ref(), None).context("picker bindings")
 }
 
-pub(super) fn validate_keymap(name: &str, view: &View) -> Result<()> {
-    let keymap = view.keymap.as_ref().map(toml_to_json).transpose()?;
-    PickerKeymap::validate_values(None, keymap.as_ref())
-        .with_context(|| format!("view {:?} picker keymap", name))
+pub(super) fn validate_keymap(_name: &str, _view: &View) -> Result<()> {
+    Ok(())
+}
+
+pub(crate) fn is_picker_action(name: &str) -> bool {
+    self::keymap::PickerAction::parse(name).is_some()
 }
 
 pub(super) fn create_renderer(
@@ -599,12 +550,24 @@ owner = { type = "string", default = "browser" }
 [views.main.engine]
 type = "picker"
 [views.main.engine.config]
-feeds = [{ view = "library:main" }]
+items = [
+  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
+  { display = "Empty preview", value = "empty", metadata = {} },
+]
 preview_ratio = 0.35
 preview_min_width = 24
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
 
+[views.override.engine]
+type = "picker"
 [views.override.engine.config]
-feeds = [{ view = "library:main" }]
+items = [
+  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
+  { display = "Empty preview", value = "empty", metadata = {} },
+]
 [views.override.engine.config.preview]
 producer = "script"
 [views.override.engine.config.preview.handler]
@@ -656,6 +619,9 @@ file = "scripts/preview.py"
     image::DynamicImage::new_rgb8(2, 2)
         .save(library_dir.join("art.png"))
         .unwrap();
+    image::DynamicImage::new_rgb8(2, 2)
+        .save(browser_dir.join("art.png"))
+        .unwrap();
 
     let preview_script = r#"#!/usr/bin/env python3
 import json, sys
@@ -703,43 +669,6 @@ sys.stdout.write("\n")
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn source_badge_must_be_boolean() {
-        let valid: View = toml::from_str(
-            r#"
-            [engine]
-            type = "picker"
-            [engine.config]
-            source_badge = true
-            "#,
-        )
-        .unwrap();
-        validate_config(EngineValidationContext {
-            view_ref: "core:aggregate",
-            view: &valid,
-            script_root: None,
-        })
-        .unwrap();
-
-        let invalid: View = toml::from_str(
-            r#"
-            [engine]
-            type = "picker"
-            [engine.config]
-            source_badge = "yes"
-            "#,
-        )
-        .unwrap();
-        assert!(
-            validate_config(EngineValidationContext {
-                view_ref: "core:aggregate",
-                view: &invalid,
-                script_root: None,
-            })
-            .is_err()
-        );
-    }
 
     #[test]
     fn display_options_must_be_boolean() {

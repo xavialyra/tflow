@@ -132,6 +132,7 @@ mod tests {
             display: crate::engine::picker::ItemDisplayInput::Plain("Terminal".to_string()).into(),
             value: Some("terminal".to_string()),
             metadata: serde_json::json!({"kind": "app"}),
+            bindings: std::collections::BTreeMap::new(),
             source_view: "apps:default".to_string(),
         });
         assert!(value.get("owner_view").is_none());

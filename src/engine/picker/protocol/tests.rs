@@ -938,8 +938,7 @@ mod preview_correlation_tests {
             .collect::<String>();
         assert!(
             content.contains("Mixed preview")
-                && content.contains("Details")
-                && content.contains("library"),
+                && content.contains("Details"),
             "{content}"
         );
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)

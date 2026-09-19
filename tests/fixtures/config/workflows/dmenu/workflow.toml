@@ -28,18 +28,19 @@ nth-delimiter = { type = "string", nullable = true }
 
 [views.main.keymap]
 "escape" = "exit"
+enter = "accept"
+"" = "copy"
 
-[views.main.commands.accept]
-key = "enter"
+[commands.accept]
 label = "Accept"
 type = "return"
 producer = "script"
-[views.main.commands.accept.handler]
+[commands.accept.handler]
 file = "scripts/result.sh"
 
-[views.main.commands.copy]
+[commands.copy]
 label = "Copy selection"
 type = "return"
 producer = "script"
-[views.main.commands.copy.handler]
+[commands.copy.handler]
 file = "scripts/result.sh"

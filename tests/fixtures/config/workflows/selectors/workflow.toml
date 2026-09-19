@@ -23,14 +23,8 @@ input_order = ["search"]
 search = { type = "string", default = "" }
 commands = { type = "array<object>", default = [] }
 
-[views.commands.commands.accept]
-key = "enter"
-label = "Select"
-scope = "selection"
-type = "return"
-producer = "script"
-[views.commands.commands.accept.handler]
-file = "scripts/result.sh"
+[views.commands.keymap]
+enter = "accept"
 
 [views.views]
 
@@ -43,11 +37,20 @@ producer = "script"
 [views.views.engine.config.items.handler]
 file = "scripts/views.sh"
 
-[views.views.commands.open]
-key = "enter"
+[views.views.keymap]
+enter = "open"
+
+[commands.accept]
+label = "Select"
+scope = "selection"
+type = "return"
+producer = "script"
+[commands.accept.handler]
+file = "scripts/result.sh"
+
+[commands.open]
 label = "Open View"
 type = "navigate"
 producer = "script"
-
-[views.views.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open-view.sh"

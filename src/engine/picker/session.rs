@@ -1,7 +1,6 @@
 use super::PickerViewServices;
 use super::items::{
-    FeedId, FeedInstance, FeedRequestIdentity, Item, ItemsEvent, ItemsRequest, ItemsResponse,
-    ItemsTaskHandle,
+    Item, ItemsEvent, ItemsRequest, ItemsRequestIdentity, ItemsResponse, ItemsTaskHandle,
 };
 use super::preview::{PickerPreview, PickerPreviewConfig};
 #[cfg(test)]
@@ -15,7 +14,6 @@ use crate::task::TaskCompletion;
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Result, bail};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -77,13 +75,13 @@ enum ItemsTaskState {
     Idle,
     Prepared(ItemsRequest),
     Running {
-        identity: FeedRequestIdentity,
+        identity: ItemsRequestIdentity,
         started_at: std::time::Instant,
     },
 }
 
 impl ItemsTaskState {
-    fn running(identity: FeedRequestIdentity) -> Self {
+    fn running(identity: ItemsRequestIdentity) -> Self {
         Self::Running {
             identity,
             started_at: std::time::Instant::now(),
@@ -129,10 +127,6 @@ impl PickerSelection {
         let last = self.items.len() - 1;
         self.selected = self.selected.saturating_add_signed(direction).min(last);
     }
-
-    fn selected_item(&self) -> Option<&Item> {
-        self.items.get(self.selected)
-    }
 }
 
 #[derive(Clone)]
@@ -168,7 +162,6 @@ pub(crate) struct PickerState {
     requested_request: Option<ItemsRequest>,
     parameter_snapshot: Option<ParameterSnapshot>,
     runtime_snapshot: Arc<EngineRuntimeSnapshot>,
-    feed_instances: Arc<BTreeMap<FeedId, FeedInstance>>,
     active: bool,
     started: bool,
     items_task_state: ItemsTaskState,
@@ -228,7 +221,6 @@ impl PickerView {
                 requested_request: None,
                 parameter_snapshot: None,
                 runtime_snapshot: Arc::new(EngineRuntimeSnapshot::default()),
-                feed_instances: Arc::new(BTreeMap::new()),
                 active: true,
                 started: false,
                 items_task_state: ItemsTaskState::Idle,
@@ -269,7 +261,7 @@ impl PickerView {
         self.requested_request.as_ref()
     }
 
-    fn requested_identity(&self) -> Option<&FeedRequestIdentity> {
+    fn requested_identity(&self) -> Option<&ItemsRequestIdentity> {
         self.requested_request_ref()
             .map(|request| &request.identity)
     }
@@ -333,11 +325,11 @@ impl PickerView {
                 ),
                 source => (self.frame.view.clone(), source.clone()),
             };
-            let parameters = if owner == self.frame.view {
-                self.parameter_snapshot.as_ref().map(|p| p.values().clone()).unwrap_or(Value::Null)
-            } else {
-                self.feed_instances.get(&FeedId(owner.clone())).map(|f| f.parameters.values().clone()).unwrap_or(Value::Null)
-            };
+            let parameters = self
+                .parameter_snapshot
+                .as_ref()
+                .map(|p| p.values().clone())
+                .unwrap_or(Value::Null);
             let state = serde_json::json!({"input": self.requested_input(), "item": super::preview::item_value(&item)});
             let request = crate::protocol::preview_request(&parameters, &self.services.launch_input, &state);
             let identity = serde_json::json!({"owner": owner, "source_view": item.source_view, "request": request}).to_string();
@@ -388,7 +380,7 @@ impl PickerView {
     }
 
     #[cfg(test)]
-    pub(super) fn running_items_task_identity(&self) -> Option<FeedRequestIdentity> {
+    pub(super) fn running_items_task_identity(&self) -> Option<ItemsRequestIdentity> {
         match &self.items_task_state {
             ItemsTaskState::Running { identity, .. } => Some(identity.clone()),
             _ => None,
@@ -411,13 +403,6 @@ impl PickerView {
 
     pub(crate) fn current_view_ref(&self) -> &str {
         &self.frame.view
-    }
-
-    fn selected_item_owner(&self) -> Option<&str> {
-        self.frame
-            .selection
-            .selected_item()
-            .map(|item| item.source_view.as_str())
     }
 
     fn request_current(&mut self, context: &ViewContext) -> Result<Option<EngineDecision>> {
@@ -460,7 +445,7 @@ impl PickerView {
                 .is_none_or(|parameters| parameters == &requested_request.identity.page_parameters)
     }
 
-    fn running_items_task_matches_request(&self, identity: &FeedRequestIdentity) -> bool {
+    fn running_items_task_matches_request(&self, identity: &ItemsRequestIdentity) -> bool {
         matches!(&self.items_task_state, ItemsTaskState::Running { identity: running, .. } if running == identity)
             && self
                 .requested_request_ref()
@@ -490,7 +475,7 @@ impl PickerView {
 
         let request_generation = requested_generation.wrapping_add(1);
         let source = page_parameters.source();
-        let identity = FeedRequestIdentity::new(
+        let identity = ItemsRequestIdentity::new(
             source.frame,
             source,
             request_generation,
@@ -504,7 +489,7 @@ impl PickerView {
             state.insert("input".to_string(), Value::String(input.to_string()));
         }
         let request =
-            ItemsRequest::new(view.to_string(), identity)?.with_engine_state(engine_state);
+            ItemsRequest::new(view.to_string(), identity)?.with_engine_state(engine_state)?;
         self.requested_request = Some(request.clone());
         self.items_task_state = ItemsTaskState::Prepared(request.clone());
         if self.frame.input_refresh.is_retry_requested() {
@@ -536,7 +521,6 @@ impl PickerView {
             Ok(result) => {
                 let errors = result.errors;
                 self.frame.query = query;
-                self.feed_instances = Arc::new(result.contexts);
                 self.frame.selection.replace(result.items);
                 if let Some(target) = self.initial_focus.take()
                     && let Some(pos) = self.frame.selection.items.iter().position(|item| {
@@ -552,7 +536,6 @@ impl PickerView {
             }
             Err(error) => {
                 self.frame.query = query;
-                Arc::make_mut(&mut self.feed_instances).clear();
                 self.frame.selection.clear();
                 self.frame.results = ResultsState::Ready(input);
                 self.frame.pending_selection = 0;
@@ -608,7 +591,6 @@ impl PickerView {
         self.frame.results = ResultsState::Invalid;
         self.frame.pending_selection = 0;
         self.frame.selection.clear();
-        Arc::make_mut(&mut self.feed_instances).clear();
         self.initial_load_completed = true;
         self.schedule_retry();
     }
@@ -682,18 +664,26 @@ impl PickerView {
         let selected_index = selected
             .map(|_| self.frame.selection.selected)
             .unwrap_or_default();
-        let (item, text, value, metadata) = match selected {
+        let (item, text, value, metadata, bindings) = match selected {
             Some(item) => (
                 serde_json::json!({
                     "text": item.text,
                     "value": item.value,
                     "metadata": item.metadata,
+                    "bindings": item.bindings,
                 }),
                 serde_json::json!(item.text),
                 serde_json::json!(item.value),
                 item.metadata.clone(),
+                serde_json::to_value(&item.bindings).unwrap_or(serde_json::json!({})),
             ),
-            None => (Value::Null, Value::Null, Value::Null, Value::Null),
+            None => (
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                serde_json::json!({}),
+            ),
         };
         ViewContextPublication::new(serde_json::json!({
             "input": self.frame.query,
@@ -701,6 +691,7 @@ impl PickerView {
             "text": text,
             "value": value,
             "metadata": metadata,
+            "bindings": bindings,
             "selected_index": selected_index,
         }))
         .with_ready(results_ready)
@@ -860,7 +851,7 @@ impl PickerView {
 impl PickerView {
     fn receive_items_completion(
         &mut self,
-    ) -> Result<Option<(FeedRequestIdentity, ItemsCompletion)>> {
+    ) -> Result<Option<(ItemsRequestIdentity, ItemsCompletion)>> {
         let identity = match &self.items_task_state {
             ItemsTaskState::Running { identity, .. } => identity.clone(),
             ItemsTaskState::Idle | ItemsTaskState::Prepared(_) => {
@@ -940,10 +931,6 @@ impl EngineRuntime for PickerView {
     fn tick(&mut self, tick: EngineTick) -> Result<EngineEmission> {
         let decision = self.handle_tick(&tick.context)?;
         Ok(EngineEmission::decision(decision).with_publication(self.current_publication()))
-    }
-
-    fn selected_item_owner(&self) -> Option<String> {
-        self.selected_item_owner().map(str::to_string)
     }
 
     fn poll_work(&mut self) -> Result<Option<EngineEmission>> {

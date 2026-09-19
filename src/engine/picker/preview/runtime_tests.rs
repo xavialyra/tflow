@@ -22,6 +22,7 @@ fn request(source: PreviewSource, metadata: Value) -> PreviewRequest {
         display: super::super::ItemDisplayInput::Plain("same".into()).into(),
         value: Some("same".into()),
         metadata,
+        bindings: std::collections::BTreeMap::new(),
         source_view: "feed:main".into(),
     };
     let request = crate::protocol::preview_request(

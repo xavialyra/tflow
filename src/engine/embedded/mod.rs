@@ -106,7 +106,7 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
 }
 
 fn reject_picker_sources(name: &str, view: &crate::workflow::config::View) -> Result<()> {
-    if view.selected_items().is_some() || !view.selected_feeds().is_empty() {
+    if view.selected_items().is_some() {
         anyhow::bail!(
             "view {:?} using engine {:?} cannot provide picker items",
             name,

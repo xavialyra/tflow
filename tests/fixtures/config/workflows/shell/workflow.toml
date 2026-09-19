@@ -11,13 +11,15 @@ type = "picker"
 [views.menu.engine.config]
 items = [{ display = "Open shell" }]
 
-[views.menu.commands.open]
-key = "enter"
+[views.menu.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open shell"
 type = "navigate"
 producer = "declared"
 
-[views.menu.commands.open.handler]
+[commands.open.handler]
 target = "shell:main"
 
 [views.main.engine]

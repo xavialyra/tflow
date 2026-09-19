@@ -12,23 +12,8 @@ type = "picker"
 show_input = false
 items = [{ display = "Collect parameters", value = "create" }]
 
-[views.main.commands.open]
-key = "enter"
-label = "Open form"
-type = "call"
-producer = "declared"
-
-[views.main.commands.open.handler]
-target = "form:input"
-query = { name = "demo", environment = "dev", enabled = true }
-presentation = { mode = "popup", width = 72, height = 20 }
-
-[views.main.commands.open.return_processor]
-type = "navigate"
-producer = "script"
-
-[views.main.commands.open.return_processor.handler]
-file = "scripts/received.py"
+[views.main.keymap]
+enter = "open"
 
 [views.input]
 cancel_exit_code = 1
@@ -48,8 +33,27 @@ type = "form"
 producer = "script"
 handler = { file = "scripts/content.py" }
 
-[views.input.commands.submit]
-key = "enter"
+[views.input.keymap]
+enter = "submit"
+
+[commands.open]
+label = "Open form"
+type = "call"
+producer = "declared"
+
+[commands.open.handler]
+target = "form:input"
+query = { name = "demo", environment = "dev", enabled = true }
+presentation = { mode = "popup", width = 72, height = 20 }
+
+[commands.open.return_processor]
+type = "navigate"
+producer = "script"
+
+[commands.open.return_processor.handler]
+file = "scripts/received.py"
+
+[commands.submit]
 label = "Submit"
 scope = "view"
 type = "return"

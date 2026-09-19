@@ -95,14 +95,7 @@ impl EngineRegistry {
     }
 }
 
-fn default_validate_keymap(engine_type: &str, name: &str, view: &View) -> Result<()> {
-    if view.keymap.is_some() {
-        bail!(
-            "view {:?} using engine {:?} cannot define a keymap",
-            name,
-            engine_type
-        );
-    }
+fn default_validate_keymap(_engine_type: &str, _name: &str, _view: &View) -> Result<()> {
     Ok(())
 }
 
@@ -165,11 +158,11 @@ mod tests {
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let bound_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[commands.cancel]\nkey = 'ctrl+b'\nlabel = 'Cancel'\ntype = 'return'\nproducer = 'declared'\n[commands.cancel.handler]\nvalue = 'cancel'",
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[keymap]\n\"ctrl+b\" = \"cancel\"",
         );
         registry
             .validate_config("bound-embedded", &bound_embedded)
-            .expect("embedded View commands should be accepted");
+            .expect("embedded View keymap should be accepted");
 
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());

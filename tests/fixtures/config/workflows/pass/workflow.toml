@@ -14,23 +14,9 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.py"
 
-[views.main.commands.copy]
-key = "enter"
-label = "Copy password"
-type = "call"
-producer = "script"
-
-[views.main.commands.copy.handler]
-file = "scripts/copy.py"
-
-[views.main.commands.otp]
-key = "ctrl+o"
-label = "Copy OTP"
-type = "run"
-producer = "script"
-
-[views.main.commands.otp.handler]
-file = "scripts/otp.py"
+[views.main.keymap]
+enter = "copy"
+"ctrl+o" = "otp"
 
 [views.unlock]
 
@@ -63,11 +49,29 @@ cat << 'EOF'
 EOF
 '''
 
-[views.unlock.commands.submit]
-key = "enter"
+[views.unlock.keymap]
+enter = "submit"
+
+[commands.copy]
+label = "Copy password"
+type = "call"
+producer = "script"
+
+[commands.copy.handler]
+file = "scripts/copy.py"
+
+[commands.otp]
+label = "Copy OTP"
+type = "run"
+producer = "script"
+
+[commands.otp.handler]
+file = "scripts/otp.py"
+
+[commands.submit]
 label = "Unlock & Copy"
 type = "run"
 producer = "script"
 
-[views.unlock.commands.submit.handler]
+[commands.submit.handler]
 file = "scripts/unlock.py"

@@ -1,8 +1,8 @@
 mod api;
-mod capture;
+pub(crate) mod capture;
 mod embedded;
 pub(crate) mod form;
-mod picker;
+pub(crate) mod picker;
 mod projection;
 mod registry;
 mod runtime;
@@ -13,14 +13,15 @@ pub(crate) use api::{
     RendererFactoryContext, RuntimeFactoryContext, ViewIdentity,
 };
 pub(crate) use capture::{
-    CaptureProtocolConfig, create_protocol_view as create_capture_protocol_view,
+    CaptureProtocolConfig, create_protocol_view as create_capture_protocol_view, is_capture_action,
 };
 pub(crate) use embedded::{
     EmbeddedProtocolConfig, EmbeddedTerminal, create_protocol_view as create_embedded_protocol_view,
 };
 pub(crate) use picker::{
     PickerProtocolConfig, PickerViewServices, SlotToken,
-    create_protocol_view as create_picker_protocol_view, mount_data as picker_mount_data,
+    create_protocol_view as create_picker_protocol_view, is_picker_action,
+    mount_data as picker_mount_data, run_items_producer_raw,
 };
 pub(crate) use projection::{project_binding_config, project_engine_config};
 pub(crate) use registry::{EngineRegistry, require_field, validate_fields};

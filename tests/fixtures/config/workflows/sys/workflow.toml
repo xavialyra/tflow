@@ -14,19 +14,22 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.sh"
 
-[views.main.commands.run]
-key = "enter"
+[views.main.keymap]
+enter = "run"
+"" = "info"
+
+[commands.run]
 label = "Run"
 type = "navigate"
 producer = "script"
-[views.main.commands.run.handler]
+[commands.run.handler]
 file = "scripts/command.sh"
 
-[views.main.commands.info]
+[commands.info]
 label = "Info"
 type = "navigate"
 producer = "script"
-[views.main.commands.info.handler]
+[commands.info.handler]
 file = "scripts/command.sh"
 
 [views.output.engine]

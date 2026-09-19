@@ -462,7 +462,6 @@ impl View for CaptureProtocolView {
             runtime: self.runtime_snapshot.clone(),
             publication: self.publication.clone(),
             revision: self.state_revision,
-            owner_view: None,
         }
     }
 

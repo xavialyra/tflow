@@ -72,6 +72,9 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 if let Some(root) = root {
                     process.env("WORKFLOW_DIR", root);
                 }
+                if let Ok(suite_path) = std::env::var("TLAUNCH_SUITE") {
+                    process.env("TLAUNCH_SUITE", suite_path);
+                }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
                     stdin,
@@ -138,6 +141,9 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 process.arg(script_path).args(args);
                 if let Some(root) = root {
                     process.env("WORKFLOW_DIR", root);
+                }
+                if let Ok(suite_path) = std::env::var("TLAUNCH_SUITE") {
+                    process.env("TLAUNCH_SUITE", suite_path);
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,

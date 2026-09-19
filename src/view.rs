@@ -51,7 +51,6 @@ pub(crate) struct ViewCommandSnapshot {
     pub(crate) runtime: Value,
     pub(crate) publication: Option<ViewPublication>,
     pub(crate) revision: u64,
-    pub(crate) owner_view: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -529,7 +528,6 @@ pub(crate) trait View {
             runtime: Value::Null,
             publication: None,
             revision: 0,
-            owner_view: None,
         }
     }
 

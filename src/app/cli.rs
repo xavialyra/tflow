@@ -42,8 +42,12 @@ struct Args {
     check: bool,
 
     /// Output the view contract (query schema, commands, engine) in JSON and exit.
-    #[arg(long, value_name = "VIEW")]
+    #[arg(long, value_name = "VIEW", conflicts_with = "items")]
     inspect: Option<String>,
+
+    /// Run the item producer of the specified view and output the strict JSON array stream to stdout.
+    #[arg(long, value_name = "VIEW", conflicts_with = "inspect")]
+    items: Option<String>,
 
     /// Inspect every configured View; use as `tlaunch inspect --all`.
     #[arg(long)]
@@ -80,7 +84,7 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     if stem.is_empty() || stem == "tlaunch" {
         return args;
     }
-    if args.iter().any(|a| a == "--check" || a == "--inspect") {
+    if args.iter().any(|a| a == "--check" || a == "--inspect" || a == "--items") {
         return args;
     }
 
@@ -283,7 +287,13 @@ pub(crate) fn run() -> Result<i32> {
     };
 
     if let Some(target) = inspect_target {
-        let view_ref = config.resolve_view(target)?;
+        let view_ref = match config.resolve_view(target) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: view {:?} not found: {e}", target);
+                return Ok(2);
+            }
+        };
         let view = config.view(&view_ref).context("view disappeared")?;
         println!(
             "{}",
@@ -292,14 +302,45 @@ pub(crate) fn run() -> Result<i32> {
         return Ok(0);
     }
 
+    let items_target = if let Some(target) = &args.items {
+        Some(target.as_str())
+    } else if args.view.as_deref() == Some("items") {
+        let target = args
+            .view_options
+            .first()
+            .context("items requires a view argument, e.g. `tlaunch items <view>`")?;
+        Some(target.as_str())
+    } else {
+        None
+    };
+
+    if let Some(target) = items_target {
+        let view_options = if args.view.as_deref() == Some("items") {
+            &args.view_options[1..]
+        } else {
+            &args.view_options[..]
+        };
+        return run_items_query(&config, target, view_options);
+    }
+
     let explicit_view = args.view.is_some();
     let root_view = if let Some(target) = args.view.as_deref() {
         config.resolve_view(target)?
     } else {
         config.entrypoint.clone()
     };
-    let mut parameters = config.bind_invocation_parameters(&root_view, &args.view_options)?;
-    config.sanitize_initial_parameter_values(&mut parameters)?;
+    let parameters = if !explicit_view && args.view_options.is_empty() && config.entrypoint_query.is_some() {
+        let mut state = config.instantiate_parameters(&root_view)?;
+        if let Some(query_val) = &config.entrypoint_query {
+            let binding = config.parameter_binding(&root_view)?;
+            binding.update_sanitized_initial_value(&mut state, query_val)?;
+        }
+        state
+    } else {
+        let mut p = config.bind_invocation_parameters(&root_view, &args.view_options)?;
+        config.sanitize_initial_parameter_values(&mut p)?;
+        p
+    };
     let input = if is_stdin_workflow {
         InputArtifact::empty()
     } else {
@@ -424,24 +465,112 @@ pub(crate) fn run() -> Result<i32> {
     Ok(result.exit_code)
 }
 
+fn run_items_query(
+    config: &CompiledConfig,
+    target: &str,
+    view_options: &[String],
+) -> Result<i32> {
+    let view_ref = match config.resolve_view(target) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: view {:?} not found: {e}", target);
+            return Ok(1);
+        }
+    };
+    let Some(view) = config.view(&view_ref) else {
+        eprintln!("error: view {:?} not found", view_ref);
+        return Ok(1);
+    };
+    if view.selected_engine_type() != crate::workflow::config::ENGINE_PICKER {
+        eprintln!("error: view {:?} does not use picker engine", view_ref);
+        return Ok(1);
+    }
+    let Some(items_producer) = view.selected_items() else {
+        println!("[]");
+        return Ok(0);
+    };
+    let mut parameters = match config.bind_invocation_parameters(&view_ref, view_options) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return Ok(1);
+        }
+    };
+    if let Err(e) = config.sanitize_initial_parameter_values(&mut parameters) {
+        eprintln!("error: {e}");
+        return Ok(1);
+    }
+    let param_values = match config.parameter_values(&parameters) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return Ok(1);
+        }
+    };
+    let cancellation = crate::lifecycle::CancellationToken::new();
+    let root = config.workflow_root(&view_ref);
+    let output = match crate::engine::run_items_producer_raw(
+        &view_ref,
+        items_producer,
+        root,
+        &param_values,
+        &cancellation,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return Ok(2);
+        }
+    };
+    if !output.is_array() {
+        eprintln!("error: items producer output must be a JSON array");
+        return Ok(2);
+    }
+    println!("{}", serde_json::to_string(&output)?);
+    Ok(0)
+}
+
 fn view_contract(
     config: &CompiledConfig,
     view_ref: &str,
     view: &crate::workflow::config::View,
 ) -> serde_json::Value {
+    let mode = match view.keymap.as_ref().map(|k| k.mode) {
+        Some(crate::workflow::config::KeymapMode::Item) => "item",
+        _ => "static",
+    };
+    let member_id = crate::workflow::config::package_id(view_ref);
+    let commands = config.workflow_commands(member_id);
+    let commands_json: serde_json::Map<String, serde_json::Value> = commands
+        .into_iter()
+        .map(|(fqid, cmd)| {
+            (fqid, serde_json::json!({ "label": cmd.label }))
+        })
+        .collect();
+
+    let mut keymap_json = serde_json::Map::new();
+    if mode == "static" {
+        if let Some(keymap) = &view.keymap {
+            for (key, val) in &keymap.bindings {
+                if let Some(cmd_id) = val.as_str() {
+                    let resolved_fqid = config
+                        .resolve_command_fqid(member_id, cmd_id)
+                        .unwrap_or_else(|| cmd_id.to_string());
+                    keymap_json.insert(key.clone(), serde_json::Value::String(resolved_fqid));
+                } else if val.as_bool() == Some(false) {
+                    keymap_json.insert(key.clone(), serde_json::Value::Bool(false));
+                }
+            }
+        }
+    }
     serde_json::json!({
         "view": view_ref,
         "alias": config.alias_for_view(view_ref),
         "engine": view.selected_engine_type(),
         "query": view.query,
-        "commands": view.commands.iter().map(|(id, cmd)| {
-            serde_json::json!({
-                "id": id,
-                "key": cmd.key,
-                "label": cmd.label,
-                "scope": "view",
-            })
-        }).collect::<Vec<_>>(),
+        "mode": mode,
+        "commands": commands_json,
+        "keymap": keymap_json,
     })
 }
 

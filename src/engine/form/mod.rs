@@ -63,8 +63,8 @@ fn prepare(value: Value, root: Option<&std::path::Path>) -> Result<PreparedConte
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let view = context.view;
     ensure!(
-        view.selected_items().is_none() && view.selected_feeds().is_empty(),
-        "form views cannot provide picker items or feeds"
+        view.selected_items().is_none(),
+        "form views cannot provide picker items"
     );
     crate::engine::validate_fields(context.view_ref, view, &["content"])?;
     crate::engine::require_field(context.view_ref, view, "content")?;
@@ -401,7 +401,6 @@ impl View for FormView {
             runtime: self.runtime_snapshot.clone(),
             publication: Some(self.publication.clone()),
             revision: self.revision,
-            owner_view: None,
         }
     }
 

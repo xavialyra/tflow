@@ -8,18 +8,6 @@ pub(crate) trait EngineConfigValidator {
     fn validate_relations(&self, config: &CompiledConfig) -> Result<()>;
 }
 
-pub(super) fn validate_view_commands(
-    view_ref: &str,
-    commands: &BTreeMap<String, super::Command>,
-    views: &BTreeMap<ViewRef, View>,
-    script_root: Option<&Path>,
-) -> Result<()> {
-    for (command_id, command) in commands {
-        validate_command_action(view_ref, command_id, &command.action, views, script_root, 0)?;
-    }
-    Ok(())
-}
-
 fn validate_command_action(
     view_ref: &str,
     command_id: &str,
@@ -272,6 +260,23 @@ impl CompiledConfig {
             }
         }
 
+        for (cmd_id, command) in &self.all_commands {
+            let Some((wf_id, _)) = cmd_id.split_once(':') else {
+                continue;
+            };
+            if command.label.trim().is_empty() {
+                bail!("command {:?} has an empty label", cmd_id);
+            }
+            validate_command_action(
+                cmd_id,
+                cmd_id,
+                &command.action,
+                &self.views,
+                self.workflow_root(wf_id),
+                0,
+            )?;
+        }
+
         for (view_ref, view) in &self.views {
             validate_view_ref(view_ref)?;
             if let Some(alias) = &view.alias {
@@ -282,26 +287,37 @@ impl CompiledConfig {
                 );
             }
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
-            validate_view_commands(
-                view_ref,
-                &view.commands,
-                &self.views,
-                self.workflow_root(view_ref),
-            )?;
-            let mut keys = BTreeMap::new();
-            for (command_id, command) in &view.commands {
-                if command.label.trim().is_empty() {
-                    bail!(
-                        "view {:?} command {:?} has an empty label",
-                        view_ref,
-                        command_id
-                    );
-                }
-                if let Some(raw_key) = &command.key {
-                    let key = super::normalize_key(raw_key)
-                        .with_context(|| format!("view {:?} command {:?}", view_ref, command_id))?;
-                    if keys.insert(key.clone(), command_id).is_some() {
-                        bail!("view {:?} has duplicate command key {:?}", view_ref, key);
+            let wf_id = super::package_id(view_ref);
+            if let Some(keymap) = &view.keymap {
+                match keymap.mode {
+                    super::KeymapMode::Item => {
+                        if !keymap.bindings.is_empty() {
+                            bail!(
+                                "view {:?} keymap uses mode = \"item\" and cannot define static key bindings",
+                                view_ref
+                            );
+                        }
+                    }
+                    super::KeymapMode::Static => {
+                        for (key, val) in &keymap.bindings {
+                            if val.as_bool() == Some(false) {
+                                continue;
+                            }
+                            let Some(cmd_target) = val.as_str() else {
+                                bail!("view {:?} keymap binding {:?} must be an action, command, or false", view_ref, key);
+                            };
+                            let is_command = self.find_command(wf_id, cmd_target).is_some();
+                            let is_action = crate::engine::is_picker_action(cmd_target)
+                                || crate::engine::is_capture_action(cmd_target);
+                            if !is_command && !is_action {
+                                bail!(
+                                    "view {:?} keymap binds {:?} to unknown command or action {:?}",
+                                    view_ref,
+                                    key,
+                                    cmd_target
+                                );
+                            }
+                        }
                     }
                 }
             }

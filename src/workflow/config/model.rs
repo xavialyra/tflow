@@ -1,4 +1,3 @@
-use super::ViewRef;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
@@ -52,6 +51,22 @@ pub(crate) struct CaptureDefaults {
     pub(crate) bindings: Option<toml::Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeymapMode {
+    #[default]
+    Static,
+    Item,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+pub struct ViewKeymap {
+    #[serde(default)]
+    pub mode: KeymapMode,
+    #[serde(flatten)]
+    pub bindings: BTreeMap<String, toml::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineSpec {
@@ -59,12 +74,6 @@ pub struct EngineSpec {
     pub engine_type: String,
     #[serde(default)]
     pub config: EngineOptions,
-}
-
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct FeedSpec {
-    pub view: ViewRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,8 +148,6 @@ impl ResolvedScriptSource {
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct EngineOptions {
     #[serde(default)]
-    pub feeds: Vec<FeedSpec>,
-    #[serde(default)]
     pub items: Option<toml::Value>,
     #[serde(flatten)]
     pub fields: toml::Table,
@@ -176,9 +183,7 @@ pub struct View {
     #[serde(default, rename = "query")]
     pub(crate) query: Option<toml::Table>,
     #[serde(default)]
-    pub(crate) keymap: Option<toml::Value>,
-    #[serde(default)]
-    pub commands: BTreeMap<String, Command>,
+    pub keymap: Option<ViewKeymap>,
 }
 
 impl View {
@@ -192,14 +197,6 @@ impl View {
 
     pub(crate) fn selected_items(&self) -> Option<&toml::Value> {
         self.engine.config.items.as_ref()
-    }
-
-    pub(crate) fn selected_feeds(&self) -> &[FeedSpec] {
-        &self.engine.config.feeds
-    }
-
-    pub(crate) fn is_feeds_page(&self) -> bool {
-        !self.selected_feeds().is_empty()
     }
 
     pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {
@@ -468,12 +465,39 @@ pub(crate) fn validate_settings_purity(table: &toml::Table, path: &Path) -> Resu
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(super) enum RawSuiteEntrypoint {
+    Target(String),
+    Detailed {
+        target: String,
+        #[serde(default)]
+        query: Option<toml::Table>,
+    },
+}
+
+impl RawSuiteEntrypoint {
+    pub(super) fn target(&self) -> &str {
+        match self {
+            Self::Target(t) => t,
+            Self::Detailed { target, .. } => target,
+        }
+    }
+
+    pub(super) fn query(&self) -> Option<&toml::Table> {
+        match self {
+            Self::Target(_) => None,
+            Self::Detailed { query, .. } => query.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SuiteHeader {
     #[serde(default = "default_workflow_api")]
     pub(super) api: u32,
     pub(super) name: String,
-    pub(super) entrypoint: String,
+    pub(super) entrypoint: Option<RawSuiteEntrypoint>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -514,6 +538,8 @@ pub(super) struct Workflow {
     #[serde(default)]
     pub(super) views: BTreeMap<String, View>,
     #[serde(default)]
+    pub(super) commands: BTreeMap<String, Command>,
+    #[serde(default)]
     pub(super) styles: BTreeMap<String, crate::ui::theme::RawStyleBinding>,
 }
 
@@ -530,7 +556,7 @@ pub(super) struct WorkflowHeader {
 mod tests {
     use super::{
         CommandAction, CommandBinding, CommandBindingVisibility, CommandConfig, ProducerKind,
-        ResolvedScriptSource, ResolvedScriptTarget, View,
+        ResolvedScriptSource, ResolvedScriptTarget, View, Workflow,
     };
 
     #[test]
@@ -607,10 +633,8 @@ args = []
 
     #[test]
     fn command_handler_owns_no_operation_type() {
-        let view: View = toml::from_str(
+        let wf: Workflow = toml::from_str(
             r#"
-            [engine]
-            type = "picker"
             [commands.open]
             type = "call"
             producer = "declared"
@@ -621,7 +645,7 @@ args = []
         .unwrap();
         let CommandAction::Call {
             producer, handler, ..
-        } = &view.commands["open"].action
+        } = &wf.commands["open"].action
         else {
             panic!("expected call action");
         };

@@ -23,31 +23,10 @@ producer = "script"
 [views.main.engine.config.preview.handler]
 file = "scripts/preview.py"
 
-[views.main.commands.open]
-key = "enter"
-label = "Open"
-type = "run"
-
-producer = "script"
-[views.main.commands.open.handler]
-file = "scripts/open.sh"
-
-[views.main.commands.openx]
-key = "ctrl+o"
-label = "Opend"
-type = "run"
-
-producer = "script"
-[views.main.commands.openx.handler]
-file = "scripts/open.sh"
-
-[views.main.commands.weight]
-key = "ctrl+w"
-label = "Set weight"
-type = "call"
-producer = "script"
-[views.main.commands.weight.handler]
-file = "scripts/weight-popup.sh"
+[views.main.keymap]
+enter = "open"
+"ctrl+o" = "openx"
+"ctrl+w" = "weight"
 
 [views.weight]
 [views.weight.query]
@@ -63,10 +42,33 @@ producer = "script"
 [views.weight.engine.config.content.handler]
 file = "scripts/weight-content.sh"
 
-[views.weight.commands.save]
-key = "enter"
+[views.weight.keymap]
+enter = "save"
+
+[commands.open]
+label = "Open"
+type = "run"
+producer = "script"
+[commands.open.handler]
+file = "scripts/open.sh"
+
+[commands.openx]
+label = "Opend"
+type = "run"
+producer = "script"
+[commands.openx.handler]
+file = "scripts/open.sh"
+
+[commands.weight]
+label = "Set weight"
+type = "call"
+producer = "script"
+[commands.weight.handler]
+file = "scripts/weight-popup.sh"
+
+[commands.save]
 label = "Save"
 type = "return"
 producer = "script"
-[views.weight.commands.save.handler]
+[commands.save.handler]
 file = "scripts/set-weight.sh"

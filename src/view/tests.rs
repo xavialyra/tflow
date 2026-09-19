@@ -17,7 +17,6 @@ impl View for TestView {
             runtime: self.runtime.clone(),
             publication: None,
             revision: 0,
-            owner_view: None,
         }
     }
     fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {

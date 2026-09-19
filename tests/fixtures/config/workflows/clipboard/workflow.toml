@@ -32,15 +32,14 @@ producer = "script"
 [views.default.engine.config.preview.handler]
 file = "scripts/preview.py"
 
-[views.default.commands.copy]
-key = "enter"
-label = "Restore"
-type = "run"
-producer = "script"
-
-[views.default.commands.copy.handler]
-file = "scripts/restore.py"
-
 [views.default.keymap]
 escape = "back"
 "ctrl+p" = "toggle_preview"
+enter = "copy"
+
+[commands.copy]
+label = "Restore"
+type = "run"
+producer = "script"
+[commands.copy.handler]
+file = "scripts/restore.py"

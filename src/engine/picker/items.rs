@@ -1,12 +1,10 @@
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
 use crate::terminal::sanitize_text;
-#[cfg(test)]
-use crate::workflow::config::CompiledConfig;
 use crate::workflow::config::{
     PickerItemsProjection, ProducerKind, parse_producer_script_handler, toml_to_json,
 };
-use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
+use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
@@ -17,105 +15,55 @@ use std::sync::Arc;
 
 const MAX_ITEMS_PER_SESSION: usize = 100_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FeedId(pub(crate) String);
-
-/// Immutable compiled metadata for one Picker feed mount.
+/// Immutable compiled metadata for one Picker view presentation.
 #[derive(Clone)]
-pub(crate) struct FeedDefinition {
-    pub(crate) feed_id: FeedId,
-    pub(crate) owner_view: String,
+pub(crate) struct PickerItemsDefinition {
+    pub(crate) view_ref: String,
     pub(crate) alias: Option<String>,
-    pub(crate) binding: ParameterBinding,
     items: Option<Value>,
     source: Arc<PickerItemsProjection>,
 }
 
-impl fmt::Debug for FeedDefinition {
+impl fmt::Debug for PickerItemsDefinition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("FeedDefinition")
-            .field("feed_id", &self.feed_id)
-            .field("owner_view", &self.owner_view)
+            .debug_struct("PickerItemsDefinition")
+            .field("view_ref", &self.view_ref)
             .field("alias", &self.alias)
             .field("items", &self.items)
             .finish_non_exhaustive()
     }
 }
 
-impl FeedDefinition {
-    pub(crate) fn collection(
+impl PickerItemsDefinition {
+    pub(crate) fn new(
         projection: Arc<PickerItemsProjection>,
-        page_view: &str,
-    ) -> Result<Arc<Vec<Arc<Self>>>> {
-        let definitions = projection
-            .feed_views(page_view)?
-            .into_iter()
-            .map(|(owner_view, view)| {
-                let items = view.items.as_ref().map(toml_to_json).transpose()?;
-                Ok(Arc::new(Self {
-                    feed_id: FeedId(owner_view.clone()),
-                    owner_view,
-                    alias: view.alias.clone(),
-                    binding: view.binding.clone(),
-                    items,
-                    source: Arc::clone(&projection),
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(definitions))
+        view_ref: &str,
+    ) -> Result<Arc<Self>> {
+        let (_, view) = projection.target_view();
+        let items = view.items.as_ref().map(toml_to_json).transpose()?;
+        Ok(Arc::new(Self {
+            view_ref: view_ref.to_string(),
+            alias: view.alias.clone(),
+            items,
+            source: projection,
+        }))
     }
 
-    fn has_items(&self) -> bool {
+    pub(crate) fn has_items(&self) -> bool {
         self.items.is_some()
     }
 
-    fn items_value(&self) -> Option<Value> {
+    pub(crate) fn items_value(&self) -> Option<Value> {
         self.items.clone()
     }
 
-    fn input_value(&self) -> &Value {
+    pub(crate) fn input_value(&self) -> &Value {
         self.source.input_value()
     }
 
-    fn workflow_root(&self) -> Option<&Path> {
-        self.source.workflow_root(&self.owner_view)
-    }
-}
-
-/// Parameters resolved for one request and one immutable feed definition.
-#[derive(Debug, Clone)]
-pub(crate) struct FeedInstance {
-    pub(crate) definition: Arc<FeedDefinition>,
-    pub(crate) parameters: ParameterSnapshot,
-}
-
-impl FeedInstance {
-    pub(crate) fn resolve(
-        definition: Arc<FeedDefinition>,
-        page_view: &str,
-        page_parameters: &ParameterSnapshot,
-        binding_raw: &str,
-    ) -> Result<Self> {
-        let parameters = if definition.owner_view == page_view {
-            page_parameters.clone()
-        } else {
-            let mut state = definition.binding.instantiate()?;
-            definition
-                .binding
-                .bind_feed_input(&mut state, binding_raw)?;
-            definition.binding.validate_instance(&state)?;
-            ParameterSnapshot::from_parts(
-                definition.binding.parameter_values(&state)?,
-                state.raw_input().to_string(),
-                InputSourceIdentity::default(),
-                state.revision(),
-            )
-        };
-        Ok(Self {
-            definition,
-            parameters,
-        })
+    pub(crate) fn workflow_root(&self) -> Option<&Path> {
+        self.source.workflow_root()
     }
 }
 
@@ -129,6 +77,8 @@ struct ItemValue {
     value: Option<String>,
     #[serde(default)]
     metadata: Value,
+    #[serde(default)]
+    bindings: BTreeMap<String, String>,
 }
 
 pub(super) fn validate_item_array(value: &Value) -> Result<()> {
@@ -158,23 +108,19 @@ pub(crate) struct Item {
     pub(crate) display: super::display::NormalizedItemDisplay,
     pub(crate) value: Option<String>,
     pub(crate) metadata: Value,
-    /// Stable provenance used internally for feed routing and preview lookup.
+    pub(crate) bindings: BTreeMap<String, String>,
     pub(crate) source_view: String,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ItemsResult {
     pub(crate) items: Vec<Item>,
-    pub(crate) contexts: BTreeMap<FeedId, FeedInstance>,
     pub(crate) errors: Vec<String>,
 }
 
-/// The complete identity of one Picker feed request.
-///
-/// All fields participate in stale-result validation. `source` carries the
-/// input generation; `generation` identifies the request itself.
+/// The complete identity of one Picker items request.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct FeedRequestIdentity {
+pub(super) struct ItemsRequestIdentity {
     pub(super) mount_id: ViewMountId,
     pub(super) source: InputSourceIdentity,
     pub(super) generation: u64,
@@ -185,7 +131,7 @@ pub(super) struct FeedRequestIdentity {
     pub(super) page_parameters: ParameterSnapshot,
 }
 
-impl FeedRequestIdentity {
+impl ItemsRequestIdentity {
     pub(super) fn new(
         mount_id: ViewMountId,
         source: InputSourceIdentity,
@@ -212,102 +158,91 @@ impl FeedRequestIdentity {
     pub(super) fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.mount_id == self.source.frame,
-            "picker feed request source does not belong to mount {:?}",
+            "picker items request source does not belong to mount {:?}",
             self.mount_id
         );
         anyhow::ensure!(
             self.input_generation == self.source.generation,
-            "picker feed request input generation does not match its source"
+            "picker items request input generation does not match its source"
         );
         anyhow::ensure!(
             self.generation > 0,
-            "picker feed request generation must be greater than zero"
+            "picker items request generation must be greater than zero"
         );
         anyhow::ensure!(
             self.page_parameters.source() == self.source,
-            "picker feed request source does not match page parameters"
+            "picker items request source does not match page parameters"
         );
         anyhow::ensure!(
             self.page_parameters.revision() == self.parameter_revision,
-            "picker feed request parameter revision does not match page parameters"
+            "picker items request parameter revision does not match page parameters"
         );
         Ok(())
     }
 
-    /// Compare the request fields bound to a ViewContext. Request generation
-    /// is intentionally excluded; it identifies a task, not the context.
-    pub(super) fn matches_context(
-        &self,
-        mount_id: ViewMountId,
-        input: &str,
-        binding_raw: &str,
-        page_parameters: &ParameterSnapshot,
-    ) -> bool {
-        self.mount_id == mount_id
-            && self.source.frame == mount_id
-            && self.source == page_parameters.source()
-            && self.input_generation == page_parameters.source().generation
-            && self.input == input
-            && self.parameter_revision == page_parameters.revision()
-            && self.binding_raw == binding_raw
-            && self.page_parameters == *page_parameters
+    pub(super) fn matches_response(&self, view: &str, identity: &ItemsRequestIdentity) -> bool {
+        !view.is_empty() && self == identity
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ItemsRequest {
-    pub(super) view: String,
-    pub(super) identity: FeedRequestIdentity,
-    pub(super) engine_state: Value,
+pub(crate) struct ItemsRequest {
+    pub(crate) view: String,
+    pub(crate) identity: ItemsRequestIdentity,
+    pub(crate) engine_state: Value,
 }
 
 impl ItemsRequest {
-    pub(super) fn new(view: String, identity: FeedRequestIdentity) -> Result<Self> {
-        anyhow::ensure!(!view.is_empty(), "picker feed request view is empty");
-        identity.validate()?;
-        Ok(Self {
+    pub(super) fn new(view: String, identity: ItemsRequestIdentity) -> Result<Self> {
+        let request = Self {
             view,
             identity,
             engine_state: Value::Null,
-        })
+        };
+        request.validate()?;
+        Ok(request)
     }
 
-    pub(super) fn with_engine_state(mut self, engine_state: Value) -> Self {
+    pub(super) fn with_engine_state(mut self, engine_state: Value) -> Result<Self> {
         self.engine_state = engine_state;
-        self
+        self.validate()?;
+        Ok(self)
     }
 
-    pub(super) fn validate(&self) -> Result<()> {
-        anyhow::ensure!(!self.view.is_empty(), "picker feed request view is empty");
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(!self.view.is_empty(), "picker items request view is empty");
         self.identity.validate()
     }
 
     pub(super) fn matches_context(
         &self,
-        mount_id: ViewMountId,
+        frame: ViewMountId,
         view: &str,
         input: &str,
         binding_raw: &str,
         page_parameters: &ParameterSnapshot,
     ) -> bool {
         self.view == view
-            && self
-                .identity
-                .matches_context(mount_id, input, binding_raw, page_parameters)
+            && self.identity.mount_id == frame
+            && self.identity.parameter_revision == page_parameters.revision()
+            && self.identity.input == input
+            && self.identity.binding_raw == binding_raw
+            && &self.identity.page_parameters == page_parameters
     }
 
-    pub(super) fn matches_response(&self, view: &str, identity: &FeedRequestIdentity) -> bool {
-        self.view == view && self.identity == *identity
+    pub(super) fn matches_response(&self, view: &str, identity: &ItemsRequestIdentity) -> bool {
+        self.identity.matches_response(view, identity)
     }
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ItemsResponse {
     pub(super) view: String,
-    pub(super) identity: FeedRequestIdentity,
+    pub(super) identity: ItemsRequestIdentity,
     pub(super) result: std::result::Result<ItemsResult, String>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ItemsEvent {
     pub(crate) view: String,
     pub(crate) errors: Vec<String>,
@@ -335,240 +270,61 @@ pub(crate) trait PickerItemsLoader: Send + Sync {
     fn load(&self, request: &ItemsRequest, cancellation: &CancellationToken) -> ItemsLoadOutcome;
 }
 
-struct FeedLoadOutput {
-    feed_id: FeedId,
-    owner_view: String,
-    badge: Option<String>,
-    context: Option<(FeedId, FeedInstance)>,
-    value: std::result::Result<Option<Value>, String>,
-    managed_child_reaped: bool,
-}
-
-fn load_single_feed(
-    definition: &Arc<FeedDefinition>,
-    page_view: &str,
+pub(crate) fn load_items_for_definition_with_outcome(
+    definition: &Arc<PickerItemsDefinition>,
     page_parameters: &ParameterSnapshot,
-    binding_raw: &str,
-    engine_state: &Value,
-    show_source_badge: bool,
-    cancellation: &CancellationToken,
-) -> Option<FeedLoadOutput> {
-    if cancellation.is_cancelled() || !definition.has_items() {
-        return None;
-    }
-    let feed_id = definition.feed_id.clone();
-    let owner_view = definition.owner_view.clone();
-    let badge = if show_source_badge && definition.owner_view != page_view {
-        Some(
-            definition
-                .alias
-                .as_deref()
-                .unwrap_or_else(|| {
-                    definition
-                        .owner_view
-                        .split_once(':')
-                        .map(|(package, _)| package)
-                        .unwrap_or(&definition.owner_view)
-                })
-                .to_string(),
-        )
-    } else {
-        None
-    };
-    let instance = match FeedInstance::resolve(
-        Arc::clone(definition),
-        page_view,
-        page_parameters,
-        binding_raw,
-    ) {
-        Ok(instance) => instance,
-        Err(error) => {
-            return Some(FeedLoadOutput {
-                feed_id,
-                owner_view: owner_view.clone(),
-                badge,
-                context: None,
-                value: Err(format!("{}: {}", owner_view, error)),
-                managed_child_reaped: false,
-            });
-        }
-    };
-
-    let context = Some((feed_id.clone(), instance.clone()));
-    let (value, managed_child_reaped) = match instance.definition.items_value() {
-        Some(value) if is_producer_value(&value) => {
-            let outcome = run_items_provider(&instance, &value, engine_state, cancellation);
-            (outcome.result.map(Some), outcome.managed_child_reaped)
-        }
-        Some(value) => (Ok(Some(value)), false),
-        None => (Ok(None), false),
-    };
-    let value = value.map_err(|error| format!("{}: {}", owner_view, error));
-
-    Some(FeedLoadOutput {
-        feed_id,
-        owner_view,
-        badge,
-        context,
-        value,
-        managed_child_reaped,
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn load_items_for_definitions(
-    definitions: &[Arc<FeedDefinition>],
-    page_view: &str,
-    page_parameters: &ParameterSnapshot,
-    binding_raw: &str,
-    cancellation: &CancellationToken,
-) -> Result<ItemsResult> {
-    load_items_for_definitions_with_outcome(
-        definitions,
-        page_view,
-        page_parameters,
-        binding_raw,
-        &Value::Null,
-        cancellation,
-    )
-    .result
-}
-
-pub(crate) fn load_items_for_definitions_with_outcome(
-    definitions: &[Arc<FeedDefinition>],
-    page_view: &str,
-    page_parameters: &ParameterSnapshot,
-    binding_raw: &str,
+    _binding_raw: &str,
     engine_state: &Value,
     cancellation: &CancellationToken,
 ) -> ItemsLoadOutcome {
-    let mut result = ItemsResult::default();
-    let show_source_badge = definitions
-        .first()
-        .is_some_and(|definition| definition.source.source_badge(page_view));
-    let outputs: Vec<Option<FeedLoadOutput>> = if definitions.len() <= 1 {
-        definitions
-            .iter()
-            .map(|definition| {
-                load_single_feed(
-                    definition,
-                    page_view,
-                    page_parameters,
-                    binding_raw,
-                    engine_state,
-                    show_source_badge,
-                    cancellation,
-                )
-            })
-            .collect()
-    } else {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = definitions
-                .iter()
-                .map(|definition| {
-                    s.spawn(|| {
-                        load_single_feed(
-                            definition,
-                            page_view,
-                            page_parameters,
-                            binding_raw,
-                            engine_state,
-                            show_source_badge,
-                            cancellation,
-                        )
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        })
+    if cancellation.is_cancelled() || !definition.has_items() {
+        return ItemsLoadOutcome {
+            result: Ok(ItemsResult::default()),
+            managed_child_reaped: false,
+        };
+    }
+    let Some(items_val) = definition.items_value() else {
+        return ItemsLoadOutcome {
+            result: Ok(ItemsResult::default()),
+            managed_child_reaped: false,
+        };
     };
 
-    let managed_child_reaped = outputs
-        .iter()
-        .flatten()
-        .any(|output| output.managed_child_reaped);
-    for output in outputs.into_iter().flatten() {
-        if cancellation.is_cancelled() {
-            return ItemsLoadOutcome {
+    let mut result = ItemsResult::default();
+    let (value, managed_child_reaped) = if is_producer_value(&items_val) {
+        let outcome = run_items_provider(
+            definition,
+            page_parameters,
+            &items_val,
+            engine_state,
+            cancellation,
+        );
+        (outcome.result, outcome.managed_child_reaped)
+    } else {
+        (Ok(items_val), false)
+    };
+
+    match value {
+        Ok(val) => {
+            append_items_value(&mut result, &definition.view_ref, val, cancellation);
+            ItemsLoadOutcome {
                 result: Ok(result),
                 managed_child_reaped,
-            };
-        }
-        if let Some((feed_id, instance)) = output.context {
-            result.contexts.insert(feed_id, instance);
-        }
-        match output.value {
-            Ok(Some(value)) => {
-                if result.items.len() >= MAX_ITEMS_PER_SESSION {
-                    result.errors.push(format!(
-                        "items exceeded the session limit of {}",
-                        MAX_ITEMS_PER_SESSION
-                    ));
-                    break;
-                }
-                append_items_value(
-                    &mut result,
-                    &output.owner_view,
-                    &output.feed_id,
-                    output.badge.as_deref(),
-                    value,
-                    cancellation,
-                );
-            }
-            Ok(None) => {}
-            Err(error) => {
-                result.errors.push(error);
             }
         }
-        if cancellation.is_cancelled() {
-            return ItemsLoadOutcome {
+        Err(err) => {
+            result.errors.push(format!("{}: {}", definition.view_ref, err));
+            ItemsLoadOutcome {
                 result: Ok(result),
                 managed_child_reaped,
-            };
+            }
         }
     }
-
-    ItemsLoadOutcome {
-        result: Ok(result),
-        managed_child_reaped,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn load_items_for_page(
-    projection: &PickerItemsProjection,
-    page_view: &str,
-    page_parameters: &ParameterSnapshot,
-    binding_raw: &str,
-    cancellation: &CancellationToken,
-) -> Result<ItemsResult> {
-    let definitions = FeedDefinition::collection(Arc::new(projection.clone()), page_view)?;
-    load_items_for_definitions(
-        &definitions,
-        page_view,
-        page_parameters,
-        binding_raw,
-        cancellation,
-    )
-}
-
-#[cfg(test)]
-fn load_items(
-    config: &CompiledConfig,
-    view_ref: &str,
-    cancellation: &CancellationToken,
-) -> Result<ItemsResult> {
-    let page_state = config.instantiate_parameters(view_ref)?;
-    let page_parameters = config.parameter_snapshot(&page_state, InputSourceIdentity::default())?;
-    let projection = PickerItemsProjection::from_config(config, &Value::Null, view_ref)?;
-    load_items_for_page(&projection, view_ref, &page_parameters, "", cancellation)
 }
 
 fn append_items_value(
     result: &mut ItemsResult,
     source_ref: &str,
-    feed_id: &FeedId,
-    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -580,14 +336,12 @@ fn append_items_value(
         ));
         return;
     }
-    append_items_array(result, source_ref, feed_id, badge, value, cancellation);
+    append_items_array(result, source_ref, value, cancellation);
 }
 
 fn append_items_array(
     result: &mut ItemsResult,
     source_ref: &str,
-    _feed_id: &FeedId,
-    badge: Option<&str>,
     value: Value,
     cancellation: &CancellationToken,
 ) {
@@ -621,7 +375,7 @@ fn append_items_array(
                 return;
             }
         };
-        let mut display: super::display::NormalizedItemDisplay = parsed.display.into();
+        let display: super::display::NormalizedItemDisplay = parsed.display.into();
         let text = sanitize_text(&display.plain_text());
         if text.is_empty() && !parsed.allow_empty {
             result.errors.push(format!(
@@ -630,29 +384,16 @@ fn append_items_array(
             ));
             return;
         }
-        if let Some(badge_text) = badge {
-            display.inject_badge(badge_text, super::display::SlotToken::Badge);
-        }
         parsed_items.push(Item {
             text,
             display,
             value: parsed.value,
             metadata: parsed.metadata,
+            bindings: parsed.bindings,
             source_view: source_ref.to_string(),
         });
     }
     result.items.extend(parsed_items);
-}
-
-#[cfg(test)]
-fn append_items(
-    result: &mut ItemsResult,
-    source_ref: &str,
-    feed_id: &FeedId,
-    value: Value,
-    cancellation: &CancellationToken,
-) {
-    append_items_array(result, source_ref, feed_id, None, value, cancellation);
 }
 
 struct ItemsScriptOutcome {
@@ -680,7 +421,8 @@ fn is_producer_value(value: &Value) -> bool {
 }
 
 fn run_items_provider(
-    instance: &FeedInstance,
+    definition: &PickerItemsDefinition,
+    page_parameters: &ParameterSnapshot,
     value: &Value,
     engine_state: &Value,
     cancellation: &CancellationToken,
@@ -696,7 +438,7 @@ fn run_items_provider(
             };
         }
     };
-    let source_label = format!("[views.{}.items]", instance.definition.owner_view);
+    let source_label = format!("[views.{}.items]", definition.view_ref);
     match provider.producer {
         ProducerKind::Declared => {
             let handler: Result<DeclaredItemsHandler> = serde_json::from_value(provider.handler)
@@ -733,7 +475,7 @@ fn run_items_provider(
             };
             let source = match parse_producer_script_handler(
                 &handler,
-                instance.definition.workflow_root(),
+                definition.workflow_root(),
             ) {
                 Ok(source) => source,
                 Err(error) => {
@@ -744,15 +486,15 @@ fn run_items_provider(
                 }
             };
             let request = crate::protocol::items_request(
-                instance.parameters.values(),
-                instance.definition.input_value(),
+                page_parameters.values(),
+                definition.input_value(),
                 "picker",
                 engine_state,
             );
             let outcome = crate::protocol::run_script_items_response(
-                &instance.definition.owner_view,
+                &definition.view_ref,
                 &source_label,
-                instance.definition.workflow_root(),
+                definition.workflow_root(),
                 &source,
                 &request,
                 cancellation,
@@ -763,6 +505,51 @@ fn run_items_provider(
                     .and_then(|value| validate_items_value(&source_label, value)),
                 managed_child_reaped: outcome.managed_child_reaped,
             }
+        }
+    }
+}
+
+pub(crate) fn run_items_producer_raw(
+    view_ref: &str,
+    producer_value: &toml::Value,
+    script_root: Option<&Path>,
+    parameters: &Value,
+    cancellation: &CancellationToken,
+) -> Result<Value> {
+    let json_val = toml_to_json(producer_value)?;
+    let source_label = format!("[views.{}.items]", view_ref);
+    if json_val.is_array() {
+        return validate_items_value(&source_label, json_val);
+    }
+    let provider: ItemsProducer = serde_json::from_value(json_val)
+        .context("items producer must define producer and handler")?;
+    match provider.producer {
+        ProducerKind::Declared => {
+            let handler: DeclaredItemsHandler = serde_json::from_value(provider.handler)
+                .context("declared items handler must define an items array")?;
+            validate_items_value(&source_label, handler.items)
+        }
+        ProducerKind::Script => {
+            let handler = toml::Value::try_from(provider.handler)
+                .context("items script handler could not be converted to TOML")?;
+            let source = parse_producer_script_handler(&handler, script_root)?;
+            let request = crate::protocol::items_request(
+                parameters,
+                &Value::Null,
+                "picker",
+                &Value::Null,
+            );
+            let outcome = crate::protocol::run_script_items_response(
+                view_ref,
+                &source_label,
+                script_root,
+                &source,
+                &request,
+                cancellation,
+            );
+            outcome
+                .result
+                .and_then(|value| validate_items_value(&source_label, value))
         }
     }
 }
@@ -787,7 +574,6 @@ fn value_type(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::InputSourceIdentity;
 
     fn cancellation() -> CancellationToken {
         CancellationToken::new()
@@ -796,14 +582,14 @@ mod tests {
     #[test]
     fn parses_structured_items_and_preserves_metadata() {
         let mut result = ItemsResult::default();
-        append_items(
+        append_items_array(
             &mut result,
             "core:items",
-            &FeedId("core:items".to_string()),
             serde_json::json!([{
                 "display": "Example item",
                 "value": "example-value",
-                "metadata": {"text": "Example metadata"}
+                "metadata": {"text": "Example metadata"},
+                "bindings": {"enter": "apps:open"}
             }]),
             &cancellation(),
         );
@@ -811,38 +597,16 @@ mod tests {
         assert_eq!(result.items[0].text, "Example item");
         assert_eq!(result.items[0].value.as_deref(), Some("example-value"));
         assert_eq!(result.items[0].metadata["text"], "Example metadata");
+        assert_eq!(result.items[0].bindings["enter"], "apps:open");
         assert_eq!(result.items[0].source_view, "core:items");
-    }
-
-    #[test]
-    fn source_badge_is_injected_into_aggregated_items() {
-        let mut result = ItemsResult::default();
-        append_items_array(
-            &mut result,
-            "apps:main",
-            &FeedId("apps:main".to_string()),
-            Some("app"),
-            serde_json::json!([{"display": "Termius"}]),
-            &cancellation(),
-        );
-
-        assert_eq!(result.items[0].text, "Termius");
-        let row = &result.items[0].display.rows[0];
-        assert_eq!(row.cells[1].spans[0].text, "app");
-        assert_eq!(row.cells[1].align, ratatui::layout::Alignment::Right);
-        assert_eq!(
-            row.cells[1].spans[0].slot,
-            crate::engine::picker::SlotToken::Badge
-        );
     }
 
     #[test]
     fn rejects_malformed_item_shapes_before_aggregation() {
         let mut result = ItemsResult::default();
-        append_items(
+        append_items_array(
             &mut result,
             "core:items",
-            &FeedId("core:items".to_string()),
             serde_json::json!([{"value": "missing display"}]),
             &cancellation(),
         );
@@ -851,10 +615,9 @@ mod tests {
         assert!(result.errors[0].contains("index 0"));
 
         let mut later_invalid = ItemsResult::default();
-        append_items(
+        append_items_array(
             &mut later_invalid,
             "core:items",
-            &FeedId("core:items".to_string()),
             serde_json::json!([
                 {"display": "valid"},
                 {"value": "missing display"}
@@ -869,21 +632,20 @@ mod tests {
     #[test]
     fn empty_display_requires_allow_empty() {
         let mut result = ItemsResult::default();
-        append_items(
+        append_items_array(
             &mut result,
             "core:items",
-            &FeedId("core:items".to_string()),
             serde_json::json!([{"display": ""}]),
             &cancellation(),
         );
         assert!(result.items.is_empty());
-        assert!(result.errors[0].contains("empty display"));
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("index 0"));
 
         let mut allowed = ItemsResult::default();
-        append_items(
+        append_items_array(
             &mut allowed,
             "core:items",
-            &FeedId("core:items".to_string()),
             serde_json::json!([{"display": "", "allow_empty": true}]),
             &cancellation(),
         );
@@ -892,67 +654,16 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_requires_matching_mount_source_and_revision() {
-        let source = InputSourceIdentity {
-            frame: ViewMountId(7),
-            generation: 3,
-        };
-        let parameters = ParameterSnapshot::from_parts(
-            serde_json::json!({"query": "value"}),
-            "value".to_string(),
-            source,
-            4,
-        );
-        let identity = FeedRequestIdentity::new(
-            ViewMountId(7),
-            source,
-            1,
-            "value".to_string(),
-            4,
-            "value".to_string(),
-            parameters.clone(),
-        )
-        .unwrap();
-        let request = ItemsRequest::new("core:items".to_string(), identity.clone()).unwrap();
-        assert!(request.matches_context(
-            ViewMountId(7),
-            "core:items",
-            "value",
-            "value",
-            &parameters
-        ));
-        assert!(request.matches_response("core:items", &identity));
-        assert!(!request.matches_context(
-            ViewMountId(8),
-            "core:items",
-            "value",
-            "value",
-            &parameters
-        ));
-    }
-
-    #[test]
     fn item_session_limit_is_enforced() {
         let mut result = ItemsResult::default();
-        let values = (0..=MAX_ITEMS_PER_SESSION)
-            .map(|index| serde_json::json!({"display": format!("item-{index}")}))
-            .collect();
-        append_items(
-            &mut result,
-            "core:items",
-            &FeedId("core:items".to_string()),
-            Value::Array(values),
-            &cancellation(),
+        let oversized = Value::Array(
+            (0..MAX_ITEMS_PER_SESSION + 1)
+                .map(|_| serde_json::json!({"display": "item"}))
+                .collect(),
         );
+        append_items_array(&mut result, "core:items", oversized, &cancellation());
         assert!(result.items.is_empty());
+        assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].contains("session limit"));
-    }
-
-    #[test]
-    fn fixture_items_are_loaded_through_static_projection() {
-        let config = crate::workflow::config::load_test_fixture().unwrap();
-        let result = load_items(&config, "core:default", &cancellation()).unwrap();
-        assert!(!result.items.is_empty());
-        assert!(result.items.iter().all(|item| !item.source_view.is_empty()));
     }
 }
