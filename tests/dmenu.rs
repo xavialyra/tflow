@@ -192,3 +192,27 @@ fn cancel_returns_nonzero_without_stdout() {
     assert_ne!(result.status, 0);
     assert!(result.stdout.is_empty());
 }
+
+#[test]
+fn dmenu_can_open_parameter_form_and_apply_query() {
+    let result = run_dmenu_steps_waiting_for_text(
+        &[],
+        b"first\nsecond\n",
+        &[&b"\x07"[..], &b"\r"[..], &b"\r"[..]],
+        &["first", "initial", "first"],
+    );
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"first\n");
+}
+
+#[test]
+fn dmenu_parameter_form_preserves_current_typed_input() {
+    let result = run_dmenu_steps_waiting_for_text(
+        &[],
+        b"first\nsecond\n",
+        &[&b"sec"[..], &b"\x07"[..], &b"\r"[..], &b"\r"[..]],
+        &["first", "second", "initial", "second"],
+    );
+    assert_eq!(result.status, 0);
+    assert_eq!(result.stdout, b"second\n");
+}

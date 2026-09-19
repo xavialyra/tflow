@@ -25,6 +25,15 @@ struct InfoMessage {
 }
 
 #[derive(Clone)]
+pub(crate) struct BaseRenderSnapshot {
+    pub(crate) instance: ViewInstanceId,
+    pub(crate) target: String,
+    pub(crate) buffer: ratatui::buffer::Buffer,
+    pub(crate) area: Rect,
+    pub(crate) result: RenderResult,
+}
+
+#[derive(Clone)]
 pub(crate) struct NavigationGrace {
     #[allow(dead_code)]
     pub(crate) from_instance: ViewInstanceId,
@@ -66,7 +75,7 @@ pub(crate) struct ProtocolSession {
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
     last_rendered_base_instance: Option<ViewInstanceId>,
-    last_content_render: Option<(ViewInstanceId, ratatui::buffer::Buffer, Rect, RenderResult)>,
+    last_content_render: Option<BaseRenderSnapshot>,
     pub(crate) navigation_grace: Option<NavigationGrace>,
 }
 
@@ -535,6 +544,7 @@ impl ProtocolSession {
         let base_index = content_host.visible_base_index(self.router.stack(), active_index);
         let base_entry = base_index.and_then(|index| self.router.stack().get(index));
         let base_instance_id = base_entry.map(|entry| entry.id);
+        let base_target = base_entry.map(|entry| &entry.context.location.target);
         let is_base_loading = base_entry.is_some_and(|entry| {
             entry
                 .view
@@ -545,20 +555,21 @@ impl ProtocolSession {
         });
 
         if let Some(current_base_id) = base_instance_id
+            && let Some(current_target) = base_target
             && self.last_rendered_base_instance != Some(current_base_id)
             && is_base_loading
-            && let Some((prev_id, cached_buffer, cached_area, cached_result)) =
-                &self.last_content_render
-            && *prev_id != current_base_id
+            && let Some(cached) = &self.last_content_render
+            && cached.instance != current_base_id
+            && cached.target != *current_target
             && self.navigation_grace.as_ref().map(|g| g.target_instance) != Some(current_base_id)
         {
             self.navigation_grace = Some(NavigationGrace {
-                from_instance: *prev_id,
+                from_instance: cached.instance,
                 target_instance: current_base_id,
                 expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
-                cached_buffer: cached_buffer.clone(),
-                cached_area: *cached_area,
-                cached_render_result: cached_result.clone(),
+                cached_buffer: cached.buffer.clone(),
+                cached_area: cached.area,
+                cached_render_result: cached.result.clone(),
             });
         }
 
@@ -612,13 +623,18 @@ impl ProtocolSession {
             }
             result
         } else {
-            if !is_base_loading && let Some(base_id) = base_instance_id {
-                self.last_content_render = Some((
-                    base_id,
-                    frame.buffer_mut().clone(),
-                    content_area,
-                    view.clone(),
-                ));
+            if !is_base_loading
+                && active_popup_rect.is_none()
+                && let Some(base_id) = base_instance_id
+                && let Some(target) = base_target
+            {
+                self.last_content_render = Some(BaseRenderSnapshot {
+                    instance: base_id,
+                    target: target.clone(),
+                    buffer: frame.buffer_mut().clone(),
+                    area: content_area,
+                    result: view.clone(),
+                });
                 self.last_rendered_base_instance = Some(base_id);
             }
             view

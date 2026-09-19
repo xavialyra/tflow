@@ -1579,3 +1579,85 @@ fn navigation_grace_expires_after_timeout() {
         .collect();
     assert_eq!(content, "async_target");
 }
+
+#[test]
+fn navigation_grace_does_not_trigger_for_same_target_parameter_reload() {
+    let (mut session, _, _) = session();
+    session.start_root(request("async_target")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+    // 1. Initial async target finishes loading and renders
+    let root_id = session.router.active().unwrap().id;
+    session
+        .task(TaskEvent {
+            task: TaskId(1),
+            instance: root_id,
+            generation: 1,
+            outcome: TaskOutcome::Completed(Value::Null),
+        })
+        .unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    assert!(session.last_content_render.is_some());
+
+    // 2. Replace with a new instance of the same target (e.g. parameter form submit)
+    session.router.replace(request("async_target")).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // 3. Render: should NOT trigger navigation grace because target is identical
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    assert!(
+        session.navigation_grace.is_none(),
+        "Same target parameter reload must not trigger grace period"
+    );
+}
+
+#[test]
+fn popup_does_not_pollute_last_content_render_snapshot() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+    // 1. Render base view
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    let cached_before = session.last_content_render.clone().unwrap();
+
+    // 2. Push a popup on top
+    let mut popup_req = request("child");
+    popup_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(20),
+        height: Some(5),
+    };
+    session.router.push(popup_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // 3. Render while popup is active
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    // 4. last_content_render must remain the clean base snapshot, not overwritten by popup
+    let cached_after = session.last_content_render.clone().unwrap();
+    assert_eq!(
+        cached_after.instance, cached_before.instance,
+        "Popup render must not replace base snapshot instance"
+    );
+    assert_eq!(
+        cached_after.target, "root",
+        "Snapshot must remain the root target"
+    );
+}

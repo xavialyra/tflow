@@ -113,6 +113,10 @@ if query.get("type", "string") == "string":
     if not isinstance(parameters_value, str):
         raise SystemExit("parameter form string value is invalid")
 else:
+    for name, definition in query.items():
+        if isinstance(definition, dict) and definition.get("nullable", False):
+            if values.get(name) == "":
+                values[name] = None
     parameters_value = values
 json.dump({
     "version": 1,
