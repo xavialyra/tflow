@@ -16,7 +16,7 @@ pub(crate) enum PreparedAction {
         request: NavigationRequest,
         mode: NavigationMode,
     },
-    Call(CallRequest),
+    Call(Box<CallRequest>),
     Return {
         value: Value,
     },
@@ -125,28 +125,27 @@ fn prepare_producer_action(
         }
     };
     match outcome {
-        crate::protocol::ProtocolOutcome::Operation(operation) => {
-            prepare_protocol_operation(
-                config,
-                invocation,
-                match action {
-                    CommandAction::Call {
-                        return_processor, ..
-                    } => return_processor.clone(),
-                    _ => None,
-                },
-                command_invocation,
-                context,
-                operation,
-                cancellation,
-            )
-        }
+        crate::protocol::ProtocolOutcome::Operation(operation) => prepare_protocol_operation(
+            config,
+            invocation,
+            match action {
+                CommandAction::Call {
+                    return_processor, ..
+                } => return_processor.clone(),
+                _ => None,
+            },
+            command_invocation,
+            context,
+            operation,
+            cancellation,
+        ),
         crate::protocol::ProtocolOutcome::Feedback { message, level } => {
             Ok(PreparedAction::Feedback { message, level })
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_return_processor(
     config: &CompiledConfig,
     invocation: &crate::workflow::InvocationContext,
@@ -205,17 +204,15 @@ pub(crate) fn prepare_return_processor(
         }
     };
     match outcome {
-        crate::protocol::ProtocolOutcome::Operation(operation) => {
-            prepare_protocol_operation(
-                config,
-                invocation,
-                None,
-                command_invocation,
-                context,
-                operation,
-                cancellation,
-            )
-        }
+        crate::protocol::ProtocolOutcome::Operation(operation) => prepare_protocol_operation(
+            config,
+            invocation,
+            None,
+            command_invocation,
+            context,
+            operation,
+            cancellation,
+        ),
         crate::protocol::ProtocolOutcome::Feedback { message, level } => {
             Ok(PreparedAction::Feedback { message, level })
         }
@@ -276,12 +273,12 @@ fn prepare_protocol_operation(
                 None => NavigationRequest::with_defaults(target),
             }
             .with_presentation(presentation);
-            Ok(PreparedAction::Call(CallRequest {
+            Ok(PreparedAction::Call(Box::new(CallRequest {
                 request,
                 origin: command_invocation.origin(),
                 context,
                 return_processor,
-            }))
+            })))
         }
         crate::protocol::ProtocolOperation::Return { value } => {
             Ok(PreparedAction::Return { value })
@@ -338,12 +335,12 @@ fn prepare_builtin_commands(
             width: Some(72),
             height: Some(16),
         });
-    Ok(PreparedAction::Call(CallRequest {
+    Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
         origin: command_invocation.origin(),
         context,
         return_processor: None,
-    }))
+    })))
 }
 
 fn prepare_builtin_parameters(
@@ -365,12 +362,12 @@ fn prepare_builtin_parameters(
             width: Some(72),
             height: Some(20),
         });
-    Ok(PreparedAction::Call(CallRequest {
+    Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
         origin: command_invocation.origin(),
         context,
         return_processor: None,
-    }))
+    })))
 }
 
 pub(crate) fn collect_available_commands(
@@ -399,7 +396,6 @@ pub(crate) fn collect_available_commands(
     }
     Ok(commands)
 }
-
 
 #[cfg(test)]
 pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {

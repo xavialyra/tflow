@@ -335,15 +335,15 @@ impl View for EmbeddedProtocolView {
             if !binding.enabled {
                 continue;
             }
-            if let crate::workflow::command::ResolvedInputAction::Engine(action) = &binding.action {
-                if action.as_str() == CMD_CANCEL {
-                    entries.push(crate::command::CommandEntry::for_event(
-                        CMD_CANCEL,
-                        Some("Cancel".to_string()),
-                        Some(binding.key),
-                        crate::command::CommandScope::Engine,
-                    ));
-                }
+            if let crate::workflow::command::ResolvedInputAction::Engine(action) = &binding.action
+                && action.as_str() == CMD_CANCEL
+            {
+                entries.push(crate::command::CommandEntry::for_event(
+                    CMD_CANCEL,
+                    Some("Cancel".to_string()),
+                    Some(binding.key),
+                    crate::command::CommandScope::Engine,
+                ));
             }
         }
         entries
@@ -565,20 +565,17 @@ mod tests {
 
     fn mounted_view(config: EmbeddedProtocolConfig) -> (Box<dyn View>, ViewContext) {
         let mut view = create_protocol_view(config, &request(), ViewInstanceId(1)).unwrap();
-        let mut context = context();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         view.event(
             ViewEvent::Resize(crate::view::TerminalSize {
                 width: 40,
                 height: 6,
             }),
-            &mut context,
+            &context,
         )
         .unwrap();
         (view, context)
@@ -599,39 +596,36 @@ mod tests {
 
     #[test]
     fn covered_ticks_use_background_polling_without_forwarding_input() {
-        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "sleep 0.02"]));
-        view.event(ViewEvent::Tick, &mut context).unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &mut context)
+        let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", "sleep 0.02"]));
+        view.event(ViewEvent::Tick, &context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
             .unwrap();
         assert!(matches!(
-            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            view.event(ViewEvent::Tick, &context).unwrap(),
             ViewDecision::Stay
         ));
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
     #[test]
     fn covered_completion_is_retained_until_foreground_activation() {
-        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
-        view.event(ViewEvent::Tick, &mut context).unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &mut context)
+        let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
+        view.event(ViewEvent::Tick, &context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
             .unwrap();
         for _ in 0..50 {
-            view.event(ViewEvent::Tick, &mut context).unwrap();
+            view.event(ViewEvent::Tick, &context).unwrap();
             std::thread::sleep(Duration::from_millis(1));
         }
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         let mut closed = false;
         for _ in 0..50 {
             if matches!(
-                view.event(ViewEvent::Tick, &mut context).unwrap(),
+                view.event(ViewEvent::Tick, &context).unwrap(),
                 ViewDecision::Close
             ) {
                 closed = true;
@@ -643,19 +637,19 @@ mod tests {
             closed,
             "covered completion must remain available on activation"
         );
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
     #[test]
     fn external_completion_replays_after_closing_is_rolled_back() {
-        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
+        let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", "exit 0"]));
         let mut completed = false;
         for _ in 0..100 {
             if matches!(
-                view.event(ViewEvent::Tick, &mut context).unwrap(),
+                view.event(ViewEvent::Tick, &context).unwrap(),
                 ViewDecision::Close
             ) {
                 completed = true;
@@ -665,33 +659,30 @@ mod tests {
         }
         assert!(completed, "embedded completion did not become ready");
 
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         assert!(matches!(
-            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            view.event(ViewEvent::Tick, &context).unwrap(),
             ViewDecision::Close
         ));
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
     #[test]
     fn raw_key_paste_and_bytes_are_forwarded_losslessly() {
         let script = "read -r line; printf '%s' \"$line\"";
-        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", script]));
+        let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", script]));
         view.event(
             ViewEvent::Input(InputEvent::Key {
                 key: crate::input::Key::Char('x'),
                 raw: vec![0x1b, b'[', b'1', b'~'],
             }),
-            &mut context,
+            &context,
         )
         .unwrap();
         view.event(
@@ -699,16 +690,16 @@ mod tests {
                 text: Some("ignored".into()),
                 raw: b"\x1b[200~payload\x1b[201~".to_vec(),
             }),
-            &mut context,
+            &context,
         )
         .unwrap();
         view.event(
             ViewEvent::Input(InputEvent::Bytes(vec![0xff, 0x00])),
-            &mut context,
+            &context,
         )
         .unwrap();
         for _ in 0..80 {
-            view.event(ViewEvent::Tick, &mut context).unwrap();
+            view.event(ViewEvent::Tick, &context).unwrap();
             if view.command_snapshot().revision > 0 {
                 break;
             }
@@ -740,20 +731,20 @@ mod tests {
 
     #[test]
     fn cancel_binding_returns_without_forwarding_escape() {
-        let (mut view, mut context) = mounted_view(config(&["/bin/sh", "-c", "sleep 2"]));
+        let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", "sleep 2"]));
         let decision = view
             .event(
                 ViewEvent::Input(InputEvent::Key {
                     key: crate::input::Key::Escape,
                     raw: vec![0x1b],
                 }),
-                &mut context,
+                &context,
             )
             .unwrap();
         assert!(matches!(decision, ViewDecision::Close));
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
@@ -764,10 +755,10 @@ mod tests {
             "result".to_string(),
             serde_json::json!({"format": "text", "required": true}),
         );
-        let (mut view, mut context) = mounted_view(cfg);
+        let (mut view, context) = mounted_view(cfg);
         let mut failed = false;
         for _ in 0..100 {
-            match view.event(ViewEvent::Tick, &mut context) {
+            match view.event(ViewEvent::Tick, &context) {
                 Ok(ViewDecision::CloseWithError(error)) => {
                     assert!(error.contains("produced no result"));
                     failed = true;
@@ -785,7 +776,7 @@ mod tests {
         }
         assert!(failed, "embedded failure should reach the protocol host");
         assert!(matches!(
-            view.event(ViewEvent::Tick, &mut context).unwrap(),
+            view.event(ViewEvent::Tick, &context).unwrap(),
             ViewDecision::Stay
         ));
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
@@ -806,9 +797,9 @@ mod tests {
             })
             .unwrap();
         assert!(rendered.unwrap().metadata.error.is_some());
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
@@ -826,22 +817,19 @@ mod tests {
         .unwrap();
         let mut context = context();
         context.presentation = request.presentation;
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         view.event(
             ViewEvent::Resize(crate::view::TerminalSize {
                 width: 10,
                 height: 4,
             }),
-            &mut context,
+            &context,
         )
         .unwrap();
-        view.event(ViewEvent::Tick, &mut context).unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
         let model = view.runtime.render_model();
         let model = model
             .downcast_ref::<super::super::EmbeddedRenderModel>()
@@ -858,18 +846,18 @@ mod tests {
                 width: 18,
                 height: 4,
             }),
-            &mut context,
+            &context,
         )
         .unwrap();
-        view.event(ViewEvent::Tick, &mut context).unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
         let model = view.runtime.render_model();
         let model = model
             .downcast_ref::<super::super::EmbeddedRenderModel>()
             .unwrap();
         assert_eq!(model.screen.as_ref().unwrap().dimensions(), (18, 4));
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
     }
 
@@ -886,11 +874,11 @@ mod tests {
             "result".to_string(),
             serde_json::json!({"format":"text", "required":false}),
         );
-        let (mut view, mut context) = mounted_view(cfg);
+        let (mut view, context) = mounted_view(cfg);
         let mut saw_final_render = false;
         let mut returned = false;
         for _ in 0..200 {
-            let decision = view.event(ViewEvent::Tick, &mut context).unwrap();
+            let decision = view.event(ViewEvent::Tick, &context).unwrap();
             if matches!(decision, ViewDecision::Invalidate) {
                 saw_final_render = true;
             }
@@ -902,9 +890,9 @@ mod tests {
         }
         assert!(saw_final_render);
         assert!(returned);
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &mut context)
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
         fs::remove_dir_all(root).unwrap();
     }

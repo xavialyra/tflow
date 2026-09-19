@@ -68,7 +68,9 @@ fn preview_debounces_and_reloads_same_value_metadata_with_managed_reap() {
     collect(&mut preview, &starter);
     assert!(matches!(preview.document, Some(document::Document::Text(ref s)) if s == "first"));
     preview.prepare(Some(request(source(ECHO), json!({"body":"changed"}))));
-    assert!(matches!(preview.render_state().document, Some(document::Document::Text(ref s)) if s == "first"));
+    assert!(
+        matches!(preview.render_state().document, Some(document::Document::Text(ref s)) if s == "first")
+    );
     // Verify grace period expiration reveals loading state when exceeding grace window
     preview.grace_due = Some(Instant::now() - Duration::from_millis(1));
     assert!(preview.render_state().document.is_none());

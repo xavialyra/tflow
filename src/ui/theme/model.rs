@@ -227,10 +227,10 @@ impl ResolvedTheme {
         let picker_badge = resolved_badge.normal;
         let picker_badge_selected = if let Some(sel) = resolved_badge.selected {
             let mut s = sel;
-            if s.bg.is_none() {
-                if let Some(bg) = picker_selected.bg {
-                    s = s.bg(bg);
-                }
+            if s.bg.is_none()
+                && let Some(bg) = picker_selected.bg
+            {
+                s = s.bg(bg);
             }
             s
         } else {
@@ -471,10 +471,10 @@ impl ResolvedTheme {
             if selected {
                 if let Some(sel) = custom.selected {
                     let mut s = sel;
-                    if s.bg.is_none() {
-                        if let Some(bg) = self.picker.selected.bg {
-                            s = s.bg(bg);
-                        }
+                    if s.bg.is_none()
+                        && let Some(bg) = self.picker.selected.bg
+                    {
+                        s = s.bg(bg);
                     }
                     s
                 } else {
@@ -763,6 +763,13 @@ mod form_tests {
 
         let sel_success = theme.resolve_slot("", &SlotToken::Success, true);
         assert_eq!(sel_success.fg, Some(ratatui::style::Color::Green));
-        assert!(sel_success.sub_modifier.contains(ratatui::style::Modifier::BOLD) || sel_success.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(
+            sel_success
+                .sub_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+                || sel_success
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+        );
     }
 }

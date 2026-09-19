@@ -44,6 +44,7 @@ pub(crate) fn run_resolved_script_with_stdin_outcome(
 
 /// Execute a resolved script with an optional protocol request on stdin and
 /// an entry-point-specific stdout limit override.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
     workflow_id: &str,
     source_label: &str,

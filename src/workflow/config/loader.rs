@@ -1,8 +1,8 @@
 use super::{
-    normalize::{normalize_view_keymaps, remove_disabled_workflows},
     CompiledConfig, RawConfig, WorkflowHeader,
+    normalize::{normalize_view_keymaps, remove_disabled_workflows},
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -310,26 +310,24 @@ pub(super) fn load_workflow_packages(
         let (wf_id, package) = read_workflow_package(&manifest, &id)?;
 
         // Validate view alias conflicts
-        if let Some(workflows) = package.get("workflows").and_then(toml::Value::as_table) {
-            if let Some(wf) = workflows.get(&wf_id).and_then(toml::Value::as_table) {
-                if let Some(views) = wf.get("views").and_then(toml::Value::as_table) {
-                    for (view_name, view) in views {
-                        let view_ref = format!("{wf_id}:{view_name}");
-                        if let Some(alias) = view.get("alias").and_then(toml::Value::as_str) {
-                            if let Some((prev_view, prev_src)) = view_aliases
-                                .insert(alias.to_string(), (view_ref.clone(), manifest.clone()))
-                            {
-                                bail!(
-                                    "conflicting view alias {:?} defined for {:?} in {:?} conflicts with {:?} in {:?}",
-                                    alias,
-                                    view_ref,
-                                    manifest.display(),
-                                    prev_view,
-                                    prev_src.display()
-                                );
-                            }
-                        }
-                    }
+        if let Some(workflows) = package.get("workflows").and_then(toml::Value::as_table)
+            && let Some(wf) = workflows.get(&wf_id).and_then(toml::Value::as_table)
+            && let Some(views) = wf.get("views").and_then(toml::Value::as_table)
+        {
+            for (view_name, view) in views {
+                let view_ref = format!("{wf_id}:{view_name}");
+                if let Some(alias) = view.get("alias").and_then(toml::Value::as_str)
+                    && let Some((prev_view, prev_src)) =
+                        view_aliases.insert(alias.to_string(), (view_ref.clone(), manifest.clone()))
+                {
+                    bail!(
+                        "conflicting view alias {:?} defined for {:?} in {:?} conflicts with {:?} in {:?}",
+                        alias,
+                        view_ref,
+                        manifest.display(),
+                        prev_view,
+                        prev_src.display()
+                    );
                 }
             }
         }

@@ -695,14 +695,11 @@ mod tests {
         capture_config.engine.workflow_root = Some(root.clone());
         let mut view =
             create_protocol_view_state(capture_config, &request(), ViewInstanceId(1)).unwrap();
-        let mut context = context();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         let correlation = view.active_task.expect("async capture must be correlated");
         let before = view.command_snapshot();
         view.event(
@@ -842,22 +839,19 @@ mod tests {
             ViewInstanceId(1),
         )
         .unwrap();
-        let mut context = context();
+        let context = context();
         assert!(matches!(
-            view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+            view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
                 .unwrap(),
             ViewDecision::Stay
         ));
         assert!(matches!(
-            view.event(
-                ViewEvent::Lifecycle(LifecycleEvent::Activated),
-                &mut context
-            )
-            .unwrap(),
+            view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+                .unwrap(),
             ViewDecision::Stay
         ));
         assert!(
-            matches!(view.event(ViewEvent::Input(InputEvent::Key { key: crate::input::Key::Enter, raw: b"\r".to_vec() }), &mut context).unwrap(), ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured")
+            matches!(view.event(ViewEvent::Input(InputEvent::Key { key: crate::input::Key::Enter, raw: b"\r".to_vec() }), &context).unwrap(), ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured")
         );
         assert!(matches!(
             view.event(
@@ -865,7 +859,7 @@ mod tests {
                     key: crate::input::Key::Escape,
                     raw: vec![0x1b]
                 }),
-                &mut context
+                &context
             )
             .unwrap(),
             ViewDecision::Close
@@ -880,15 +874,12 @@ mod tests {
             ViewInstanceId(1),
         )
         .unwrap();
-        let mut context = context();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
-        view.event(ViewEvent::Tick, &mut context).unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
         let publication = view.command_snapshot().publication.unwrap();
         assert_eq!(
             publication.current,
@@ -938,16 +929,13 @@ mod tests {
         let mut cfg = config(output);
         cfg.engine.workflow_root = Some(root.clone());
         let mut view = create_protocol_view(cfg, &request(), ViewInstanceId(1)).unwrap();
-        let mut context = context();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &mut context)
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Lifecycle(LifecycleEvent::Activated),
-            &mut context,
-        )
-        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
         for _ in 0..200 {
-            view.event(ViewEvent::Tick, &mut context).unwrap();
+            view.event(ViewEvent::Tick, &context).unwrap();
             if view.command_snapshot().revision > 0 {
                 break;
             }

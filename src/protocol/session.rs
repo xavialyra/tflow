@@ -298,7 +298,7 @@ impl ProtocolSession {
                     let is_loading = self.router.active().is_some_and(|a| {
                         let snapshot = a.view.command_snapshot();
                         snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
-                            && snapshot.publication.as_ref().map_or(false, |p| !p.ready)
+                            && snapshot.publication.as_ref().is_some_and(|p| !p.ready)
                     });
                     if is_loading {
                         self.pending_key = Some(*key);
@@ -366,21 +366,21 @@ impl ProtocolSession {
         self.expire_info(Instant::now());
         self.sync_active_commands()?;
 
-        if matches!(event, ViewEvent::Task(_)) {
-            if let Some(key) = self.pending_key.take() {
-                let is_ready = self.router.active().is_some_and(|a| {
-                    let snapshot = a.view.command_snapshot();
-                    snapshot.publication.as_ref().is_some_and(|p| p.ready)
+        if matches!(event, ViewEvent::Task(_))
+            && let Some(key) = self.pending_key.take()
+        {
+            let is_ready = self.router.active().is_some_and(|a| {
+                let snapshot = a.view.command_snapshot();
+                snapshot.publication.as_ref().is_some_and(|p| p.ready)
+            });
+            if is_ready {
+                let re_event = ViewEvent::Input(InputEvent::Key {
+                    key,
+                    raw: Vec::new(),
                 });
-                if is_ready {
-                    let re_event = ViewEvent::Input(InputEvent::Key {
-                        key,
-                        raw: Vec::new(),
-                    });
-                    return self.dispatch_with_effects(re_event, effects);
-                } else {
-                    self.pending_key = Some(key);
-                }
+                return self.dispatch_with_effects(re_event, effects);
+            } else {
+                self.pending_key = Some(key);
             }
         }
 
@@ -544,29 +544,22 @@ impl ProtocolSession {
                 .is_some_and(|p| !p.ready)
         });
 
-        if let Some(current_base_id) = base_instance_id {
-            if self.last_rendered_base_instance != Some(current_base_id) && is_base_loading {
-                if let Some((prev_id, cached_buffer, cached_area, cached_result)) =
-                    &self.last_content_render
-                {
-                    if *prev_id != current_base_id
-                        && self
-                            .navigation_grace
-                            .as_ref()
-                            .map(|g| g.target_instance)
-                            != Some(current_base_id)
-                    {
-                        self.navigation_grace = Some(NavigationGrace {
-                            from_instance: *prev_id,
-                            target_instance: current_base_id,
-                            expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
-                            cached_buffer: cached_buffer.clone(),
-                            cached_area: *cached_area,
-                            cached_render_result: cached_result.clone(),
-                        });
-                    }
-                }
-            }
+        if let Some(current_base_id) = base_instance_id
+            && self.last_rendered_base_instance != Some(current_base_id)
+            && is_base_loading
+            && let Some((prev_id, cached_buffer, cached_area, cached_result)) =
+                &self.last_content_render
+            && *prev_id != current_base_id
+            && self.navigation_grace.as_ref().map(|g| g.target_instance) != Some(current_base_id)
+        {
+            self.navigation_grace = Some(NavigationGrace {
+                from_instance: *prev_id,
+                target_instance: current_base_id,
+                expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
+                cached_buffer: cached_buffer.clone(),
+                cached_area: *cached_area,
+                cached_render_result: cached_result.clone(),
+            });
         }
 
         let mut in_grace_period = false;

@@ -214,7 +214,6 @@ impl CompiledConfig {
         ))
     }
 
-
     pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
         let mut globals = self.commands.bindings.clone();
         let binding_uses_key = |binding: &CommandBinding, key: &str| {

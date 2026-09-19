@@ -351,6 +351,7 @@ impl Document {
         self.height(area.width).saturating_sub(area.height)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render(
         &self,
         frame: &mut Frame,

@@ -91,19 +91,15 @@ impl ChromeSnapshot {
             .filter(|e| e.scope == CommandScope::View)
             .collect::<Vec<_>>();
 
-        let enter_entry = [
-            CommandScope::View,
-            CommandScope::Engine,
-            CommandScope::Host,
-        ]
-        .into_iter()
-        .find_map(|scope| {
-            self.entries.iter().find(|e| {
-                e.scope == scope
-                    && (e.key == Some(Key::Enter)
-                        || e.key.and_then(|k| k.binding_name()).as_deref() == Some("enter"))
-            })
-        });
+        let enter_entry = [CommandScope::View, CommandScope::Engine, CommandScope::Host]
+            .into_iter()
+            .find_map(|scope| {
+                self.entries.iter().find(|e| {
+                    e.scope == scope
+                        && (e.key == Some(Key::Enter)
+                            || e.key.and_then(|k| k.binding_name()).as_deref() == Some("enter"))
+                })
+            });
 
         let enter_in_view = enter_entry.is_some_and(|e| e.scope == CommandScope::View);
         let has_more_view_commands = if enter_in_view {
@@ -117,10 +113,8 @@ impl ChromeSnapshot {
             let label = enter.label.clone().unwrap_or_else(|| "Enter".to_string());
             commands.push(("enter".to_string(), label));
         }
-        if has_more_view_commands {
-            if let Some(overflow) = self.overflow_command() {
-                commands.push(overflow);
-            }
+        if has_more_view_commands && let Some(overflow) = self.overflow_command() {
+            commands.push(overflow);
         }
         commands
     }

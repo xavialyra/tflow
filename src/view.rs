@@ -1371,7 +1371,7 @@ impl Router {
             .as_ref()
             .is_some_and(|boundary| boundary.handler.post_commit());
         let post_commit_result = post_commit_processor
-            .then(|| self.pending_result.as_ref())
+            .then_some(self.pending_result.as_ref())
             .flatten()
             .cloned();
         let continuation_decision = if post_commit_processor {

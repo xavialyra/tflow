@@ -321,7 +321,7 @@ impl PickerView {
                 .cloned()
         })
         .flatten();
-        let request = item.and_then(|item| {
+        let request = item.map(|item| {
             let configured = self.preview.source();
             let (owner, source) = match configured {
                 super::preview::PreviewSource::Inherit => (
@@ -342,7 +342,7 @@ impl PickerView {
             let request = crate::protocol::preview_request(&parameters, &self.services.launch_input, &state);
             let identity = serde_json::json!({"owner": owner, "source_view": item.source_view, "request": request}).to_string();
             let root = self.services.workflow_root(&owner).map(std::path::Path::to_path_buf);
-            Some(super::preview::PreviewRequest { identity, owner, request, root, source })
+            super::preview::PreviewRequest { identity, owner, request, root, source }
         });
         let content_size = self.preview_content_size;
         self.preview.set_content_size(content_size);
@@ -538,12 +538,12 @@ impl PickerView {
                 self.frame.query = query;
                 self.feed_instances = Arc::new(result.contexts);
                 self.frame.selection.replace(result.items);
-                if let Some(target) = self.initial_focus.take() {
-                    if let Some(pos) = self.frame.selection.items.iter().position(|item| {
+                if let Some(target) = self.initial_focus.take()
+                    && let Some(pos) = self.frame.selection.items.iter().position(|item| {
                         item.value.as_deref() == Some(&target) || item.text == target
-                    }) {
-                        self.frame.selection.selected = pos;
-                    }
+                    })
+                {
+                    self.frame.selection.selected = pos;
                 }
                 self.frame.results = ResultsState::Ready(input);
                 let pending_selection = std::mem::take(&mut self.frame.pending_selection);

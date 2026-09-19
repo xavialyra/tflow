@@ -7,7 +7,9 @@ use unicode_width::UnicodeWidthStr;
 /// through the Theme preprocessor to maintain consistency and readable contrast.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
+#[derive(Default)]
 pub enum SlotToken {
+    #[default]
     Primary,
     Secondary,
     Muted,
@@ -17,12 +19,6 @@ pub enum SlotToken {
     Warning,
     Error,
     Custom(String),
-}
-
-impl Default for SlotToken {
-    fn default() -> Self {
-        Self::Primary
-    }
 }
 
 impl From<String> for SlotToken {

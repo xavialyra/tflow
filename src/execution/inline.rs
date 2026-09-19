@@ -17,15 +17,14 @@ pub(crate) fn parse_shebang(script: &str) -> Shebang {
     let first_line = script.lines().next().unwrap_or("").trim_end();
     if let Some(shebang_str) = first_line.strip_prefix("#!") {
         let trimmed = shebang_str.trim();
-        if !trimmed.is_empty() {
-            if let Ok(words) = shell_words::split(trimmed) {
-                if let Some((interpreter, args)) = words.split_first() {
-                    return Shebang {
-                        interpreter: interpreter.clone(),
-                        args: args.to_vec(),
-                    };
-                }
-            }
+        if !trimmed.is_empty()
+            && let Ok(words) = shell_words::split(trimmed)
+            && let Some((interpreter, args)) = words.split_first()
+        {
+            return Shebang {
+                interpreter: interpreter.clone(),
+                args: args.to_vec(),
+            };
         }
     }
     Shebang {
@@ -63,11 +62,11 @@ pub(crate) fn verify_interpreter(interpreter: &str) -> Result<PathBuf> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    if let Ok(metadata) = fs::metadata(path) {
-        if metadata.is_file() {
-            let mode = metadata.mode();
-            return (mode & 0o111) != 0;
-        }
+    if let Ok(metadata) = fs::metadata(path)
+        && metadata.is_file()
+    {
+        let mode = metadata.mode();
+        return (mode & 0o111) != 0;
     }
     false
 }
@@ -114,19 +113,19 @@ pub(crate) fn format_attributed_script(
     let attribution =
         format!("# [tlaunch] source: workflows/{workflow_id}.toml -> [{source_label}]");
     let mut lines = script_body.lines();
-    if let Some(first_line) = lines.next() {
-        if first_line.starts_with("#!") {
-            let mut result = String::new();
-            result.push_str(first_line);
+    if let Some(first_line) = lines.next()
+        && first_line.starts_with("#!")
+    {
+        let mut result = String::new();
+        result.push_str(first_line);
+        result.push('\n');
+        result.push_str(&attribution);
+        result.push('\n');
+        for line in lines {
+            result.push_str(line);
             result.push('\n');
-            result.push_str(&attribution);
-            result.push('\n');
-            for line in lines {
-                result.push_str(line);
-                result.push('\n');
-            }
-            return result;
         }
+        return result;
     }
     format!("#!/bin/sh\n{attribution}\n{script_body}\n")
 }
@@ -149,12 +148,11 @@ pub(crate) fn materialize_inline_script(
     let filename = format!("{clean_wf}_{clean_src}_{hash}");
     let dest_path = dir.join(&filename);
 
-    if dest_path.is_file() {
-        if let Ok(meta) = fs::metadata(&dest_path) {
-            if meta.len() > 0 {
-                return Ok(dest_path);
-            }
-        }
+    if dest_path.is_file()
+        && let Ok(meta) = fs::metadata(&dest_path)
+        && meta.len() > 0
+    {
+        return Ok(dest_path);
     }
 
     let attributed = format_attributed_script(workflow_id, source_label, script_body);

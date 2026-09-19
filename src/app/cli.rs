@@ -519,7 +519,9 @@ fn resolve_global_root_view(config: &CompiledConfig, view_arg: Option<&str>) -> 
     if let Some(default_view) = &config.default_view {
         return config.resolve_view(default_view);
     }
-    bail!("no default view found; define a view with alias = \"main\" or specify a View on the command line");
+    bail!(
+        "no default view found; define a view with alias = \"main\" or specify a View on the command line"
+    );
 }
 
 #[cfg(test)]

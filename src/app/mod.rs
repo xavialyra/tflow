@@ -195,6 +195,7 @@ impl App {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         config: Arc<crate::workflow::config::CompiledConfig>,
         invocation: Arc<crate::workflow::InvocationContext>,

@@ -59,12 +59,11 @@ impl ProtocolCommandService {
             .as_ref()
             .is_some_and(|p| p.ready && !p.current.is_null());
 
-        if has_item {
-            if let Some(owner) = &snapshot.owner_view {
-                if owner != target {
-                    views_to_collect.push((owner.clone(), false));
-                }
-            }
+        if has_item
+            && let Some(owner) = &snapshot.owner_view
+            && owner != target
+        {
+            views_to_collect.push((owner.clone(), false));
         }
 
         for (view_ref, is_page) in views_to_collect {
@@ -112,13 +111,13 @@ impl ProtocolCommandService {
                                         serde_json::Value::Null
                                     }
                                 });
-                            if let serde_json::Value::Object(ref mut map) = current {
-                                if snapshot.engine_type == crate::workflow::config::ENGINE_PICKER {
-                                    map.insert(
-                                        "input".to_string(),
-                                        serde_json::Value::String(snapshot.raw_input.clone()),
-                                    );
-                                }
+                            if let serde_json::Value::Object(ref mut map) = current
+                                && snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
+                            {
+                                map.insert(
+                                    "input".to_string(),
+                                    serde_json::Value::String(snapshot.raw_input.clone()),
+                                );
                             }
                             current
                         },
@@ -546,7 +545,7 @@ pub(crate) fn map_prepared_action(
                         let parameters = value.get("parameters").cloned().ok_or_else(|| {
                             anyhow::anyhow!("parameter form result has no parameters")
                         })?;
-                        config.validate_parameter_values(&target, &parameters)?;
+                        config.validate_parameter_values(target, &parameters)?;
                         let request =
                             crate::workflow::command::NavigationRequest::with_defaults(target)
                                 .with_parameters(parameters);
@@ -574,9 +573,7 @@ pub(crate) fn map_prepared_action(
                 continuation: crate::view::Continuation::Call(boundary),
             }))
         }
-        PreparedAction::Return { value } => {
-            Ok(ViewDecision::Return(ViewResult::new(value)))
-        }
+        PreparedAction::Return { value } => Ok(ViewDecision::Return(ViewResult::new(value))),
         PreparedAction::Execute {
             prepared,
             exit,
@@ -592,12 +589,9 @@ pub(crate) fn map_prepared_action(
                 effect
             })
         }
-        PreparedAction::Feedback { message, level } => {
-            Ok(ViewDecision::Effect(crate::view::EffectRequest::ShowFeedback {
-                message,
-                level,
-            }))
-        }
+        PreparedAction::Feedback { message, level } => Ok(ViewDecision::Effect(
+            crate::view::EffectRequest::ShowFeedback { message, level },
+        )),
     }
 }
 

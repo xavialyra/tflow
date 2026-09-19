@@ -50,7 +50,7 @@ pub(crate) fn static_bindings(value: Option<&Value>) -> Option<Value> {
     let mut static_bindings = serde_json::Map::new();
     for (action, values) in bindings {
         let values = values.as_array()?;
-        let values = values.iter().cloned().collect();
+        let values = values.to_vec();
         static_bindings.insert(action.clone(), Value::Array(values));
     }
     Some(Value::Object(static_bindings))

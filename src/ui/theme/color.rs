@@ -78,6 +78,18 @@ pub(super) fn parse_ansi_color(value: &str) -> Option<Color> {
     }
 }
 
+fn parse_hex_color(value: &str) -> Option<Color> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    Some(Color::Rgb(
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,16 +124,4 @@ mod tests {
             );
         }
     }
-}
-
-fn parse_hex_color(value: &str) -> Option<Color> {
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
-        return None;
-    }
-    Some(Color::Rgb(
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-    ))
 }

@@ -124,7 +124,7 @@ pub(super) fn footer_line(
         if commands.is_empty() {
             complete
         } else if let Some(overflow_command) = overflow_command {
-            command_footer(&[overflow_command.clone()])
+            command_footer(std::slice::from_ref(overflow_command))
         } else {
             complete
         }
@@ -197,10 +197,12 @@ pub(super) fn footer_line(
     result
 }
 
+type TextSpan = (usize, usize);
+
 fn footer_label_spans(
     title: Option<&str>,
     status: &str,
-) -> (String, Option<(usize, usize)>, Option<(usize, usize)>) {
+) -> (String, Option<TextSpan>, Option<TextSpan>) {
     let mut text = String::new();
     let mut title_span = None;
     let mut status_span = None;

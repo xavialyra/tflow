@@ -112,11 +112,11 @@ impl CommandEntry {
             && self.label == other.label
             && self.key.map(|k| k.binding_identity()) == other.key.map(|k| k.binding_identity())
             && self.scope == other.scope
-            && match (&self.handler, &other.handler) {
-                (CommandHandler::Action(_), CommandHandler::Action(_)) => true,
-                (CommandHandler::Event, CommandHandler::Event) => true,
-                _ => false,
-            }
+            && matches!(
+                (&self.handler, &other.handler),
+                (CommandHandler::Action(_), CommandHandler::Action(_))
+                    | (CommandHandler::Event, CommandHandler::Event)
+            )
     }
 }
 
@@ -268,10 +268,10 @@ impl CommandRegistry {
             if !seen_ids.insert(entry.id.clone()) {
                 continue;
             }
-            if let Some(key) = entry.key {
-                if !seen_keys.insert(key.binding_identity()) {
-                    continue;
-                }
+            if let Some(key) = entry.key
+                && !seen_keys.insert(key.binding_identity())
+            {
+                continue;
             }
             effective.push(entry);
         }

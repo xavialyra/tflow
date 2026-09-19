@@ -567,7 +567,6 @@ impl PickerPreview {
                 self.task = None;
                 if batch.revision != self.revision {
                     // A cancelled generation must never clear the newer document.
-                    return;
                 } else {
                     for decoded in batch.images {
                         let PreviewImageState { image, error } = &mut self.images[decoded.block];
@@ -591,7 +590,9 @@ impl PickerPreview {
     }
 
     pub(super) fn render_state(&self) -> PickerPreviewRenderState {
-        let grace_expired = self.grace_due.is_some_and(|due| std::time::Instant::now() >= due);
+        let grace_expired = self
+            .grace_due
+            .is_some_and(|due| std::time::Instant::now() >= due);
         let (document, images, status, package) = if grace_expired {
             let package = self
                 .prepared

@@ -181,15 +181,15 @@ pub(crate) fn parse_response(
                     success_message,
                 },
             };
-            if let Some(expected_operation) = expected_operation {
-                if operation.operation_type() != expected_operation {
-                    bail!(
-                        "{} producer returned operation {:?}, expected {:?}",
-                        source_label,
-                        operation.operation_type(),
-                        expected_operation
-                    );
-                }
+            if let Some(expected_operation) = expected_operation
+                && operation.operation_type() != expected_operation
+            {
+                bail!(
+                    "{} producer returned operation {:?}, expected {:?}",
+                    source_label,
+                    operation.operation_type(),
+                    expected_operation
+                );
             }
             validate_operation(&operation, source_label)?;
             Ok(ProtocolOutcome::Operation(operation))
@@ -600,12 +600,7 @@ pub(crate) fn command_request(
     engine_state: &Value,
     engine_type: &str,
 ) -> Value {
-    let mut context = producer_context(
-        owner.parameters.values(),
-        input,
-        engine_type,
-        engine_state,
-    );
+    let mut context = producer_context(owner.parameters.values(), input, engine_type, engine_state);
     if let Value::Object(ref mut map) = context {
         map.insert(
             "command".to_string(),
@@ -675,9 +670,7 @@ mod tests {
         let null = parse_response(null, Some("return"), "test").unwrap();
         assert!(matches!(
             null,
-            ProtocolOutcome::Operation(ProtocolOperation::Return {
-                value: Value::Null,
-            })
+            ProtocolOutcome::Operation(ProtocolOperation::Return { value: Value::Null })
         ));
     }
 
@@ -695,8 +688,12 @@ mod tests {
                 "version": 1,
                 "operation": {"type": "return", "value": value.clone()},
             });
-            let parsed =
-                parse_response(&serde_json::to_vec(&response).unwrap(), Some("return"), "test").unwrap();
+            let parsed = parse_response(
+                &serde_json::to_vec(&response).unwrap(),
+                Some("return"),
+                "test",
+            )
+            .unwrap();
             assert!(
                 matches!(parsed, ProtocolOutcome::Operation(ProtocolOperation::Return { value: parsed_value }) if parsed_value == value)
             );
@@ -759,7 +756,8 @@ mod tests {
 
     #[test]
     fn parse_response_allows_any_operation_when_expected_is_none() {
-        let run = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["true"]}}"#;
+        let run =
+            br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["true"]}}"#;
         let parsed = parse_response(run, None, "test").unwrap();
         assert_eq!(parsed.operation().unwrap().operation_type(), "run");
         let call = br#"{"version":1,"operation":{"type":"call","target":"view:other"}}"#;
@@ -814,11 +812,17 @@ mod tests {
     fn response_rejects_both_or_neither_operation_and_error() {
         let both = br#"{"version":1,"operation":{"type":"return","value":1},"error":"failed"}"#;
         let err = parse_response(both, None, "test").unwrap_err();
-        assert!(err.to_string().contains("cannot define both operation and error"));
+        assert!(
+            err.to_string()
+                .contains("cannot define both operation and error")
+        );
 
         let neither = br#"{"version":1}"#;
         let err = parse_response(neither, None, "test").unwrap_err();
-        assert!(err.to_string().contains("must define either operation or error"));
+        assert!(
+            err.to_string()
+                .contains("must define either operation or error")
+        );
 
         let empty_msg = br#"{"version":1,"error":""}"#;
         let err = parse_response(empty_msg, None, "test").unwrap_err();
