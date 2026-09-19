@@ -1,7 +1,7 @@
 mod support;
 
 use std::{fs, process::Command};
-use support::{binary_path, temporary_root};
+use support::{binary_path, quick_picker_fixture, temporary_root};
 
 fn launcher_command() -> Command {
     Command::new(binary_path())
@@ -363,3 +363,79 @@ fn isolated_multi_workflow_directory_supports_multiple_workflows() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn shebang_workflow_fixture_invoked_directly_as_executable_script() {
+    let fixture = quick_picker_fixture();
+    let bin_dir = binary_path().parent().unwrap().to_path_buf();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), original_path);
+
+    // 直接执行赋予了执行权限的 quick-picker.toml，验证内核 Shebang (#!/usr/bin/env -S tlaunch -w) 正常分发
+    let output = Command::new(&fixture)
+        .env("PATH", &new_path)
+        .arg("--check")
+        .output()
+        .expect("could not directly execute workflow script via shebang");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "direct shebang execution failed; stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("configuration is valid:"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(&fixture.display().to_string()),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn shebang_workflow_fixture_supports_direct_inspection_and_query_schema() {
+    let fixture = quick_picker_fixture();
+    let bin_dir = binary_path().parent().unwrap().to_path_buf();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), original_path);
+
+    // 通过直接执行脚本传递 --inspect main 验证别名解析与契约结构
+    let output = Command::new(&fixture)
+        .env("PATH", &new_path)
+        .args(["--inspect", "main"])
+        .output()
+        .expect("could not inspect shebang workflow");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "direct inspect failed; stderr: {stderr}"
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    assert_eq!(parsed["view"], "quick-picker:main");
+    assert_eq!(parsed["alias"], "main");
+    assert_eq!(parsed["engine"], "picker");
+    assert_eq!(
+        parsed["query"]["prompt"]["default"],
+        "Select an action:"
+    );
+}
+
+#[test]
+fn shebang_workflow_fixture_runs_interactively_through_pty() {
+    use support::run_tty_invocation_with_redirected_stdout_after_marker;
+
+    let fixture = quick_picker_fixture();
+    let result = run_tty_invocation_with_redirected_stdout_after_marker(
+        &["-w", fixture.to_str().unwrap()],
+        "First Option",
+        b"\r",
+    );
+    assert_eq!(result.status, 0);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(stdout.trim(), "selected_option");
+}
+

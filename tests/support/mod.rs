@@ -1212,6 +1212,10 @@ pub fn fixture_config() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/config.toml")
 }
 
+pub fn quick_picker_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quick-picker.toml")
+}
+
 pub fn temporary_root() -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

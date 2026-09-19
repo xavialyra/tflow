@@ -1,0 +1,29 @@
+#!/usr/bin/env -S tlaunch -w
+[workflow]
+api = 1
+name = "quick-picker"
+
+[views.main]
+alias = "main"
+
+[views.main.query]
+type = "object"
+prompt = { type = "string", default = "Select an action:" }
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+items = [
+    { display = "First Option", value = "first_option" },
+    { display = "Second Option", value = "second_option" },
+]
+
+[views.main.commands.run]
+key = "enter"
+label = "Run"
+type = "return"
+producer = "declared"
+
+[views.main.commands.run.handler]
+value = "selected_option"
