@@ -2,6 +2,17 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-19
+
+- Added accepted ADR 0005 (`docs/adr/0005-manifest-driven-suites-and-self-contained-workflows.md`):
+  - Defined manifest-driven workflow suite orchestration (`[suite]`), strict two-tier non-nesting, and 100% self-contained atomic workflow contracts (`[workflow]`).
+  - Disambiguated CLI dispatch semantics: `-w, --workflow <PATH>` for single atomic workflows vs `-s, --suite <PATH>` for multi-workflow suite manifests.
+  - Decoupled passive host environment (`~/.config/tlaunch/settings.toml`) from workflow governance, eliminating `default_view` and `disabled_workflows` sanitization hacks.
+  - Centralized routing aliases into suite manifest `[aliases]` tables, stripping aliases from individual workflow views to eliminate collision.
+  - Rejected suite-level private themes in favor of surgical semantic style slot overrides (`[styles.<id>.<slot>]`) inheriting active global theme schemes.
+  - Standardized ephemeral pipeline execution (`npx` / UNIX pipe streaming) with `/dev/tty` TUI isolation and stdout structured output.
+  - Updated `docs/adr/index.md` to register ADR 0005.
+
 ## 2026-09-17
 
 - Updated the CLI Reference (`docs/reference/cli.md`): documented `-w, --workflow <PATH>` for running single-file workflows (`.toml`) and directory packages in isolated mode; documented zero-configuration in-memory fallback when global `config.toml` is absent; specified entry point resolution prioritizing `alias = "main"` globally and requiring `alias = "main"` or explicit view selection in isolated workflow mode; documented the `--theme <THEME>` flag; and documented Shebang integration for executable workflow files (`#!/usr/bin/env -S tlaunch -w`).
