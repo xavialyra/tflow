@@ -90,7 +90,7 @@ impl CommandEntry {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn execute_action(&self) -> Result<ViewDecision> {
         match &self.handler {
             CommandHandler::Action(action) => action.execute(),
@@ -247,35 +247,6 @@ impl CommandRegistry {
                 id
             ),
         }
-    }
-
-    /// Returns the effective command set at the current revision.
-    ///
-    /// Deduplicates conflicting key bindings and duplicate IDs by scope priority (View > Engine > Host).
-    #[allow(dead_code)]
-    pub(crate) fn effective_entries(&self) -> Vec<&CommandEntry> {
-        let mut seen_keys = HashSet::new();
-        let mut seen_ids = HashSet::new();
-        let mut effective = Vec::new();
-
-        let all = self
-            .view_entries
-            .iter()
-            .chain(self.engine_entries.iter())
-            .chain(self.host_entries.iter());
-
-        for entry in all {
-            if !seen_ids.insert(entry.id.clone()) {
-                continue;
-            }
-            if let Some(key) = entry.key
-                && !seen_keys.insert(key.binding_identity())
-            {
-                continue;
-            }
-            effective.push(entry);
-        }
-        effective
     }
 
     /// Returns all available command entries, ordered by View > Engine > Host.
@@ -513,7 +484,7 @@ mod tests {
             .unwrap();
 
         let entries = registry.picker_entries();
-        // 顺序应为 View -> Engine -> Host
+        // Scope order should be View -> Engine -> Host.
         assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].0.id, "view_print");
         assert_eq!(entries[0].0.scope, CommandScope::View);
@@ -523,7 +494,7 @@ mod tests {
         assert_eq!(entries[1].0.scope, CommandScope::Engine);
         assert_eq!(entries[1].1, None);
 
-        // host_print 的 key_common 被 view_print 抢占，降级为 None，但条目保留
+        // host_print's key_common is preempted by view_print, degraded to None while retaining the entry.
         assert_eq!(entries[2].0.id, "host_print");
         assert_eq!(entries[2].0.scope, CommandScope::Host);
         assert_eq!(entries[2].1, None);

@@ -8,8 +8,9 @@ mod runtime;
 mod session;
 mod tasks;
 
-#[allow(unused_imports)]
-pub(crate) use self::display::{ItemDisplayInput, NormalizedItemDisplay, SlotToken};
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use self::display::ItemDisplayInput;
+pub(crate) use self::display::SlotToken;
 use self::items::{FeedDefinition, ItemsRequest, PickerItemsLoader};
 use self::keymap::PickerKeymap;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};

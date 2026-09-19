@@ -248,11 +248,6 @@ impl ViewResult {
     pub(crate) fn new(value: Value) -> Self {
         Self { value }
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn text(value: impl Into<String>) -> Self {
-        Self::new(Value::String(value.into()))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -538,7 +533,7 @@ pub(crate) trait View {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     fn publication(&self) -> Option<&ViewPublication> {
         None
     }

@@ -120,7 +120,7 @@ pub(super) fn footer_line(
         + UnicodeWidthStr::width(complete.text.as_str());
 
     let right = if needed > width {
-        // 宽度小的情况下只显示commands
+        // When width is constrained, show only the command footer.
         if commands.is_empty() {
             complete
         } else if let Some(overflow_command) = overflow_command {

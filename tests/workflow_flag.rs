@@ -293,7 +293,7 @@ fn isolated_multi_workflow_directory_requires_a_manifest() {
     let multi_dir = root.join("my_workflows");
     fs::create_dir_all(&multi_dir).unwrap();
 
-    // 1. 单文件工作流 foo.toml (带有 alias = "main")
+    // 1. Single-file workflow foo.toml (with entrypoint = "main")
     let foo_file = multi_dir.join("foo.toml");
     fs::write(
         &foo_file,
@@ -311,7 +311,7 @@ fn isolated_multi_workflow_directory_requires_a_manifest() {
     )
     .unwrap();
 
-    // 2. 目录包工作流 bar/workflow.toml (带有 alias = "bar")
+    // 2. Directory package workflow bar/workflow.toml (with alias = "bar")
     let bar_dir = multi_dir.join("bar");
     fs::create_dir_all(&bar_dir).unwrap();
     let bar_file = bar_dir.join("workflow.toml");
@@ -332,7 +332,7 @@ fn isolated_multi_workflow_directory_requires_a_manifest() {
     )
     .unwrap();
 
-    // 测试 1: --check 整个多工作流目录有效
+    // Test 1: Verify --check rejects a multi-workflow directory without a manifest
     let output = launcher_command()
         .args(["--check", "-w"])
         .arg(&multi_dir)
@@ -349,7 +349,7 @@ fn shebang_workflow_fixture_invoked_directly_as_executable_script() {
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.display(), original_path);
 
-    // 直接执行赋予了执行权限的 quick-picker.toml，验证内核 Shebang (#!/usr/bin/env -S tlaunch -w) 正常分发
+    // Directly execute quick-picker.toml with executable permissions to verify shebang dispatch (#!/usr/bin/env -S tlaunch -w)
     let output = Command::new(&fixture)
         .env("PATH", &new_path)
         .arg("--check")
@@ -379,7 +379,7 @@ fn shebang_workflow_fixture_supports_direct_inspection_and_query_schema() {
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.display(), original_path);
 
-    // 通过直接执行脚本传递 --inspect main 验证别名解析与契约结构
+    // Pass --inspect main directly to verify alias resolution and contract structure
     let output = Command::new(&fixture)
         .env("PATH", &new_path)
         .args(["--inspect", "main"])

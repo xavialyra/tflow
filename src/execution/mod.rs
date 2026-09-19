@@ -3,10 +3,8 @@ mod process;
 mod runner;
 mod script;
 
-#[allow(unused_imports)]
 pub(crate) use inline::{
-    Shebang, format_attributed_script, materialize_inline_script, parse_shebang,
-    prepare_inline_script_command, scripts_cache_dir, verify_interpreter,
+    parse_shebang, prepare_inline_script_command, verify_interpreter,
 };
 pub(crate) use process::{
     ForegroundTerminalReclaimError, PreparedProcess, ProcessGroupGuard, run_foreground_process,

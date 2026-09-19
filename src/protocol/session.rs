@@ -35,8 +35,6 @@ pub(crate) struct BaseRenderSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct NavigationGrace {
-    #[allow(dead_code)]
-    pub(crate) from_instance: ViewInstanceId,
     pub(crate) target_instance: ViewInstanceId,
     pub(crate) expires_at: Instant,
     pub(crate) cached_buffer: ratatui::buffer::Buffer,
@@ -206,7 +204,6 @@ impl ProtocolSession {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn tick(&mut self) -> Result<ViewDecision> {
         self.dispatch_with_owned_effects(ViewEvent::Tick)
     }
@@ -564,7 +561,6 @@ impl ProtocolSession {
             && self.navigation_grace.as_ref().map(|g| g.target_instance) != Some(current_base_id)
         {
             self.navigation_grace = Some(NavigationGrace {
-                from_instance: cached.instance,
                 target_instance: current_base_id,
                 expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
                 cached_buffer: cached.buffer.clone(),

@@ -105,12 +105,6 @@ impl NormalizedItemDisplay {
         parts.join(" ")
     }
 
-    /// Total number of rows required by this item layout.
-    #[allow(dead_code)]
-    pub fn row_count(&self) -> usize {
-        self.rows.len().max(1)
-    }
-
     /// Add a source badge to the top row without changing secondary rows.
     pub fn inject_badge(&mut self, badge_text: &str, slot: SlotToken) {
         if badge_text.is_empty() {
@@ -166,14 +160,6 @@ pub enum ItemDisplayInput {
 
     /// Level 2: Full multi-line structure
     MultiLine { rows: Vec<RowInput> },
-}
-
-impl ItemDisplayInput {
-    #[allow(dead_code)]
-    pub fn plain_text(&self) -> String {
-        let normalized: NormalizedItemDisplay = self.clone().into();
-        normalized.plain_text()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

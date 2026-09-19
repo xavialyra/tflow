@@ -409,13 +409,6 @@ pub struct Command {
     pub action: CommandAction,
 }
 
-impl Command {
-    #[allow(dead_code)]
-    pub fn has_key(&self) -> bool {
-        self.key.is_some()
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawConfig {
