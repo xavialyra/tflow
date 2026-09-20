@@ -122,6 +122,7 @@ impl CommandOrigin {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
         match self {
             Self::View(reference) => Some(reference),
@@ -164,6 +165,7 @@ impl CommandInvocation {
         self.origin.clone()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
         self.origin.view_reference()
     }

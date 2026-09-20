@@ -10,6 +10,7 @@ use crate::workflow::config::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 pub(crate) enum PreparedAction {
     Navigate {
@@ -101,9 +102,7 @@ fn prepare_producer_action(
             crate::protocol::ProtocolOutcome::Operation(operation)
         }
         ProducerKind::Script => {
-            let root = command_invocation
-                .view_reference()
-                .and_then(|_| config.workflow_root(command_invocation.source_view()));
+            let root = command_root(config, &command_invocation);
             let source = crate::workflow::config::parse_producer_script_handler(handler, root)?;
             let request = crate::protocol::command_request(
                 &context.owner,
@@ -180,9 +179,7 @@ pub(crate) fn prepare_return_processor(
             crate::protocol::ProtocolOutcome::Operation(operation)
         }
         ProducerKind::Script => {
-            let root = command_invocation
-                .view_reference()
-                .and_then(|_| config.workflow_root(command_invocation.source_view()));
+            let root = command_root(config, &command_invocation);
             let source =
                 crate::workflow::config::parse_producer_script_handler(&processor.handler, root)?;
             let request = crate::protocol::return_request(
@@ -289,7 +286,8 @@ fn prepare_protocol_operation(
             success_message,
             ..
         } => {
-            let prepared = prepared_direct_process(config, command_invocation.source_view(), argv)?;
+            let root = command_root(config, &command_invocation);
+            let prepared = prepared_direct_process(root, argv)?;
             Ok(PreparedAction::Execute {
                 prepared,
                 exit,
@@ -299,14 +297,22 @@ fn prepare_protocol_operation(
     }
 }
 
+fn command_root<'a>(
+    config: &'a CompiledConfig,
+    command_invocation: &CommandInvocation,
+) -> Option<&'a Path> {
+    config
+        .workflow_root(command_invocation.id())
+        .or_else(|| config.workflow_root(command_invocation.source_view()))
+}
+
 fn prepared_direct_process(
-    config: &CompiledConfig,
-    source_view: &str,
+    root: Option<&Path>,
     argv: Vec<String>,
 ) -> Result<PreparedProcess> {
     anyhow::ensure!(!argv.is_empty(), "run operation argv must not be empty");
     let mut environment = Vec::new();
-    if let Some(root) = config.workflow_root(source_view) {
+    if let Some(root) = root {
         environment.push((
             "WORKFLOW_DIR".to_string(),
             root.to_string_lossy().into_owned(),

@@ -520,6 +520,10 @@ pub(crate) trait View {
         None
     }
 
+    fn has_modal_overlay(&self) -> bool {
+        false
+    }
+
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
             engine_type: "test".to_string(),

@@ -366,6 +366,9 @@ impl PickerView {
     }
 
     pub(crate) fn is_in_grace_period(&self) -> bool {
+        if self.frame.input_refresh.is_loading() {
+            return true;
+        }
         match &self.items_task_state {
             ItemsTaskState::Running { started_at, .. } => {
                 started_at.elapsed() < SEARCH_GRACE_PERIOD
@@ -373,6 +376,10 @@ impl PickerView {
             ItemsTaskState::Prepared(_) => true,
             ItemsTaskState::Idle => false,
         }
+    }
+
+    pub(crate) fn should_retain_items(&self, results_ready: bool) -> bool {
+        results_ready || self.is_in_grace_period() || !self.frame.selection.items.is_empty()
     }
 
     pub(crate) fn has_completed_initial_load(&self) -> bool {
@@ -653,7 +660,8 @@ impl PickerView {
 
     fn current_publication(&self) -> ViewContextPublication {
         let results_ready = self.results_current_snapshot(&self.frame.query);
-        let selected = results_ready
+        let should_retain = self.should_retain_items(results_ready);
+        let selected = should_retain
             .then(|| {
                 self.frame
                     .selection

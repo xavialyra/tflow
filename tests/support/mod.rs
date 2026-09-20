@@ -1066,6 +1066,13 @@ pub fn wait_for_process_exit(pid: libc::pid_t) {
     }
 }
 
+pub fn current_screen(master: &File) -> String {
+    drain_master(master);
+    current_pty_observation(master)
+        .expect("test PTY is not registered")
+        .visible
+}
+
 pub fn discard_pending_master_output(master: &File) {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut output = Vec::new();

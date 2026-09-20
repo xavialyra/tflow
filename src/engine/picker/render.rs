@@ -215,9 +215,9 @@ impl PickerView {
         let in_grace_period = self.is_in_grace_period();
         let initial_loading = !self.has_completed_initial_load();
         let searching = self.is_loading() && !in_grace_period;
-        let should_retain = results_ready || in_grace_period;
+        let should_retain = self.should_retain_items(results_ready);
 
-        let (items, selected) = if should_retain || !frame.selection.items.is_empty() {
+        let (items, selected) = if should_retain {
             (Arc::clone(&frame.selection.items), frame.selection.selected)
         } else {
             (Arc::new(Vec::new()), 0)

@@ -108,6 +108,60 @@ fn selected_item_updates_publication() {
 }
 
 #[test]
+fn grace_period_retains_item_bindings_during_loading_to_prevent_flicker() {
+    let (_config, mut picker) = test_picker(110);
+    let source = crate::input::InputSourceIdentity {
+        frame: crate::input::ViewMountId(110),
+        generation: 0,
+    };
+    picker.frame.query.clear();
+    picker.frame.results = ResultsState::Ready(String::new());
+    let parameters = test_parameters("", source, 1);
+    picker
+        .request_items("core:default", "", "", parameters.clone())
+        .unwrap();
+    picker.items_task_state = ItemsTaskState::Idle;
+    picker.parameter_snapshot = Some(parameters);
+
+    let mut bindings = BTreeMap::new();
+    bindings.insert("apps:open".to_string(), "Enter".to_string());
+
+    picker.frame.selection.replace(vec![Item {
+        text: "Application".to_string(),
+        display: crate::engine::picker::ItemDisplayInput::Plain("Application".to_string()).into(),
+        value: Some("application".to_string()),
+        metadata: Value::Null,
+        bindings,
+        source_view: "apps:main".to_string(),
+    }]);
+
+    let pub_initial = picker.current_publication();
+    assert!(pub_initial.ready);
+    assert_eq!(pub_initial.current()["bindings"]["apps:open"], "Enter");
+
+    // 用户打字提交输入，进入重新加载状态
+    picker.invalidate_items_for_committed_input();
+
+    assert!(picker.is_in_grace_period());
+    assert!(picker.should_retain_items(false));
+    let pub_loading = picker.current_publication();
+    // 关键契约：ready 必须为 false（保护按键不使用陈旧数据提前执行）
+    assert!(!pub_loading.ready);
+    // 关键契约：在宽限期内必须保留选中项的 bindings（彻底消除 Footer 闪烁）
+    assert_eq!(pub_loading.current()["bindings"]["apps:open"], "Enter");
+
+    // Producer 可能超过搜索宽限期；旧列表仍然是渲染层的保留内容，
+    // 发布层也必须继续提供同一条目，直到新结果或失败结果提交。
+    picker.frame.input_refresh = InputRefreshState::Stable;
+    picker.items_task_state = ItemsTaskState::Idle;
+    assert!(!picker.is_in_grace_period());
+    assert!(picker.should_retain_items(false));
+    let pub_after_grace = picker.current_publication();
+    assert!(!pub_after_grace.ready);
+    assert_eq!(pub_after_grace.current()["bindings"]["apps:open"], "Enter");
+}
+
+#[test]
 fn background_items_completion_publishes_mount_current_without_runtime_update() {
     let (_config, mut picker) = test_picker(115);
     let source = crate::input::InputSourceIdentity {

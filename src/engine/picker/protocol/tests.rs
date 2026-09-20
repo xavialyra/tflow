@@ -217,6 +217,48 @@ fn invalid_integer_binding() -> ParameterBinding {
     registry.parameter_binding("core:default").unwrap()
 }
 
+#[test]
+fn publication_ready_changes_advance_dynamic_command_revision() {
+    let tasks = TaskRuntime::new();
+    let mut view = view_with_stale_aware_runtime(
+        Box::new(ExitOnActionRuntime),
+        invalid_integer_binding(),
+        &tasks,
+    );
+    let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    let current = serde_json::json!({
+        "item": {"value": "row", "bindings": {"enter": "core:open"}}
+    });
+
+    view.map_emission(
+        &context,
+        EngineEmission::decision(EngineDecision::Continue).with_publication(
+            crate::engine::ViewContextPublication::new(current.clone()).with_ready(false),
+        ),
+    )
+    .unwrap();
+    let loading_revision = view.state_revision;
+
+    view.map_emission(
+        &context,
+        EngineEmission::decision(EngineDecision::Continue).with_publication(
+            crate::engine::ViewContextPublication::new(current.clone()).with_ready(true),
+        ),
+    )
+    .unwrap();
+    assert_eq!(view.state_revision, loading_revision + 1);
+
+    view.map_emission(
+        &context,
+        EngineEmission::decision(EngineDecision::Continue).with_publication(
+            crate::engine::ViewContextPublication::new(current).with_ready(false),
+        ),
+    )
+    .unwrap();
+    assert_eq!(view.state_revision, loading_revision + 2);
+    tasks.shutdown_and_wait();
+}
+
 fn view_with_stale_aware_runtime(
     runtime: Box<dyn EngineRuntime>,
     parameter_binding: ParameterBinding,
@@ -243,7 +285,6 @@ fn view_with_stale_aware_runtime(
         recognized_route_selectors: HashSet::new(),
         route_schemas: BTreeMap::new(),
         route_resolutions: BTreeMap::new(),
-        completion_prefixes: BTreeMap::new(),
         disabled_keys: HashSet::new(),
         parameter_bindings: BTreeMap::new(),
         route_entry: false,
@@ -401,6 +442,111 @@ fn explicit_enter_action_precedes_route_submission() {
         )
         .unwrap();
     assert!(matches!(decision, ViewDecision::Exit));
+    tasks.shutdown_and_wait();
+}
+
+#[test]
+fn route_prefix_whitespace_jumps_directly_without_invalidating_or_batching() {
+    let tasks = TaskRuntime::new();
+    let binding = invalid_integer_binding();
+    let mut view =
+        view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
+    view.route_entry = true;
+    view.editor = EditorBuffer::from_raw("other", 5);
+    view.route_resolutions.insert(
+        "other".to_string(),
+        crate::view::RouteTarget {
+            reference: "other".to_string(),
+            label: None,
+        },
+    );
+    view.route_schemas.insert(
+        "other".to_string(),
+        crate::view::QuerySchema {
+            id: "query".to_string(),
+        },
+    );
+    view.parameter_bindings.insert("other".to_string(), binding);
+
+    let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    let decision = view
+        .event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Char(' '),
+                raw: b" ".to_vec(),
+            }),
+            &context,
+        )
+        .unwrap();
+    assert!(matches!(
+        decision,
+        ViewDecision::Transition(TransitionRequest::Push(_))
+    ));
+    assert_eq!(view.task_generation, 0, "must not spawn tasks on current view");
+    tasks.shutdown_and_wait();
+}
+
+#[test]
+fn route_completion_accept_jumps_directly_without_invalidating_or_batching() {
+    let tasks = TaskRuntime::new();
+    let binding = invalid_integer_binding();
+    let mut view =
+        view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
+    view.route_entry = true;
+    view.editor = EditorBuffer::from_raw("oth", 3);
+    view.route_candidates = vec![RouteCandidate {
+        target: crate::view::RouteTarget {
+            reference: "other".to_string(),
+            label: None,
+        },
+        label: "other".to_string(),
+    }];
+    view.route_resolutions.insert(
+        "other".to_string(),
+        crate::view::RouteTarget {
+            reference: "other".to_string(),
+            label: None,
+        },
+    );
+    view.route_schemas.insert(
+        "other".to_string(),
+        crate::view::QuerySchema {
+            id: "query".to_string(),
+        },
+    );
+    view.parameter_bindings.insert("other".to_string(), binding);
+
+    let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    // 1. Open completion with Tab
+    view.event(
+        ViewEvent::Input(InputEvent::Key {
+            key: Key::Tab,
+            raw: b"\t".to_vec(),
+        }),
+        &context,
+    )
+    .unwrap();
+    assert!(view.completion.is_some());
+    assert!(view.has_modal_overlay());
+
+    // 2. Accept completion with Tab
+    let decision = view
+        .event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Tab,
+                raw: b"\t".to_vec(),
+            }),
+            &context,
+        )
+        .unwrap();
+
+    assert!(view.completion.is_none());
+    assert!(!view.has_modal_overlay());
+    assert!(matches!(
+        decision,
+        ViewDecision::Transition(TransitionRequest::Push(_))
+    ));
+    assert_eq!(view.task_generation, 0, "must not spawn tasks on current view");
     tasks.shutdown_and_wait();
 }
 
@@ -722,8 +868,8 @@ fn completion_disabled_patch_is_respected() {
 #[test]
 fn route_query_contains_only_target_binding_values() {
     let config = crate::workflow::config::load_test_fixture().unwrap();
-    let binding = config.parameter_binding("core:default").unwrap();
-    let query = parsed_route_query(&binding, "core:default", "query", "needle").unwrap();
+    let binding = config.parameter_binding("sys:main").unwrap();
+    let query = parsed_route_query(&binding, "sys:main", "query", "needle").unwrap();
     assert_eq!(query.values, Value::String("needle".to_string()));
 }
 

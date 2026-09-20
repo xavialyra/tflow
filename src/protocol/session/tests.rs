@@ -59,9 +59,18 @@ impl View for SyntheticView {
         )]
     }
 
+    fn has_modal_overlay(&self) -> bool {
+        self.target.ends_with("_overlay")
+    }
+
     fn command_snapshot(&self) -> ViewCommandSnapshot {
+        let engine_type = if self.target.starts_with("picker") {
+            crate::workflow::config::ENGINE_PICKER.to_string()
+        } else {
+            "test".to_string()
+        };
         ViewCommandSnapshot {
-            engine_type: "test".to_string(),
+            engine_type,
             parameters: Value::Null,
             raw_input: String::new(),
             runtime: self.runtime.clone(),
@@ -231,6 +240,8 @@ fn session() -> (
     routes.insert("grandchild", "grandchild");
     routes.insert("zero_inset", "zero_inset");
     routes.insert("async_target", "async_target");
+    routes.insert("picker_async", "picker_async");
+    routes.insert("root_overlay", "root_overlay");
     let router = Router::new(
         Box::new(routes),
         Box::new(Factory {
@@ -1654,5 +1665,55 @@ fn popup_does_not_pollute_last_content_render_snapshot() {
     assert_eq!(
         cached_after.target, "root",
         "Snapshot must remain the root target"
+    );
+}
+
+#[test]
+fn navigation_grace_is_skipped_when_target_is_picker() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+    // 1. Initial render shows "root"
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    // 2. Navigate to an async loading picker view
+    session.router.push(request("picker_async")).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // 3. Render: should NOT trigger navigation grace because target is a picker
+    terminal
+        .draw(|frame| {
+            let result = session.render(frame, frame.area(), None).unwrap();
+            assert_eq!(result.footer.location.label(), "picker_async");
+        })
+        .unwrap();
+    assert!(
+        session.navigation_grace.is_none(),
+        "Picker target must skip navigation grace to avoid covering input and controls"
+    );
+}
+
+#[test]
+fn modal_overlay_does_not_pollute_last_content_render_snapshot() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root_overlay")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+    // 1. Render base view while modal overlay (like completion popup) is active
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    // 2. Overlay view must NOT be recorded as the clean base snapshot
+    assert!(
+        session.last_content_render.is_none(),
+        "Modal overlay view must not pollute last_content_render snapshot"
     );
 }

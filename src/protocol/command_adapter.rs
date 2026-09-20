@@ -24,20 +24,226 @@ pub(crate) trait CommandService {
         snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>>;
 
-    fn dispatch_item_key(
-        &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
-        key: crate::input::Key,
-    ) -> Result<Option<crate::view::ViewDecision>>;
+    fn is_view_dynamic(&self, target: &str) -> bool;
 
     fn update_active_snapshot(&self, snapshot: &ViewCommandSnapshot);
+}
 
-    fn compute_item_footer_commands(
+pub(crate) trait ViewCommandProvider: Send + Sync {
+    fn is_dynamic(&self) -> bool;
+    fn provide_commands(
         &self,
         context: &ViewContext,
         snapshot: &ViewCommandSnapshot,
-    ) -> Option<Vec<(String, String)>>;
+    ) -> Result<Vec<crate::command::CommandEntry>>;
+}
+
+pub(crate) struct StaticViewCommandProvider {
+    target: String,
+    member_id: String,
+    config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
+    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
+    cancellation: crate::lifecycle::CancellationToken,
+    active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
+}
+
+impl ViewCommandProvider for StaticViewCommandProvider {
+    fn is_dynamic(&self) -> bool {
+        false
+    }
+
+    fn provide_commands(
+        &self,
+        context: &ViewContext,
+        snapshot: &ViewCommandSnapshot,
+    ) -> Result<Vec<crate::command::CommandEntry>> {
+        let Some(view) = self.config.view(&self.target) else {
+            return Ok(Vec::new());
+        };
+        let keymap = view.keymap.as_ref();
+        let page = command_page_owner(context, snapshot);
+        let mut entries = Vec::new();
+
+        if let Some(keymap) = keymap && !keymap.bindings.is_empty() {
+            for (key_str, val) in &keymap.bindings {
+                if val.as_bool() == Some(false) {
+                    continue;
+                }
+                let Some(cmd_target) = val.as_str() else {
+                    continue;
+                };
+                let Some(cmd) = self.config.find_command(&self.member_id, cmd_target) else {
+                    continue;
+                };
+                let key = if key_str.is_empty() {
+                    None
+                } else {
+                    crate::input::Key::parse_binding(key_str).ok()
+                };
+                let cmd_wf = if let Some((wf, _)) = cmd_target.split_once(':') {
+                    wf
+                } else {
+                    &self.member_id
+                };
+                let local_id = cmd_target
+                    .strip_prefix(&format!("{}:", self.member_id))
+                    .unwrap_or(cmd_target);
+                let action = create_command_action(
+                    std::sync::Arc::clone(&self.config),
+                    std::sync::Arc::clone(&self.invocation),
+                    self.cancellation.clone(),
+                    context.instance,
+                    std::sync::Arc::clone(&self.active_snapshot),
+                    crate::workflow::command::CommandRef {
+                        view: self.target.clone(),
+                        id: local_id.to_string(),
+                    },
+                    cmd.clone(),
+                    page.clone(),
+                    cmd_wf.to_string(),
+                );
+                entries.push(crate::command::CommandEntry::new(
+                    local_id.to_string(),
+                    Some(cmd.label.clone()),
+                    key,
+                    crate::command::CommandScope::View,
+                    action,
+                ));
+            }
+        } else {
+            let mut seen_keys = std::collections::HashSet::new();
+            for (fqid, cmd) in self.config.workflow_commands(&self.member_id) {
+                let local_id = fqid
+                    .strip_prefix(&format!("{}:", self.member_id))
+                    .unwrap_or(&fqid);
+                let cmd_wf = if let Some((wf, _)) = fqid.split_once(':') {
+                    wf
+                } else {
+                    &self.member_id
+                };
+                let action = create_command_action(
+                    std::sync::Arc::clone(&self.config),
+                    std::sync::Arc::clone(&self.invocation),
+                    self.cancellation.clone(),
+                    context.instance,
+                    std::sync::Arc::clone(&self.active_snapshot),
+                    crate::workflow::command::CommandRef {
+                        view: self.target.clone(),
+                        id: local_id.to_string(),
+                    },
+                    cmd.clone(),
+                    page.clone(),
+                    cmd_wf.to_string(),
+                );
+                let mut key = cmd.key.as_ref().and_then(|k| {
+                    crate::workflow::config::normalize_key(k).ok().and_then(|k_norm| {
+                        crate::input::Key::parse_binding(&k_norm).ok()
+                    })
+                });
+                if let Some(k) = key {
+                    if !seen_keys.insert(k.binding_identity()) {
+                        key = None;
+                    }
+                }
+                entries.push(crate::command::CommandEntry::new(
+                    local_id.to_string(),
+                    Some(cmd.label.clone()),
+                    key,
+                    crate::command::CommandScope::View,
+                    action,
+                ));
+            }
+        }
+        Ok(entries)
+    }
+}
+
+pub(crate) struct ItemViewCommandProvider {
+    target: String,
+    member_id: String,
+    config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
+    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
+    cancellation: crate::lifecycle::CancellationToken,
+    active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
+}
+
+impl ViewCommandProvider for ItemViewCommandProvider {
+    fn is_dynamic(&self) -> bool {
+        true
+    }
+
+    fn provide_commands(
+        &self,
+        context: &ViewContext,
+        snapshot: &ViewCommandSnapshot,
+    ) -> Result<Vec<crate::command::CommandEntry>> {
+        let Some(publ) = snapshot.publication.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let bindings_obj = publ
+            .current
+            .get("item")
+            .and_then(|i| i.get("bindings"))
+            .or_else(|| publ.current.get("bindings"))
+            .and_then(|b| b.as_object());
+        let Some(bindings) = bindings_obj else {
+            return Ok(Vec::new());
+        };
+
+        let page = command_page_owner(context, snapshot);
+        let mut entries = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+
+        for (key_str, val) in bindings {
+            if val.as_bool() == Some(false) {
+                continue;
+            }
+            let Some(cmd_target) = val.as_str() else {
+                continue;
+            };
+            let Some(cmd) = self.config.find_command(&self.member_id, cmd_target) else {
+                continue;
+            };
+            let mut key = if key_str.is_empty() {
+                None
+            } else {
+                crate::input::Key::parse_binding(key_str).ok()
+            };
+            if let Some(k) = key {
+                if !seen_keys.insert(k.binding_identity()) {
+                    key = None;
+                }
+            }
+            let cmd_wf = if let Some((wf, _)) = cmd_target.split_once(':') {
+                wf
+            } else {
+                &self.member_id
+            };
+            let action = create_command_action(
+                std::sync::Arc::clone(&self.config),
+                std::sync::Arc::clone(&self.invocation),
+                self.cancellation.clone(),
+                context.instance,
+                std::sync::Arc::clone(&self.active_snapshot),
+                crate::workflow::command::CommandRef {
+                    view: self.target.clone(),
+                    id: cmd_target.to_string(),
+                },
+                cmd.clone(),
+                page.clone(),
+                cmd_wf.to_string(),
+            );
+            entries.push(crate::command::CommandEntry::new(
+                cmd_target.to_string(),
+                Some(cmd.label.clone()),
+                key,
+                crate::command::CommandScope::View,
+                action,
+            ));
+        }
+
+        Ok(entries)
+    }
 }
 
 #[derive(Clone)]
@@ -62,122 +268,32 @@ impl ProtocolCommandService {
         }
     }
 
-    fn build_commands_for_scope(
-        &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
-        scope: crate::command::CommandScope,
-    ) -> Result<Vec<crate::command::CommandEntry>> {
-        self.update_active_snapshot(snapshot);
-        if scope != crate::command::CommandScope::View {
-            return Ok(Vec::new());
-        }
-        let target = &context.location.target;
-        let Some(view) = self.config.view(target) else {
-            return Ok(Vec::new());
-        };
+    pub(crate) fn view_command_provider(&self, target: &str) -> Box<dyn ViewCommandProvider> {
         let member_id = crate::workflow::config::package_id(target);
-        let keymap = view.keymap.as_ref();
-        let is_item_mode =
-            keymap.is_some_and(|k| k.mode == crate::workflow::config::KeymapMode::Item);
-
-        let mut entries = Vec::new();
-        if !is_item_mode {
-            let page = command_page_owner(context, snapshot);
-            if let Some(keymap) = keymap
-                && !keymap.bindings.is_empty()
-            {
-                for (key_str, val) in &keymap.bindings {
-                    if val.as_bool() == Some(false) {
-                        continue;
-                    }
-                    let Some(cmd_target) = val.as_str() else {
-                        continue;
-                    };
-                    let Some(cmd) = self.config.find_command(member_id, cmd_target) else {
-                        continue;
-                    };
-                    let key = if key_str.is_empty() {
-                        None
-                    } else {
-                        crate::input::Key::parse_binding(key_str).ok()
-                    };
-                    let cmd_wf = if let Some((wf, _)) = cmd_target.split_once(':') {
-                        wf
-                    } else {
-                        member_id
-                    };
-                    let local_id = cmd_target
-                        .strip_prefix(&format!("{member_id}:"))
-                        .unwrap_or(cmd_target);
-                    let action = create_command_action(
-                        std::sync::Arc::clone(&self.config),
-                        std::sync::Arc::clone(&self.invocation),
-                        self.cancellation.clone(),
-                        context.instance,
-                        std::sync::Arc::clone(&self.active_snapshot),
-                        crate::workflow::command::CommandRef {
-                            view: target.clone(),
-                            id: local_id.to_string(),
-                        },
-                        cmd.clone(),
-                        page.clone(),
-                        cmd_wf.to_string(),
-                    );
-                    entries.push(crate::command::CommandEntry::new(
-                        local_id.to_string(),
-                        Some(cmd.label.clone()),
-                        key,
-                        scope,
-                        action,
-                    ));
-                }
-            } else {
-                let mut seen_keys = std::collections::HashSet::new();
-                for (fqid, cmd) in self.config.workflow_commands(member_id) {
-                    let local_id = fqid
-                        .strip_prefix(&format!("{member_id}:"))
-                        .unwrap_or(&fqid);
-                    let cmd_wf = if let Some((wf, _)) = fqid.split_once(':') {
-                        wf
-                    } else {
-                        member_id
-                    };
-                    let action = create_command_action(
-                        std::sync::Arc::clone(&self.config),
-                        std::sync::Arc::clone(&self.invocation),
-                        self.cancellation.clone(),
-                        context.instance,
-                        std::sync::Arc::clone(&self.active_snapshot),
-                        crate::workflow::command::CommandRef {
-                            view: target.clone(),
-                            id: local_id.to_string(),
-                        },
-                        cmd.clone(),
-                        page.clone(),
-                        cmd_wf.to_string(),
-                    );
-                    let mut key = cmd.key.as_ref().and_then(|k| {
-                        crate::workflow::config::normalize_key(k).ok().and_then(|k_norm| {
-                            crate::input::Key::parse_binding(&k_norm).ok()
-                        })
-                    });
-                    if let Some(k) = key {
-                        if !seen_keys.insert(k.binding_identity()) {
-                            key = None;
-                        }
-                    }
-                    entries.push(crate::command::CommandEntry::new(
-                        local_id.to_string(),
-                        Some(cmd.label.clone()),
-                        key,
-                        scope,
-                        action,
-                    ));
-                }
-            }
+        let is_item_mode = self
+            .config
+            .view(target)
+            .and_then(|v| v.keymap.as_ref())
+            .is_some_and(|k| k.mode == crate::workflow::config::KeymapMode::Item);
+        if is_item_mode {
+            Box::new(ItemViewCommandProvider {
+                target: target.to_string(),
+                member_id: member_id.to_string(),
+                config: std::sync::Arc::clone(&self.config),
+                invocation: std::sync::Arc::clone(&self.invocation),
+                cancellation: self.cancellation.clone(),
+                active_snapshot: std::sync::Arc::clone(&self.active_snapshot),
+            })
+        } else {
+            Box::new(StaticViewCommandProvider {
+                target: target.to_string(),
+                member_id: member_id.to_string(),
+                config: std::sync::Arc::clone(&self.config),
+                invocation: std::sync::Arc::clone(&self.invocation),
+                cancellation: self.cancellation.clone(),
+                active_snapshot: std::sync::Arc::clone(&self.active_snapshot),
+            })
         }
-        Ok(entries)
     }
 }
 
@@ -194,6 +310,15 @@ fn create_command_action(
 ) -> std::sync::Arc<dyn crate::command::CommandAction> {
     std::sync::Arc::new(move || {
         let snap_opt = active_snapshot.read().unwrap().clone();
+        if snap_opt.as_ref().is_some_and(|snap| {
+            snap.engine_type == crate::workflow::config::ENGINE_PICKER
+                && snap
+                    .publication
+                    .as_ref()
+                    .is_some_and(|publication| !publication.ready)
+        }) {
+            return Ok(ViewDecision::Stay);
+        }
         let (current, engine_type, owner) = if let Some(snap) = &snap_opt {
             let mut current = snap
                 .publication
@@ -494,12 +619,18 @@ impl CommandService for ProtocolCommandService {
         Ok(entries)
     }
 
+    fn is_view_dynamic(&self, target: &str) -> bool {
+        self.view_command_provider(target).is_dynamic()
+    }
+
     fn build_view_commands(
         &self,
         context: &ViewContext,
         snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>> {
-        self.build_commands_for_scope(context, snapshot, crate::command::CommandScope::View)
+        self.update_active_snapshot(snapshot);
+        let provider = self.view_command_provider(&context.location.target);
+        provider.provide_commands(context, snapshot)
     }
 
     fn build_engine_commands(
@@ -510,176 +641,8 @@ impl CommandService for ProtocolCommandService {
         Ok(Vec::new())
     }
 
-    fn dispatch_item_key(
-        &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
-        key: crate::input::Key,
-    ) -> Result<Option<crate::view::ViewDecision>> {
-        let target = &context.location.target;
-        let member_id = crate::workflow::config::package_id(target);
-        let Some(view) = self.config.view(target) else {
-            return Ok(None);
-        };
-        let is_item_mode = view
-            .keymap
-            .as_ref()
-            .is_some_and(|k| k.mode == crate::workflow::config::KeymapMode::Item);
-        if !is_item_mode {
-            return Ok(None);
-        }
-
-        let Some(publ) = snapshot.publication.as_ref() else {
-            return Ok(None);
-        };
-        if !publ.ready {
-            return Ok(None);
-        }
-        let key_name = match key.binding_name() {
-            Some(k) => k,
-            None => return Ok(None),
-        };
-        let bound_cmd = publ
-            .current
-            .get("item")
-            .and_then(|i| i.get("bindings"))
-            .and_then(|b| b.get(&key_name))
-            .or_else(|| {
-                publ.current
-                    .get("bindings")
-                    .and_then(|b| b.get(&key_name))
-            })
-            .and_then(|v| v.as_str());
-
-        let Some(cmd_target) = bound_cmd else {
-            return Ok(None);
-        };
-
-        let Some(cmd) = self.config.find_command(member_id, cmd_target) else {
-            return Ok(None);
-        };
-
-        let page = command_page_owner(context, snapshot);
-        let cmd_wf = if let Some((wf, _)) = cmd_target.split_once(':') {
-            wf
-        } else {
-            member_id
-        };
-        let owner = command_owner(&self.config, cmd_wf, context, snapshot);
-        let execution = crate::workflow::command::CommandExecution {
-            invocation: crate::workflow::command::CommandInvocation::view(
-                crate::workflow::command::CommandRef {
-                    view: target.clone(),
-                    id: cmd_target.to_string(),
-                },
-                cmd.clone(),
-            ),
-            context: crate::workflow::command::CommandContext {
-                page,
-                owner,
-                current: publ.current.clone(),
-                engine_type: snapshot.engine_type.clone(),
-            },
-        };
-        let prepared = crate::workflow::command::prepare_command_action(
-            &self.config,
-            &self.invocation,
-            execution,
-            &self.cancellation,
-        )
-        .map_err(crate::view::operation_failure)?;
-        let decision = map_prepared_action(
-            &self.config,
-            &self.invocation,
-            &self.cancellation,
-            prepared,
-            context.instance,
-        )
-        .map_err(crate::view::operation_failure)?;
-
-        Ok(Some(decision))
-    }
-
     fn update_active_snapshot(&self, snapshot: &ViewCommandSnapshot) {
         *self.active_snapshot.write().unwrap() = Some(snapshot.clone());
-    }
-
-    fn compute_item_footer_commands(
-        &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
-    ) -> Option<Vec<(String, String)>> {
-        let target = &context.location.target;
-        let member_id = crate::workflow::config::package_id(target);
-        let view = self.config.view(target)?;
-        let is_item_mode = view
-            .keymap
-            .as_ref()
-            .is_some_and(|k| k.mode == crate::workflow::config::KeymapMode::Item);
-        if !is_item_mode {
-            return None;
-        }
-
-        let publ = snapshot.publication.as_ref()?;
-        if !publ.ready {
-            return Some(Vec::new());
-        }
-        let bindings_obj = publ
-            .current
-            .get("item")
-            .and_then(|i| i.get("bindings"))
-            .or_else(|| publ.current.get("bindings"))
-            .and_then(|b| b.as_object());
-        let Some(bindings) = bindings_obj else {
-            return Some(Vec::new());
-        };
-
-        let mut commands = Vec::new();
-        if let Some(cmd_val) = bindings.get("enter").and_then(|v| v.as_str()) {
-            let label = self
-                .config
-                .find_command(member_id, cmd_val)
-                .map(|c| c.label.clone())
-                .unwrap_or_else(|| "Enter".to_string());
-            commands.push(("enter".to_string(), label));
-        }
-
-        Some(commands)
-    }
-}
-
-pub(crate) fn command_owner(
-    config: &crate::workflow::config::CompiledConfig,
-    view_ref: &str,
-    context: &ViewContext,
-    snapshot: &ViewCommandSnapshot,
-) -> crate::workflow::command::CommandOwnerContext {
-    if view_ref == context.location.target {
-        command_page_owner(context, snapshot)
-    } else {
-        let (values, raw_input) = if let Ok(state) = config.instantiate_parameters(view_ref) {
-            (
-                config
-                    .parameter_values(&state)
-                    .unwrap_or(serde_json::Value::Null),
-                state.raw_input().to_string(),
-            )
-        } else {
-            (snapshot.parameters.clone(), snapshot.raw_input.clone())
-        };
-        let parameters = crate::workflow::parameter::ParameterSnapshot::from_parts(
-            values,
-            raw_input,
-            crate::input::InputSourceIdentity {
-                frame: crate::input::ViewMountId(context.instance.0),
-                generation: snapshot.revision,
-            },
-            snapshot.revision,
-        );
-        crate::workflow::command::CommandOwnerContext {
-            view_ref: view_ref.to_string(),
-            parameters,
-        }
     }
 }
 

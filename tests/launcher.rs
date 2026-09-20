@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use support::{
-    discard_pending_master_output, fixture_config, run_tty_invocation_with_blocked_stdout_signal,
+    current_screen, discard_pending_master_output, fixture_config,
+    run_tty_invocation_with_blocked_stdout_signal,
     spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
     spawn_launcher_with_redirected_stdout, temporary_root, wait_for_fresh_screen,
     wait_for_fresh_text, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
@@ -1761,6 +1762,22 @@ fi
 }
 
 #[test]
+fn aggregated_item_command_executes_from_its_declaring_workflow_root() {
+    let mut process = spawn_launcher(&fixture_config());
+    wait_for_ready(&process.master);
+    send_bytes(&mut process, b"2+2");
+    wait_for_text(&process.master, "= 4");
+    send_bytes(&mut process, b"\r");
+    wait_for_fresh_screen(&process.master, |screen| {
+        !screen.contains("ERROR")
+            && (screen.contains("Copied") || screen.contains("4"))
+    });
+    send_bytes(&mut process, b"\x03");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
 fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -3433,4 +3450,167 @@ handler = {target = "missing:main"}
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "{}", String::from_utf8_lossy(&output));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn command_palette_displays_and_executes_dynamic_item_commands_in_aggregate_view() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+
+    // In aggregate view core:default, type arithmetic expression to trigger calculator card
+    process.master.write_all(b"2+2").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "4");
+
+    // Press Ctrl-K to open command palette
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+
+    // Command palette MUST display dynamic item command "Copy"
+    let output = wait_for_text(&process.master, "Copy");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(
+        screen.contains("Copy"),
+        "command palette should display item command 'Copy': {screen}"
+    );
+
+    // Press Enter in command palette to accept and execute the command
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify copy feedback succeeds and launcher remains stable
+    let output = wait_for_text(&process.master, "Copied");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(
+        screen.contains("Copied"),
+        "executing copy from palette should show copy feedback: {screen}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn command_palette_displays_and_executes_desktop_app_item_commands_in_aggregate_view() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+
+    // In aggregate view core:default, type to filter desktop app
+    process.master.write_all(b"Advanced").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Advanced Network");
+
+    // Press Ctrl-K to open command palette
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+
+    // Command palette MUST display dynamic item commands from apps ("Open", "Opend", "Set weight")
+    let output = wait_for_text(&process.master, "Open");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(
+        screen.contains("Open"),
+        "command palette should display item command 'Open': {screen}"
+    );
+
+    // Type "Open" to filter down to Open and press Enter
+    process.master.write_all(b"Open\r").unwrap();
+    process.master.flush().unwrap();
+
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {}", String::from_utf8_lossy(&output));
+}
+
+#[test]
+fn aggregate_view_footer_commands_survive_a_slow_refresh() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "slow:main"
+
+        [workflows.slow.commands.open]
+        label = "Open"
+        type = "run"
+        producer = "declared"
+        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'opened\\n'"], exit = true }
+
+        [workflows.slow.views.main]
+        [workflows.slow.views.main.keymap]
+        mode = "item"
+        [workflows.slow.views.main.engine]
+        type = "picker"
+        [workflows.slow.views.main.engine.config.items]
+        producer = "script"
+        [workflows.slow.views.main.engine.config.items.handler]
+        file = "scripts/items.sh"
+        "#,
+    )
+    .unwrap();
+    write_workflow_script(
+        &root,
+        "slow",
+        "scripts/items.sh",
+        r#"#!/bin/sh
+sleep 0.35
+printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{"enter":"slow:open"}}]}'
+"#,
+    );
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Open");
+
+    process.master.write_all(b"A").unwrap();
+    process.master.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+
+    let screen = current_screen(&process.master);
+    assert!(
+        screen.contains("Open"),
+        "item commands disappeared while a slow producer was refreshing: {screen}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_view_footer_commands_remain_stable_during_input_without_flicker() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+
+    // Initial state: core:default loaded, shows Open in footer
+    let initial_screen = wait_for_text(&process.master, "Open");
+    assert!(String::from_utf8_lossy(&initial_screen).contains("Open"));
+
+    // Type a character to trigger search
+    process.master.write_all(b"A").unwrap();
+    process.master.flush().unwrap();
+
+    // Immediately check screen: Open MUST still be present in footer!
+    // The command registry must retain the published item binding while results refresh.
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    let immediate_screen = current_screen(&process.master);
+    assert!(
+        immediate_screen.contains("Open"),
+        "Footer item commands must not disappear immediately during input! Screen: {immediate_screen}"
+    );
+
+    // Wait for search result to arrive
+    let ready_screen = wait_for_text(&process.master, "Advanced Network");
+    assert!(String::from_utf8_lossy(&ready_screen).contains("Open"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
 }

@@ -115,48 +115,50 @@ pub(crate) fn create_protocol_view(
         runtime.set_initial_focus(Some(focus.clone()));
     }
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
-    let route_candidates = routes.complete("");
-    let mut completion_prefixes = BTreeMap::from([(String::new(), route_candidates.clone())]);
-    for candidate in &route_candidates {
-        for text in [&candidate.label, &candidate.target.reference] {
-            for (index, _) in text.char_indices().skip(1) {
-                let prefix = &text[..index];
-                completion_prefixes
-                    .entry(prefix.to_string())
-                    .or_insert_with(|| routes.complete(prefix));
-            }
-            completion_prefixes
-                .entry(text.to_string())
-                .or_insert_with(|| routes.complete(text));
-        }
-    }
-    let recognized_route_selectors = route_candidates
-        .iter()
-        .flat_map(|candidate| {
-            [candidate.target.reference.clone(), candidate.label.clone()].into_iter()
-        })
-        .collect::<HashSet<_>>();
-    let current_view = config.identity.view_ref.as_str();
-    let route_candidates = route_candidates
-        .into_iter()
-        .filter(|candidate| candidate.target.reference != current_view)
-        .collect::<Vec<_>>();
-    let route_resolutions = route_candidates
-        .iter()
-        .flat_map(|candidate| {
-            [candidate.target.reference.clone(), candidate.label.clone()]
+    let (route_candidates, recognized_route_selectors, route_resolutions, route_schemas) =
+        if config.route_entry {
+            let all_candidates = routes.complete("");
+            let recognized_route_selectors = all_candidates
+                .iter()
+                .flat_map(|candidate| {
+                    [candidate.target.reference.clone(), candidate.label.clone()].into_iter()
+                })
+                .collect::<HashSet<_>>();
+            let current_view = config.identity.view_ref.as_str();
+            let route_candidates = all_candidates
                 .into_iter()
-                .filter_map(|selector| routes.resolve(&selector).map(|target| (selector, target)))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let route_schemas = route_candidates
-        .iter()
-        .filter_map(|candidate| {
-            routes
-                .query_schema(&candidate.target.reference)
-                .map(|schema| (candidate.target.reference.clone(), schema))
-        })
-        .collect::<BTreeMap<_, _>>();
+                .filter(|candidate| candidate.target.reference != current_view)
+                .collect::<Vec<_>>();
+            let route_resolutions = route_candidates
+                .iter()
+                .flat_map(|candidate| {
+                    [candidate.target.reference.clone(), candidate.label.clone()]
+                        .into_iter()
+                        .filter_map(|selector| routes.resolve(&selector).map(|target| (selector, target)))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let route_schemas = route_candidates
+                .iter()
+                .filter_map(|candidate| {
+                    routes
+                        .query_schema(&candidate.target.reference)
+                        .map(|schema| (candidate.target.reference.clone(), schema))
+                })
+                .collect::<BTreeMap<_, _>>();
+            (
+                route_candidates,
+                recognized_route_selectors,
+                route_resolutions,
+                route_schemas,
+            )
+        } else {
+            (
+                Vec::new(),
+                HashSet::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+        };
     let mut disabled_keys = explicitly_disabled_keys(
         config.bindings.defaults.as_ref(),
         config.bindings.view_keymap.as_ref(),
@@ -205,7 +207,6 @@ pub(crate) fn create_protocol_view(
         recognized_route_selectors,
         route_schemas,
         route_resolutions,
-        completion_prefixes,
         disabled_keys,
         parameter_bindings: config.parameter_bindings,
         route_entry: config.route_entry,
@@ -325,7 +326,6 @@ struct PickerProtocolView {
     recognized_route_selectors: HashSet<String>,
     route_schemas: BTreeMap<String, crate::view::QuerySchema>,
     route_resolutions: BTreeMap<String, crate::view::RouteTarget>,
-    completion_prefixes: BTreeMap<String, Vec<RouteCandidate>>,
     disabled_keys: HashSet<crate::input::BindingKey>,
     parameter_bindings: BTreeMap<String, ParameterBinding>,
     route_entry: bool,
@@ -565,7 +565,10 @@ impl PickerProtocolView {
         if let Some(publication) = emission.publication() {
             self.publication_ready = publication.ready;
             let current = publication.current().clone();
-            if self.publication.as_ref().map(|snapshot| &snapshot.current) != Some(&current) {
+            let publication_changed = self.publication.as_ref().is_none_or(|snapshot| {
+                snapshot.current != current || snapshot.ready != publication.ready
+            });
+            if publication_changed {
                 self.state_revision = self.state_revision.wrapping_add(1);
             }
             self.publication = Some(ViewPublication::new(current, publication.ready));
@@ -686,27 +689,20 @@ impl PickerProtocolView {
         let prefix = &self.editor.raw[range.clone()];
         let folded = prefix.to_lowercase();
         let candidates = self
-            .completion_prefixes
-            .get(prefix)
-            .cloned()
-            .unwrap_or_else(|| {
-                self.route_candidates
-                    .iter()
-                    .filter(|candidate| {
-                        candidate.label.to_lowercase().starts_with(&folded)
-                            || candidate
-                                .target
-                                .reference
-                                .to_lowercase()
-                                .starts_with(&folded)
-                    })
-                    .cloned()
-                    .collect()
+            .route_candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.label.to_lowercase().starts_with(&folded)
+                    || candidate
+                        .target
+                        .reference
+                        .to_lowercase()
+                        .starts_with(&folded)
             })
-            .into_iter()
             .filter(|candidate| {
                 candidate.target.reference != self.engine_context.view_identity().view_ref
             })
+            .cloned()
             .collect();
         self.completion = Some(CompletionState {
             source_instance: self.instance,
@@ -751,11 +747,10 @@ impl PickerProtocolView {
                 candidate.target.reference.len() + 1,
             )
             .map_err(|error| anyhow::anyhow!("completion edit was rejected: {error}"))?;
-        let changed = self.edit_changed(context)?;
         if let Some(route) = self.route_submission()? {
-            Ok(ViewDecision::Batch(vec![changed, route]))
+            Ok(route)
         } else {
-            Ok(changed)
+            self.edit_changed(context)
         }
     }
 
@@ -769,13 +764,13 @@ impl PickerProtocolView {
         match key {
             Key::Char(character) => {
                 self.editor.insert(character);
-                let changed = self.edit_changed(context)?;
                 if character.is_whitespace()
                     && let Some(route) = self.route_submission()?
                 {
-                    Ok(ViewDecision::Batch(vec![changed, route]))
+                    self.completion = None;
+                    Ok(route)
                 } else {
-                    Ok(changed)
+                    self.edit_changed(context)
                 }
             }
             Key::Left => {
@@ -881,6 +876,10 @@ impl View for PickerProtocolView {
 
     fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
         Some(self)
+    }
+
+    fn has_modal_overlay(&self) -> bool {
+        self.completion.is_some()
     }
 
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
