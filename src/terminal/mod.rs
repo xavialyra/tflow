@@ -134,7 +134,7 @@ impl PartialEq for ImagePicker {
 
 impl Eq for ImagePicker {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ImagePickerFingerprint {
     font_width: u16,
     font_height: u16,

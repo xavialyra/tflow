@@ -359,7 +359,7 @@ impl Document {
         theme: &crate::ui::theme::Theme,
         package: &str,
         scroll: u16,
-        revision: u64,
+        _revision: u64,
         images: &[PreviewImageState],
         picker: Option<crate::terminal::ImagePicker>,
         protocols: &mut ImageProtocolCache,
@@ -458,7 +458,6 @@ impl Document {
                                 }) => {
                                     if let Some(picker) = picker.filter(|_| !inner.is_empty()) {
                                         let key = ImageProtocolKey::new(
-                                            revision,
                                             *index,
                                             image,
                                             ratatui::layout::Size::new(inner.width, inner.height),
@@ -479,11 +478,7 @@ impl Document {
                                         .wrap(Wrap { trim: false }),
                                     inner,
                                 ),
-                                _ => frame.render_widget(
-                                    Paragraph::new("Loading image…")
-                                        .style(theme.picker.preview.text),
-                                    inner,
-                                ),
+                                _ => {}
                             }
                         }
                     }
@@ -509,7 +504,6 @@ impl Document {
             ) = (picker, images.get(index))
             {
                 let key = ImageProtocolKey::new(
-                    revision,
                     index,
                     image,
                     ratatui::layout::Size::new(inner.width, inner.height),

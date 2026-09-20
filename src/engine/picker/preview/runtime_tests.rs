@@ -310,3 +310,114 @@ fn preview_scroll_up_responds_immediately_after_repeated_scroll_down_and_resize(
     preview.deactivate();
     tasks.shutdown_and_wait();
 }
+
+#[test]
+fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching() {
+    let root = std::env::temp_dir().join(format!("test-preview-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let img_path = root.join("icon.png");
+    image::DynamicImage::new_rgba8(4, 4).save(&img_path).unwrap();
+
+    let (tasks, starter) = runtime();
+    let mut preview = preview();
+    let doc = document::parse(json!({
+        "type": "image",
+        "path": img_path.to_string_lossy()
+    })).unwrap();
+    let req1 = request(PreviewSource::Declared(doc.clone()), json!({"id": 1}));
+    let req2 = request(PreviewSource::Declared(doc), json!({"id": 2}));
+
+    // 1. First selection loads and decodes image
+    preview.prepare(Some(req1));
+    ready(&mut preview);
+    preview.start(&starter);
+    for _ in 0..100 {
+        preview.start(&starter);
+        if preview.task.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(preview.images[0].image.is_some());
+    let initial_arc = preview.images[0].image.as_ref().unwrap().clone();
+
+    // Render with protocol cache
+    let mut protocols = ImageProtocolCache::new();
+    let theme = Theme::terminal();
+    let picker = Some(crate::terminal::ImagePicker::test_halfblocks());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            preview
+                .render_state()
+                .render(frame, frame.area(), &theme, picker, &mut protocols);
+        })
+        .unwrap();
+
+    // Protocol finishes encoding
+    for _ in 0..100 {
+        terminal
+            .draw(|frame| {
+                preview
+                    .render_state()
+                    .render(frame, frame.area(), &theme, picker, &mut protocols);
+            })
+            .unwrap();
+        let key = image_protocol::ImageProtocolKey::new(
+            0,
+            &initial_arc,
+            ratatui::layout::Size::new(40, 10),
+            picker.unwrap(),
+        );
+        if protocols.protocol(key).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let key = image_protocol::ImageProtocolKey::new(
+        0,
+        &initial_arc,
+        ratatui::layout::Size::new(40, 10),
+        picker.unwrap(),
+    );
+    assert!(protocols.protocol(key).is_some(), "protocol should be ready");
+
+    // 2. Switch to second item (same image path)
+    preview.prepare(Some(req2));
+    ready(&mut preview);
+    preview.start(&starter);
+
+    // Image should be immediately present from decode_cache without starting a new async task!
+    assert!(
+        preview.task.is_none(),
+        "image should hit decode cache and not start a decode task"
+    );
+    assert!(
+        preview.images[0].image.is_some(),
+        "cached image should be immediately loaded"
+    );
+    assert!(
+        Arc::ptr_eq(
+            preview.images[0].image.as_ref().unwrap(),
+            &initial_arc
+        ),
+        "should reuse exact same Arc allocation"
+    );
+
+    // 3. Render: Protocol cache must hit immediately on the very first frame without resubmitting!
+    terminal
+        .draw(|frame| {
+            preview
+                .render_state()
+                .render(frame, frame.area(), &theme, picker, &mut protocols);
+        })
+        .unwrap();
+    assert!(
+        protocols.protocol(key).is_some(),
+        "protocol cache must hit immediately on first frame"
+    );
+
+    preview.deactivate();
+    tasks.shutdown_and_wait();
+    let _ = std::fs::remove_dir_all(root);
+}

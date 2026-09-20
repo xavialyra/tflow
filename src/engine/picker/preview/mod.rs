@@ -24,6 +24,7 @@ pub(crate) struct PickerPreviewConfig {
 
 const DEBOUNCE_DURATION: std::time::Duration = std::time::Duration::from_millis(80);
 const GRACE_PERIOD_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+const DECODE_CACHE_CAPACITY: usize = 32;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,6 +237,8 @@ pub(super) struct PickerPreview {
     scroll: u16,
     pool: Option<Arc<image_decode::ImageDecodePool>>,
     content_size: Option<(u16, u16)>,
+    decode_cache: std::collections::HashMap<std::path::PathBuf, Arc<DynamicImage>>,
+    decode_order: std::collections::VecDeque<std::path::PathBuf>,
 }
 
 #[derive(Clone, Default)]
@@ -323,6 +326,8 @@ impl PickerPreview {
             scroll: 0,
             pool: None,
             content_size: None,
+            decode_cache: std::collections::HashMap::new(),
+            decode_order: std::collections::VecDeque::new(),
         }
     }
 
@@ -336,6 +341,41 @@ impl PickerPreview {
     pub(super) fn deactivate(&mut self) {
         self.reset_selection();
         self.pool.take();
+        self.decode_cache.clear();
+        self.decode_order.clear();
+    }
+
+    fn get_cached_image(&mut self, path: &std::path::Path) -> Option<Arc<DynamicImage>> {
+        if let Some(image) = self.decode_cache.get(path) {
+            let image = Arc::clone(image);
+            if let Some(pos) = self.decode_order.iter().position(|p| p == path) {
+                self.decode_order.remove(pos);
+            }
+            self.decode_order.push_back(path.to_path_buf());
+            Some(image)
+        } else {
+            None
+        }
+    }
+
+    fn cache_decoded_image(&mut self, path: std::path::PathBuf, image: Arc<DynamicImage>) {
+        if self.decode_cache.contains_key(&path) {
+            if let Some(pos) = self.decode_order.iter().position(|p| p == &path) {
+                self.decode_order.remove(pos);
+            }
+            self.decode_order.push_back(path.clone());
+            self.decode_cache.insert(path, image);
+            return;
+        }
+        while self.decode_cache.len() >= DECODE_CACHE_CAPACITY {
+            if let Some(oldest) = self.decode_order.pop_front() {
+                self.decode_cache.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.decode_order.push_back(path.clone());
+        self.decode_cache.insert(path, image);
     }
 
     #[cfg(test)]
@@ -527,14 +567,23 @@ impl PickerPreview {
             document.images(&mut paths);
         }
         let root = self.prepared.as_ref().and_then(|r| r.root.as_deref());
-        let images = paths
+        let resolved = paths
             .iter()
-            .enumerate()
-            .map(|(i, p)| (i, image_path::resolve(root, p)))
+            .map(|p| image_path::resolve(root, p))
             .collect::<Vec<_>>();
-        self.images = vec![PreviewImageState::default(); paths.len()];
+
+        self.images = vec![PreviewImageState::default(); resolved.len()];
+        let mut uncached = Vec::new();
+        for (i, path) in resolved.into_iter().enumerate() {
+            if let Some(cached) = self.get_cached_image(&path) {
+                self.images[i].image = Some(cached);
+                self.images[i].error = None;
+            } else {
+                uncached.push((i, path));
+            }
+        }
         self.document = document;
-        self.start_images(images);
+        self.start_images(uncached);
     }
 
     fn start_images(&mut self, images: Vec<(usize, std::path::PathBuf)>) {
@@ -570,14 +619,18 @@ impl PickerPreview {
                     // A cancelled generation must never clear the newer document.
                 } else {
                     for decoded in batch.images {
-                        let PreviewImageState { image, error } = &mut self.images[decoded.block];
                         match decoded.result {
-                            Ok(decoded) => *image = Some(Arc::new(decoded)),
+                            Ok(decoded_img) => {
+                                let arc_img = Arc::new(decoded_img);
+                                self.cache_decoded_image(decoded.path, Arc::clone(&arc_img));
+                                self.images[decoded.block].image = Some(arc_img);
+                                self.images[decoded.block].error = None;
+                            }
                             Err(message) => {
-                                *error = Some(format!(
+                                self.images[decoded.block].error = Some(format!(
                                     "could not load {}: {message}",
                                     decoded.path.display()
-                                ))
+                                ));
                             }
                         }
                     }

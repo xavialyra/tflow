@@ -18,9 +18,8 @@ static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 type EncodeResult = std::result::Result<StatefulProtocol, String>;
 type Encoder = dyn Fn(Arc<DynamicImage>, ImagePicker, Size) -> EncodeResult + Send + Sync + 'static;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ImageProtocolKey {
-    revision: u64,
     block: usize,
     image: usize,
     area: Size,
@@ -29,14 +28,12 @@ pub(super) struct ImageProtocolKey {
 
 impl ImageProtocolKey {
     pub(super) fn new(
-        revision: u64,
         block: usize,
         image: &Arc<DynamicImage>,
         area: Size,
         picker: ImagePicker,
     ) -> Self {
         Self {
-            revision,
             block,
             image: Arc::as_ptr(image) as usize,
             area,
@@ -237,9 +234,12 @@ fn encode_protocol(image: Arc<DynamicImage>, picker: ImagePicker, area: Size) ->
     }
 }
 
+const PROTOCOL_CACHE_CAPACITY: usize = 32;
+
 pub(crate) struct ImageProtocolCache {
     id: u64,
-    entries: HashMap<usize, (ImageProtocolKey, CachedProtocol)>,
+    entries: HashMap<ImageProtocolKey, CachedProtocol>,
+    order: VecDeque<ImageProtocolKey>,
     completion_tx: Sender<ProtocolCompletion>,
     completion_rx: Receiver<ProtocolCompletion>,
     #[cfg(test)]
@@ -252,6 +252,7 @@ impl ImageProtocolCache {
         Self {
             id: NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed),
             entries: HashMap::new(),
+            order: VecDeque::new(),
             completion_tx,
             completion_rx,
             #[cfg(test)]
@@ -260,38 +261,47 @@ impl ImageProtocolCache {
     }
 
     pub(super) fn update(&mut self, desired: Vec<DesiredImageProtocol>) {
-        self.collect();
-        let desired_blocks = desired
-            .iter()
-            .map(|desired| desired.key.block)
-            .collect::<Vec<_>>();
-        self.entries.retain(|block, state| {
-            let keep = desired_blocks.contains(block);
-            if !keep && let CachedProtocol::Pending(cancellation) = &state.1 {
-                cancellation.store(true, Ordering::Release);
-            }
-            keep
-        });
-
-        for desired in desired {
-            let unchanged = self
-                .entries
-                .get(&desired.key.block)
-                .is_some_and(|(key, _)| *key == desired.key);
-            if unchanged {
-                continue;
-            }
-            if let Some((_, CachedProtocol::Pending(cancellation))) =
-                self.entries.remove(&desired.key.block)
+        // Keep completed encodings for reuse, but stop work for images that are
+        // no longer visible before accepting any queued completions.
+        self.entries.retain(|key, state| {
+            if let CachedProtocol::Pending(cancellation) = state
+                && !desired.iter().any(|image| image.key == *key)
             {
                 cancellation.store(true, Ordering::Release);
+                return false;
             }
+            true
+        });
+        self.order.retain(|key| self.entries.contains_key(key));
+        self.collect();
+
+        for desired in desired {
+            if let Some(state) = self.entries.get(&desired.key) {
+                if !matches!(state, CachedProtocol::Failed(_)) {
+                    if let Some(pos) = self.order.iter().position(|k| *k == desired.key) {
+                        self.order.remove(pos);
+                    }
+                    self.order.push_back(desired.key);
+                    continue;
+                }
+            }
+
+            while self.entries.len() >= PROTOCOL_CACHE_CAPACITY {
+                if let Some(oldest) = self.order.pop_front() {
+                    if let Some(CachedProtocol::Pending(cancellation)) = self.entries.remove(&oldest) {
+                        cancellation.store(true, Ordering::Release);
+                    }
+                } else {
+                    break;
+                }
+            }
+
             let key = desired.key;
             let cancellation = match default_pool() {
                 Ok(pool) => pool.submit(self.id, desired, self.completion_tx.clone()),
                 Err(error) => {
-                    self.entries
-                        .insert(key.block, (key, CachedProtocol::Failed(error)));
+                    self.entries.insert(key, CachedProtocol::Failed(error));
+                    self.order.push_back(key);
                     continue;
                 }
             };
@@ -299,27 +309,25 @@ impl ImageProtocolCache {
             {
                 self.submissions += 1;
             }
-            self.entries
-                .insert(key.block, (key, CachedProtocol::Pending(cancellation)));
+            self.entries.insert(key, CachedProtocol::Pending(cancellation));
+            self.order.push_back(key);
         }
     }
 
     pub(crate) fn clear(&mut self) {
         for (_, state) in self.entries.drain() {
-            if let CachedProtocol::Pending(cancellation) = state.1 {
+            if let CachedProtocol::Pending(cancellation) = state {
                 cancellation.store(true, Ordering::Release);
             }
         }
+        self.order.clear();
     }
 
     fn collect(&mut self) {
         while let Ok(completed) = self.completion_rx.try_recv() {
-            let Some((key, state)) = self.entries.get_mut(&completed.key.block) else {
+            let Some(state) = self.entries.get_mut(&completed.key) else {
                 continue;
             };
-            if *key != completed.key {
-                continue;
-            }
             *state = match completed.result {
                 Ok(protocol) => CachedProtocol::Ready(Box::new(protocol)),
                 Err(error) => CachedProtocol::Failed(error),
@@ -329,8 +337,12 @@ impl ImageProtocolCache {
 
     pub(super) fn protocol(&mut self, key: ImageProtocolKey) -> Option<&mut StatefulProtocol> {
         self.collect();
-        match self.entries.get_mut(&key.block) {
-            Some((cached_key, CachedProtocol::Ready(protocol))) if *cached_key == key => {
+        match self.entries.get_mut(&key) {
+            Some(CachedProtocol::Ready(protocol)) => {
+                if let Some(pos) = self.order.iter().position(|k| *k == key) {
+                    self.order.remove(pos);
+                }
+                self.order.push_back(key);
                 Some(protocol.as_mut())
             }
             _ => None,
@@ -338,10 +350,8 @@ impl ImageProtocolCache {
     }
 
     pub(super) fn error(&self, key: ImageProtocolKey) -> Option<&str> {
-        match self.entries.get(&key.block) {
-            Some((cached_key, CachedProtocol::Failed(error))) if *cached_key == key => {
-                Some(error.as_str())
-            }
+        match self.entries.get(&key) {
+            Some(CachedProtocol::Failed(error)) => Some(error.as_str()),
             _ => None,
         }
     }
@@ -359,11 +369,10 @@ mod tests {
     use std::sync::Barrier;
     use std::time::Duration;
 
-    fn key(revision: u64, block: usize) -> ImageProtocolKey {
+    fn key(block: usize, image_id: usize) -> ImageProtocolKey {
         ImageProtocolKey {
-            revision,
             block,
-            image: revision as usize,
+            image: image_id,
             area: Size::new(20, 10),
             picker: ImagePicker::test_halfblocks().fingerprint(),
         }
@@ -392,7 +401,7 @@ mod tests {
         let pool = ImageProtocolPool::new(1, encoder).unwrap();
         let (completion_tx, completion) = channel();
         let submit = |revision| DesiredImageProtocol {
-            key: key(revision, 0),
+            key: key(0, revision),
             image: Arc::new(DynamicImage::new_rgba8(revision as u32, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
@@ -438,7 +447,7 @@ mod tests {
         let pool = ImageProtocolPool::new(1, encoder).unwrap();
         let (completion_tx, _completion_rx) = channel();
         let desired = |revision| DesiredImageProtocol {
-            key: key(revision, 0),
+            key: key(0, revision),
             image: Arc::new(DynamicImage::new_rgba8(revision as u32, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
@@ -466,7 +475,7 @@ mod tests {
         let mut cache = ImageProtocolCache::new();
         let image = Arc::new(DynamicImage::new_rgba8(2, 2));
         let picker = ImagePicker::test_halfblocks();
-        let key = ImageProtocolKey::new(1, 0, &image, Size::new(20, 10), picker);
+        let key = ImageProtocolKey::new(0, &image, Size::new(20, 10), picker);
         let desired = || DesiredImageProtocol {
             key,
             image: Arc::clone(&image),
@@ -486,15 +495,13 @@ mod tests {
         let picker = ImagePicker::test_halfblocks();
         let old_image = Arc::new(DynamicImage::new_rgba8(1, 1));
         let new_image = Arc::new(DynamicImage::new_rgba8(2, 2));
-        let old_key = ImageProtocolKey::new(1, 0, &old_image, Size::new(20, 10), picker);
-        let new_key = ImageProtocolKey::new(2, 0, &new_image, Size::new(20, 10), picker);
+        let old_key = ImageProtocolKey::new(0, &old_image, Size::new(20, 10), picker);
+        let new_key = ImageProtocolKey::new(0, &new_image, Size::new(20, 10), picker);
         cache.entries.insert(
-            0,
-            (
-                new_key,
-                CachedProtocol::Pending(Arc::new(AtomicBool::new(false))),
-            ),
+            new_key,
+            CachedProtocol::Pending(Arc::new(AtomicBool::new(false))),
         );
+        cache.order.push_back(new_key);
         let old_protocol = encode_protocol(old_image, picker, old_key.area).unwrap();
         cache
             .completion_tx
@@ -507,22 +514,59 @@ mod tests {
         cache.collect();
 
         assert!(matches!(
-            cache.entries.get(&0),
-            Some((key, CachedProtocol::Pending(_))) if *key == new_key
+            cache.entries.get(&new_key),
+            Some(CachedProtocol::Pending(_))
         ));
+    }
+
+    #[test]
+    fn updating_visible_images_cancels_only_obsolete_pending_work() {
+        let mut cache = ImageProtocolCache::new();
+        let picker = ImagePicker::test_halfblocks();
+        let image = Arc::new(DynamicImage::new_rgba8(2, 2));
+        let current = ImageProtocolKey::new(0, &image, Size::new(20, 10), picker);
+        let obsolete = key(0, 1);
+        let ready = key(1, 2);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let retained = Arc::new(AtomicBool::new(false));
+        cache.entries.insert(obsolete, CachedProtocol::Pending(Arc::clone(&cancelled)));
+        cache.entries.insert(current, CachedProtocol::Pending(Arc::clone(&retained)));
+        cache.entries.insert(ready, CachedProtocol::Ready(Box::new(
+            encode_protocol(Arc::clone(&image), picker, ready.area).unwrap(),
+        )));
+        cache.order.extend([obsolete, current, ready]);
+        cache.completion_tx.send(ProtocolCompletion {
+            key: obsolete,
+            result: Err("late completion".to_string()),
+        }).unwrap();
+
+        cache.update(vec![DesiredImageProtocol { key: current, image, picker }]);
+
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!retained.load(Ordering::Acquire));
+        assert!(!cache.entries.contains_key(&obsolete));
+        assert!(!cache.order.contains(&obsolete));
+        assert!(cache.protocol(ready).is_some());
+        assert_eq!(cache.submissions, 0);
+
+        cache.update(Vec::new());
+
+        assert!(retained.load(Ordering::Acquire));
+        assert!(!cache.entries.contains_key(&current));
+        assert!(!cache.order.contains(&current));
+        assert!(cache.protocol(ready).is_some());
     }
 
     #[test]
     fn clearing_cache_cancels_pending_work() {
         let mut cache = ImageProtocolCache::new();
         let cancellation = Arc::new(AtomicBool::new(false));
+        let k = key(0, 1);
         cache.entries.insert(
-            0,
-            (
-                key(1, 0),
-                CachedProtocol::Pending(Arc::clone(&cancellation)),
-            ),
+            k,
+            CachedProtocol::Pending(Arc::clone(&cancellation)),
         );
+        cache.order.push_back(k);
 
         cache.clear();
 
@@ -547,7 +591,7 @@ mod tests {
         let pool = ImageProtocolPool::new(1, encoder).unwrap();
         let (completion_tx, completion_rx) = channel();
         let desired = |revision| DesiredImageProtocol {
-            key: key(revision, 0),
+            key: key(0, revision),
             image: Arc::new(DynamicImage::new_rgba8(1, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
