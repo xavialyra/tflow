@@ -22,7 +22,7 @@ bold = true
 
 [views.main.query]
 type = "object"
-input_order = ["search"]
+input = "search"
 search = { type = "string", default = "" }
 selected = { type = "array<string>", default = [] }
 

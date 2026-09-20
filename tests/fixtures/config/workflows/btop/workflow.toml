@@ -7,7 +7,7 @@ entrypoint = "main"
 
 [views.main.query]
 type = "object"
-input_order = ["resource"]
+input = "resource"
 resource = { type = "string", default = "cpu" }
 next = { type = "object", default = { resource = "memory", next = { resource = "network", next = { resource = "processes", next = { resource = "cpu" } } } } }
 

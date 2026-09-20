@@ -22,7 +22,7 @@ enter = "copy"
 
 [views.unlock.query]
 type = "object"
-input_order = ["entry"]
+input = "entry"
 entry = { type = "string" }
 
 [views.unlock.engine]

@@ -20,7 +20,6 @@ cancel_exit_code = 1
 
 [views.input.query]
 type = "object"
-input_order = ["name", "environment", "enabled"]
 name = { type = "string", default = "" }
 environment = { type = "string", default = "dev" }
 enabled = { type = "boolean", default = true }

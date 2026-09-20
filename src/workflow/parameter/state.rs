@@ -1,6 +1,5 @@
 use super::schema::{
-    ParameterSchema, ParameterType, ViewParameterSchema, compile_parameter_schema,
-    render_input_value, validate_required,
+    ParameterSchema, ViewParameterSchema, compile_parameter_schema, validate_required,
 };
 use crate::input::InputSourceIdentity;
 use crate::terminal::sanitize_terminal_text;
@@ -99,78 +98,126 @@ impl ParameterRegistry {
         Ok(state)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn bind_cli(&self, view_ref: &str, arguments: &[String]) -> Result<ParameterState> {
         let mut state = self.instantiate(view_ref)?;
-        let schema = &self.schema_for(view_ref, &state)?.schema;
+        self.apply_cli(&mut state, arguments)?;
+        Ok(state)
+    }
+
+    pub(crate) fn apply_cli(&self, state: &mut ParameterState, arguments: &[String]) -> Result<()> {
+        let view_ref = &state.view_ref;
+        let schema = &self.schema_for(view_ref, state)?.schema;
         if schema.plain {
             if arguments.is_empty() {
-                return Ok(state);
+                return Ok(());
             }
-            bail!(
-                "view {:?} does not declare keyed query parameters",
-                view_ref
-            );
+            if arguments.len() > 1 {
+                bail!(
+                    "view {:?} accepts at most one positional query argument, received {}",
+                    view_ref,
+                    arguments.len()
+                );
+            }
+            let argument = &arguments[0];
+            if argument.starts_with("--") {
+                bail!(
+                    "view {:?} does not declare keyed query parameters",
+                    view_ref
+                );
+            }
+            state
+                .values
+                .insert("query".to_string(), Value::String(argument.clone()));
+            state.revision = state.revision.wrapping_add(1);
+            state.raw_input = argument.clone();
+            return Ok(());
         }
         let mut assigned = BTreeSet::new();
+        let mut positional_seen = false;
         for argument in arguments {
-            let raw = argument.strip_prefix("--").with_context(|| {
-                format!(
-                    "view {:?} does not accept positional argument {:?}",
-                    view_ref, argument
-                )
-            })?;
-            if raw.is_empty() {
-                bail!("view {:?} does not accept positional arguments", view_ref);
-            }
-            let (name, value, typed) = if let Some((name, source)) = raw.split_once(":=") {
-                (
-                    name,
-                    serde_json::from_str(source).with_context(|| {
-                        format!("query parameter --{name}:= contains invalid JSON")
-                    })?,
-                    true,
-                )
-            } else if let Some((name, source)) = raw.split_once('=') {
-                (name, Value::String(source.to_string()), false)
-            } else if let Some(name) = raw.strip_prefix("no-") {
-                (name, Value::Bool(false), true)
-            } else {
-                (raw, Value::Bool(true), true)
-            };
-            if name.is_empty()
-                || !name.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-                })
-            {
-                bail!("invalid query parameter name {:?}", name);
-            }
-            let field = schema.fields.get(name).with_context(|| {
-                format!(
-                    "view {:?} does not declare query parameter --{}",
-                    view_ref, name
-                )
-            })?;
-            if !assigned.insert(name.to_string()) {
-                bail!("query parameter --{} may be specified only once", name);
-            }
-            let value = if typed {
-                value
-            } else {
+            if let Some(raw) = argument.strip_prefix("--") {
+                if raw.is_empty() {
+                    bail!("view {:?} does not accept positional arguments", view_ref);
+                }
+                let (name, value, typed) = if let Some((name, source)) = raw.split_once(":=") {
+                    (
+                        name,
+                        serde_json::from_str(source).with_context(|| {
+                            format!("query parameter --{name}:= contains invalid JSON")
+                        })?,
+                        true,
+                    )
+                } else if let Some((name, source)) = raw.split_once('=') {
+                    (name, Value::String(source.to_string()), false)
+                } else if let Some(name) = raw.strip_prefix("no-") {
+                    (name, Value::Bool(false), true)
+                } else {
+                    (raw, Value::Bool(true), true)
+                };
+                if name.is_empty()
+                    || !name.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                    })
+                {
+                    bail!("invalid query parameter name {:?}", name);
+                }
+                let field = schema.fields.get(name).with_context(|| {
+                    format!(
+                        "view {:?} does not declare query parameter --{}",
+                        view_ref, name
+                    )
+                })?;
+                if !assigned.insert(name.to_string()) {
+                    bail!("query parameter --{} may be specified only once", name);
+                }
+                let value = if typed {
+                    value
+                } else {
+                    field
+                        .value_type
+                        .parse_cli(value.as_str().expect("CLI input is a string"))?
+                };
                 field
-                    .value_type
-                    .parse_cli(value.as_str().expect("CLI input is a string"))?
-            };
-            field
-                .validate(&value)
-                .with_context(|| format!("invalid query parameter --{}", name))?;
-            state.values.insert(name.to_string(), value);
+                    .validate(&value)
+                    .with_context(|| format!("invalid query parameter --{}", name))?;
+                state.values.insert(name.to_string(), value);
+            } else {
+                if positional_seen {
+                    bail!(
+                        "view {:?} accepts at most one positional query argument",
+                        view_ref
+                    );
+                }
+                positional_seen = true;
+                let Some(input_field) = &schema.input else {
+                    bail!(
+                        "view {:?} does not declare an interactive input field and does not accept positional arguments",
+                        view_ref
+                    );
+                };
+                let field = schema.fields.get(input_field).with_context(|| {
+                    format!("query input references unknown field {:?}", input_field)
+                })?;
+                if !assigned.insert(input_field.clone()) {
+                    bail!(
+                        "query parameter --{} may be specified only once",
+                        input_field
+                    );
+                }
+                let value = Value::String(argument.clone());
+                field
+                    .validate(&value)
+                    .with_context(|| format!("invalid query parameter --{}", input_field))?;
+                state.values.insert(input_field.clone(), value);
+            }
         }
         validate_required(schema, &state.values)?;
         if !assigned.is_empty() {
             state.revision = state.revision.wrapping_add(1);
         }
-        state.raw_input = self.render_input(&state)?;
-        Ok(state)
+        state.raw_input = self.render_input(state)?;
+        Ok(())
     }
 
     pub(crate) fn render_input(&self, state: &ParameterState) -> Result<String> {
@@ -183,30 +230,15 @@ impl ParameterRegistry {
                 .unwrap_or_default()
                 .to_string());
         }
-        if schema.input_order.is_empty() {
-            return Ok(String::new());
+        if let Some(input_field) = &schema.input {
+            return Ok(state
+                .values
+                .get(input_field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string());
         }
-        if schema.input_order.len() == 1 {
-            let name = &schema.input_order[0];
-            let field = schema.fields.get(name).expect("query field disappeared");
-            if field.value_type == ParameterType::String {
-                return Ok(state
-                    .values
-                    .get(name)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string());
-            }
-        }
-        Ok(schema
-            .input_order
-            .iter()
-            .map(|name| {
-                let field = schema.fields.get(name).expect("query field disappeared");
-                render_input_value(state.values.get(name).unwrap_or(&field.default))
-            })
-            .collect::<Vec<_>>()
-            .join(" "))
+        Ok(String::new())
     }
 
     pub(crate) fn update_input(&self, state: &mut ParameterState, source: &str) -> Result<bool> {
@@ -239,7 +271,7 @@ impl ParameterRegistry {
             state.revision = state.revision.wrapping_add(1);
             return Ok(true);
         }
-        if schema.input_order.is_empty() {
+        let Some(input_field) = &schema.input else {
             if !validate_required_fields {
                 if state.raw_input != source {
                     state.raw_input = source.to_string();
@@ -251,44 +283,13 @@ impl ParameterRegistry {
                 state.raw_input = source.to_string();
                 return Ok(false);
             }
-            bail!("query input cannot be parsed because input_order is empty");
-        }
-        let tokens = if !validate_required_fields && source.is_empty() {
-            Vec::new()
-        } else if schema.input_order.len() == 1
-            && schema.fields[&schema.input_order[0]].value_type == ParameterType::String
-        {
-            vec![source.to_string()]
-        } else {
-            shell_words::split(source).context("query input contains invalid quoting")?
+            bail!("query input cannot be parsed because input is not configured");
         };
-        if tokens.len() > schema.input_order.len() {
-            bail!(
-                "query input expected at most {} values, received {}",
-                schema.input_order.len(),
-                tokens.len()
-            );
-        }
+        let field = schema.fields.get(input_field).expect("query field disappeared");
+        let value = Value::String(source.to_string());
+        field.validate(&value)?;
         let mut values = state.values.clone();
-        for (index, name) in schema.input_order.iter().enumerate() {
-            let field = schema.fields.get(name).expect("query field disappeared");
-            let value = match tokens.get(index) {
-                Some(token) => field
-                    .value_type
-                    .parse_text(token)
-                    .with_context(|| format!("query input field {:?} is invalid", name))?,
-                None if field.required && validate_required_fields => {
-                    bail!("query input is missing required field {:?}", name)
-                }
-                None if field.required && source.is_empty() => {
-                    values.remove(name);
-                    continue;
-                }
-                None => field.default.clone(),
-            };
-            field.validate(&value)?;
-            values.insert(name.clone(), value);
-        }
+        values.insert(input_field.clone(), value);
         if validate_required_fields {
             validate_required(schema, &values)?;
         }
@@ -581,31 +582,34 @@ impl ParameterBinding {
                 .values
                 .insert("query".to_string(), Value::String(query.to_string()));
         } else {
-            let object = snapshot
-                .values
-                .as_object()
-                .context("object query snapshot must be a JSON object")?;
-            for name in object.keys() {
-                if !self.schema.fields.contains_key(name) && !name.starts_with("__") {
-                    bail!("query contains unknown parameter {:?}", name);
-                }
-            }
-            for (name, field) in &self.schema.fields {
-                let Some(value) = object.get(name) else {
-                    if field.required {
-                        continue;
+            let empty_or_null = snapshot.values.as_str().is_some_and(|s| s.is_empty()) || snapshot.values.is_null();
+            if !empty_or_null {
+                let object = snapshot
+                    .values
+                    .as_object()
+                    .context("object query snapshot must be a JSON object")?;
+                for name in object.keys() {
+                    if !self.schema.fields.contains_key(name) && !name.starts_with("__") {
+                        bail!("query contains unknown parameter {:?}", name);
                     }
-                    let value = &field.default;
+                }
+                for (name, field) in &self.schema.fields {
+                    let Some(value) = object.get(name) else {
+                        if field.required {
+                            continue;
+                        }
+                        let value = &field.default;
+                        field
+                            .validate(value)
+                            .with_context(|| format!("invalid query parameter {:?}", name))?;
+                        state.values.insert(name.clone(), value.clone());
+                        continue;
+                    };
                     field
                         .validate(value)
                         .with_context(|| format!("invalid query parameter {:?}", name))?;
                     state.values.insert(name.clone(), value.clone());
-                    continue;
-                };
-                field
-                    .validate(value)
-                    .with_context(|| format!("invalid query parameter {:?}", name))?;
-                state.values.insert(name.clone(), value.clone());
+                }
             }
         }
         // Initialization snapshots may intentionally omit required fields;
@@ -616,8 +620,19 @@ impl ParameterBinding {
         Ok(state)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn bind_cli(&self, arguments: &[String]) -> Result<ParameterState> {
         self.registry.bind_cli(&self.view_ref, arguments)
+    }
+
+    pub(crate) fn apply_cli(&self, state: &mut ParameterState, arguments: &[String]) -> Result<()> {
+        anyhow::ensure!(
+            state.view_ref() == self.view_ref,
+            "parameter binding for {:?} cannot update {:?}",
+            self.view_ref,
+            state.view_ref()
+        );
+        self.registry.apply_cli(state, arguments)
     }
 
     pub(crate) fn parse_input(&self, state: &mut ParameterState, source: &str) -> Result<bool> {
@@ -694,7 +709,7 @@ mod tests {
             "workflows": { "trans": { "views": { "default": {
                 "query": {
                     "type": "object",
-                    "input_order": ["source", "target", "text"],
+                    "input": "text",
                     "source": {"type": "string", "nullable": true},
                     "target": {"type": "string", "nullable": true},
                     "text": {"type": "string", "default": ""}
@@ -718,11 +733,11 @@ mod tests {
         let registry = ParameterRegistry::compile(&config()).unwrap();
         let mut state = registry.instantiate("trans:default").unwrap();
         registry
-            .update_input(&mut state, "ja en 'good morning'")
+            .update_input(&mut state, "good morning")
             .unwrap();
         assert_eq!(
             registry.parameter_values(&state).unwrap(),
-            serde_json::json!({"source":"ja", "target":"en", "text":"good morning"})
+            serde_json::json!({"source": null, "target": null, "text": "good morning"})
         );
     }
 
@@ -733,11 +748,12 @@ mod tests {
         registry
             .update_value(
                 &mut state,
-                &serde_json::json!({"source":"en", "target":"zh"}),
+                &serde_json::json!({"source":"en", "target":"zh", "text":"hello"}),
             )
             .unwrap();
-        assert_eq!(registry.render_input(&state).unwrap(), "en zh ''");
-        assert_eq!(registry.parameter_values(&state).unwrap()["text"], "");
+        assert_eq!(registry.render_input(&state).unwrap(), "hello");
+        assert_eq!(registry.parameter_values(&state).unwrap()["text"], "hello");
+        assert_eq!(registry.parameter_values(&state).unwrap()["source"], "en");
     }
 
     #[test]
@@ -874,11 +890,10 @@ mod tests {
     }
 
     #[test]
-    fn instance_validation_checks_required_fields_outside_input_order() {
+    fn instance_validation_checks_required_fields_outside_input() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
             "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
-                "input_order": [],
                 "token": {"type": "string"}
             }}}}}
         }))
@@ -895,7 +910,7 @@ mod tests {
         let registry = ParameterRegistry::compile(&serde_json::json!({
             "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
-                "input_order": ["visible"],
+                "input": "visible",
                 "visible": {"type": "string", "default": ""},
                 "token": {"type": "string"}
             }}}}}
@@ -913,11 +928,10 @@ mod tests {
     }
 
     #[test]
-    fn feed_binding_rejects_nonempty_input_without_ordered_fields() {
+    fn query_input_rejects_nonempty_input_when_input_field_not_configured() {
         let registry = ParameterRegistry::compile(&serde_json::json!({
             "workflows": {"apps": {"views": {"default": {"query": {
                 "type": "object",
-                "input_order": [],
                 "token": {"type": "string", "default": "fixed"}
             }}}}}
         }))
@@ -926,81 +940,35 @@ mod tests {
 
         let error = registry
             .update_input(&mut state, "needle")
-            .expect_err("normal user input needs an ordered query field");
-        assert!(error.to_string().contains("input_order is empty"));
+            .expect_err("user input requires configured input field");
+        assert!(error.to_string().contains("input is not configured"));
         assert_eq!(registry.parameter_values(&state).unwrap()["token"], "fixed");
     }
 
     #[test]
-    fn nullable_and_json_fields_keep_the_canonical_input_projection() {
-        let registry = ParameterRegistry::compile(&serde_json::json!({
+    fn query_schema_rejects_non_string_input_field() {
+        let error = ParameterRegistry::compile(&serde_json::json!({
             "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
-                "input_order": ["maybe", "items", "object"],
-                "maybe": {"type": "string", "nullable": true},
-                "items": {"type": "array<string>", "default": ["one", "two"]},
-                "object": {"type": "object", "default": {}}
-            }}}}}
-        }))
-        .unwrap();
-        let state = registry.instantiate("data:default").unwrap();
-        assert_eq!(registry.render_input(&state).unwrap(), "'' one,two {}");
-
-        let state = registry
-            .bind_cli("data:default", &["--items=one,two".into()])
-            .unwrap();
-        assert_eq!(
-            registry.parameter_values(&state).unwrap()["items"],
-            serde_json::json!(["one", "two"])
-        );
-        assert_eq!(registry.render_input(&state).unwrap(), "'' one,two {}");
-    }
-
-    #[test]
-    fn interactive_input_rejects_array_and_object_fields_with_json_error() {
-        let registry = ParameterRegistry::compile(&serde_json::json!({
-            "workflows": {"data": {"views": {"default": {"query": {
-                "type": "object",
-                "input_order": ["items"],
+                "input": "items",
                 "items": {"type": "array<string>", "default": []}
             }}}}}
         }))
-        .unwrap();
-        let mut state = registry.instantiate("data:default").unwrap();
-        let error = registry
-            .update_input(&mut state, "one,two")
-            .expect_err("interactive array input must remain JSON-only");
-        assert!(format!("{error:#}").contains("array<string> input requires JSON"));
-
-        let registry = ParameterRegistry::compile(&serde_json::json!({
-            "workflows": {"data": {"views": {"default": {"query": {
-                "type": "object",
-                "input_order": ["object"],
-                "object": {"type": "object", "default": {}}
-            }}}}}
-        }))
-        .unwrap();
-        let mut state = registry.instantiate("data:default").unwrap();
-        let error = registry
-            .update_input(&mut state, "{}")
-            .expect_err("interactive object input must remain JSON-only");
-        assert!(format!("{error:#}").contains("object input requires JSON"));
+        .expect_err("non-string input field must be rejected");
+        assert!(error.to_string().contains("must be of type string"));
     }
 
     #[test]
-    fn nullable_empty_input_token_remains_an_empty_string() {
-        let registry = ParameterRegistry::compile(&serde_json::json!({
+    fn query_schema_rejects_legacy_input_order() {
+        let error = ParameterRegistry::compile(&serde_json::json!({
             "workflows": {"data": {"views": {"default": {"query": {
                 "type": "object",
-                "input_order": ["maybe", "other"],
-                "maybe": {"type": "string", "nullable": true},
-                "other": {"type": "string", "default": ""}
+                "input_order": ["maybe"],
+                "maybe": {"type": "string", "nullable": true}
             }}}}}
         }))
-        .unwrap();
-        let mut state = registry.instantiate("data:default").unwrap();
-        registry.update_input(&mut state, "'' other").unwrap();
-        assert_eq!(registry.parameter_values(&state).unwrap()["maybe"], "");
+        .expect_err("legacy input_order must be rejected");
+        assert!(error.to_string().contains("input_order has been replaced by input"));
     }
 
     #[test]
@@ -1106,7 +1074,7 @@ mod tests {
             ParameterRegistry::compile(&serde_json::json!({
                 "workflows": {"apps": {"views": {"default": {"query": {
                     "type": "object",
-                    "input_order": ["visible"],
+                    "input": "visible",
                     "visible": {"type": "string", "default": ""},
                     "token": {"type": "string"}
                 }}}}}
@@ -1150,5 +1118,72 @@ mod tests {
         assert_eq!(snapshot.source(), source);
         assert_eq!(snapshot.raw_input(), "");
         assert_eq!(snapshot.revision(), 0);
+    }
+
+    #[test]
+    fn cli_accepts_single_positional_query_for_plain_view() {
+        let registry = ParameterRegistry::compile(&serde_json::json!({
+            "workflows": {"calc": {"views": {"main": {}}}}
+        }))
+        .unwrap();
+        let state = registry
+            .bind_cli("calc:main", &["2+2".to_string()])
+            .unwrap();
+        assert_eq!(
+            registry.parameter_values(&state).unwrap(),
+            Value::String("2+2".to_string())
+        );
+        assert_eq!(state.raw_input(), "2+2");
+
+        let err = registry
+            .bind_cli("calc:main", &["2+2".to_string(), "extra".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("accepts at most one positional query argument"));
+    }
+
+    #[test]
+    fn cli_accepts_positional_query_mapped_to_input_field() {
+        let registry = ParameterRegistry::compile(&serde_json::json!({
+            "workflows": {"apps": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "input": "search",
+                    "search": {"type": "string", "default": ""},
+                    "limit": {"type": "integer", "default": 10}
+                }
+            }}}}
+        }))
+        .unwrap();
+        let state = registry
+            .bind_cli("apps:main", &["firefox".to_string(), "--limit=20".to_string()])
+            .unwrap();
+        assert_eq!(
+            registry.parameter_values(&state).unwrap(),
+            serde_json::json!({"search": "firefox", "limit": 20})
+        );
+        assert_eq!(state.raw_input(), "firefox");
+
+        // Reject duplicate assignment via positional and explicit flag
+        let err = registry
+            .bind_cli("apps:main", &["firefox".to_string(), "--search=chrome".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("may be specified only once"));
+    }
+
+    #[test]
+    fn cli_rejects_positional_query_when_input_field_not_declared() {
+        let registry = ParameterRegistry::compile(&serde_json::json!({
+            "workflows": {"form": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "name": {"type": "string", "default": ""}
+                }
+            }}}}
+        }))
+        .unwrap();
+        let err = registry
+            .bind_cli("form:main", &["positional".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("does not declare an interactive input field"));
     }
 }

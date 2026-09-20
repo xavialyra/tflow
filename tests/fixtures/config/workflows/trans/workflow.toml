@@ -16,7 +16,7 @@ file = "scripts/items.sh"
 
 [views.main.query]
 type = "object"
-input_order = ["source", "target", "text"]
+input = "text"
 source = { type = "string", nullable = true }
 target = { type = "string", nullable = true }
 text = { type = "string", default = "" }

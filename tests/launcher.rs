@@ -970,7 +970,7 @@ fn explicit_embedded_view_receives_typed_query_input() {
         command = ["sh", "-lc", "printf 'input=%s\\n' \"$LAUNCHER_INPUT\""]
         [workflows.core.views.direct.query]
         type = "object"
-        input_order = ["text"]
+        input = "text"
         text = { type = "string", default = "" }
         "#,
     )
@@ -1776,7 +1776,7 @@ fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
 
         [workflows.example.views.main.query]
         type = "object"
-        input_order = ["name"]
+        input = "name"
         name = { type = "string", default = "" }
     "#,
     )
@@ -1807,7 +1807,7 @@ fn ctrl_g_builds_a_form_from_the_target_query_and_replaces_typed_parameters() {
         [workflows.dynamic.views.main]
         [workflows.dynamic.views.main.query]
         type = "object"
-        input_order = ["title", "count", "enabled", "tags", "metadata"]
+        input = "title"
         title = { type = "string", default = "initial title" }
         count = { type = "integer", default = 2 }
         enabled = { type = "boolean", default = false }
@@ -1872,7 +1872,7 @@ sys.stdout.write("\n")
 
     send_bytes(
         &mut process,
-        b"\x15changed\t\x157\t \t\x15[\"x\",\"y\"]\t\x15{\"mode\":\"fast\"}\r",
+        b"\x15changed\t\x157\t \t\x15{\"mode\":\"fast\"}\t\x15[\"x\",\"y\"]\r",
     );
     wait_for_fresh_text(
         &process.master,
@@ -2004,7 +2004,7 @@ fn command_palette_opens_for_an_empty_aggregate_view() {
         file = "scripts/items.sh"
         [workflows.selectors.views.commands.query]
         type = "object"
-        input_order = ["search", "commands"]
+        input = "search"
         search = { type = "string", default = "" }
         commands = { type = "array<object>", default = [] }
         "#,
@@ -2547,7 +2547,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         output = "target-default"
         [workflows.core.views.capture.query]
         type = "object"
-        input_order = ["text"]
+        input = "text"
         text = { type = "string", default = "target-default" }
         "#,
     )

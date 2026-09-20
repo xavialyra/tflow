@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParameterType {
@@ -124,7 +124,7 @@ impl ParameterField {
 pub(crate) struct ParameterSchema {
     pub(crate) plain: bool,
     pub(crate) fields: BTreeMap<String, ParameterField>,
-    pub(crate) input_order: Vec<String>,
+    pub(crate) input: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,7 +137,7 @@ pub(super) fn compile_parameter_schema(view: &Value) -> Result<ParameterSchema> 
         return Ok(ParameterSchema {
             plain: true,
             fields: BTreeMap::new(),
-            input_order: Vec::new(),
+            input: None,
         });
     };
     let query = query.as_object().context("view query must be an object")?;
@@ -152,33 +152,47 @@ pub(super) fn compile_parameter_schema(view: &Value) -> Result<ParameterSchema> 
         return Ok(ParameterSchema {
             plain: true,
             fields: BTreeMap::new(),
-            input_order: Vec::new(),
+            input: None,
         });
     }
     if query_type != "object" {
         bail!("view query type must be \"object\" or \"string\"");
     }
-    let input_order = parse_input_order(query.get("input_order"))?;
+    if query.contains_key("input_order") {
+        bail!("query input_order has been replaced by input = \"<field>\"");
+    }
+    let input = match query.get("input") {
+        Some(val) => {
+            let field_name = val
+                .as_str()
+                .context("query input must be a string field name")?;
+            Some(field_name.to_string())
+        }
+        None => None,
+    };
     let mut fields = BTreeMap::new();
     for (name, value) in query {
-        if matches!(name.as_str(), "type" | "input_order") {
+        if matches!(name.as_str(), "type" | "input") {
             continue;
         }
         fields.insert(name.clone(), compile_field(name, value)?);
     }
-    let mut seen = BTreeSet::new();
-    for name in &input_order {
-        if !seen.insert(name.clone()) {
-            bail!("query input_order contains duplicate field {:?}", name);
-        }
-        if !fields.contains_key(name) {
-            bail!("query input_order references unknown field {:?}", name);
+    if let Some(input_field) = &input {
+        let field = fields.get(input_field).with_context(|| {
+            format!("query input references unknown field {:?}", input_field)
+        })?;
+        if field.value_type != ParameterType::String {
+            bail!(
+                "query input field {:?} must be of type string, found {}",
+                input_field,
+                field.value_type.description()
+            );
         }
     }
     Ok(ParameterSchema {
         plain: false,
         fields,
-        input_order,
+        input,
     })
 }
 
@@ -229,37 +243,4 @@ pub(super) fn validate_required(
         }
     }
     Ok(())
-}
-
-pub(super) fn render_input_value(value: &Value) -> String {
-    match value {
-        Value::Null => "''".to_string(),
-        Value::String(value) => shell_words::quote(value).into_owned(),
-        Value::Array(values) => values
-            .iter()
-            .map(|value| match value {
-                Value::String(value) => value.clone(),
-                value => value.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        value => value.to_string(),
-    }
-}
-
-fn parse_input_order(value: Option<&Value>) -> Result<Vec<String>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    value
-        .as_array()
-        .context("query input_order must be an array of field names")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .context("query input_order entries must be strings")
-        })
-        .collect()
 }

@@ -35,16 +35,13 @@ if query_type == "string":
         raise SystemExit("string query values are invalid")
     fields.append({"name": "query", "label": "Query", "type": "string", "value": values})
 elif query_type == "object":
-    order = query.get("input_order", [])
-    if not isinstance(order, list) or not all(isinstance(name, str) for name in order):
-        raise SystemExit("query input_order is invalid")
     names = []
-    for name in order:
-        if name not in names:
-            names.append(name)
+    input_field = query.get("input")
+    if isinstance(input_field, str) and input_field in query:
+        names.append(input_field)
     names.extend(sorted(
         name for name in query
-        if name not in ("type", "input_order") and name not in names
+        if name not in ("type", "input", "input_order") and name not in names
     ))
     if not isinstance(values, dict):
         raise SystemExit("object query values are invalid")
@@ -77,7 +74,7 @@ sys.stdout.write("\n")
 
 [views.main.query]
 type = "object"
-input_order = ["payload"]
+input = "payload"
 payload = { type = "string", default = "" }
 
 [views.main.keymap]

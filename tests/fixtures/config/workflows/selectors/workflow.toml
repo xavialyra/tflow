@@ -19,7 +19,7 @@ file = "scripts/commands.sh"
 
 [views.commands.query]
 type = "object"
-input_order = ["search"]
+input = "search"
 search = { type = "string", default = "" }
 commands = { type = "array<object>", default = [] }
 

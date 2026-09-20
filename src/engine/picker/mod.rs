@@ -544,7 +544,7 @@ entrypoint = "main"
 [views.main]
 [views.main.query]
 type = "object"
-input_order = ["search"]
+input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "browser" }
 [views.main.engine]
@@ -594,7 +594,7 @@ entrypoint = "main"
 [views.main]
 [views.main.query]
 type = "object"
-input_order = ["search"]
+input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "library" }
 [views.main.engine]

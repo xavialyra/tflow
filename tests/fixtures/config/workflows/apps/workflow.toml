@@ -31,7 +31,7 @@ enter = "open"
 [views.weight]
 [views.weight.query]
 type = "object"
-input_order = ["app"]
+input = "app"
 app = { type = "string", default = "" }
 
 [views.weight.engine]
