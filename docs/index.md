@@ -29,7 +29,7 @@ This documentation is organized into four core categories following the **Diáta
 *Task-oriented recipes for solving specific practical problems.*
 
 *Engine-specific View configuration:*
-- [Picker Views](how-to/picker-views.md) — Configure static items, dynamic feeds, aggregation, and previews.
+- [Picker Views](how-to/picker-views.md) — Configure static items, item producers, dynamic aggregation, and previews.
 - [Capture Views](how-to/capture-views.md) — Configure static or script-produced text output.
 - [Form Views](how-to/form-views.md) — Generate editable fields from query parameters and use commands to submit values.
 - [Embedded Views](how-to/embedded-views.md) — Host interactive terminal programs through a PTY.

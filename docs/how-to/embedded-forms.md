@@ -23,7 +23,6 @@ The complete example is in [the form workflow](../../tests/fixtures/config/workf
 ```toml
 [views.input.query]
 type = "object"
-input_order = ["name", "environment", "enabled"]
 name = { type = "string", default = "" }
 environment = { type = "string", default = "dev" }
 enabled = { type = "boolean", default = true }
@@ -42,7 +41,7 @@ producer = "script"
 handler = { file = "scripts/submit.py" }
 ```
 
-The query schema supplies typed defaults and `input_order` controls the positional order used by routes and CLI input. The form engine supplies the interactive fields. The submit command reads `context.engine.state.values`; those values are typed JSON, so a boolean field returns `true` or `false` rather than text. A failed validation keeps the form open and displays the field error.
+The query schema supplies typed defaults, and the form engine supplies the interactive fields. The submit command reads `context.engine.state.values`; those values are typed JSON, so a boolean field returns `true` or `false` rather than text. A failed validation keeps the form open and displays the field error.
 
 To invoke the example directly:
 

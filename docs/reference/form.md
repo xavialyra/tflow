@@ -14,7 +14,7 @@ The `form` Engine renders editable fields with Ratatui. View query parameters re
 
 ## Configuration
 
-`engine.config.content` is required and accepts a producer with exactly `producer` and `handler`. Form rejects Picker items/feeds, other Engine configuration fields, and a View `keymap`. View and session commands retain their normal binding precedence.
+`engine.config.content` is required and accepts a producer with exactly `producer` and `handler`. Form rejects Picker items, other Engine configuration fields, and a View `keymap`. View and session commands retain their normal binding precedence.
 
 ```toml
 [views.edit.engine]

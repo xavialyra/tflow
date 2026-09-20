@@ -185,6 +185,6 @@ tlaunch -w ~/.config/tlaunch/workflows/notes
 ## Next Steps
 
 - Read [workflow.toml Specification](../reference/workflow-toml.md) for all six operation types and strict protocol rules.
-- Follow [Picker Views](../how-to/picker-views.md) for request filtering, feeds, and previews.
+- Follow [Picker Views](../how-to/picker-views.md) for request filtering, item producers, and previews.
 - Read [Commands and Producer Scripts](../how-to/commands-and-producers.md) for script context and typed responses.
 - Read [Producer Protocol](../reference/producer-protocol.md) for the exact request and response contract.

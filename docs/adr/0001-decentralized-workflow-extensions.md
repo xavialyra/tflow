@@ -105,7 +105,7 @@ printf '%s\n' "checkout producer"
 ### 5. Multiplexed CLI Entry (`argv[0]`) & Schema Inspection
 
 - **Symlink Multiplexing via Existing CLI Pipeline**: If the launcher binary is executed under an `argv[0]` alias matching a configured view (e.g. via `ln -s tlaunch ~/.local/bin/dmenu`), it is syntactically equivalent to running `tlaunch <argv[0]> "$@"`. The host canonicalizes `argv[0]` to the target view identifier and delegates directly to the existing CLI argument and query parameter binding pipeline (`bind_invocation_parameters`), requiring no separate CLI engine or competing execution path.
-- **CLI Flag to Query Mapping**: Trailing CLI arguments are passed as explicit CLI flags matching fields in `[views.<name>.query]`. Undeclared flags are rejected with a validation error. Note that `input_order` is purely an internal picker UI query parsing contract and does not govern CLI flag mapping.
+- **CLI Flag to Query Mapping**: Trailing CLI arguments are passed as explicit CLI flags matching fields in `[views.<name>.query]`. Undeclared flags are rejected with a validation error. Interactive text input maps directly to the single field specified by `input = "<field>"`.
 - **Contract Inspection**: A dedicated CLI mode (`tlaunch inspect <view>`) outputs the view's query schema, command bindings, and return types, enabling automatic shell completion generation.
 
 ### 6. Alignment with M3 Theming (Historical Contract)

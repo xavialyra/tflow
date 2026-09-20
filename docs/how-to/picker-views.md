@@ -4,14 +4,15 @@ type: "guide"
 tags:
   - picker
   - views
-  - feeds
+  - aggregation
+  - item-bindings
   - preview
-description: "Configure Picker Views with static items, dynamic feeds, aggregate feeds, and script-produced preview documents."
+description: "Configure Picker Views with static items, script producers, multi-source aggregation, and script-produced preview documents."
 ---
 
 # How to Configure Picker Views
 
-Use the `picker` Engine for a selectable list with an editable query. A Picker can use literal items, a version-1 item producer, or several feed Views composed by the host.
+Use the `picker` Engine for a selectable list with an editable query. A Picker can use literal items, a version-1 item producer, or an aggregation script composing multiple member Views.
 
 ## Problem
 
@@ -83,25 +84,40 @@ The request uses `entrypoint = "picker-items"` and the shared `context` object. 
 
 The host owns feed composition, selection state, and provenance. Feed identity and scheduling data are not sent to the producer. An item producer cannot return navigation or other View configuration. See [Commands and Producer Scripts](commands-and-producers.md) for command context and response rules.
 
-### 3. Compose Multiple Feeds
+### 3. Compose Multiple Sources in an Aggregation View
 
-An aggregate Picker can combine configured feed Views:
+An aggregate Picker combines items from multiple member Views dynamically via a producer script and item-driven bindings:
 
 ```toml
+[views.default.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+sources = { type = "array<string>", default = [] }
+
 [views.default.engine]
 type = "picker"
 
-[views.default.engine.config]
-[[views.default.engine.config.feeds]]
-view = "apps:main"
+[views.default.engine.config.items]
+producer = "script"
+[views.default.engine.config.items.handler]
+file = "scripts/items.py"
 
-[[views.default.engine.config.feeds]]
-view = "sys:main"
+[views.default.keymap]
+mode = "item"
 ```
 
-Each feed keeps its own parameter binding and producer request. The host assigns item provenance internally and exposes only the normalized public item under `context.engine.state.item` to command producers. Aggregate pages automatically add the feed alias as a right-aligned `badge` on the first row of items from external feeds; when no alias is configured, the workflow ID is used. Set `source_badge = false` in the aggregate View's engine config to disable this behavior. Commands declared by a selected feed owner can be projected into the aggregate footer when they have a physical key; their parameter context remains the selected feed's independent snapshot.
+In the Suite manifest, inject the targets into the aggregate View:
 
-### 4. Use a Declared List for Small Fixed Feeds
+```toml
+[suite.entrypoint]
+target = "core:default"
+query = { sources = ["apps:main", "calculator:main", "sys:main"] }
+```
+
+The aggregator script fetches items headlessly from each source via `tlaunch -s $TLAUNCH_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings.
+
+### 4. Use a Declared List for Small Static Collections
 
 No script is needed when the list is static:
 

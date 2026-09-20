@@ -5,7 +5,7 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 ## Engine Guides
 
 - **[Picker Views](picker-views.md)**
-  Configure static items, dynamic feeds, aggregate feeds, and declared, script-produced, or inherited preview documents.
+  Configure static items, script item producers, dynamic aggregation, and declared, script-produced, or inherited preview documents.
 
 - **[Capture Views](capture-views.md)**
   Configure static or script-produced Capture output and lifecycle behavior.
