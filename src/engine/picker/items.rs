@@ -514,6 +514,7 @@ pub(crate) fn run_items_producer_raw(
     producer_value: &toml::Value,
     script_root: Option<&Path>,
     parameters: &Value,
+    raw_input: &str,
     cancellation: &CancellationToken,
 ) -> Result<Value> {
     let json_val = toml_to_json(producer_value)?;
@@ -533,11 +534,14 @@ pub(crate) fn run_items_producer_raw(
             let handler = toml::Value::try_from(provider.handler)
                 .context("items script handler could not be converted to TOML")?;
             let source = parse_producer_script_handler(&handler, script_root)?;
+            let engine_state = serde_json::json!({
+                "input": raw_input,
+            });
             let request = crate::protocol::items_request(
                 parameters,
                 &Value::Null,
                 "picker",
-                &Value::Null,
+                &engine_state,
             );
             let outcome = crate::protocol::run_script_items_response(
                 view_ref,

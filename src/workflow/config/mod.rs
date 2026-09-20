@@ -108,12 +108,28 @@ impl CompiledConfig {
         &self.workflows
     }
 
+    #[allow(dead_code)]
     pub(crate) fn bind_invocation_parameters(
         &self,
         view_ref: &str,
         arguments: &[String],
     ) -> Result<ParameterState> {
-        self.parameter_binding(view_ref)?.bind_cli(arguments)
+        self.bind_invocation_parameters_with_seed(view_ref, None, arguments)
+    }
+
+    pub(crate) fn bind_invocation_parameters_with_seed(
+        &self,
+        view_ref: &str,
+        seed: Option<&Value>,
+        arguments: &[String],
+    ) -> Result<ParameterState> {
+        let binding = self.parameter_binding(view_ref)?;
+        let mut state = binding.instantiate()?;
+        if let Some(seed_value) = seed {
+            binding.update_sanitized_initial_value(&mut state, seed_value)?;
+        }
+        binding.apply_cli(&mut state, arguments)?;
+        Ok(state)
     }
 
     pub(crate) fn instantiate_parameters(&self, view_ref: &str) -> Result<ParameterState> {

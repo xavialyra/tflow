@@ -2149,7 +2149,7 @@ fn tab_opens_builtin_route_completion_and_escape_cancels_it() {
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
-    wait_for_fresh_text(&process.master, "Termius");
+    wait_for_fresh_text(&process.master, "Advanced");
 
     process.master.write_all(b"sys\t").unwrap();
     process.master.flush().unwrap();

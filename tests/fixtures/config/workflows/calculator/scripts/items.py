@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import ast, json, operator, sys
 request = json.load(sys.stdin)
-state = request.get('context', {}).get('engine', {}).get('state', {})
+state = request.get('context', {}).get('engine', {}).get('state') or {}
 expression = state.get('input', '').strip()
 if not expression:
     json.dump({'version': 1, 'items': []}, sys.stdout); sys.stdout.write('\n'); raise SystemExit

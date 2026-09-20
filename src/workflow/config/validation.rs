@@ -179,6 +179,10 @@ impl CompiledConfig {
     {
         if !self.entrypoint.is_empty() {
             self.engine(&self.entrypoint)?;
+            if let Some(query) = &self.entrypoint_query {
+                self.validate_parameter_values(&self.entrypoint, query)
+                    .with_context(|| format!("invalid suite entrypoint query for {:?}", self.entrypoint))?;
+            }
         }
         engines.validate_defaults(&self.defaults)?;
         for (package_id, workflow) in &self.workflows {

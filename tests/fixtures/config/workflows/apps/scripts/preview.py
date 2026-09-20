@@ -61,10 +61,54 @@ def icon_names(icon):
     return names
 
 
-def find_icon(icon, desktop_file):
+def get_cache_dir():
+    cache_dir = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache_dir, "tlaunch")
+
+
+def load_icon_cache():
+    cache_file = os.path.join(get_cache_dir(), "icon-cache.json")
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def save_icon_cache(cache):
+    if not cache:
+        return
+    cache_dir = get_cache_dir()
+    cache_file = os.path.join(cache_dir, "icon-cache.json")
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        tmp = f"{cache_file}.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        os.replace(tmp, cache_file)
+    except OSError:
+        pass
+
+
+def find_icon(icon, desktop_file, cache=None):
     if not isinstance(icon, str) or not icon.strip():
         return None
     icon = os.path.expanduser(icon.strip())
+    if cache is not None and icon in cache:
+        cached_path = cache[icon]
+        if cached_path is None or os.path.isfile(cached_path):
+            return cached_path
+    result = _find_icon_uncached(icon, desktop_file)
+    if cache is not None:
+        cache[icon] = result
+    return result
+
+
+def _find_icon_uncached(icon, desktop_file):
     names = icon_names(icon)
 
     direct_paths = []
@@ -129,7 +173,9 @@ def main():
     entry = desktop_entry(desktop_file)
     name = text_value(item.get("text")) or text_value(entry.get("Name")) or "Application"
     icon_name = text_value(entry.get("Icon"))
-    icon_path = find_icon(icon_name, desktop_file)
+    icon_cache = load_icon_cache()
+    icon_path = find_icon(icon_name, desktop_file, icon_cache)
+    save_icon_cache(icon_cache)
 
     details = []
     generic_name = text_value(entry.get("GenericName"))

@@ -316,11 +316,18 @@ pub(crate) fn run() -> Result<i32> {
 
     if let Some(target) = items_target {
         let view_options = if args.view.as_deref() == Some("items") {
-            &args.view_options[1..]
+            args.view_options[1..].to_vec()
         } else {
-            &args.view_options[..]
+            let mut opts = Vec::new();
+            if args.items.is_some()
+                && let Some(v) = &args.view
+            {
+                opts.push(v.clone());
+            }
+            opts.extend(args.view_options.iter().cloned());
+            opts
         };
-        return run_items_query(&config, target, view_options);
+        return run_items_query(&config, target, &view_options);
     }
 
     let explicit_view = args.view.is_some();
@@ -329,18 +336,13 @@ pub(crate) fn run() -> Result<i32> {
     } else {
         config.entrypoint.clone()
     };
-    let parameters = if !explicit_view && args.view_options.is_empty() && config.entrypoint_query.is_some() {
-        let mut state = config.instantiate_parameters(&root_view)?;
-        if let Some(query_val) = &config.entrypoint_query {
-            let binding = config.parameter_binding(&root_view)?;
-            binding.update_sanitized_initial_value(&mut state, query_val)?;
-        }
-        state
+    let seed = if !explicit_view || root_view == config.entrypoint {
+        config.entrypoint_query.as_ref()
     } else {
-        let mut p = config.bind_invocation_parameters(&root_view, &args.view_options)?;
-        config.sanitize_initial_parameter_values(&mut p)?;
-        p
+        None
     };
+    let mut parameters = config.bind_invocation_parameters_with_seed(&root_view, seed, &args.view_options)?;
+    config.sanitize_initial_parameter_values(&mut parameters)?;
     let input = if is_stdin_workflow {
         InputArtifact::empty()
     } else {
@@ -474,12 +476,12 @@ fn run_items_query(
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: view {:?} not found: {e}", target);
-            return Ok(1);
+            return Ok(2);
         }
     };
     let Some(view) = config.view(&view_ref) else {
         eprintln!("error: view {:?} not found", view_ref);
-        return Ok(1);
+        return Ok(2);
     };
     if view.selected_engine_type() != crate::workflow::config::ENGINE_PICKER {
         eprintln!("error: view {:?} does not use picker engine", view_ref);
@@ -489,7 +491,12 @@ fn run_items_query(
         println!("[]");
         return Ok(0);
     };
-    let mut parameters = match config.bind_invocation_parameters(&view_ref, view_options) {
+    let seed = if view_ref == config.entrypoint {
+        config.entrypoint_query.as_ref()
+    } else {
+        None
+    };
+    let mut parameters = match config.bind_invocation_parameters_with_seed(&view_ref, seed, view_options) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -500,6 +507,7 @@ fn run_items_query(
         eprintln!("error: {e}");
         return Ok(1);
     }
+    let raw_input = parameters.raw_input().to_string();
     let param_values = match config.parameter_values(&parameters) {
         Ok(v) => v,
         Err(e) => {
@@ -514,17 +522,18 @@ fn run_items_query(
         items_producer,
         root,
         &param_values,
+        &raw_input,
         &cancellation,
     ) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("{e}");
-            return Ok(2);
+            eprintln!("{e:#}");
+            return Ok(1);
         }
     };
     if !output.is_array() {
         eprintln!("error: items producer output must be a JSON array");
-        return Ok(2);
+        return Ok(1);
     }
     println!("{}", serde_json::to_string(&output)?);
     Ok(0)

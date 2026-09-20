@@ -1,7 +1,10 @@
 [suite]
 api = 1
 name = "Development Fixtures"
-entrypoint = "core:default"
+
+[suite.entrypoint]
+target = "core:default"
+query = { sources = ["apps:main", "calculator:main", "sys:main"] }
 
 [workflows]
 apps = { dir = "./workflows/apps" }

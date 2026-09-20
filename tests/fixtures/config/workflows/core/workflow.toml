@@ -3,12 +3,19 @@ api = 1
 name = "core"
 entrypoint = "default"
 
+[views.default.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+sources = { type = "array<string>", default = [] }
+
 [views.default.engine]
 type = "picker"
 
-[views.default.engine.config]
-items = [
-  { display = "Termius", value = "termius", bindings = { enter = "apps:open" } },
-  { display = "Calculator", value = "calculator", bindings = { enter = "calculator:copy" } },
-  { display = "Lock Screen", value = "lock", bindings = { enter = "sys:run" } },
-]
+[views.default.engine.config.items]
+producer = "script"
+[views.default.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.default.keymap]
+mode = "item"

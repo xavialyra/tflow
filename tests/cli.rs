@@ -1562,6 +1562,32 @@ fn items_query_mode_outputs_valid_json_array_exit_0() {
 }
 
 #[test]
+fn items_query_mode_missing_view_exit_2() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = []
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&config)
+        .args(["--items", "core:missing"])
+        .output()
+        .expect("could not run items query");
+    assert_eq!(output.status.code(), Some(2));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn items_query_mode_validation_failure_exit_1() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1582,16 +1608,7 @@ fn items_query_mode_validation_failure_exit_1() {
     )
     .unwrap();
 
-    // 1. Missing view -> exit code 1
-    let output = launcher_command()
-        .args(["--suite"])
-        .arg(&config)
-        .args(["--items", "core:missing"])
-        .output()
-        .expect("could not run items query");
-    assert_eq!(output.status.code(), Some(1));
-
-    // 2. Non-picker view -> exit code 1
+    // Non-picker view -> exit code 1
     let output = launcher_command()
         .args(["--suite"])
         .arg(&config)
@@ -1603,7 +1620,7 @@ fn items_query_mode_validation_failure_exit_1() {
 }
 
 #[test]
-fn items_query_mode_producer_script_failure_exit_2() {
+fn items_query_mode_producer_script_failure_exit_1() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1626,7 +1643,52 @@ fn items_query_mode_producer_script_failure_exit_2() {
         .args(["--items", "core:default"])
         .output()
         .expect("could not run items query");
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn items_query_mode_accepts_plain_and_object_positional_queries() {
+    let suite = std::path::PathBuf::from("tests/fixtures/config/default.toml");
+
+    // 1. Plain string query (calculator:main "2+2")
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&suite)
+        .args(["--items", "calculator:main", "2+2"])
+        .output()
+        .expect("could not run calculator items query");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let items: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(items.is_array());
+    assert_eq!(items[0]["value"], "4");
+
+    // 2. Object query (apps:main "network")
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&suite)
+        .args(["--items", "apps:main", "network"])
+        .output()
+        .expect("could not run apps items query");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let items: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(items.is_array());
+    assert!(stdout.contains("Advanced Network Configuration"));
+
+    // 3. Aggregation query (core:default "2+2")
+    let output = launcher_command()
+        .args(["--suite"])
+        .arg(&suite)
+        .args(["--items", "core:default", "2+2"])
+        .output()
+        .expect("could not run core items query with calculation");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let items: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
+    assert!(items.is_array());
+    assert_eq!(items[0]["value"], "4");
+    assert_eq!(items[0]["bindings"]["enter"], "calculator:copy");
 }
 
