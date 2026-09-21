@@ -2,7 +2,8 @@ use super::FormView;
 use crate::view::{RelativeCursor, RenderResult};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -34,7 +35,6 @@ fn display_width(grapheme: &str) -> usize {
 
 const MAX_FORM_WIDTH: u16 = 48;
 const BOXED_FIELD_HEIGHT: u16 = 3;
-const FIELD_ERROR_HEIGHT: u16 = 4;
 
 fn field_error(draft: &super::content::Draft) -> Option<String> {
     match draft.value() {
@@ -128,22 +128,14 @@ impl FormView {
             return result;
         }
 
-        // Keep the editor column readable on wide terminals and use the spare
-        // height for validation feedback.
+        // Keep the editor column readable on wide terminals; validation
+        // feedback is drawn on each field's own border.
         let boxed = area.width >= 3 && area.height >= 3;
         let errors = self.fields.iter().map(field_error).collect::<Vec<_>>();
+        // Validation feedback rides on the field border, so every boxed field
+        // keeps the same compact height regardless of its error state.
         let field_heights = if boxed {
-            errors
-                .iter()
-                .map(|error| {
-                    if error.is_some() {
-                        FIELD_ERROR_HEIGHT
-                    } else {
-                        BOXED_FIELD_HEIGHT
-                    }
-                    .min(area.height)
-                })
-                .collect::<Vec<_>>()
+            vec![BOXED_FIELD_HEIGHT.min(area.height); self.fields.len()]
         } else {
             vec![1; self.fields.len()]
         };
@@ -182,7 +174,7 @@ impl FormView {
                     draft.field.label.as_deref().unwrap_or(&draft.field.name),
                     if draft.field.required { " *" } else { "" }
                 );
-                let block = Block::default()
+                let mut block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(if focused {
@@ -190,7 +182,18 @@ impl FormView {
                     } else {
                         theme.border
                     })
-                    .title(ratatui::text::Line::from(visible(&label)).style(theme.label));
+                    .title(Line::from(visible(&label)).style(theme.label));
+                if let Some(error) = &errors[index] {
+                    let budget = usize::from(bounds.width).saturating_sub(4);
+                    let clipped =
+                        (budget > 0).then(|| crate::ui::chrome::clip(&visible(error), budget));
+                    if let Some(clipped) = clipped.filter(|clipped| !clipped.is_empty()) {
+                        block = block.title_bottom(
+                            Line::from(Span::styled(format!(" {clipped} "), theme.error))
+                                .alignment(Alignment::Right),
+                        );
+                    }
+                }
                 let inner = block.inner(bounds);
                 frame.render_widget(block, bounds);
                 inner
@@ -211,20 +214,6 @@ impl FormView {
                     y: editor.y - area.y,
                     visible: self.active,
                 });
-            }
-            if boxed
-                && field_height > BOXED_FIELD_HEIGHT
-                && let Some(error) = &errors[index]
-            {
-                frame.render_widget(
-                    Paragraph::new(visible(error)).style(theme.error),
-                    Rect::new(
-                        column.x + 1,
-                        column.y + y + BOXED_FIELD_HEIGHT,
-                        column.width.saturating_sub(2),
-                        1,
-                    ),
-                );
             }
         }
         result

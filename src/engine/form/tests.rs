@@ -220,6 +220,61 @@ fn required_fields_use_the_inline_marker_without_an_additional_row() {
 }
 
 #[test]
+fn field_errors_render_on_the_bottom_border_without_an_extra_row() {
+    let mut form = declared(json!([
+        {"name":"age", "label":"Age", "type":"integer", "value":3}
+    ]));
+    paste(&mut form, "x");
+    let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+    terminal
+        .draw(|frame| {
+            form.render_form(frame, frame.area());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows = (0..5)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    let matches = rows
+        .iter()
+        .filter(|row| row.contains("Enter an integer"))
+        .count();
+    assert_eq!(matches, 1, "the error must occupy a single row: {rows:?}");
+    let error_row = rows
+        .iter()
+        .position(|row| row.contains("Enter an integer"))
+        .unwrap();
+    assert!(
+        rows[error_row].contains('╰'),
+        "the error must share the bottom border: {rows:?}"
+    );
+}
+
+#[test]
+fn errors_are_omitted_when_the_border_cannot_fit_them() {
+    let mut form = declared(json!([
+        {"name":"age", "label":"Age", "type":"integer", "value":3}
+    ]));
+    paste(&mut form, "x");
+    for (width, height) in [(3u16, 3u16), (1, 1)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                form.render_form(frame, frame.area());
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!text.contains("Enter"), "{width}x{height}: {text:?}");
+    }
+}
+
+#[test]
 fn form_column_uses_the_compact_default_maximum_width() {
     let form = declared(json!([{"name":"name", "value":"value"}]));
     let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
@@ -456,10 +511,26 @@ fn closing_rollback_restarts_incomplete_content_with_new_task_generation() {
 }
 
 #[test]
-fn form_chrome_has_no_footer_bindings() {
-    let form = declared(json!([{"name": "field", "value": "test"}]));
+fn form_chrome_status_reports_the_focused_field_position() {
+    let mut form = declared(json!([
+        {"name": "first", "value": "1"},
+        {"name": "second", "value": "2"},
+        {"name": "third", "value": "3"}
+    ]));
     let chrome = form.chrome(&context()).unwrap();
     assert!(chrome.bindings.is_none());
+    assert_eq!(chrome.status.as_deref(), Some("Ready \u{b7} 1 of 3"));
+    key(&mut form, Key::Tab);
+    assert_eq!(
+        form.chrome(&context()).unwrap().status.as_deref(),
+        Some("Ready \u{b7} 2 of 3")
+    );
+    key(&mut form, Key::Tab);
+    key(&mut form, Key::Tab);
+    assert_eq!(
+        form.chrome(&context()).unwrap().status.as_deref(),
+        Some("Ready \u{b7} 1 of 3")
+    );
 }
 
 #[test]

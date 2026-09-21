@@ -72,6 +72,8 @@ Content has exactly one required property, `fields`, an ordered array. Empty arr
 
 Fields use single-line editors in a vertical layout. The focused field remains visible as focus changes. Pasted content is retained verbatim, including newlines; control characters are displayed as spaces. JSON can therefore be pasted with formatting, although the editor displays it on one line.
 
+Each boxed field draws its validation message on the right of its own bottom border, so invalid and valid fields keep the same height. The footer status additionally reports the focused field as `n of total`.
+
 ## Public State and Commands
 
 A command receives the original query in `context.parameters` and the following current state in `context.engine.state`:

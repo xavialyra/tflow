@@ -163,8 +163,8 @@ impl FormView {
         })
     }
 
-    fn status(&self) -> &'static str {
-        if self.error.is_some() {
+    fn status(&self) -> String {
+        let base = if self.error.is_some() {
             "Form unavailable"
         } else if !self.publication.ready {
             "Loading form…"
@@ -174,6 +174,11 @@ impl FormView {
             "Modified"
         } else {
             "Ready"
+        };
+        if self.fields.is_empty() {
+            base.to_string()
+        } else {
+            format!("{base} · {} of {}", self.focus + 1, self.fields.len())
         }
     }
 
@@ -406,7 +411,7 @@ impl View for FormView {
 
     fn chrome(&self, _context: &ViewContext) -> Result<ViewChrome> {
         Ok(ViewChrome {
-            status: Some(self.status().into()),
+            status: Some(self.status()),
             error: self.error.clone(),
             bindings: None,
             overflow_command: None,
