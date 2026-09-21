@@ -162,6 +162,75 @@ fn grace_period_retains_item_bindings_during_loading_to_prevent_flicker() {
 }
 
 #[test]
+fn input_refresh_keeps_the_current_preview_until_new_items_are_ready() {
+    let (_config, mut picker) = test_picker(111);
+    let source = crate::input::InputSourceIdentity {
+        frame: crate::input::ViewMountId(111),
+        generation: 0,
+    };
+    let parameters = test_parameters("", source, 1);
+    picker.parameter_snapshot = Some(parameters.clone());
+    picker
+        .request_items("core:default", "", "", parameters.clone())
+        .unwrap();
+    picker.frame.query.clear();
+    picker.frame.results = ResultsState::Ready(String::new());
+    picker.items_task_state = ItemsTaskState::Idle;
+    picker.frame.selection.replace(vec![test_item("old")]);
+    picker.set_preview_visible(true);
+    picker.sync_preview();
+
+    let tasks = TaskRuntime::new();
+    let starter =
+        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(crate::input::ViewMountId(111)));
+    std::thread::sleep(std::time::Duration::from_millis(90));
+    picker.start_prepared_auxiliary_work(&starter);
+    assert!(picker.preview.document_scroll_state().0);
+
+    picker.invalidate_items_for_committed_input();
+    picker.sync_preview();
+    assert!(picker.preview.document_scroll_state().0);
+    assert!(picker.preview.prepared_request().is_none());
+
+    tasks.shutdown_and_wait();
+}
+
+#[test]
+fn a_covered_picker_keeps_its_rendered_preview_for_the_return_trip() {
+    let (_config, mut picker) = test_picker(112);
+    picker.set_preview_visible(true);
+    picker.frame.selection.replace(vec![test_item("item")]);
+
+    let tasks = TaskRuntime::new();
+    let starter =
+        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(crate::input::ViewMountId(112)));
+    std::thread::sleep(std::time::Duration::from_millis(90));
+    picker.start_prepared_auxiliary_work(&starter);
+    assert!(
+        picker.preview.document_scroll_state().0,
+        "the preview document should be installed"
+    );
+
+    // Covering the Picker (for example while a child View is open) must not
+    // discard what is already rendered.
+    picker.suspend_auxiliary_work();
+    assert!(!picker.active);
+    assert!(
+        picker.preview.document_scroll_state().0,
+        "covering must keep the rendered preview"
+    );
+
+    // Returning keeps the same document and starts no replacement load.
+    picker.active = true;
+    assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
+    assert!(
+        picker.preview.document_scroll_state().0,
+        "returning must not reset the preview"
+    );
+    tasks.shutdown_and_wait();
+}
+
+#[test]
 fn background_items_completion_publishes_mount_current_without_runtime_update() {
     let (_config, mut picker) = test_picker(115);
     let source = crate::input::InputSourceIdentity {
@@ -957,9 +1026,10 @@ mod preview_provider_tests {
             picker.frame.selection.items[0].value.as_deref(),
             Some("needle")
         );
-        assert!(picker.preview.prepared_request().is_none());
+        // A covered Picker keeps its prepared preview but starts no work.
+        assert!(picker.preview.prepared_request().is_some());
         assert!(picker.start_prepared_auxiliary_work(&starter).is_empty());
-        assert!(picker.preview.prepared_request().is_none());
+        assert!(picker.preview.prepared_request().is_some());
         picker.deactivate();
         tasks.shutdown_and_wait();
         std::fs::remove_dir_all(temp).unwrap();

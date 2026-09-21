@@ -99,6 +99,34 @@ fn preview_debounces_and_reloads_same_value_metadata_with_managed_reap() {
 }
 
 #[test]
+fn items_refresh_holds_document_until_new_preview_or_grace_expiry() {
+    let mut preview = preview();
+    preview.document = Some(document::parse(json!("old preview")).unwrap().unwrap());
+    preview.selection = Some("old-selection".into());
+
+    preview.hold_for_items_refresh();
+    let grace_due = preview.grace_due;
+    assert!(preview.document.is_some());
+    assert!(preview.prepared.is_none());
+    assert!(preview.selection.is_none());
+    assert!(preview.render_state().document.is_some());
+
+    preview.hold_for_items_refresh();
+    assert_eq!(preview.grace_due, grace_due);
+
+    preview.grace_due = Some(Instant::now() - Duration::from_millis(1));
+    assert!(preview.render_state().document.is_none());
+    assert_eq!(
+        preview.render_state().status.as_deref(),
+        Some("Loading preview…")
+    );
+
+    preview.prepare(None);
+    assert!(preview.document.is_none());
+    assert!(preview.grace_due.is_none());
+}
+
+#[test]
 fn preview_selection_hidden_reshow_and_deactivation_cancel_and_reject_stale_results() {
     let (tasks, starter) = runtime();
     let mut preview = preview();

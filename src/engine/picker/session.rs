@@ -302,17 +302,17 @@ impl PickerView {
             && self
                 .preview_content_size
                 .is_none_or(|size| self.preview.fits(size));
-        let item = (visible
-            && (self.requested_request.is_none()
-                || self.results_current_snapshot(self.requested_input())))
-        .then(|| {
-            self.frame
-                .selection
-                .items
-                .get(self.frame.selection.selected)
-                .cloned()
-        })
-        .flatten();
+        let results_current = self.requested_request.is_none()
+            || self.results_current_snapshot(self.requested_input());
+        let item = (visible && results_current)
+            .then(|| {
+                self.frame
+                    .selection
+                    .items
+                    .get(self.frame.selection.selected)
+                    .cloned()
+            })
+            .flatten();
         let request = item.map(|item| {
             let configured = self.preview.source();
             let (owner, source) = match configured {
@@ -339,7 +339,11 @@ impl PickerView {
         let content_size = self.preview_content_size;
         self.preview.set_content_size(content_size);
         self.preview.set_visible(visible);
-        self.preview.prepare(request);
+        if visible && !results_current {
+            self.preview.hold_for_items_refresh();
+        } else {
+            self.preview.prepare(request);
+        }
     }
 
     pub(super) fn list_presentation(&self) -> String {
@@ -598,6 +602,7 @@ impl PickerView {
         self.frame.results = ResultsState::Invalid;
         self.frame.pending_selection = 0;
         self.frame.selection.clear();
+        self.preview.prepare(None);
         self.initial_load_completed = true;
         self.schedule_retry();
     }
@@ -736,7 +741,7 @@ impl PickerView {
         self.remember_context(context);
         self.parameter_snapshot = Some(context.parameter_snapshot().clone());
         self.invalidate_items_for_committed_input();
-        self.preview.prepare(None);
+        self.preview.hold_for_items_refresh();
         Ok(EngineDecision::RuntimeUpdate(self.runtime_update(
             context.runtime_snapshot(),
             context.input_raw(),
@@ -756,7 +761,7 @@ impl PickerView {
     }
 
     fn handle_input_rejected(&mut self) -> Result<EngineDecision> {
-        self.preview.prepare(None);
+        self.preview.hold_for_items_refresh();
         self.frame.input_refresh = InputRefreshState::Stable;
         self.items_task_state = ItemsTaskState::Idle;
         self.frame.results = ResultsState::Invalid;
@@ -1031,7 +1036,7 @@ impl EngineRuntime for PickerView {
 
     fn suspend_auxiliary_work(&mut self) {
         self.active = false;
-        self.preview.deactivate();
+        self.preview.suspend();
     }
 
     fn start_prepared_auxiliary_work(

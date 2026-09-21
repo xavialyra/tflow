@@ -345,6 +345,15 @@ impl PickerPreview {
         self.decode_order.clear();
     }
 
+    /// Stop accepting new preview work while the Picker is covered without
+    /// discarding what is already rendered. Reactivation resumes any pending
+    /// load and keeps the current document, so the return trip does not flash
+    /// a loading state.
+    pub(super) fn suspend(&mut self) {
+        self.decode_cache.clear();
+        self.decode_order.clear();
+    }
+
     fn get_cached_image(&mut self, path: &std::path::Path) -> Option<Arc<DynamicImage>> {
         if let Some(image) = self.decode_cache.get(path) {
             let image = Arc::clone(image);
@@ -428,15 +437,34 @@ impl PickerPreview {
         &self.config.source
     }
 
-    pub(super) fn prepare(&mut self, request: Option<PreviewRequest>) {
-        let identity = request.as_ref().map(|r| r.identity.as_str());
-        if identity == self.selection.as_deref() {
+    pub(super) fn hold_for_items_refresh(&mut self) {
+        if self.selection.is_none() && self.prepared.is_none() && self.grace_due.is_some() {
             return;
         }
+        self.cancel_pending();
+        self.selection = None;
+        self.prepared = None;
+        self.grace_due = Some(std::time::Instant::now() + GRACE_PERIOD_DURATION);
+        if self.document.is_none() {
+            self.status = Some("Loading preview…".into());
+        }
+    }
+
+    pub(super) fn prepare(&mut self, request: Option<PreviewRequest>) {
         let Some(request) = request else {
+            if self.selection.is_none()
+                && self.prepared.is_none()
+                && self.document.is_none()
+                && self.grace_due.is_none()
+            {
+                return;
+            }
             self.reset_selection();
             return;
         };
+        if self.selection.as_deref() == Some(request.identity.as_str()) {
+            return;
+        }
         self.cancel_pending();
         let now = std::time::Instant::now();
         self.selection = Some(request.identity.clone());
