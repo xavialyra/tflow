@@ -3,6 +3,10 @@ import json
 import os
 import subprocess
 import sys
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
 def main():
     try:
@@ -53,6 +57,63 @@ def main():
         },
     }
     child_req_bytes = json.dumps(child_req).encode("utf-8")
+
+    def view_badge(view_ref, source):
+        if isinstance(source, dict):
+            alias = source.get("alias")
+            if isinstance(alias, str) and alias:
+                return alias
+
+        if tomllib is not None and os.path.isfile(suite_file):
+            try:
+                with open(suite_file, "rb") as f:
+                    aliases = tomllib.load(f).get("aliases", {})
+                for alias, target in aliases.items():
+                    if target == view_ref:
+                        return alias
+            except Exception:
+                pass
+        return view_ref
+
+    def add_view_badge(item, badge):
+        display = item.get("display")
+        badge_cell = {"text": badge, "slot": "badge", "align": "right"}
+        badge_width = max(1, len(badge))
+
+        if isinstance(display, str):
+            item["display"] = {
+                "constraints": [{"Fill": 1}, {"Length": badge_width}],
+                "cells": [{"text": display, "slot": "primary"}, badge_cell],
+            }
+            return
+
+        if not isinstance(display, dict):
+            return
+
+        if isinstance(display.get("rows"), list) and display["rows"]:
+            first_row = display["rows"][0]
+            if not isinstance(first_row, dict):
+                return
+            cells = first_row.setdefault("cells", [])
+            constraints = first_row.setdefault("constraints", [])
+            if not isinstance(cells, list) or not isinstance(constraints, list):
+                return
+            if len(constraints) < len(cells):
+                constraints.extend({"Fill": 1} for _ in range(len(cells) - len(constraints)))
+            cells.append(badge_cell)
+            constraints.append({"Length": badge_width})
+            return
+
+        cells = display.get("cells")
+        if isinstance(cells, list):
+            constraints = display.setdefault("constraints", [])
+            if not isinstance(constraints, list):
+                constraints = []
+                display["constraints"] = constraints
+            if len(constraints) < len(cells):
+                constraints.extend({"Fill": 1} for _ in range(len(cells) - len(constraints)))
+            cells.append(badge_cell)
+            constraints.append({"Length": badge_width})
 
     def inspect_view_keymap(view_ref):
         if tlaunch_bin and os.path.exists(suite_file):
@@ -172,6 +233,7 @@ def main():
                 combined = dict(keymap)
                 combined.update(current_bindings)
                 item["bindings"] = combined
+            add_view_badge(item, view_badge(view_ref, source))
             all_items.append(item)
 
     filtered_items = [item for item in all_items if item_matches_query(item)]

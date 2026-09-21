@@ -1,0 +1,24 @@
+{
+  "name": "tlaunch",
+  "version": "0.1.0",
+  "description": "A generic TUI workflow host for View-based CLI workflows",
+  "bin": {
+    "tlaunch": "./bin/run.js"
+  },
+  "scripts": {
+    "test": "node ./bin/run.js --check -w ../init.toml"
+  },
+  "keywords": [
+    "tui",
+    "launcher",
+    "terminal",
+    "workflow",
+    "picker",
+    "ratatui"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "tlaunch team",
+  "license": "MIT"
+}

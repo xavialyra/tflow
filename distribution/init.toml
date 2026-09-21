@@ -1,0 +1,804 @@
+[workflow]
+api = 1
+name = "Setup Wizard"
+entrypoint = "main"
+
+[styles.checked]
+foreground = "scheme:accent"
+bold = true
+
+[styles.checked.selected]
+foreground = "scheme:accent"
+bold = true
+
+[styles.unchecked]
+foreground = "scheme:muted"
+
+[views.main]
+
+[views.main.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+selected = { type = "array<string>", default = ["calculator", "apps", "sys"] }
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+preview_ratio = 0.52
+preview_min_width = 36
+preview_default_open = true
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+script = '''#!/usr/bin/env python3
+import json
+import os
+import shutil
+import sys
+import urllib.request
+
+DEFAULT_CANDIDATES = [
+    {
+        "id": "calculator",
+        "name": "Quick Calculator",
+        "desc": "Real-time math evaluation with formatted display & clipboard copy.",
+        "feed": "calculator:main",
+        "aliases": {"calc": "calculator:main"},
+        "deps": {"optional": ["wl-copy", "xclip"]}
+    },
+    {
+        "id": "apps",
+        "name": "Desktop Applications",
+        "desc": "Search and launch GUI / desktop apps with icon preview & weight stats.",
+        "feed": "apps:main",
+        "aliases": {"app": "apps:main"},
+        "deps": {"optional": ["gio", "setsid"]}
+    },
+    {
+        "id": "sys",
+        "name": "System & Session Controls",
+        "desc": "Fast system actions for logging out, restarting, or shutting down.",
+        "feed": "sys:main",
+        "aliases": {"sys": "sys:main"},
+        "deps": {"optional": ["systemctl", "loginctl"]}
+    },
+    {
+        "id": "clipboard",
+        "name": "Clipboard History",
+        "desc": "Search, preview, and restore clipboard history entries.",
+        "aliases": {"clip": "clipboard:default"},
+        "deps": {"optional": ["wl-paste", "wl-copy", "xclip"]}
+    },
+    {
+        "id": "shell",
+        "name": "Shell Runner",
+        "desc": "Quick interactive shell commands running in an embedded terminal.",
+        "aliases": {"shell": "shell:main"},
+        "deps": {"required": ["sh"]}
+    },
+    {
+        "id": "dmenu",
+        "name": "dmenu Emulation",
+        "desc": "CLI pipeline filter compatible with dmenu scripts and keybindings.",
+        "aliases": {"dmenu": "dmenu:main"},
+        "deps": {}
+    }
+]
+
+def workflow_cache_dir():
+    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache_home, "tlaunch", "workflows")
+
+def has_workflows(root):
+    return any(
+        os.path.isfile(os.path.join(root, name, "workflow.toml"))
+        for name in os.listdir(root)
+        if os.path.isdir(os.path.join(root, name))
+    ) if os.path.isdir(root) else False
+
+def ensure_workflow_cache():
+    cache = workflow_cache_dir()
+    marker = os.path.join(cache, ".bootstrap-complete")
+    if os.path.isfile(marker) and has_workflows(cache):
+        return cache
+
+    source = os.environ.get("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR")
+    if not source or not has_workflows(source):
+        return None
+
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    staging = f"{cache}.staging-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        shutil.copytree(source, staging)
+        if not has_workflows(staging):
+            return None
+        with open(os.path.join(staging, ".bootstrap-complete"), "w", encoding="utf-8") as f:
+            f.write("ready\\n")
+        shutil.rmtree(cache, ignore_errors=True)
+        os.replace(staging, cache)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return cache if os.path.isfile(marker) else None
+
+def fetch_catalog():
+    ensure_workflow_cache()
+    return DEFAULT_CANDIDATES
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    selected = set(parameters.get("selected", []))
+
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    query = state.get("input", "") if isinstance(state, dict) else ""
+    tokens = query.casefold().split()
+
+    catalog = fetch_catalog()
+    cache = ensure_workflow_cache()
+    items = []
+    for c in catalog:
+        cid = c["id"]
+        workflow_dir = (
+            os.path.join(cache, cid)
+            if cache and os.path.isfile(os.path.join(cache, cid, "workflow.toml"))
+            else None
+        )
+        if workflow_dir is None:
+            continue
+        name = c.get("name", cid)
+        desc = c.get("desc") or c.get("description", "")
+        searchable = f"{cid} {name} {desc}".casefold()
+        if not all(token in searchable for token in tokens):
+            continue
+
+        is_sel = cid in selected
+        mark = "[✓] " if is_sel else "[ ] "
+
+        display = {
+            "constraints": [{"Length": 4}, {"Fill": 1}],
+            "cells": [
+                {"text": mark, "slot": "checked" if is_sel else "unchecked"},
+                {"text": f"{name} ({cid})", "slot": "checked" if is_sel else "primary"},
+            ],
+        }
+
+        items.append({
+            "value": cid,
+            "display": display,
+            "metadata": {
+                "id": cid,
+                "name": name,
+                "desc": desc,
+                "deps": c.get("dependencies", {}),
+                "aliases": c.get("aliases", {}),
+                "feed": c.get("feed"),
+                "selected": is_sel,
+                "workflow_dir": workflow_dir,
+            },
+        })
+
+    json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+script = '''#!/usr/bin/env python3
+import json
+import os
+import shutil
+import sys
+
+def check_command(cmd):
+    return shutil.which(cmd) is not None
+
+def generate_suite_preview(selected):
+    feeds = []
+    if "calculator" in selected:
+        feeds.append('    "calculator:main",')
+    if "apps" in selected:
+        feeds.append('    "apps:main",')
+    if "sys" in selected:
+        feeds.append('    "sys:main",')
+
+    feeds_toml = "\n".join(feeds)
+    if feeds_toml:
+        feeds_toml = f"\n  sources = [\n{feeds_toml}\n  ]"
+
+    wf_blocks = []
+    for wf in selected:
+        wf_blocks.append(f'{wf} = {{ dir = "./workflows/{wf}" }}')
+    wf_toml = "\n".join(wf_blocks)
+
+    alias_map = {
+        "apps": 'app = "apps:main"',
+        "calculator": 'calc = "calculator:main"',
+        "sys": 'sys = "sys:main"',
+        "clipboard": 'clip = "clipboard:default"',
+        "shell": 'shell = "shell:main"',
+        "dmenu": 'dmenu = "dmenu:main"',
+    }
+    alias_blocks = [alias_map[wf] for wf in selected if wf in alias_map]
+    alias_toml = "\n".join(alias_blocks)
+
+    return f"""[suite]
+api = 1
+name = "My Workspace"
+
+[suite.entrypoint]
+target = "core:main"
+query = {{{feeds_toml}
+}}
+
+[workflows]
+core = {{ dir = "./workflows/core" }}
+{wf_toml}
+
+[aliases]
+{alias_toml}"""
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    selected = parameters.get("selected", [])
+
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    item = state.get("item")
+
+    children = []
+
+    # 1. Current Highlighted Item Card
+    if isinstance(item, dict):
+        meta = item.get("metadata", {})
+        cid = meta.get("id", item.get("value", ""))
+        name = meta.get("name", cid)
+        desc = meta.get("desc", "")
+        is_sel = meta.get("selected", False)
+        deps = meta.get("deps", {})
+
+        spans = [
+            {"text": f"{desc}\n\n"},
+            {"text": "System Doctor Check:\n"}
+        ]
+
+        # Check required dependencies
+        reqs = deps.get("required", [])
+        opts = deps.get("optional", [])
+        if not reqs and not opts:
+            spans.append({"text": "  ✓ Pure standard environment (zero external dependencies)\n"})
+        else:
+            for req in reqs:
+                ok = check_command(req)
+                spans.append({
+                    "text": f"  {'✓' if ok else '✗'} {req:<12} (required)  -> {'found' if ok else 'NOT FOUND'}\n"
+                })
+            for opt in opts:
+                ok = check_command(opt)
+                spans.append({
+                    "text": f"  {'✓' if ok else '○'} {opt:<12} (optional)  -> {'available' if ok else 'not installed'}\n"
+                })
+
+        children.append({
+            "type": "paragraph",
+            "spans": spans,
+            "title": f" Component Inspector: {cid} ",
+            "border": True,
+        })
+    else:
+        children.append({
+            "type": "paragraph",
+            "text": "Move cursor to inspect components...",
+            "title": " Component Inspector ",
+            "border": True,
+        })
+
+    # 2. Actions & Keymap Banner
+    actions_text = (
+        "Keybindings & Fast Actions:\n"
+        "  • [Tab]         Toggle selected workflow\n"
+        "  • [Ctrl+T]      Try Now! (Zero-side-effect sandbox session)\n"
+        "  • [Enter]       Install to ~/.config/tlaunch (Writes Suite & Settings)\n"
+        "  • [Ctrl+A/R]    Select All / Clear All\n"
+        "  • [Esc]         Exit Setup Wizard"
+    )
+    children.append({
+        "type": "paragraph",
+        "text": actions_text,
+        "title": " Ready Actions ",
+        "border": True,
+    })
+
+    doc = {
+        "version": 1,
+        "preview": {
+            "type": "layout",
+            "direction": "vertical",
+            "constraints": [{"Fill": 1}, {"Length": 8}],
+            "children": children,
+        },
+    }
+
+    json.dump(doc, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[views.main.keymap]
+tab = "toggle"
+"ctrl+a" = "select_all"
+"ctrl+r" = "clear_all"
+"ctrl+t" = "test_drive"
+enter = "install"
+escape = "cancel"
+
+[commands.toggle]
+label = "Toggle"
+type = "navigate"
+producer = "script"
+[commands.toggle.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    selected = list(parameters.get("selected", []))
+
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    current_input = state.get("input", "")
+    item = state.get("item")
+
+    if isinstance(item, dict):
+        val = item.get("value")
+        if val:
+            if val in selected:
+                selected.remove(val)
+            else:
+                selected.append(val)
+
+    query = {
+        "search": current_input,
+        "selected": selected,
+    }
+    if isinstance(item, dict) and item.get("value"):
+        query["__engine"] = {
+            "focus": item["value"],
+        }
+
+    json.dump(
+        {
+            "version": 1,
+            "operation": {
+                "type": "navigate",
+                "target": "main",
+                "replace": True,
+                "query": query,
+            },
+        },
+        sys.stdout,
+        separators=(",", ":"),
+    )
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[commands.select_all]
+label = "Select All"
+type = "navigate"
+producer = "script"
+[commands.select_all.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+ALL_CANDIDATES = ["apps", "calculator", "sys", "clipboard", "shell", "dmenu"]
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    current_input = state.get("input", "")
+
+    json.dump(
+        {
+            "version": 1,
+            "operation": {
+                "type": "navigate",
+                "target": "main",
+                "replace": True,
+                "query": {
+                    "search": current_input,
+                    "selected": ALL_CANDIDATES,
+                },
+            },
+        },
+        sys.stdout,
+        separators=(",", ":"),
+    )
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[commands.clear_all]
+label = "Clear All"
+type = "navigate"
+producer = "script"
+[commands.clear_all.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    current_input = state.get("input", "")
+
+    json.dump(
+        {
+            "version": 1,
+            "operation": {
+                "type": "navigate",
+                "target": "main",
+                "replace": True,
+                "query": {
+                    "search": current_input,
+                    "selected": [],
+                },
+            },
+        },
+        sys.stdout,
+        separators=(",", ":"),
+    )
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[commands.test_drive]
+label = "Sandbox Try"
+type = "run"
+producer = "script"
+[commands.test_drive.handler]
+script = '''#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+def resolve_tlaunch_bin():
+    if os.environ.get("TLAUNCH_BIN"):
+        return os.environ["TLAUNCH_BIN"]
+    which = shutil.which("tlaunch")
+    return which if which else "tlaunch"
+
+def generate_settings_content():
+    return """[defaults.picker.bindings]
+exit = ["ctrl+c", "ctrl+d"]
+toggle_preview = ["ctrl+p"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]
+"""
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    selected = list(parameters.get("selected", []))
+    engine = context.get("engine", {})
+    state = engine.get("state", {}) if isinstance(engine, dict) else {}
+    item = state.get("item", {}) if isinstance(state, dict) else {}
+    current = item.get("value") if isinstance(item, dict) else None
+
+    meta = item.get("metadata", {}) if isinstance(item, dict) else {}
+    workflow_id = meta.get("id") or (item.get("value") if isinstance(item, dict) else None)
+    workflow_source = meta.get("workflow_dir")
+    if not workflow_id or not workflow_source:
+        print("Selected workflow is not available in the cache.", file=sys.stderr)
+        sys.exit(1)
+
+    tlaunch_bin = resolve_tlaunch_bin()
+
+    runner_script = f"""
+import os, sys, shutil, tempfile, subprocess
+
+workflow_id = {json.dumps(workflow_id)}
+workflow_source = {json.dumps(workflow_source)}
+tlaunch_bin = {json.dumps(tlaunch_bin)}
+
+if not workflow_source or not os.path.isdir(workflow_source):
+    raise SystemExit(f"cached workflow is not available for {workflow_id!r}")
+
+tmpdir = tempfile.mkdtemp(prefix="tlaunch-sandbox-")
+try:
+    workflow_dir = os.path.join(tmpdir, workflow_id)
+    shutil.copytree(workflow_source, workflow_dir)
+
+    settings_path = os.path.join(tmpdir, "settings.toml")
+    with open(settings_path, "w", encoding="utf-8") as f:
+        f.write({json.dumps(generate_settings_content())})
+
+    print(f"\\n\\033[1;33m>>> Trying workflow: {workflow_id} (zero-side-effect sandbox)\\033[0m")
+    env = os.environ.copy()
+    env["TLAUNCH_SETTINGS"] = settings_path
+    subprocess.run([tlaunch_bin, "-w", workflow_dir, "-c", settings_path], env=env)
+finally:
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print("\\033[1;32m[✓] Cleaned sandbox environment. Zero files were touched.\\033[0m\\n")
+"""
+
+    json.dump(
+        {
+            "version": 1,
+            "operation": {
+                "type": "run",
+                "mode": "foreground",
+                "argv": [sys.executable, "-c", runner_script],
+                "exit": False,
+            },
+        },
+        sys.stdout,
+        separators=(",", ":"),
+    )
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[commands.install]
+label = "Install"
+type = "run"
+producer = "script"
+[commands.install.handler]
+script = '''#!/usr/bin/env python3
+import json
+import os
+import shutil
+import sys
+
+DEFAULT_CANDIDATES = [
+    {
+        "id": "calculator",
+        "name": "Quick Calculator",
+        "feed": "calculator:main",
+        "aliases": {"calc": "calculator:main"},
+    },
+    {
+        "id": "apps",
+        "name": "Desktop Applications",
+        "feed": "apps:main",
+        "aliases": {"app": "apps:main"},
+    },
+    {
+        "id": "sys",
+        "name": "System & Session Controls",
+        "feed": "sys:main",
+        "aliases": {"sys": "sys:main"},
+    },
+    {
+        "id": "clipboard",
+        "name": "Clipboard History",
+        "aliases": {"clip": "clipboard:default"},
+    },
+    {
+        "id": "shell",
+        "name": "Shell Runner",
+        "aliases": {"shell": "shell:main"},
+    },
+    {
+        "id": "dmenu",
+        "name": "dmenu Emulation",
+        "aliases": {"dmenu": "dmenu:main"},
+    }
+]
+
+def fetch_catalog():
+    return DEFAULT_CANDIDATES
+
+def resolve_target_dirs():
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        config_dir = os.path.join(xdg_config, "tlaunch")
+    else:
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        config_dir = os.path.join(home, ".config", "tlaunch")
+    return config_dir
+
+def workflow_cache_dir():
+    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(cache_home, "tlaunch", "workflows")
+
+def generate_suite_manifest(selected):
+    catalog = fetch_catalog()
+    catalog_map = {c["id"]: c for c in catalog}
+
+    feeds = []
+    for wf in selected:
+        info = catalog_map.get(wf, {})
+        feed = info.get("feed")
+        if feed:
+            feeds.append(f'    "{feed}",')
+
+    feeds_toml = "\n".join(feeds)
+    if feeds_toml:
+        feeds_toml = f"\n  sources = [\n{feeds_toml}\n  ]"
+
+    wf_lines = [f'{wf} = {{ dir = "./workflows/{wf}" }}' for wf in selected]
+    wf_toml = "\n".join(wf_lines)
+
+    alias_lines = []
+    for wf in selected:
+        info = catalog_map.get(wf, {})
+        aliases = info.get("aliases", {})
+        for a_k, a_v in aliases.items():
+            alias_lines.append(f'{a_k} = "{a_v}"')
+    alias_toml = "\n".join(alias_lines)
+
+    return f"""[suite]
+api = 1
+name = "Default Suite"
+
+[suite.entrypoint]
+target = "core:main"
+query = {{{feeds_toml}
+}}
+
+[workflows]
+core = {{ dir = "./workflows/core" }}
+{wf_toml}
+
+[aliases]
+{alias_toml}
+"""
+
+def generate_settings_manifest():
+    return """# Passive host settings for tlaunch
+[defaults.picker.bindings]
+exit = ["ctrl+c", "ctrl+d"]
+toggle_preview = ["ctrl+p"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]
+"""
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
+    except Exception:
+        request = {}
+
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    selected = list(parameters.get("selected", []))
+
+    config_dir = resolve_target_dirs()
+    workflows_dir = os.path.join(config_dir, "workflows")
+    os.makedirs(workflows_dir, exist_ok=True)
+
+    cache_root = workflow_cache_dir()
+    installed = []
+
+    to_copy = list(selected)
+    if "core" not in to_copy:
+        to_copy.append("core")
+
+    for wf in to_copy:
+        wf_src = os.path.join(cache_root, wf)
+        if os.path.isdir(wf_src):
+            dst = os.path.join(workflows_dir, wf)
+            shutil.copytree(wf_src, dst, dirs_exist_ok=True)
+            installed.append(wf)
+
+    suite_file = os.path.join(config_dir, "default.toml")
+    settings_file = os.path.join(config_dir, "settings.toml")
+
+    with open(suite_file, "w", encoding="utf-8") as f:
+        f.write(generate_suite_manifest(selected))
+
+    if not os.path.exists(settings_file):
+        with open(settings_file, "w", encoding="utf-8") as f:
+            f.write(generate_settings_manifest())
+
+    installed_str = ", ".join(installed) if installed else "(none)"
+    msg = f"""
+\033[1;32m🎉 [✓] tlaunch configuration installed successfully!\033[0m
+============================================================
+  Suite Manifest:   {suite_file}
+  Settings File:    {settings_file}
+  Workflows Dir:    {workflows_dir}
+  Active Workflows: {installed_str}
+============================================================
+
+You are ready to launch! Try running:
+  \033[1;36mtlaunch\033[0m               # Open unified launcher (core)
+  \033[1;36mtlaunch app\033[0m           # Search & launch applications
+  \033[1;36mtlaunch calc\033[0m          # Quick math calculator
+  \033[1;36mtlaunch sys\033[0m           # Power and session menu
+"""
+
+    json.dump(
+        {
+            "version": 1,
+            "operation": {
+                "type": "run",
+                "mode": "foreground",
+                "argv": [sys.executable, "-c", "import sys; print(sys.argv[1])", msg],
+                "exit": True,
+            },
+        },
+        sys.stdout,
+        separators=(",", ":"),
+    )
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+'''
+
+[commands.cancel]
+label = "Cancel"
+type = "run"
+producer = "declared"
+[commands.cancel.handler]
+mode = "foreground"
+argv = ["true"]
+exit = true

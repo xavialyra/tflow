@@ -84,7 +84,10 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     if stem.is_empty() || stem == "tlaunch" {
         return args;
     }
-    if args.iter().any(|a| a == "--check" || a == "--inspect" || a == "--items") {
+    if args
+        .iter()
+        .any(|a| a == "--check" || a == "--inspect" || a == "--items")
+    {
         return args;
     }
 
@@ -341,7 +344,8 @@ pub(crate) fn run() -> Result<i32> {
     } else {
         None
     };
-    let mut parameters = config.bind_invocation_parameters_with_seed(&root_view, seed, &args.view_options)?;
+    let mut parameters =
+        config.bind_invocation_parameters_with_seed(&root_view, seed, &args.view_options)?;
     config.sanitize_initial_parameter_values(&mut parameters)?;
     let input = if is_stdin_workflow {
         InputArtifact::empty()
@@ -355,6 +359,13 @@ pub(crate) fn run() -> Result<i32> {
     )?);
 
     let runtime_log = RuntimeLog::open(config.log_file.as_deref());
+    if let Ok(current_exe) = std::env::current_exe() {
+        if std::env::var_os("TLAUNCH_BIN").is_none() {
+            unsafe {
+                std::env::set_var("TLAUNCH_BIN", &current_exe);
+            }
+        }
+    }
     let signal_guard =
         SignalGuard::install().context("could not install launcher signal handlers")?;
     let cancellation = signal_guard.cancellation_token();
@@ -467,11 +478,7 @@ pub(crate) fn run() -> Result<i32> {
     Ok(result.exit_code)
 }
 
-fn run_items_query(
-    config: &CompiledConfig,
-    target: &str,
-    view_options: &[String],
-) -> Result<i32> {
+fn run_items_query(config: &CompiledConfig, target: &str, view_options: &[String]) -> Result<i32> {
     let view_ref = match config.resolve_view(target) {
         Ok(v) => v,
         Err(e) => {
@@ -496,13 +503,14 @@ fn run_items_query(
     } else {
         None
     };
-    let mut parameters = match config.bind_invocation_parameters_with_seed(&view_ref, seed, view_options) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Ok(1);
-        }
-    };
+    let mut parameters =
+        match config.bind_invocation_parameters_with_seed(&view_ref, seed, view_options) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Ok(1);
+            }
+        };
     if let Err(e) = config.sanitize_initial_parameter_values(&mut parameters) {
         eprintln!("error: {e}");
         return Ok(1);
@@ -552,9 +560,7 @@ fn view_contract(
     let commands = config.workflow_commands(member_id);
     let commands_json: serde_json::Map<String, serde_json::Value> = commands
         .into_iter()
-        .map(|(fqid, cmd)| {
-            (fqid, serde_json::json!({ "label": cmd.label }))
-        })
+        .map(|(fqid, cmd)| (fqid, serde_json::json!({ "label": cmd.label })))
         .collect();
 
     let mut keymap_json = serde_json::Map::new();
