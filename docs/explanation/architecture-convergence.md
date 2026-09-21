@@ -169,13 +169,7 @@ The release collector run at `target/stage5/scheduler-20260907-092158Z/` used fi
 
 ### Stage 5 Evidence Collector
 
-The ignored `stage_5_scheduler_evidence` crate-unit entrypoint delegates to the scheduler-adjacent collector in `src/task/stage5_evidence.rs`. Invoke it exactly with:
-
-```sh
-cargo test --release --lib stage_5_scheduler_evidence -- --ignored --exact --nocapture
-```
-
-Each invocation creates a non-overwriting ignored artifact directory at `target/stage5/scheduler-YYYYMMDD-HHMMSSZ[-n]/` containing `raw.json` (schema, build profile, environment, scenario constants, terminal records, per-run measurements, and nearest-rank summaries) and `summary.md` (the self-contained human review table). The collector uses five independent 40-iteration serialized-runtime samples, with five terminal records per iteration, a real bounded slow Picker shell process, readiness-file coordination, latest-wins replacement, correlated task events, cancellation-to-reap timestamps, and post-shutdown lifecycle checks. Each artifact must be reviewed against the workload scope before changing scheduling policy.
+The ignored `stage_5_scheduler_evidence` crate-unit entrypoint and the `src/task/stage5_evidence.rs` collector it delegated to were removed, so the run recorded above can no longer be reproduced by a documented command. Re-deriving a baseline requires an equivalent harness; `src/task/tests.rs` remains the executable coverage for the same metrics.
 
 Each stage preserves observable CLI behavior, workflow configuration, key dispatch, rendering, and call/return behavior unless a separately approved change says otherwise. Stages 1 and 2 are independent enough to proceed in either order; stage 3 must not block lifecycle fixes.
 

@@ -63,7 +63,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | :--- | :--- | :--- |
 | `[picker]` | `text` | Normal candidate text & unstyled editor input. |
 | `[picker]` | `muted` | Secondary description text in candidate items. |
-| `[picker]` | `input_prefix` | Highlight for recognized route prefixes and aliases in query input. |
+| `[picker]` | `input_prefix` | Highlight for the non-root left prefix marker in query input. |
 | `[picker]` | `cursor` | Styled pseudo-cursor in the query input. |
 | `[picker]` | `selected` | Active selected row background and text. |
 | `[picker]` | `selected_muted` | Secondary description text on the active selected row. |

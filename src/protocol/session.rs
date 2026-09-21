@@ -595,11 +595,8 @@ impl ProtocolSession {
                 paint_retained(frame, retained, content_area, retain_area)
             }
             None => {
-                let has_modal_overlay =
-                    base_entry.is_some_and(|entry| entry.view.has_modal_overlay());
                 if !is_base_loading
                     && active_popup_rect.is_none()
-                    && !has_modal_overlay
                     && let Some(base_id) = base_instance_id
                 {
                     self.navigation.settle(SettledFrame {

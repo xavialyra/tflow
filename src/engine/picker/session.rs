@@ -22,10 +22,22 @@ use std::sync::Arc;
 /// refresh never waits for this delay.
 const SEARCH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(80);
 
+/// What Backspace does on the empty input line of a non-root Picker that
+/// renders a left prefix. Unset leaves Backspace inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrefixBackspace {
+    /// Return to the parent View, like Escape.
+    Parent,
+    /// Return to the root View in one step.
+    Root,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PickerOptions {
     pub(super) show_input: bool,
     pub(super) show_divider: bool,
+    pub(super) show_left_prefix: bool,
+    pub(super) prefix_backspace: Option<PrefixBackspace>,
 }
 
 impl Default for PickerOptions {
@@ -33,6 +45,8 @@ impl Default for PickerOptions {
         Self {
             show_input: true,
             show_divider: true,
+            show_left_prefix: true,
+            prefix_backspace: None,
         }
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use crate::command::{CommandEntry, CommandRegistry, CommandScope};
 use crate::protocol::ProtocolCommandService;
 use crate::view::{
-    EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, RouteCatalog, View, ViewContext,
+    EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, View, ViewContext,
     ViewFactory, ViewMetadata, ViewServices,
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Position};
@@ -57,10 +57,6 @@ impl View for SyntheticView {
             CommandScope::Engine,
             Arc::new(|| Ok(ViewDecision::Stay)),
         )]
-    }
-
-    fn has_modal_overlay(&self) -> bool {
-        self.target.ends_with("_overlay")
     }
 
     fn retained_content_area(&self, area: Rect) -> Option<Rect> {
@@ -338,15 +334,6 @@ fn command_registry_resolution_follows_view_over_engine_over_host() {
         registry.resolve(crate::input::Key::Char('x')).unwrap().id,
         "view_x"
     );
-}
-
-#[test]
-fn route_completion_falls_back_to_canonical_labels() {
-    let mut routes = MapRouteCatalog::default();
-    routes.insert("core:default", "core:default");
-    let candidates = routes.complete("core:");
-    assert_eq!(candidates[0].label, "core:default");
-    assert_eq!(candidates[0].target.label.as_deref(), Some("core:default"));
 }
 
 #[test]
@@ -1836,24 +1823,4 @@ fn navigation_grace_does_not_flash_a_closed_view_when_returning() {
         })
         .collect();
     assert_eq!(content, "async_target");
-}
-
-#[test]
-fn modal_overlay_does_not_settle_a_base_frame() {
-    let (mut session, _, _) = session();
-    session.start_root(request("root_overlay")).unwrap();
-    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
-
-    // 1. Render base view while modal overlay (like completion popup) is active
-    terminal
-        .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
-        })
-        .unwrap();
-
-    // 2. Overlay view must NOT be recorded as the clean base snapshot
-    assert!(
-        session.navigation.settled().is_none(),
-        "Modal overlay view must not settle a base frame"
-    );
 }

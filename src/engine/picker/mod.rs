@@ -17,7 +17,7 @@ use self::keymap::PickerKeymap;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
 use self::session::PickerOptions;
-pub(crate) use self::session::PickerView;
+pub(crate) use self::session::{PickerView, PrefixBackspace};
 use self::tasks::PickerItemsScheduler;
 use super::{
     EngineValidationContext, InputBindingFactoryContext, RendererFactoryContext, validate_fields,
@@ -222,17 +222,25 @@ impl From<PickerRuntimeServices> for PickerViewServices {
 
 pub(crate) use items::Item;
 
+/// Engine config fields the Picker accepts. Shared by the factory plan and
+/// validation so the two cannot drift apart.
+const CONFIG_FIELDS: &[&str] = &[
+    "preview_ratio",
+    "preview_min_width",
+    "preview_default_open",
+    "preview",
+    "show_input",
+    "show_divider",
+    "show_left_prefix",
+];
+
+/// Subset of [`CONFIG_FIELDS`] that must deserialize as a boolean.
+const BOOLEAN_FIELDS: &[&str] = &["show_input", "show_divider", "show_left_prefix"];
+
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &[
-                "preview_ratio",
-                "preview_min_width",
-                "preview_default_open",
-                "preview",
-                "show_input",
-                "show_divider",
-            ],
+            runtime: CONFIG_FIELDS,
             binding: &["preview_ratio", "preview_min_width", "preview"],
             binding_defaults: Some(&["defaults", "picker", "bindings"]),
         })
@@ -295,19 +303,8 @@ pub(super) fn preview_options(
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(
-        name,
-        view,
-        &[
-            "preview_ratio",
-            "preview_min_width",
-            "preview_default_open",
-            "preview",
-            "show_input",
-            "show_divider",
-        ],
-    )?;
-    for field in ["show_input", "show_divider"] {
+    validate_fields(name, view, CONFIG_FIELDS)?;
+    for field in BOOLEAN_FIELDS {
         if let Some(value) = view.engine_field(field)
             && !matches!(value, toml::Value::Boolean(_))
         {
@@ -672,7 +669,7 @@ mod tests {
 
     #[test]
     fn display_options_must_be_boolean() {
-        for field in ["show_input", "show_divider"] {
+        for field in BOOLEAN_FIELDS {
             for value in ["true", "false", "\"false\"", "0", "[]", "{}"] {
                 let view: View = toml::from_str(&format!(
                     "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = {value}\n"

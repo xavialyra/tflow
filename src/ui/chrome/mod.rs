@@ -21,7 +21,7 @@ use layout::{InputLayout, Insets};
 #[cfg(test)]
 use crate::ui::theme::Theme;
 #[cfg(test)]
-use crate::workflow::navigation::RouteDisplay;
+use crate::view::ViewLocation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Default)]
@@ -357,9 +357,9 @@ mod tests {
     use crate::input::EditorBuffer;
     use ratatui::style::Color;
 
-    fn route() -> RouteDisplay {
-        RouteDisplay {
-            view_ref: "apps:default".to_string(),
+    fn route() -> ViewLocation {
+        ViewLocation {
+            target: "apps:default".to_string(),
             alias: Some("app".to_string()),
         }
     }

@@ -33,7 +33,6 @@ src/
     config/                   Loading, normalization, compilation, and validation
     parameter/                Parameter schemas and state instances
     command/                  Command contracts and preparation
-    navigation.rs             Router and route resolution
     runtime.rs                Shared workflow runtime store
 
   engine/                     View Engine protocol and concrete implementations

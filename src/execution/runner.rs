@@ -172,17 +172,22 @@ fn run_started_bounded_command(
         };
 
         if let Some(writer) = stdin_writer.as_mut() {
+            let mut closed = false;
             match writer.write(&input[input_offset..]) {
                 Ok(0) => {}
                 Ok(count) => input_offset += count,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                // The producer closed its stdin without reading the request, as
+                // an inline `printf` script legitimately may. Its stdout is still
+                // the response, so stop writing rather than failing the run.
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => closed = true,
                 Err(error) => {
                     process_group.force_kill();
                     return Err(error).context("could not write bounded command input");
                 }
             }
-            if input_offset == input.len() {
+            if closed || input_offset == input.len() {
                 stdin_writer = None;
             }
         }
@@ -399,6 +404,30 @@ mod tests {
 
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_producer_that_closes_stdin_still_reports_its_output() {
+        let mut command = Command::new("sh");
+        // Closes the request pipe, then answers: an inline `printf` script does
+        // the same thing far faster than the parent can notice.
+        command.args(["-c", "exec 0<&-; sleep 0.2; printf ok"]);
+        let input = vec![b'x'; 1024 * 1024];
+        let started = Instant::now();
+
+        let output = run_bounded_command_with_stdin(
+            command,
+            Some(&input),
+            Duration::from_secs(5),
+            1024,
+            1024,
+            &CancellationToken::new(),
+        )
+        .expect("a producer that ignores its request must still be collected");
+
+        assert_eq!(output.stdout, b"ok");
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

@@ -29,22 +29,14 @@ fn normalize_keymap_table(
     let mode_val = table.remove("mode");
     let entries = std::mem::replace(table, toml::map::Map::new());
     let mut normalized = toml::map::Map::new();
-    let is_item_mode = if let Some(mode) = mode_val {
+    if let Some(mode) = mode_val {
         let mode_str = mode
             .as_str()
             .with_context(|| format!("{label} keymap mode must be a string"))?;
         if mode_str != "static" && mode_str != "item" {
             anyhow::bail!("{label} keymap mode must be \"static\" or \"item\", got {:?}", mode_str);
         }
-        let item = mode_str == "item";
         normalized.insert("mode".to_string(), mode);
-        item
-    } else {
-        false
-    };
-
-    if is_item_mode && !entries.is_empty() {
-        anyhow::bail!("{label} keymap uses mode = \"item\" and cannot define static key bindings");
     }
 
     let mut source_by_key = BTreeMap::new();

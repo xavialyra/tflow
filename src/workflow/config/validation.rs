@@ -293,35 +293,25 @@ impl CompiledConfig {
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
             let wf_id = super::package_id(view_ref);
             if let Some(keymap) = &view.keymap {
-                match keymap.mode {
-                    super::KeymapMode::Item => {
-                        if !keymap.bindings.is_empty() {
-                            bail!(
-                                "view {:?} keymap uses mode = \"item\" and cannot define static key bindings",
-                                view_ref
-                            );
-                        }
+                // Both modes may declare bindings. `mode = "item"` only adds the
+                // focused item's bindings on top of them (item wins per key).
+                for (key, val) in &keymap.bindings {
+                    if val.as_bool() == Some(false) {
+                        continue;
                     }
-                    super::KeymapMode::Static => {
-                        for (key, val) in &keymap.bindings {
-                            if val.as_bool() == Some(false) {
-                                continue;
-                            }
-                            let Some(cmd_target) = val.as_str() else {
-                                bail!("view {:?} keymap binding {:?} must be an action, command, or false", view_ref, key);
-                            };
-                            let is_command = self.find_command(wf_id, cmd_target).is_some();
-                            let is_action = crate::engine::is_picker_action(cmd_target)
-                                || crate::engine::is_capture_action(cmd_target);
-                            if !is_command && !is_action {
-                                bail!(
-                                    "view {:?} keymap binds {:?} to unknown command or action {:?}",
-                                    view_ref,
-                                    key,
-                                    cmd_target
-                                );
-                            }
-                        }
+                    let Some(cmd_target) = val.as_str() else {
+                        bail!("view {:?} keymap binding {:?} must be an action, command, or false", view_ref, key);
+                    };
+                    let is_command = self.find_command(wf_id, cmd_target).is_some();
+                    let is_action = crate::engine::is_picker_action(cmd_target)
+                        || crate::engine::is_capture_action(cmd_target);
+                    if !is_command && !is_action {
+                        bail!(
+                            "view {:?} keymap binds {:?} to unknown command or action {:?}",
+                            view_ref,
+                            key,
+                            cmd_target
+                        );
                     }
                 }
             }

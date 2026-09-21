@@ -147,6 +147,35 @@ replace = true
 
 With `replace = false` or an omitted field, the operation pushes a new stack entry.
 
+### 6. Restore a Known Selection After Replace
+
+A `replace` re-mounts the target, so a Picker starts on its first row again. Carry the previous item identity as the host-reserved `__focus` query key (or `__engine = { focus = "..." }`); the Picker selects the first loaded item whose `value` or `text` matches. Reserved `__`-prefixed keys are stripped before the target View's parameters are published.
+
+```toml
+[views.main.commands.refresh]
+key = "ctrl+r"
+label = "Refresh"
+type = "navigate"
+producer = "script"
+
+[views.main.commands.refresh.handler]
+file = "scripts/refresh.py"
+```
+
+The script reads the current selection from `context.engine.state.item` and re-enters the same View with `replace = true`:
+
+```python
+request = json.load(sys.stdin)
+state = request["context"]["engine"]["state"]
+item = state.get("item") if isinstance(state, dict) else None
+focus = item.get("value") if isinstance(item, dict) else None
+operation = {"type": "navigate", "target": "main", "replace": True}
+if isinstance(focus, str):
+    operation["query"] = {"__focus": focus}
+json.dump({"version": 1, "operation": operation}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+```
+
 ## Troubleshooting
 
 - Put script diagnostics on stderr; stdout must contain one JSON response object.

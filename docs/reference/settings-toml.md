@@ -69,9 +69,27 @@ different view; a repeated alias with the same target is allowed. Suites reject
 `theme`, `image_protocol`, `log_file`, and `defaults`; these belong to settings.
 Suites cannot mount suites or define views. See [ADR 0005](../adr/0005-manifest-driven-suites-and-self-contained-workflows.md).
 
-## Engine Defaults (`[defaults.<engine>.bindings]`)
+## Engine Defaults (`[defaults.<engine>]`)
 
-Global keybindings for engines can be adjusted at the root level.
+Global engine defaults can be adjusted at the root level.
+
+### `[defaults.picker]`
+- `left_prefix` (string, default unset): left-side marker for the input line of any Picker that is not the root View. `"$route"` resolves to the target View's route label/alias, any other value is rendered literally, and leaving it unset renders nothing. The marker is purely presentational — it never changes key handling — and it is the visual cue that Escape (and, when enabled, Backspace) leaves the View. Use an East Asian Wide glyph (for example `〈`) so its two-column width is measured the same on CJK and non-CJK terminals; a half-width arrow such as `←` is East Asian Ambiguous and would shift.
+
+  ```toml
+  [defaults.picker]
+  left_prefix = "$route"
+  # left_prefix = "〈"
+  ```
+
+  Backspace only navigates while a left prefix is actually rendered — a Picker with `show_left_prefix = false` (such as a completion popup) never returns on Backspace. What Backspace then does is opt-in; see `left_prefix_backspace`. The engine itself does not parse route selectors; a workflow that wants "selector + space jumps" binds a command to `space` and resolves the alias in its script.
+- `left_prefix_backspace` (string, default unset): what Backspace does on an empty input line of a non-root Picker that renders a left prefix. `"parent"` returns to the parent View, like Escape; `"root"` returns to the root View in one step; leaving it unset keeps Backspace inert. It has no effect without a rendered prefix, so the per-view `show_left_prefix` option also disables it.
+
+  ```toml
+  [defaults.picker]
+  left_prefix = "$route"
+  left_prefix_backspace = "root"
+  ```
 
 ### `[defaults.picker.bindings]`
 Available configurable actions for the `picker` engine:

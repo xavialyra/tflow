@@ -1,5 +1,5 @@
 use crate::engine::{
-    EngineRegistry, PickerProtocolConfig, create_capture_protocol_view,
+    EngineRegistry, PickerProtocolConfig, PrefixBackspace, create_capture_protocol_view,
     create_embedded_protocol_view, create_picker_protocol_view, picker_mount_data,
 };
 use crate::input::{InputSourceIdentity, ViewMountId};
@@ -11,7 +11,6 @@ use crate::workflow::config::CompiledConfig;
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 /// Factory used by the default protocol composition root. It owns only
 /// immutable configuration and creates a fresh protocol View for each Router
@@ -149,23 +148,17 @@ impl ViewFactory for ProtocolViewFactory {
         match engine_type.as_str() {
             crate::workflow::config::ENGINE_PICKER => {
                 let parameter_binding = self.config.parameter_binding(target)?;
-                let query_prefix = (self.config.default_view.as_deref() != Some(target.as_str()))
-                    .then(|| {
+                let left_prefix = match self.config.picker_left_prefix() {
+                    None => None,
+                    Some("$route") => Some(
                         services
                             .routes
                             .resolve(target)
-                            .and_then(|route| route.label)
-                            .unwrap_or_else(|| target.clone())
-                    });
-                let parameter_bindings = self
-                    .config
-                    .iter_views()
-                    .map(|(view_ref, _)| {
-                        self.config
-                            .parameter_binding(view_ref)
-                            .map(|binding| (view_ref.clone(), binding))
-                    })
-                    .collect::<Result<BTreeMap<_, _>>>()?;
+                            .map(|location| location.label().to_string())
+                            .unwrap_or_else(|| target.clone()),
+                    ),
+                    Some(literal) => Some(literal.to_string()),
+                };
                 let config = PickerProtocolConfig {
                     identity: crate::engine::ViewIdentity::new(
                         target,
@@ -175,17 +168,26 @@ impl ViewFactory for ProtocolViewFactory {
                     bindings,
                     services: self.picker_services(target, instance)?,
                     parameter_binding,
-                    parameter_bindings,
                     theme: self.theme.clone(),
-                    route_entry: target == self.config.default_view.as_deref().unwrap_or_default(),
-                    query_prefix,
+                    left_prefix,
+                    prefix_backspace: self
+                        .config
+                        .picker_left_prefix_backspace()
+                        .map(|value| match value {
+                            crate::workflow::config::LeftPrefixBackspace::Parent => {
+                                PrefixBackspace::Parent
+                            }
+                            crate::workflow::config::LeftPrefixBackspace::Root => {
+                                PrefixBackspace::Root
+                            }
+                        }),
                     runtime_snapshot,
                     tasks: services
                         .host
                         .task_runtime()
                         .context("protocol host does not provide a TaskRuntime")?,
                 };
-                create_picker_protocol_view(config, request, instance, services.routes)
+                create_picker_protocol_view(config, request, instance)
             }
             crate::workflow::config::ENGINE_FORM => crate::engine::form::create_protocol_view(
                 crate::engine::form::FormProtocolConfig {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::engine::ProjectedBindingConfig;
-use crate::view::{MapRouteCatalog, RouteCatalog, ViewContext};
+use crate::view::ViewContext;
 use anyhow::bail;
 use ratatui::style::{Color, Style};
 use ratatui::{Terminal, backend::TestBackend};
@@ -24,21 +24,13 @@ fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> Picker
         engine: ProjectedEngineConfig::default(),
         bindings: ProjectedBindingConfig::default(),
         services,
-        parameter_bindings: BTreeMap::new(),
         parameter_binding,
         theme: ResolvedTheme::terminal(),
-        route_entry: true,
-        query_prefix: None,
+        left_prefix: None,
+        prefix_backspace: None,
         runtime_snapshot: serde_json::json!({"view": {}}),
         tasks,
     }
-}
-
-#[test]
-fn completion_candidates_are_read_only_and_replace_only_matching_revision() {
-    let mut routes = MapRouteCatalog::default();
-    routes.insert("sy", "sys:main");
-    assert_eq!(routes.complete("sy")[0].target.reference, "sys:main");
 }
 
 #[test]
@@ -50,6 +42,40 @@ fn navigation_input_seed_is_separate_from_the_structured_query() {
     assert_eq!(request.query, query);
     assert_eq!(request.input.as_ref().unwrap().cursor, 3);
     let _ = ViewContext::new(ViewInstanceId(1), "picker");
+}
+
+#[test]
+fn left_prefix_is_rendered_only_when_present() {
+    let hidden = visible_editor_query(None, "", 0, 20);
+    assert_eq!(hidden.text, "");
+    assert_eq!(hidden.cursor, 0);
+    assert_eq!(hidden.highlight, None);
+
+    let shown = visible_editor_query(Some("\u{3008}"), "", 0, 20);
+    assert_eq!(shown.text, "\u{3008} ");
+    // The full-width glyph is two columns plus its separating space.
+    assert_eq!(shown.cursor, 3);
+    assert_eq!(shown.highlight, Some(0.."\u{3008}".len()));
+}
+
+#[test]
+fn left_prefix_precedes_typed_input() {
+    let query = visible_editor_query(Some("sys"), "ab", 2, 20);
+    assert_eq!(query.text, "sys ab");
+    // The marker shares the accent style; typed text does not.
+    assert_eq!(query.highlight, Some(0.."sys".len()));
+    assert_eq!(query.cursor, 3 + 1 + 2);
+}
+
+#[test]
+fn left_prefix_is_clipped_but_preserved_at_tiny_widths() {
+    let query = visible_editor_query(Some("\u{3008}"), "abcdef", 6, 3);
+    assert_eq!(query.text, "\u{3008} ");
+    assert_eq!(query.highlight, Some(0.."\u{3008}".len()));
+
+    let single = visible_editor_query(Some("\u{3008}"), "abcdef", 6, 1);
+    assert_eq!(single.text, "\u{3008}");
+    assert_eq!(single.highlight, Some(0.."\u{3008}".len()));
 }
 
 #[test]
@@ -66,11 +92,10 @@ fn picker_retained_content_area_keeps_only_the_item_and_preview_body() {
         config_with_tasks(services, tasks.clone()),
         &request("core:default"),
         ViewInstanceId(1),
-        &MapRouteCatalog::default(),
     )
     .unwrap();
 
-    // Default options: one input row, one divider row, no completion.
+    // Default options: one input row and one divider row.
     let area = Rect::new(0, 0, 40, 12);
     assert_eq!(
         view.retained_content_area(area),
@@ -81,16 +106,7 @@ fn picker_retained_content_area_keeps_only_the_item_and_preview_body() {
 }
 
 #[test]
-fn completion_selection_cycles_through_picker_matches() {
-    assert_eq!(cycle_completion_selection(0, 3, -1), 2);
-    assert_eq!(cycle_completion_selection(2, 3, 1), 0);
-    assert_eq!(cycle_completion_selection(0, 0, 1), 0);
-}
-
-#[test]
 fn picker_task_registry_rejects_stale_events_and_consumes_the_current_completion() {
-    let mut routes = MapRouteCatalog::default();
-    routes.insert("core:default", "core:default");
     let tasks = TaskRuntime::new();
     let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
     let services = crate::engine::picker::PickerRuntimeServices::new(
@@ -103,7 +119,6 @@ fn picker_task_registry_rejects_stale_events_and_consumes_the_current_completion
         config_with_tasks(services, tasks.clone()),
         &request("core:default"),
         ViewInstanceId(1),
-        &routes,
     )
     .unwrap();
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
@@ -309,14 +324,8 @@ fn view_with_stale_aware_runtime(
         renderer: create_renderer(RendererFactoryContext).unwrap(),
         options: PickerOptions::default(),
         keymap: PickerKeymap::from_values(None, None).unwrap(),
-        route_candidates: Vec::new(),
-        recognized_route_selectors: HashSet::new(),
-        route_schemas: BTreeMap::new(),
-        route_resolutions: BTreeMap::new(),
         disabled_keys: HashSet::new(),
-        parameter_bindings: BTreeMap::new(),
-        route_entry: false,
-        query_prefix: None,
+        left_prefix: None,
         theme: ResolvedTheme::terminal(),
         parameter_binding,
         editor: editor.clone(),
@@ -340,19 +349,79 @@ fn view_with_stale_aware_runtime(
         active: false,
         activated_once: false,
         closed: false,
-        completion: None,
-        route_transition_pending: false,
         defer_work_poll: false,
         task_completion_pending: false,
         publication_ready: false,
         diagnostic: None,
         content_size: (1, 1),
+        has_parent: false,
     }
+}
+
+fn backspace_decision(
+    left_prefix: Option<&str>,
+    show_left_prefix: bool,
+    behavior: Option<PrefixBackspace>,
+) -> ViewDecision {
+    let tasks = TaskRuntime::new();
+    let mut view = view_with_stale_aware_runtime(
+        Box::new(ExitOnActionRuntime),
+        invalid_integer_binding(),
+        &tasks,
+    );
+    view.left_prefix = left_prefix.map(str::to_string);
+    view.options.show_left_prefix = show_left_prefix;
+    view.options.prefix_backspace = behavior;
+    view.editor.clear();
+    let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
+    context.has_parent = true;
+    let decision = view
+        .event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Backspace,
+                raw: Vec::new(),
+            }),
+            &context,
+        )
+        .unwrap();
+    drop(view);
+    tasks.shutdown_and_wait();
+    decision
+}
+
+#[test]
+fn backspace_on_a_prefixed_empty_input_obeys_the_configured_behavior() {
+    assert!(matches!(
+        backspace_decision(Some("sys"), true, None),
+        ViewDecision::Invalidate
+    ));
+    assert!(matches!(
+        backspace_decision(Some("sys"), true, Some(PrefixBackspace::Parent)),
+        ViewDecision::Close
+    ));
+    assert!(matches!(
+        backspace_decision(Some("sys"), true, Some(PrefixBackspace::Root)),
+        ViewDecision::CloseToRoot
+    ));
+}
+
+#[test]
+fn backspace_ignores_the_setting_without_a_rendered_prefix() {
+    // No configured marker.
+    assert!(matches!(
+        backspace_decision(None, true, Some(PrefixBackspace::Root)),
+        ViewDecision::Invalidate
+    ));
+    // The View opted out of the marker, such as a completion popup.
+    assert!(matches!(
+        backspace_decision(Some("sys"), false, Some(PrefixBackspace::Root)),
+        ViewDecision::Invalidate
+    ));
 }
 
 #[test]
 #[allow(clippy::type_complexity)]
-fn preview_body_size_tracks_resize_completion_and_committed_starts() {
+fn preview_body_size_tracks_resize_and_committed_starts() {
     struct SizedRuntime {
         size: (u16, u16),
         seen: Arc<std::sync::Mutex<Vec<(&'static str, (u16, u16))>>>,
@@ -388,27 +457,14 @@ fn preview_body_size_tracks_resize_completion_and_committed_starts() {
         view_with_stale_aware_runtime(Box::new(runtime), invalid_integer_binding(), &tasks);
     view.options.show_input = true;
     view.options.show_divider = true;
-    view.route_entry = true;
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
     let resize = |height| ViewEvent::Resize(crate::view::TerminalSize { width: 40, height });
     view.event(resize(8), &context).unwrap();
     assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 6))));
     view.start_prepared_work();
     assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 6))));
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Tab,
-            raw: Vec::new(),
-        }),
-        &context,
-    )
-    .unwrap();
-    assert!(view.completion.is_some());
-    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 0))));
-    view.start_prepared_work();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 0))));
     view.event(resize(12), &context).unwrap();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 0))));
+    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
     view.event(
         ViewEvent::Input(InputEvent::Key {
             key: Key::Escape,
@@ -424,140 +480,19 @@ fn preview_body_size_tracks_resize_completion_and_committed_starts() {
     view.start_prepared_work();
     assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 0))));
     for height in 0..12 {
-        let body = view.body_layout(Rect::new(0, 0, 40, height))[3];
+        let body = view.body_layout(Rect::new(0, 0, 40, height))[2];
         assert_eq!(body.height, height.saturating_sub(2));
     }
 }
 
 #[test]
-fn explicit_enter_action_precedes_route_submission() {
+fn tab_no_longer_opens_builtin_completion() {
     let tasks = TaskRuntime::new();
     let binding = invalid_integer_binding();
-    let mut view =
-        view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
-    view.route_entry = true;
-    view.editor = EditorBuffer::from_raw("other 1", 7);
-    view.route_resolutions.insert(
-        "other".to_string(),
-        crate::view::RouteTarget {
-            reference: "other".to_string(),
-            label: None,
-        },
-    );
-    view.route_schemas.insert(
-        "other".to_string(),
-        crate::view::QuerySchema {
-            id: "query".to_string(),
-        },
-    );
-    view.parameter_bindings.insert("other".to_string(), binding);
-    view.keymap = PickerKeymap::from_values(
-        Some(serde_json::json!({
-            "exit": ["enter"]
-        })),
-        None,
-    )
-    .unwrap();
-
-    let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    let decision = view
-        .event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Enter,
-                raw: b"\r".to_vec(),
-            }),
-            &context,
-        )
-        .unwrap();
-    assert!(matches!(decision, ViewDecision::Exit));
-    tasks.shutdown_and_wait();
-}
-
-#[test]
-fn route_prefix_whitespace_jumps_directly_without_invalidating_or_batching() {
-    let tasks = TaskRuntime::new();
-    let binding = invalid_integer_binding();
-    let mut view =
-        view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
-    view.route_entry = true;
-    view.editor = EditorBuffer::from_raw("other", 5);
-    view.route_resolutions.insert(
-        "other".to_string(),
-        crate::view::RouteTarget {
-            reference: "other".to_string(),
-            label: None,
-        },
-    );
-    view.route_schemas.insert(
-        "other".to_string(),
-        crate::view::QuerySchema {
-            id: "query".to_string(),
-        },
-    );
-    view.parameter_bindings.insert("other".to_string(), binding);
-
-    let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    let decision = view
-        .event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Char(' '),
-                raw: b" ".to_vec(),
-            }),
-            &context,
-        )
-        .unwrap();
-    assert!(matches!(
-        decision,
-        ViewDecision::Transition(TransitionRequest::Push(_))
-    ));
-    assert_eq!(view.task_generation, 0, "must not spawn tasks on current view");
-    tasks.shutdown_and_wait();
-}
-
-#[test]
-fn route_completion_accept_jumps_directly_without_invalidating_or_batching() {
-    let tasks = TaskRuntime::new();
-    let binding = invalid_integer_binding();
-    let mut view =
-        view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding.clone(), &tasks);
-    view.route_entry = true;
+    let mut view = view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding, &tasks);
     view.editor = EditorBuffer::from_raw("oth", 3);
-    view.route_candidates = vec![RouteCandidate {
-        target: crate::view::RouteTarget {
-            reference: "other".to_string(),
-            label: None,
-        },
-        label: "other".to_string(),
-    }];
-    view.route_resolutions.insert(
-        "other".to_string(),
-        crate::view::RouteTarget {
-            reference: "other".to_string(),
-            label: None,
-        },
-    );
-    view.route_schemas.insert(
-        "other".to_string(),
-        crate::view::QuerySchema {
-            id: "query".to_string(),
-        },
-    );
-    view.parameter_bindings.insert("other".to_string(), binding);
 
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    // 1. Open completion with Tab
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Tab,
-            raw: b"\t".to_vec(),
-        }),
-        &context,
-    )
-    .unwrap();
-    assert!(view.completion.is_some());
-    assert!(view.has_modal_overlay());
-
-    // 2. Accept completion with Tab
     let decision = view
         .event(
             ViewEvent::Input(InputEvent::Key {
@@ -567,14 +502,12 @@ fn route_completion_accept_jumps_directly_without_invalidating_or_batching() {
             &context,
         )
         .unwrap();
-
-    assert!(view.completion.is_none());
-    assert!(!view.has_modal_overlay());
-    assert!(matches!(
-        decision,
-        ViewDecision::Transition(TransitionRequest::Push(_))
-    ));
-    assert_eq!(view.task_generation, 0, "must not spawn tasks on current view");
+    assert!(matches!(decision, ViewDecision::Stay));
+    assert_eq!(view.editor.raw, "oth");
+    assert_eq!(
+        view.task_generation, 0,
+        "must not spawn tasks on current view"
+    );
     tasks.shutdown_and_wait();
 }
 
@@ -677,7 +610,6 @@ fn static_display_options_reach_picker_rendering_and_input() {
             picker_config,
             &request("core:default").with_input("seed", 4).unwrap(),
             ViewInstanceId(1),
-            &MapRouteCatalog::default(),
         )
         .unwrap();
         let context = ViewContext::new(ViewInstanceId(1), "core:default");
@@ -755,48 +687,6 @@ fn static_display_options_reach_picker_rendering_and_input() {
 }
 
 #[test]
-fn empty_query_backspace_returns_to_root_only_from_a_child() {
-    let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
-    let tasks = TaskRuntime::new();
-    let services = crate::engine::picker::PickerRuntimeServices::new(
-        fixture,
-        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
-        "core:default",
-    )
-    .view_services();
-    let mut picker_config = config_with_tasks(services, tasks.clone());
-    picker_config.route_entry = false;
-    picker_config.query_prefix = Some("app".to_string());
-    let mut view = create_protocol_view(
-        picker_config,
-        &request("core:default"),
-        ViewInstanceId(1),
-        &MapRouteCatalog::default(),
-    )
-    .unwrap();
-    let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
-    for (has_parent, expected) in [
-        (true, ViewDecision::CloseToRoot),
-        (false, ViewDecision::Invalidate),
-    ] {
-        context.has_parent = has_parent;
-        assert_eq!(
-            view.event(
-                ViewEvent::Input(InputEvent::Key {
-                    key: Key::Backspace,
-                    raw: Vec::new(),
-                }),
-                &context,
-            )
-            .unwrap(),
-            expected,
-        );
-    }
-    drop(view);
-    tasks.shutdown_and_wait();
-}
-
-#[test]
 fn pseudo_cursor_styles_existing_and_trailing_cells() {
     let style = Style::default().fg(Color::Magenta).bg(Color::Green);
     let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
@@ -841,45 +731,7 @@ fn pseudo_cursor_styles_existing_and_trailing_cells() {
 }
 
 #[test]
-fn editor_cursor_uses_route_prefix_and_unicode_display_width() {
-    let query = visible_editor_query(Some("app"), None, "a界bc", "a界".len(), 8);
-    assert_eq!(query.text, "app a界b");
-    assert_eq!(query.cursor, 7);
-    assert_eq!(query.highlight, Some(0..3));
-
-    let query = visible_editor_query(Some("app"), None, "界", "界".len(), 6);
-    assert_eq!(query.text, "app 界");
-    assert_eq!(query.cursor.min(5), 5);
-    assert_eq!(query.highlight, Some(0..3));
-
-    let query = visible_editor_query(None, None, "abc", 3, 3);
-    assert_eq!(query.text, "abc");
-    assert_eq!(query.cursor.min(2), 2);
-    assert_eq!(query.highlight, None);
-
-    let combining = "a\u{301}bc";
-    let query = visible_editor_query(None, None, combining, combining.len(), 2);
-    assert_eq!(query.text, "c");
-    assert_eq!(query.cursor, 1);
-    let emoji = "x👩‍💻yz";
-    let query = visible_editor_query(None, None, emoji, "x👩‍💻".len(), 4);
-    assert_eq!(query.text, "x👩‍💻y");
-    assert_eq!(query.cursor, 3);
-    let query = visible_editor_query(None, None, emoji, emoji.len(), 4);
-    assert_eq!(query.text, "...");
-    assert_eq!(query.cursor, 3);
-
-    let query = visible_editor_query(Some("abcdef"), None, "x", 0, 3);
-    assert_eq!(query.text, "abc");
-    assert_eq!(query.cursor, 2);
-    assert_eq!(query.highlight, None);
-
-    let query = visible_editor_query(None, Some(3), "app needle", 10, 20);
-    assert_eq!(query.highlight, Some(0..3));
-}
-
-#[test]
-fn completion_disabled_patch_is_respected() {
+fn explicitly_disabled_keys_patch_is_respected() {
     let disabled = explicitly_disabled_keys(
         None,
         Some(&serde_json::json!({
@@ -891,29 +743,6 @@ fn completion_disabled_patch_is_respected() {
     assert!(disabled.contains(&Key::Escape.binding_identity()));
     let empty_override = explicitly_disabled_keys(Some(&serde_json::json!({"back": []})), None);
     assert!(empty_override.contains(&Key::Escape.binding_identity()));
-}
-
-#[test]
-fn route_query_contains_only_target_binding_values() {
-    let config = crate::workflow::config::load_test_fixture().unwrap();
-    let binding = config.parameter_binding("sys:main").unwrap();
-    let query = parsed_route_query(&binding, "sys:main", "query", "needle").unwrap();
-    assert_eq!(query.values, Value::String("needle".to_string()));
-}
-
-#[test]
-fn invalid_route_query_is_rejected_before_navigation() {
-    let registry = crate::workflow::parameter::ParameterRegistry::compile(&serde_json::json!({
-        "workflows": {"target": {"views": {"detail": {"query": {
-            "type": "object",
-            "count": {"type": "integer"}
-        }}}}}
-    }))
-    .unwrap();
-    let binding = std::sync::Arc::new(registry)
-        .parameter_binding("target:detail")
-        .unwrap();
-    assert!(parsed_route_query(&binding, "target:detail", "query", "bad").is_err());
 }
 
 #[test]
@@ -943,7 +772,6 @@ fn picker_preview_declared_image_renders_after_decode_and_encoding() {
         picker_config,
         &request("core:default"),
         ViewInstanceId(1),
-        &MapRouteCatalog::default(),
     )
     .unwrap();
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
@@ -1021,11 +849,10 @@ mod preview_correlation_tests {
                 .unwrap(),
             bindings: crate::engine::project_binding_config(&config, page, &definition).unwrap(),
             services,
-            parameter_bindings: BTreeMap::new(),
             parameter_binding: config.parameter_binding(page).unwrap(),
             theme: ResolvedTheme::terminal(),
-            route_entry: false,
-            query_prefix: None,
+            left_prefix: None,
+            prefix_backspace: None,
             runtime_snapshot: serde_json::json!({"view":{}}),
             tasks: tasks.clone(),
         };
@@ -1041,7 +868,6 @@ mod preview_correlation_tests {
             protocol_config,
             &request,
             instance,
-            &crate::view::MapRouteCatalog::default(),
         )
         .unwrap();
         let context = ViewContext::new(instance, page);

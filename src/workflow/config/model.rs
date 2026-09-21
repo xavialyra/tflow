@@ -28,6 +28,17 @@ pub(crate) enum ImageProtocol {
     Iterm2,
 }
 
+/// What Backspace does on the empty input line of a non-root Picker that
+/// renders a left prefix.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LeftPrefixBackspace {
+    /// Return to the parent View, like Escape.
+    Parent,
+    /// Return to the root View in one step.
+    Root,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Defaults {
@@ -40,6 +51,16 @@ pub(crate) struct Defaults {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PickerDefaults {
+    /// Left-side marker for non-root Picker input lines. Unset renders
+    /// nothing, `"$route"` renders the target View's route label/alias, and
+    /// any other value is rendered literally. The marker is presentational: it
+    /// never changes key handling.
+    #[serde(default)]
+    pub(crate) left_prefix: Option<String>,
+    /// Backspace behavior while the input line is empty. Unset leaves
+    /// Backspace inert; it only applies while a left prefix is rendered.
+    #[serde(default)]
+    pub(crate) left_prefix_backspace: Option<LeftPrefixBackspace>,
     #[serde(default)]
     pub(crate) bindings: Option<toml::Value>,
 }

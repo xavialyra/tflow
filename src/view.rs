@@ -392,6 +392,7 @@ pub(crate) fn operation_failure(error: impl std::fmt::Display) -> anyhow::Error 
 pub(crate) enum ViewDecision {
     Stay,
     Invalidate,
+    ClearInput,
     Transition(TransitionRequest),
     Return(ViewResult),
     Effect(EffectRequest),
@@ -496,6 +497,14 @@ pub(crate) trait View {
         Ok(ViewDecision::Stay)
     }
 
+    /// Consume the View's editable input. Called when a command's `navigate`
+    /// operation requests `clear_input`, so a completed jump does not resurrect
+    /// the query when the View is revealed again. Views without editable input
+    /// ignore it.
+    fn clear_input(&mut self, _context: &ViewContext) -> Result<()> {
+        Ok(())
+    }
+
     fn dispatch_key_event(
         &mut self,
         key: Key,
@@ -518,10 +527,6 @@ pub(crate) trait View {
 
     fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
         None
-    }
-
-    fn has_modal_overlay(&self) -> bool {
-        false
     }
 
     /// Region of this View that may briefly display retained pixels from the
@@ -565,25 +570,14 @@ pub(crate) trait View {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RouteTarget {
-    pub(crate) reference: String,
-    pub(crate) label: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RouteCandidate {
-    pub(crate) target: RouteTarget,
-    pub(crate) label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuerySchema {
     pub(crate) id: String,
 }
 
 pub(crate) trait RouteCatalog {
-    fn resolve(&self, selector: &str) -> Option<RouteTarget>;
-    fn complete(&self, prefix: &str) -> Vec<RouteCandidate>;
+    /// Resolve a navigation target selector to the View it names, with the
+    /// suite alias (when any) that the footer and route prefixes display.
+    fn resolve(&self, selector: &str) -> Option<ViewLocation>;
     fn query_schema(&self, target: &str) -> Option<QuerySchema>;
 
     fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
@@ -777,19 +771,19 @@ impl Router {
         source: Option<ViewInstanceId>,
     ) -> Result<ViewInstanceId> {
         let source_id = source.or_else(|| self.stack.last().map(|entry| entry.id));
-        let target = match self.routes.resolve(&request.target) {
-            Some(target) => target,
+        let location = match self.routes.resolve(&request.target) {
+            Some(location) => location,
             None => {
                 let error = anyhow::anyhow!("unknown navigation target {:?}", request.target);
                 self.notify_transition_rejected(source_id, ViewInstanceId(0), &error);
                 return Err(error);
             }
         };
-        if request.query.target != target.reference {
+        if request.query.target != location.target {
             let error = anyhow::anyhow!(
                 "navigation query target {:?} does not match target {:?}",
                 request.query.target,
-                target.reference
+                location.target
             );
             self.notify_transition_rejected(source_id, ViewInstanceId(0), &error);
             return Err(error);
@@ -822,8 +816,8 @@ impl Router {
         let instance = ViewInstanceId(self.next_instance);
         self.next_instance = self.next_instance.wrapping_add(1).max(1);
         let mut canonical_request = request.clone();
-        canonical_request.target = target.reference.clone();
-        canonical_request.query.target = target.reference.clone();
+        canonical_request.target = location.target.clone();
+        canonical_request.query.target = location.target.clone();
         let services = ViewServices {
             host: &*self.host,
             routes: &*self.routes,
@@ -837,10 +831,7 @@ impl Router {
         };
         let context = ViewContext {
             instance,
-            location: ViewLocation {
-                target: target.reference,
-                alias: target.label,
-            },
+            location,
             has_parent: self.stack.len() > usize::from(replace),
             presentation: request.presentation.clone(),
             query: canonical_request.query.clone(),
@@ -1220,6 +1211,14 @@ impl Router {
                 self.result_committed = false;
                 self.finish_return(executor)?;
             }
+            ViewDecision::ClearInput => {
+                if let Some(source) = source
+                    && let Some(index) = self.stack.iter().position(|entry| entry.id == source)
+                {
+                    let context = self.stack[index].context.clone();
+                    self.stack[index].view.clear_input(&context)?;
+                }
+            }
             ViewDecision::Batch(decisions) => {
                 let mut decisions = flatten_decisions(decisions);
                 if let Err(error) = validate_batch(&decisions) {
@@ -1530,28 +1529,11 @@ impl MapRouteCatalog {
 
 #[cfg(test)]
 impl RouteCatalog for MapRouteCatalog {
-    fn resolve(&self, selector: &str) -> Option<RouteTarget> {
-        self.routes
-            .get(selector)
-            .cloned()
-            .map(|reference| RouteTarget {
-                label: (selector != reference).then(|| selector.to_string()),
-                reference,
-            })
-    }
-
-    fn complete(&self, prefix: &str) -> Vec<RouteCandidate> {
-        self.routes
-            .keys()
-            .filter(|route| route.starts_with(prefix))
-            .map(|route| RouteCandidate {
-                target: RouteTarget {
-                    reference: self.routes[route].clone(),
-                    label: Some(route.clone()),
-                },
-                label: route.clone(),
-            })
-            .collect()
+    fn resolve(&self, selector: &str) -> Option<ViewLocation> {
+        self.routes.get(selector).map(|reference| ViewLocation {
+            alias: (selector != reference).then(|| selector.to_string()),
+            target: reference.clone(),
+        })
     }
 
     fn query_schema(&self, target: &str) -> Option<QuerySchema> {

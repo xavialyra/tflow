@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct EditorBuffer {
     pub(crate) raw: String,
@@ -13,34 +11,6 @@ pub(crate) struct EditorSnapshot {
     pub(crate) cursor: usize,
     pub(crate) revision: u64,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BufferEditError {
-    RevisionMismatch { expected: u64, actual: u64 },
-    RangeOutOfBounds,
-    NonCharBoundary,
-}
-
-impl std::fmt::Display for BufferEditError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RevisionMismatch { expected, actual } => {
-                write!(
-                    formatter,
-                    "editor buffer revision is {actual}, expected {expected}"
-                )
-            }
-            Self::RangeOutOfBounds => {
-                formatter.write_str("editor buffer edit range is out of bounds")
-            }
-            Self::NonCharBoundary => {
-                formatter.write_str("editor buffer edit range is not on UTF-8 boundaries")
-            }
-        }
-    }
-}
-
-impl std::error::Error for BufferEditError {}
 
 impl EditorBuffer {
     #[cfg(test)]
@@ -198,45 +168,6 @@ impl EditorBuffer {
         true
     }
 
-    pub(crate) fn replace_range(
-        &mut self,
-        expected_revision: u64,
-        range: Range<usize>,
-        replacement: &str,
-        cursor: usize,
-    ) -> Result<(), BufferEditError> {
-        if self.revision != expected_revision {
-            return Err(BufferEditError::RevisionMismatch {
-                expected: expected_revision,
-                actual: self.revision,
-            });
-        }
-        if range.start > range.end
-            || range.end > self.raw.len()
-            || !self.raw.is_char_boundary(range.start)
-            || !self.raw.is_char_boundary(range.end)
-        {
-            return Err(if range.start > range.end || range.end > self.raw.len() {
-                BufferEditError::RangeOutOfBounds
-            } else {
-                BufferEditError::NonCharBoundary
-            });
-        }
-        let new_len = self.raw.len() - (range.end - range.start) + replacement.len();
-        if cursor > new_len {
-            return Err(BufferEditError::RangeOutOfBounds);
-        }
-        let mut candidate = self.raw.clone();
-        candidate.replace_range(range.clone(), replacement);
-        if !candidate.is_char_boundary(cursor) {
-            return Err(BufferEditError::NonCharBoundary);
-        }
-        self.raw = candidate;
-        self.cursor = cursor;
-        self.bump_revision();
-        Ok(())
-    }
-
     pub(crate) fn replace_all(&mut self, raw: String, cursor: usize) {
         self.raw = raw;
         self.set_cursor(cursor);
@@ -271,28 +202,5 @@ mod tests {
         assert_eq!(buffer.revision, 1);
         assert!(buffer.delete_backward());
         assert_eq!(buffer.revision, 2);
-    }
-
-    #[test]
-    fn range_edits_require_the_current_revision_and_utf8_boundaries() {
-        let mut buffer = EditorBuffer::new("cafe");
-        assert_eq!(
-            buffer.replace_range(1, 0..1, "C", 1),
-            Err(BufferEditError::RevisionMismatch {
-                expected: 1,
-                actual: 0,
-            })
-        );
-        let mut unicode = EditorBuffer::new("éa");
-        assert_eq!(
-            unicode.replace_range(0, 1..2, "", 1),
-            Err(BufferEditError::NonCharBoundary)
-        );
-        buffer
-            .replace_range(0, 0..4, "café", 5)
-            .expect("valid range edit");
-        assert_eq!(buffer.raw, "café");
-        assert_eq!(buffer.cursor, 5);
-        assert_eq!(buffer.revision, 1);
     }
 }

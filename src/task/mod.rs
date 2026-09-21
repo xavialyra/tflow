@@ -115,14 +115,6 @@ pub(crate) struct TaskRuntimeMetricsSnapshot {
 
 const RECENT_TERMINAL_LIMIT: usize = 256;
 
-#[cfg(test)]
-mod stage5_evidence;
-
-#[cfg(test)]
-pub(crate) fn run_stage_5_scheduler_evidence() {
-    stage5_evidence::run();
-}
-
 trait TaskClock: Send + Sync {
     fn now(&self) -> Duration;
 }

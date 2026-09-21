@@ -6,7 +6,7 @@ use super::{
 use super::{byte_at_width, clip_from, divider_line, previous_char_boundary};
 use crate::ui::theme::Theme;
 #[cfg(test)]
-use crate::workflow::navigation::RouteDisplay;
+use crate::view::ViewLocation;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
@@ -149,7 +149,7 @@ impl ChromeFrame {
     #[cfg(test)]
     pub(crate) fn compose(
         width: usize,
-        route: &RouteDisplay,
+        route: &ViewLocation,
         input: &str,
         engine: EngineChrome,
         error: Option<&str>,
@@ -160,7 +160,7 @@ impl ChromeFrame {
     #[cfg(test)]
     pub(crate) fn compose_with_cursor(
         width: usize,
-        route: Option<&RouteDisplay>,
+        route: Option<&ViewLocation>,
         input: &str,
         input_cursor: usize,
         engine: EngineChrome,
@@ -168,7 +168,7 @@ impl ChromeFrame {
     ) -> Self {
         Self::compose_with_cursor_label(
             width,
-            route.map(RouteDisplay::label),
+            route.map(ViewLocation::label),
             input,
             input_cursor,
             engine,

@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::{
     current_screen, discard_pending_master_output, fixture_config,
@@ -1063,132 +1063,6 @@ fn explicit_embedded_view_runs_without_picker_intent() {
 }
 
 #[test]
-fn btop_fixture_single_view_routes_tab_and_escape_restore_the_empty_default() {
-    let root = temporary_root();
-    let marker = root.join("resource-marker");
-    let bin = root.join("bin");
-    let user_config = root.join("xdg-config").join("btop");
-    let fake_btop = bin.join("btop");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&user_config).unwrap();
-    fs::write(
-        user_config.join("btop.conf"),
-        "shown_boxes = \"cpu mem\"\nupdate_ms = 777\n",
-    )
-    .unwrap();
-    fs::write(
-        &fake_btop,
-        "#!/bin/sh\nset -eu\nprintf '%s|%s|%s\\n' \"$LAUNCHER_INPUT\" \"$(sed -n '/^shown_boxes = /p' \"$2\")\" \"$(sed -n '/^update_ms = /p' \"$2\")\" >> \"$MONITOR_MARKER\"\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
-    )
-    .unwrap();
-    fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}:/usr/bin:/bin",
-        bin.display(),
-        support::binary_path().parent().unwrap().display()
-    );
-
-    let mut process = spawn_launcher_with_args_and_env(
-        &fixture_config(),
-        &[],
-        &[
-            ("MONITOR_MARKER", marker.to_str().unwrap()),
-            ("PATH", &path),
-            ("XDG_CONFIG_HOME", root.join("xdg-config").to_str().unwrap()),
-        ],
-    );
-    wait_for_ready(&process.master);
-    process.master.write_all(b"btop:main ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Commands");
-    let initial = wait_for_nonempty_file(&marker);
-    assert!(initial.starts_with("|"), "initial marker: {initial}");
-    assert!(initial.contains("shown_boxes = ") && initial.contains("cpu"));
-    assert!(
-        !initial.contains("cpu mem"),
-        "user box selection leaked: {initial}"
-    );
-    assert!(initial.contains("update_ms = 777"), "marker: {initial}");
-
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let switched = loop {
-        let contents = fs::read_to_string(&marker).unwrap_or_default();
-        if contents.lines().count() >= 2 {
-            break contents;
-        }
-        assert!(Instant::now() < deadline, "Tab did not restart the monitor");
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let switched_line = switched.lines().nth(1).unwrap();
-    assert!(
-        switched_line.starts_with("memory|"),
-        "switched marker: {switched}"
-    );
-    assert!(switched_line.contains("shown_boxes = ") && switched_line.contains("mem"));
-    assert!(
-        !switched_line.contains("cpu mem"),
-        "user box selection leaked: {switched}"
-    );
-    assert!(
-        switched_line.contains("update_ms = 777"),
-        "marker: {switched}"
-    );
-
-    for (index, (expected_input, expected_box)) in
-        [("network", "net"), ("processes", "proc"), ("cpu", "cpu")]
-            .into_iter()
-            .enumerate()
-    {
-        process.master.write_all(b"\t").unwrap();
-        process.master.flush().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let contents = loop {
-            let contents = fs::read_to_string(&marker).unwrap_or_default();
-            if contents.lines().count() >= 3 + index {
-                break contents;
-            }
-            assert!(Instant::now() < deadline, "Tab did not restart the monitor");
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let line = contents.lines().last().unwrap();
-        assert!(
-            line.starts_with(&format!("{expected_input}|")),
-            "marker: {contents}"
-        );
-        assert!(line.contains(expected_box), "marker: {contents}");
-        assert!(line.contains("update_ms = 777"), "marker: {contents}");
-    }
-
-    discard_pending_master_output(&process.master);
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible
-            .lines()
-            .nth(1)
-            .is_some_and(|line| line.trim() == "█")
-            && !visible.contains("btop /")
-    });
-    let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---\n").next().unwrap();
-    assert!(
-        visible
-            .lines()
-            .nth(1)
-            .is_some_and(|line| line.trim() == "█"),
-        "screen: {visible}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn waits_for_items_before_running_enter_command() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -1239,62 +1113,6 @@ fn waits_for_items_before_running_enter_command() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove launcher integration config");
-}
-
-#[test]
-fn route_query_and_activate_share_one_input_batch() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [workflows.apps.views.main]
-        alias = "app"
-        [workflows.apps.views.main.engine]
-        type = "picker"
-        [workflows.apps.views.main.engine.config]
-        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [workflows.apps.views.main.commands.run]
-        key = "enter"
-        label = "Run"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'route-batch:needle:value\\n'"], exit = true }
-        "#,
-    )
-    .expect("could not write route batch integration config");
-    write_workflow_script(
-        &root,
-        "apps",
-        "scripts/route.sh",
-        "printf 'route-batch:%s:%s\\n' \"$1\" \"$2\"\n",
-    );
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"app needle\r")
-        .expect("could not write routed query and activation");
-    process
-        .master
-        .flush()
-        .expect("could not flush routed query and activation");
-
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    assert!(
-        String::from_utf8_lossy(&output).contains("route-batch:needle:value"),
-        "output: {:?}",
-        output
-    );
-    fs::remove_dir_all(root).expect("could not remove route batch integration config");
 }
 
 #[test]
@@ -1648,7 +1466,7 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
 }
 
 #[test]
-fn unknown_input_closes_route_completion_before_escape() {
+fn unknown_input_sequence_exits_cleanly_after_escape() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1950,12 +1768,335 @@ fn view_selector_discovers_views_and_navigates_to_the_selected_view() {
 }
 
 #[test]
-fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref() {
-    let config = fixture_config();
+fn picker_left_prefix_marks_views_pushed_on_a_parent() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Open app", value = "app"}]
+        [workflows.core.views.default.commands.open]
+        key = "enter"
+        label = "Open app"
+        type = "navigate"
+        producer = "declared"
+        handler = { target = "apps:main" }
+
+        [workflows.apps.views.main]
+        [workflows.apps.views.main.engine]
+        type = "picker"
+        [workflows.apps.views.main.engine.config]
+        items = [{display = "App item", value = "item"}]
+"#,
+    )
+    .expect("could not write left prefix config");
+    fs::write(
+        root.join("settings.toml"),
+        "[defaults.picker]\nleft_prefix = \"\u{3008}\"\n",
+    )
+    .expect("could not write left prefix settings");
+
+    fn visible_screen(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes)
+            .rsplit("--- visible screen ---")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
+
+    // The root View has no parent, so the input line stays bare.
+    let root_screen = visible_screen(&wait_for_text(&process.master, "Open app"));
+    assert!(
+        !root_screen.contains('\u{3008}'),
+        "root view showed a left prefix: {root_screen}"
+    );
+
+    // Opening the item pushes apps:main, which now advertises its parent.
+    process.master.write_all(b"\r").unwrap();
     process.master.flush().unwrap();
+    let child_screen = visible_screen(&wait_for_text(&process.master, "App item"));
+    assert!(
+        child_screen
+            .lines()
+            .any(|line| line.trim_start().starts_with('\u{3008}')),
+        "pushed view did not show a left prefix: {child_screen}"
+    );
+
+    // Returning to the root drops the prefix again.
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let back_screen = visible_screen(&wait_for_text(&process.master, "Open app"));
+    assert!(
+        !back_screen.contains('\u{3008}'),
+        "returning to the root kept the left prefix: {back_screen}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove left prefix config");
+}
+
+#[test]
+fn picker_left_prefix_route_mode_uses_the_alias() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [aliases]
+        app = "apps:main"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Open app", value = "app"}]
+        [workflows.core.views.default.commands.open]
+        key = "enter"
+        label = "Open app"
+        type = "navigate"
+        producer = "declared"
+        handler = { target = "apps:main" }
+
+        [workflows.apps.views.main]
+        [workflows.apps.views.main.engine]
+        type = "picker"
+        [workflows.apps.views.main.engine.config]
+        items = [{display = "App item", value = "item"}]
+"#,
+    )
+    .expect("could not write route prefix config");
+    fs::write(
+        root.join("settings.toml"),
+        "[defaults.picker]\nleft_prefix = \"$route\"\n",
+    )
+    .expect("could not write route prefix settings");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Open app");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_text(&process.master, "App item");
+    let screen = String::from_utf8_lossy(&screen);
+    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible
+            .lines()
+            .any(|line| line.trim_start().starts_with("app ")),
+        "pushed view did not show the route alias prefix: {visible}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove route prefix config");
+}
+
+// Three Picker levels whose suite aliases double as the rendered left prefix,
+// so the input line identifies the View that Backspace landed on.
+const BACKSPACE_CHAIN_CONFIG: &str = r#"
+    default_view = "core:default"
+
+    [aliases]
+    mid = "demo:mid"
+    leaf = "demo:leaf"
+
+    [workflows.core.views.default]
+    [workflows.core.views.default.engine]
+    type = "picker"
+    [workflows.core.views.default.engine.config]
+    items = [{display = "Root entry", value = "root"}]
+    [workflows.core.views.default.commands.open]
+    key = "enter"
+    label = "Open mid"
+    type = "navigate"
+    producer = "declared"
+    handler = { target = "demo:mid" }
+
+    [workflows.demo.views.mid]
+    [workflows.demo.views.mid.engine]
+    type = "picker"
+    [workflows.demo.views.mid.engine.config]
+    items = [{display = "Mid entry", value = "mid"}]
+    [workflows.demo.views.mid.commands.open]
+    key = "enter"
+    label = "Open leaf"
+    type = "navigate"
+    producer = "declared"
+    handler = { target = "demo:leaf" }
+
+    [workflows.demo.views.leaf]
+    [workflows.demo.views.leaf.engine]
+    type = "picker"
+    [workflows.demo.views.leaf.engine.config]
+    items = [{display = "Leaf entry", value = "leaf"}]
+"#;
+
+/// Push `demo:leaf`, press Backspace on its empty input line, then type a
+/// character so the frame is unmistakably fresh even when Backspace did
+/// nothing.
+fn backspace_chain_screen(settings: &str, expected_item: &str, expected_input: &str) -> String {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(&config, BACKSPACE_CHAIN_CONFIG)
+        .expect("could not write backspace chain config");
+    fs::write(root.join("settings.toml"), settings).expect("could not write backspace settings");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Open mid");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Open leaf");
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Leaf entry");
+
+    process.master.write_all(b"\x7f").unwrap();
+    process.master.flush().unwrap();
+    process.master.write_all(b"e").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_fresh_screen(&process.master, |visible| {
+        visible.contains(expected_item)
+            && visible.lines().any(|line| line.trim() == expected_input)
+    });
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).expect("could not remove backspace chain config");
+
+    String::from_utf8_lossy(&screen)
+        .rsplit("--- visible screen ---")
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn left_prefix_backspace_parent_returns_one_level() {
+    let screen = backspace_chain_screen(
+        "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"parent\"\n",
+        "Mid entry",
+        "mid e\u{2588}",
+    );
+    assert!(screen.contains("Mid entry"), "{screen}");
+    assert!(screen.contains("Open leaf"), "{screen}");
+}
+
+#[test]
+fn left_prefix_backspace_root_returns_to_the_root_view() {
+    let screen = backspace_chain_screen(
+        "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"root\"\n",
+        "Root entry",
+        "e\u{2588}",
+    );
+    assert!(screen.contains("Root entry"), "{screen}");
+    assert!(screen.contains("Open mid"), "{screen}");
+}
+
+#[test]
+fn left_prefix_backspace_unset_leaves_backspace_inert() {
+    let screen = backspace_chain_screen(
+        "[defaults.picker]\nleft_prefix = \"$route\"\n",
+        "Leaf entry",
+        "leaf e\u{2588}",
+    );
+    assert!(screen.contains("Leaf entry"), "{screen}");
+}
+
+#[test]
+fn core_space_separator_jumps_and_otherwise_appends() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Enter Open");
+
+    // A known alias jumps to its route on space.
+    process.master.write_all(b"sys").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| {
+        visible.contains("Show system information")
+    });
+    process.master.write_all(b" ").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| visible.contains("Show date"));
+
+    // Backspace consumes the rendered left prefix and returns to the root,
+    // leaving the consumed selector out of the entry input.
+    process.master.write_all(b"\x7f").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| visible.contains("Enter Open"));
+
+    // A non-route token keeps filtering: the space is appended and items stay.
+    process.master.write_all(b"a").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| visible.contains("Enter Open"));
+    process.master.write_all(b" ").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.contains("a \u{2588}"))
+    });
+    let screen = String::from_utf8_lossy(&screen);
+    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        !visible.contains("(no matches)"),
+        "space cleared the filtered list: {visible}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn core_route_completion_survives_a_query_that_matches_no_item() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Enter Open");
+
+    // `pass` names a route but matches no aggregate item, so the entry View has
+    // no selected item to carry its Tab binding.
+    process.master.write_all(b"pass").unwrap();
+    process.master.flush().unwrap();
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "pass \u{2588}")
+    });
+    let screen = String::from_utf8_lossy(&screen);
+    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible.lines().any(|line| line.trim() == "pass \u{2588}"),
+        "Tab did not open the pass route: {visible}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
+    wait_for_ready(&process.master);
     wait_for_text(&process.master, "Show date");
 
     process.master.write_all(b"\x0b").unwrap();
@@ -2104,11 +2245,8 @@ fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
 
 #[test]
 fn command_selector_does_not_expose_an_owner_from_stale_items() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
     wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
     wait_for_text(&process.master, "Show date");
 
     process.master.write_all(b"no-match\x0b").unwrap();
@@ -2139,29 +2277,46 @@ fn command_selector_does_not_expose_an_owner_from_stale_items() {
 }
 
 #[test]
-fn tab_opens_builtin_route_completion_and_escape_cancels_it() {
+fn core_tab_command_opens_the_route_completion_popup() {
     let config = fixture_config();
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
+
+    // With no typed prefix every aliased route is a candidate, so the Tab
+    // command opens the workflow's own completion popup.
+    wait_for_text(&process.master, "Enter Open");
     process.master.write_all(b"\t").unwrap();
     process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "app");
-    assert!(String::from_utf8_lossy(&output).contains("sys"));
+    let output = wait_for_text(&process.master, "(apps:main)");
+    let visible = String::from_utf8_lossy(&output).into_owned();
+    // `btop:main` is not one of the entry point's aggregate sources, so seeing
+    // it proves completion offers every aliased route, not just the sources.
+    assert!(visible.contains("(btop:main)"), "{visible}");
 
-    process.master.write_all(b"\x1b").unwrap();
+    process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
-    wait_for_fresh_text(&process.master, "Advanced");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
 
-    process.master.write_all(b"sys\t").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "sys:main");
-    let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---").next().unwrap();
-    assert!(!visible.contains("apps:main"), "screen: {visible}");
+#[test]
+fn core_tab_command_routes_directly_when_only_one_route_matches() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
 
-    process.master.write_all(b"\r").unwrap();
+    process.master.write_all(b"sys").unwrap();
     process.master.flush().unwrap();
     wait_for_text(&process.master, "Show system information");
+
+    // `sys` leaves exactly one candidate route, so Tab routes straight to it
+    // instead of opening the popup. The target view is the unfiltered
+    // sys:main list, which also contains "Show date".
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Show date");
+    let visible = String::from_utf8_lossy(&output).into_owned();
+    assert!(!visible.contains("(sys:main)"), "completion popup opened: {visible}");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -2309,215 +2464,6 @@ fn item_bindings_dispatch_and_display_in_footer() {
         output
     );
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn routed_picker_restores_alias_prefix_and_top_spacing() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-
-        [workflows.apps.views.default]
-        alias = "app"
-        [workflows.apps.views.default.engine]
-        type = "picker"
-        [workflows.apps.views.default.engine.config]
-        items = [{display = "Needle", value = "needle"}]
-        "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"app needle").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "app needle█")
-            && visible
-                .lines()
-                .last()
-                .is_some_and(|footer| footer.trim_start().starts_with("app "))
-    });
-    let output = String::from_utf8_lossy(&output);
-    let visible = output.rsplit("--- visible screen ---").next().unwrap();
-    let mut lines = visible.lines().filter(|line| !line.is_empty());
-    assert!(lines.next().is_some_and(|line| line.trim().is_empty()));
-    assert!(visible.lines().any(|line| line.trim() == "app needle█"));
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn picker_back_returns_to_parent_without_clearing_routed_query() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = [{display = "Item", value = "value"}]
-        [workflows.apps.views.default]
-        alias = "app"
-        [workflows.apps.views.default.engine]
-        type = "picker"
-        [workflows.apps.views.default.engine.config]
-        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [workflows.sys.views.default]
-        alias = "sys"
-        [workflows.sys.views.default.engine]
-        type = "picker"
-        [workflows.sys.views.default.engine.config]
-        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-"#,
-    )
-    .expect("could not write route input config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"app ")
-        .expect("could not write app route");
-    process.master.flush().expect("could not flush app route");
-    let _ = wait_for_text(&process.master, "app");
-
-    process
-        .master
-        .write_all(b"aa")
-        .expect("could not write app query");
-    process.master.flush().expect("could not flush app query");
-    let _ = wait_for_text(&process.master, "aa");
-
-    process
-        .master
-        .write_all(b"\x1b")
-        .expect("could not return from the routed picker");
-    process
-        .master
-        .flush()
-        .expect("could not flush the routed picker return");
-    let _ = wait_for_text(&process.master, "Item");
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close route input launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush route input launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove route input config");
-}
-
-#[test]
-fn empty_picker_input_returns_to_parent_before_a_new_root_route() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "apps:default"
-        [[workflows.core.views.default.engine.config.feeds]]
-        view = "sys:default"
-        [workflows.apps.views.default]
-        alias = "app"
-        [workflows.apps.views.default.engine]
-        type = "picker"
-        [workflows.apps.views.default.engine.config]
-        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-        [workflows.sys.views.default]
-        alias = "sys"
-        [workflows.sys.views.default.engine]
-        type = "picker"
-        [workflows.sys.views.default.engine.config]
-        items = [{display = "Item", value = "value", metadata = {target = "core:capture"}}]
-"#,
-    )
-    .expect("could not write route editing config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"app aa")
-        .expect("could not write app route query");
-    process
-        .master
-        .flush()
-        .expect("could not flush app route query");
-    let _ = wait_for_text(&process.master, "app");
-
-    process
-        .master
-        .write_all(b"\x7f\x7f")
-        .expect("could not delete route parameters");
-    process
-        .master
-        .flush()
-        .expect("could not flush route parameter deletion");
-    let _ = wait_for_text(&process.master, "Item");
-
-    process
-        .master
-        .write_all(b"\x7f")
-        .expect("could not return from the empty child picker");
-    process
-        .master
-        .flush()
-        .expect("could not flush the child picker return");
-    process
-        .master
-        .write_all(b"\x7f\x7f\x7f")
-        .expect("could not backspace at the empty default root");
-    process
-        .master
-        .flush()
-        .expect("could not flush default root backspace");
-    process
-        .master
-        .write_all(b"sys ")
-        .expect("could not write replacement route");
-    process
-        .master
-        .flush()
-        .expect("could not flush replacement route");
-    let _ = wait_for_text(&process.master, "sys");
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close route editing launcher");
-    process
-        .master
-        .flush()
-        .expect("could not flush route editing launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove route editing config");
 }
 
 #[test]
@@ -2844,58 +2790,6 @@ fn invalid_embedded_command_is_rejected_during_startup() {
 }
 
 #[test]
-fn failed_view_creation_returns_to_the_current_view() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        [workflows.core.views.broken]
-        [workflows.core.views.broken.engine]
-        type = "embedded"
-        [workflows.core.views.broken.engine.config]
-        command = ["/definitely/missing/tlaunch-test"]
-"#,
-    )
-    .expect("could not write failed navigation integration config");
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    process
-        .master
-        .write_all(b"core:broken ")
-        .expect("could not write broken view route");
-    process
-        .master
-        .flush()
-        .expect("could not flush broken route");
-    let output = wait_for_text(&process.master, "ERROR");
-    assert!(
-        String::from_utf8_lossy(&output).contains(" core:broken"),
-        "output: {:?}",
-        output
-    );
-
-    process
-        .master
-        .write_all(b"\x03")
-        .expect("could not close launcher after failed navigation");
-    process
-        .master
-        .flush()
-        .expect("could not flush launcher close");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).expect("could not remove failed navigation config");
-}
-
-#[test]
 fn qualified_view_path_navigates_to_any_engine() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2949,58 +2843,6 @@ fn qualified_view_path_navigates_to_any_engine() {
         output
     );
     fs::remove_dir_all(root).expect("could not remove qualified route config");
-}
-
-#[test]
-fn ctrl_k_in_embedded_view_displays_embedded_commands() {
-    let root = temporary_root();
-    let marker = root.join("resource-marker");
-    let bin = root.join("bin");
-    let fake_btop = bin.join("btop");
-    fs::create_dir_all(&bin).unwrap();
-    fs::write(
-        &fake_btop,
-        "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&fake_btop, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let path = format!("{}:/usr/bin:/bin", bin.display());
-
-    let mut process = spawn_launcher_with_args_and_env(
-        &fixture_config(),
-        &[],
-        &[
-            ("MONITOR_MARKER", marker.to_str().unwrap()),
-            ("PATH", &path),
-        ],
-    );
-    wait_for_ready(&process.master);
-    process.master.write_all(b"btop:main ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Commands");
-
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Reset monitor");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Commands");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    // ADR5 displays the suite member shorthand alias in the picker footer.
-    wait_for_text(&process.master, "core");
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -3284,11 +3126,8 @@ sys.stdout.write("\n")
 
 #[test]
 fn command_selector_displays_keybindings_for_commands() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
     wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
     wait_for_text(&process.master, "Show date");
 
     process.master.write_all(b"\x0b").unwrap();
@@ -3319,11 +3158,8 @@ fn command_selector_displays_keybindings_for_commands() {
 
 #[test]
 fn command_selector_can_open_edit_query_form_and_apply_parameters() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
     wait_for_ready(&process.master);
-    process.master.write_all(b"sys ").unwrap();
-    process.master.flush().unwrap();
     wait_for_text(&process.master, "Show date");
 
     // Open command palette with Ctrl+K
@@ -3520,6 +3356,80 @@ fn aggregate_view_footer_commands_remain_stable_during_input_without_flicker() {
     // Wait for search result to arrive
     let ready_screen = wait_for_text(&process.master, "Advanced Network");
     assert!(String::from_utf8_lossy(&ready_screen).contains("Open"));
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn completion_jump_consumes_the_picker_input() {
+    let config = fixture_config();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Enter Open");
+
+    // Filter the entry so the completion command has a half-typed route.
+    process.master.write_all(b"sys").unwrap();
+    process.master.flush().unwrap();
+    let filtered = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "sys\u{2588}")
+            && visible.contains("Show system information")
+            && visible.contains("core | 1 of 1")
+    });
+    assert!(String::from_utf8_lossy(&filtered).contains("core | 1 of 1"));
+
+    // Tab routes straight to sys:main.
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| visible.contains("Show date"));
+
+    // Returning to the entry must not resurrect the half-typed input that the
+    // completion jump consumed.
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let returned = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "\u{2588}")
+            && !visible.contains("Show system information")
+            && visible
+                .lines()
+                .last()
+                .is_some_and(|footer| footer.trim_start().starts_with("core |"))
+    });
+    let returned = String::from_utf8_lossy(&returned);
+    let visible = returned.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        !visible.contains("Show system information"),
+        "completion jump did not consume the entry input: {visible}"
+    );
+
+    // Opening the completion popup consumes the input too, so cancelling it
+    // does not bring the half-typed route back either. `fo` is deliberately
+    // ambiguous: typing the exact alias `form` jumps straight to it now.
+    process.master.write_all(b"fo").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "fo\u{2588}")
+    });
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "(form:input)");
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let cancelled = wait_for_fresh_screen(&process.master, |visible| {
+        visible.lines().any(|line| line.trim() == "\u{2588}")
+            && visible
+                .lines()
+                .last()
+                .is_some_and(|footer| footer.trim_start().starts_with("core |"))
+    });
+    let cancelled = String::from_utf8_lossy(&cancelled);
+    let cancelled = cancelled.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        !cancelled.lines().any(|line| line.trim() == "fo\u{2588}"),
+        "completion popup did not consume the entry input: {cancelled}"
+    );
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();

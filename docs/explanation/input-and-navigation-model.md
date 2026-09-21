@@ -17,8 +17,8 @@ The input and navigation subsystem is the operational backbone of `tlaunch`. It 
 
 The architecture clearly demarcates responsibilities across four distinct layers:
 
-1. **`RouteCatalog`**: Read-only directory of declared views, aliases, query schemas, and canonical route paths.
-2. **`Router`**: Manages the runtime View Stack, current route location, and navigation transitions (`navigate`, `call`, `return`).
+1. **`RouteCatalog`**: Read-only adapter that resolves a navigation target selector to the View it names (with its suite alias) and validates query schemas.
+2. **`Router`**: Manages the runtime View Stack, current View location, and navigation transitions (`navigate`, `call`, `return`).
 3. **`Session`**: The stateful driver that coordinates terminal polling, hosts the `Router`, handles global session commands, and invokes render cycles.
 4. **`View` & `Engine`**: Concrete execution units (`picker`, `capture`, `embedded`) that receive dispatched input events, manage internal view state, and emit command requests.
 
@@ -47,7 +47,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 
 ## 3. Route Resolution and Query Contracts
 
-- **Prefix Routing**: In the default view, typing `<alias> <query>` or `<workflow:view> <query>` automatically commits the route and switches to the target view with the remainder parsed as its query argument.
+- **Prefix Routing**: The engine does not parse route selectors. A workflow that wants "type an alias, then Space to jump" binds a command to `space` and resolves the alias in its own script, as the development fixture's `core:route_separator` does. The host still renders the current View's suite alias as an optional left prefix and can return to the parent or root on Backspace through `[defaults.picker] left_prefix_backspace`.
 - **Route Query Scope**: Arguments passed via CLI or navigation actions are validated against the target view's declared `[views.<name>.query]` schema before the view is mounted.
 
 ## 4. View Lifecycle Sequences

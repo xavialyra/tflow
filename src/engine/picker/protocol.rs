@@ -1,11 +1,11 @@
 //! Protocol-native adapter for the Picker engine.
 //!
-//! The adapter owns the interactive editor and route completion. The existing
-//! PickerView remains responsible for item loading, selection, and preview
+//! The adapter owns the interactive editor. The existing PickerView remains
+//! responsible for item loading, selection, and preview
 
 use super::{
-    PickerKeymap, PickerOptions, PickerView, PickerViewServices, create_input_bindings,
-    create_renderer,
+    PickerKeymap, PickerOptions, PickerView, PickerViewServices, PrefixBackspace,
+    create_input_bindings, create_renderer,
 };
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
@@ -22,21 +22,20 @@ use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
     EffectRequest, FallbackInputReceiver, LifecycleEvent, NavigationRequest, ParsedQuery,
-    RenderContext, RenderResult, RouteCandidate, RouteCatalog, TransitionRequest, View,
-    ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent,
+    ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
     text::{Line, Span},
     widgets::Paragraph,
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     ops::Range,
 };
 
@@ -61,12 +60,13 @@ pub(crate) struct PickerProtocolConfig {
     pub(crate) bindings: ProjectedBindingConfig,
     pub(crate) services: PickerViewServices,
     pub(crate) parameter_binding: ParameterBinding,
-    /// Bindings for route targets used by route-entry submission. The map is
-    /// optional so existing Picker mounts remain valid when route entry is off.
-    pub(crate) parameter_bindings: BTreeMap<String, ParameterBinding>,
     pub(crate) theme: ResolvedTheme,
-    pub(crate) route_entry: bool,
-    pub(crate) query_prefix: Option<String>,
+    /// Marker rendered at the start of a non-root View's input line. Purely
+    /// presentational; it never affects key handling.
+    pub(crate) left_prefix: Option<String>,
+    /// Backspace behavior on an empty, prefixed input line. `None` leaves
+    /// Backspace inert.
+    pub(crate) prefix_backspace: Option<super::PrefixBackspace>,
     pub(crate) runtime_snapshot: Value,
     pub(crate) tasks: TaskRuntime,
 }
@@ -75,7 +75,6 @@ pub(crate) fn create_protocol_view(
     config: PickerProtocolConfig,
     request: &NavigationRequest,
     instance: ViewInstanceId,
-    routes: &dyn RouteCatalog,
 ) -> Result<Box<dyn View>> {
     anyhow::ensure!(
         request.query.target == config.identity.view_ref,
@@ -95,6 +94,12 @@ pub(crate) fn create_protocol_view(
             .field("show_divider")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        show_left_prefix: config
+            .engine
+            .field("show_left_prefix")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        prefix_backspace: config.prefix_backspace,
     };
     let (preview_ratio, preview_min_width, preview_visible) = super::preview_options(
         config.engine.field("preview_ratio"),
@@ -115,50 +120,6 @@ pub(crate) fn create_protocol_view(
         runtime.set_initial_focus(Some(focus.clone()));
     }
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
-    let (route_candidates, recognized_route_selectors, route_resolutions, route_schemas) =
-        if config.route_entry {
-            let all_candidates = routes.complete("");
-            let recognized_route_selectors = all_candidates
-                .iter()
-                .flat_map(|candidate| {
-                    [candidate.target.reference.clone(), candidate.label.clone()].into_iter()
-                })
-                .collect::<HashSet<_>>();
-            let current_view = config.identity.view_ref.as_str();
-            let route_candidates = all_candidates
-                .into_iter()
-                .filter(|candidate| candidate.target.reference != current_view)
-                .collect::<Vec<_>>();
-            let route_resolutions = route_candidates
-                .iter()
-                .flat_map(|candidate| {
-                    [candidate.target.reference.clone(), candidate.label.clone()]
-                        .into_iter()
-                        .filter_map(|selector| routes.resolve(&selector).map(|target| (selector, target)))
-                })
-                .collect::<BTreeMap<_, _>>();
-            let route_schemas = route_candidates
-                .iter()
-                .filter_map(|candidate| {
-                    routes
-                        .query_schema(&candidate.target.reference)
-                        .map(|schema| (candidate.target.reference.clone(), schema))
-                })
-                .collect::<BTreeMap<_, _>>();
-            (
-                route_candidates,
-                recognized_route_selectors,
-                route_resolutions,
-                route_schemas,
-            )
-        } else {
-            (
-                Vec::new(),
-                HashSet::new(),
-                BTreeMap::new(),
-                BTreeMap::new(),
-            )
-        };
     let mut disabled_keys = explicitly_disabled_keys(
         config.bindings.defaults.as_ref(),
         config.bindings.view_keymap.as_ref(),
@@ -203,14 +164,8 @@ pub(crate) fn create_protocol_view(
         runtime,
         renderer,
         keymap,
-        route_candidates,
-        recognized_route_selectors,
-        route_schemas,
-        route_resolutions,
         disabled_keys,
-        parameter_bindings: config.parameter_bindings,
-        route_entry: config.route_entry,
-        query_prefix: config.query_prefix,
+        left_prefix: config.left_prefix,
         theme: config.theme,
         parameter_binding: config.parameter_binding,
         editor,
@@ -226,13 +181,12 @@ pub(crate) fn create_protocol_view(
         active: false,
         activated_once: false,
         closed: false,
-        completion: None,
-        route_transition_pending: false,
         defer_work_poll: false,
         task_completion_pending: false,
         publication_ready: false,
         diagnostic: None,
         content_size: (1, 1),
+        has_parent: false,
         options,
     }))
 }
@@ -255,18 +209,6 @@ fn initial_editor(
     let state = binding.state_from_snapshot(snapshot, false)?;
     let rendered = binding.render_input(&state)?;
     Ok(EditorBuffer::from_raw(rendered.clone(), rendered.len()))
-}
-
-fn parsed_route_query(
-    binding: &ParameterBinding,
-    target: &str,
-    schema: &str,
-    text: &str,
-) -> Result<ParsedQuery> {
-    let mut state = binding.instantiate()?;
-    binding.parse_input(&mut state, text)?;
-    let values = binding.parameter_values(&state)?;
-    Ok(ParsedQuery::new(target, schema, values))
 }
 
 fn parameter_snapshot(
@@ -308,28 +250,13 @@ fn engine_context(
     })
 }
 
-#[derive(Clone)]
-struct CompletionState {
-    source_instance: ViewInstanceId,
-    source_revision: u64,
-    candidates: Vec<RouteCandidate>,
-    selected: usize,
-    range: Range<usize>,
-}
-
 struct PickerProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     options: PickerOptions,
     keymap: PickerKeymap,
-    route_candidates: Vec<RouteCandidate>,
-    recognized_route_selectors: HashSet<String>,
-    route_schemas: BTreeMap<String, crate::view::QuerySchema>,
-    route_resolutions: BTreeMap<String, crate::view::RouteTarget>,
     disabled_keys: HashSet<crate::input::BindingKey>,
-    parameter_bindings: BTreeMap<String, ParameterBinding>,
-    route_entry: bool,
-    query_prefix: Option<String>,
+    left_prefix: Option<String>,
     theme: ResolvedTheme,
     parameter_binding: ParameterBinding,
     editor: EditorBuffer,
@@ -345,18 +272,20 @@ struct PickerProtocolView {
     active: bool,
     activated_once: bool,
     closed: bool,
-    completion: Option<CompletionState>,
-    route_transition_pending: bool,
     defer_work_poll: bool,
     task_completion_pending: bool,
     publication_ready: bool,
     diagnostic: Option<String>,
     content_size: (u16, u16),
+    /// Whether this View was pushed on top of a parent, cached from the mount
+    /// context so the render path can show a parent hint without a ViewContext.
+    has_parent: bool,
 }
 
 impl PickerProtocolView {
     fn rebuild_context(&mut self, context: &ViewContext) {
         debug_assert_eq!(context.instance, self.instance);
+        self.has_parent = context.has_parent;
         self.parameters = ParameterSnapshot::from_parts(
             self.parameters.values().clone(),
             self.editor.raw.clone(),
@@ -415,7 +344,6 @@ impl PickerProtocolView {
     }
 
     fn edit_changed(&mut self, context: &ViewContext) -> Result<ViewDecision> {
-        self.completion = None;
         self.task_completion_pending = false;
         if self.parse_editor(context)? {
             let committed = self.runtime.input_committed(self.engine_context.clone())?;
@@ -438,7 +366,7 @@ impl PickerProtocolView {
         Ok(ready)
     }
 
-    fn body_layout(&self, area: Rect) -> [Rect; 4] {
+    fn body_layout(&self, area: Rect) -> [Rect; 3] {
         let query_height = if self.options.show_input {
             area.height.min(1)
         } else {
@@ -449,21 +377,11 @@ impl PickerProtocolView {
         } else {
             0
         };
-        let completion_available = area
-            .height
-            .saturating_sub(query_height)
-            .saturating_sub(divider_height);
-        let completion_height = self
-            .completion
-            .as_ref()
-            .map(|_| completion_available)
-            .unwrap_or(0);
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(query_height),
                 Constraint::Length(divider_height),
-                Constraint::Length(completion_height),
                 Constraint::Min(0),
             ])
             .split(area);
@@ -472,7 +390,7 @@ impl PickerProtocolView {
     }
 
     fn sync_auxiliary_size(&mut self) {
-        let body = self.body_layout(Rect::new(0, 0, self.content_size.0, self.content_size.1))[3];
+        let body = self.body_layout(Rect::new(0, 0, self.content_size.0, self.content_size.1))[2];
         self.runtime
             .set_auxiliary_content_size((body.width, body.height));
     }
@@ -491,70 +409,10 @@ impl PickerProtocolView {
         }
     }
 
-    fn route_submission(&mut self) -> Result<Option<ViewDecision>> {
-        if !self.route_entry {
-            return Ok(None);
-        }
-        let Some(separator) = self.editor.raw.find(char::is_whitespace) else {
-            return Ok(None);
-        };
-        let selector = &self.editor.raw[..separator];
-        if selector.is_empty() {
-            return Ok(None);
-        }
-        let Some(target) = self.route_resolutions.get(selector).cloned() else {
-            return Ok(None);
-        };
-        let target = target.reference;
-        let Some(schema) = self.route_schemas.get(&target) else {
-            self.diagnostic = Some(format!("route {:?} does not expose a query schema", target));
-            return Ok(Some(ViewDecision::Invalidate));
-        };
-        let Some(binding) = self.parameter_bindings.get(&target).or_else(|| {
-            (target == self.engine_context.view_identity().view_ref)
-                .then_some(&self.parameter_binding)
-        }) else {
-            self.diagnostic = Some(format!("route {:?} has no parameter binding", target));
-            return Ok(Some(ViewDecision::Invalidate));
-        };
-        let query_start = self.editor.raw[separator..]
-            .char_indices()
-            .find_map(|(offset, character)| {
-                (!character.is_whitespace()).then_some(separator + offset)
-            })
-            .unwrap_or(self.editor.raw.len());
-        let query_text = &self.editor.raw[query_start..];
-        let query_cursor = self
-            .editor
-            .cursor
-            .saturating_sub(query_start)
-            .min(query_text.len());
-        let query = match parsed_route_query(binding, &target, &schema.id, query_text) {
-            Ok(query) => query,
-            Err(error) => {
-                self.diagnostic = Some(error.to_string());
-                return Ok(Some(ViewDecision::Invalidate));
-            }
-        };
-        self.diagnostic = None;
-        self.route_transition_pending = true;
-        let request = NavigationRequest::new(target, query)
-            .with_input(query_text, query_cursor)
-            .map_err(crate::view::operation_failure)?;
-        Ok(Some(ViewDecision::Transition(TransitionRequest::Push(
-            request,
-        ))))
-    }
-
-    fn recognized_editor_prefix_end(&self) -> Option<usize> {
-        if self.query_prefix.is_some() {
-            return None;
-        }
-        let separator = self.editor.raw.find(char::is_whitespace)?;
-        let selector = &self.editor.raw[..separator];
-        self.recognized_route_selectors
-            .contains(selector)
-            .then_some(selector.len())
+    fn rendered_left_prefix(&self) -> Option<&str> {
+        self.left_prefix
+            .as_deref()
+            .filter(|_| self.options.show_left_prefix && self.has_parent)
     }
 
     fn map_emission(
@@ -627,28 +485,13 @@ impl PickerProtocolView {
             EngineDecision::Execute(crate::engine::EffectRequest::CopyToClipboard(value)) => {
                 Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(value)))
             }
-            EngineDecision::Navigate(EngineNavigationRequest {
-                target,
-                parameters,
-                replace,
-            }) => {
-                let schema = self.route_schemas.get(&target).with_context(|| {
-                    format!(
-                        "Picker navigation target {:?} is not in the route catalog",
-                        target
-                    )
-                })?;
-                let query = ParsedQuery::new(
-                    target.clone(),
-                    schema.id.clone(),
-                    parameters.unwrap_or(Value::Null),
-                );
-                let request = NavigationRequest::new(target, query);
-                Ok(ViewDecision::Transition(if replace {
-                    TransitionRequest::Replace(request)
-                } else {
-                    TransitionRequest::Push(request)
-                }))
+            EngineDecision::Navigate(EngineNavigationRequest { target, .. }) => {
+                // The Picker runtime never emits engine navigation; route jumps
+                // are workflow commands. Keep a defensive error for other hosts.
+                anyhow::bail!(
+                    "Picker engine navigation to {:?} is unsupported; bind a navigate command instead",
+                    target
+                )
             }
             EngineDecision::Batch(decisions) => {
                 let mut mapped = Vec::with_capacity(decisions.len());
@@ -668,92 +511,6 @@ impl PickerProtocolView {
         self.map_emission(context, emission)
     }
 
-    fn completion_range(&self) -> Option<Range<usize>> {
-        if !self.route_entry
-            || !self.editor.raw[..self.editor.cursor]
-                .chars()
-                .all(|c| !c.is_whitespace())
-        {
-            return None;
-        }
-        Some(0..self.editor.raw[..self.editor.cursor].len())
-    }
-
-    fn open_completion(&mut self) {
-        let Some(range) = self.completion_range() else {
-            if self.completion.take().is_some() {
-                self.state_revision = self.state_revision.wrapping_add(1);
-            }
-            return;
-        };
-        let prefix = &self.editor.raw[range.clone()];
-        let folded = prefix.to_lowercase();
-        let candidates = self
-            .route_candidates
-            .iter()
-            .filter(|candidate| {
-                candidate.label.to_lowercase().starts_with(&folded)
-                    || candidate
-                        .target
-                        .reference
-                        .to_lowercase()
-                        .starts_with(&folded)
-            })
-            .filter(|candidate| {
-                candidate.target.reference != self.engine_context.view_identity().view_ref
-            })
-            .cloned()
-            .collect();
-        self.completion = Some(CompletionState {
-            source_instance: self.instance,
-            source_revision: self.editor.revision,
-            candidates,
-            selected: 0,
-            range,
-        });
-        self.state_revision = self.state_revision.wrapping_add(1);
-    }
-
-    fn completion_move(&mut self, direction: isize) -> bool {
-        let Some(completion) = &mut self.completion else {
-            return false;
-        };
-        if completion.candidates.is_empty() {
-            return true;
-        }
-        completion.selected =
-            cycle_completion_selection(completion.selected, completion.candidates.len(), direction);
-        true
-    }
-
-    fn completion_accept(&mut self, context: &ViewContext) -> Result<ViewDecision> {
-        let Some(completion) = self.completion.take() else {
-            return Ok(ViewDecision::Stay);
-        };
-        self.state_revision = self.state_revision.wrapping_add(1);
-        if completion.source_instance != self.instance
-            || completion.source_revision != self.editor.revision
-        {
-            return Ok(ViewDecision::Stay);
-        }
-        let Some(candidate) = completion.candidates.get(completion.selected) else {
-            return Ok(ViewDecision::Stay);
-        };
-        self.editor
-            .replace_range(
-                completion.source_revision,
-                completion.range,
-                &format!("{} ", candidate.target.reference),
-                candidate.target.reference.len() + 1,
-            )
-            .map_err(|error| anyhow::anyhow!("completion edit was rejected: {error}"))?;
-        if let Some(route) = self.route_submission()? {
-            Ok(route)
-        } else {
-            self.edit_changed(context)
-        }
-    }
-
     fn apply_key(&mut self, context: &ViewContext, key: Key) -> Result<ViewDecision> {
         if !self.options.show_input {
             return match key {
@@ -764,14 +521,7 @@ impl PickerProtocolView {
         match key {
             Key::Char(character) => {
                 self.editor.insert(character);
-                if character.is_whitespace()
-                    && let Some(route) = self.route_submission()?
-                {
-                    self.completion = None;
-                    Ok(route)
-                } else {
-                    self.edit_changed(context)
-                }
+                self.edit_changed(context)
             }
             Key::Left => {
                 self.editor.move_left();
@@ -792,8 +542,15 @@ impl PickerProtocolView {
             Key::Backspace => {
                 if self.editor.delete_backward() {
                     self.edit_changed(context)
-                } else if self.editor.raw.is_empty() && context.has_parent && !self.route_entry {
-                    Ok(ViewDecision::CloseToRoot)
+                } else if self.editor.raw.is_empty() && self.rendered_left_prefix().is_some() {
+                    // The only editable thing left is the rendered left prefix.
+                    // Both opt-in behaviors consume it by leaving this View;
+                    // unset (or a View without a prefix) leaves Backspace inert.
+                    match self.options.prefix_backspace {
+                        Some(PrefixBackspace::Parent) => Ok(ViewDecision::Close),
+                        Some(PrefixBackspace::Root) => Ok(ViewDecision::CloseToRoot),
+                        None => Ok(ViewDecision::Invalidate),
+                    }
                 } else {
                     Ok(ViewDecision::Invalidate)
                 }
@@ -816,10 +573,10 @@ impl View for PickerProtocolView {
     }
 
     fn retained_content_area(&self, area: Rect) -> Option<Rect> {
-        // The freshly mounted input line, divider, and route completion belong
-        // to this instance. Only the item list and preview may briefly show
-        // pixels retained from the View this Picker replaced.
-        Some(self.body_layout(area)[3])
+        // The freshly mounted input line and divider belong to this instance.
+        // Only the item list and preview may briefly show pixels retained from
+        // the View this Picker replaced.
+        Some(self.body_layout(area)[2])
     }
 
     fn publication(&self) -> Option<&ViewPublication> {
@@ -829,14 +586,7 @@ impl View for PickerProtocolView {
     fn chrome(&self, _context: &ViewContext) -> Result<crate::view::ViewChrome> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
-        let mut status = self.renderer.chrome(&model).status;
-        if let Some(completion) = &self.completion {
-            status = Some(format!(
-                "{} / {} views",
-                usize::from(!completion.candidates.is_empty()).saturating_add(completion.selected),
-                completion.candidates.len()
-            ));
-        }
+        let status = self.renderer.chrome(&model).status;
         Ok(crate::view::ViewChrome {
             status,
             error: self.diagnostic.clone(),
@@ -885,37 +635,13 @@ impl View for PickerProtocolView {
         Some(self)
     }
 
-    fn has_modal_overlay(&self) -> bool {
-        self.completion.is_some()
-    }
-
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
         self.rebuild_context(context);
         let result = match id {
             CMD_EXIT => Ok(ViewDecision::Exit),
-            CMD_BACK => {
-                if self.completion.is_some() {
-                    self.completion = None;
-                    self.state_revision = self.state_revision.wrapping_add(1);
-                    Ok(ViewDecision::Invalidate)
-                } else {
-                    self.action(context, "picker.back")
-                }
-            }
-            CMD_SELECT_PREVIOUS => {
-                if self.completion_move(-1) {
-                    Ok(ViewDecision::Invalidate)
-                } else {
-                    self.action(context, "picker.select_previous")
-                }
-            }
-            CMD_SELECT_NEXT => {
-                if self.completion_move(1) {
-                    Ok(ViewDecision::Invalidate)
-                } else {
-                    self.action(context, "picker.select_next")
-                }
-            }
+            CMD_BACK => self.action(context, "picker.back"),
+            CMD_SELECT_PREVIOUS => self.action(context, "picker.select_previous"),
+            CMD_SELECT_NEXT => self.action(context, "picker.select_next"),
             CMD_TOGGLE_PREVIEW => self.action(context, "picker.toggle_preview"),
             CMD_PREVIEW_SCROLL_UP => self.action(context, "picker.preview_scroll_up"),
             CMD_PREVIEW_SCROLL_DOWN => self.action(context, "picker.preview_scroll_down"),
@@ -934,18 +660,23 @@ impl View for PickerProtocolView {
         result
     }
 
+    fn clear_input(&mut self, context: &ViewContext) -> Result<()> {
+        if self.editor.raw.is_empty() {
+            return Ok(());
+        }
+        self.editor.clear();
+        self.parse_editor(context)?;
+        self.sync_auxiliary_size();
+        Ok(())
+    }
+
     fn command_snapshot(&self) -> ViewCommandSnapshot {
-        let in_completion = self.completion.is_some();
         ViewCommandSnapshot {
             engine_type: self.engine_context.view_identity().engine_type.clone(),
             parameters: self.parameters.values().clone(),
             raw_input: self.editor.raw.clone(),
             runtime: self.runtime_snapshot.clone(),
-            publication: if in_completion {
-                None
-            } else {
-                self.publication.clone()
-            },
+            publication: self.publication.clone(),
             revision: self.state_revision,
         }
     }
@@ -995,18 +726,8 @@ impl View for PickerProtocolView {
                 self.closed = true;
                 Ok(ViewDecision::Stay)
             }
-            ViewEvent::Lifecycle(LifecycleEvent::TransitionCommitted { .. }) => {
-                if self.route_transition_pending {
-                    self.route_transition_pending = false;
-                    self.editor.clear();
-                    self.parse_editor(context)?;
-                    Ok(ViewDecision::Invalidate)
-                } else {
-                    Ok(ViewDecision::Stay)
-                }
-            }
-            ViewEvent::Lifecycle(LifecycleEvent::TransitionRejected { .. }) => {
-                self.route_transition_pending = false;
+            ViewEvent::Lifecycle(LifecycleEvent::TransitionCommitted { .. })
+            | ViewEvent::Lifecycle(LifecycleEvent::TransitionRejected { .. }) => {
                 Ok(ViewDecision::Stay)
             }
             ViewEvent::Input(InputEvent::Key { key, raw }) => {
@@ -1019,14 +740,7 @@ impl View for PickerProtocolView {
                 self.edit_changed(context)
             }
             ViewEvent::Input(InputEvent::Paste { text: None, .. })
-            | ViewEvent::Input(InputEvent::Bytes(_)) => {
-                if self.completion.take().is_some() {
-                    self.state_revision = self.state_revision.wrapping_add(1);
-                    Ok(ViewDecision::Invalidate)
-                } else {
-                    Ok(ViewDecision::Stay)
-                }
-            }
+            | ViewEvent::Input(InputEvent::Bytes(_)) => Ok(ViewDecision::Stay),
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
             ViewEvent::Task(task) => {
                 if !self.task_registry.accepts(&task) {
@@ -1093,10 +807,9 @@ impl View for PickerProtocolView {
         let layout = self.body_layout(area);
         let query_height = layout[0].height;
         let divider_height = layout[1].height;
-        let completion_height = layout[2].height;
+        let left_prefix = self.rendered_left_prefix();
         let query = visible_editor_query(
-            self.query_prefix.as_deref(),
-            self.recognized_editor_prefix_end(),
+            left_prefix,
             &self.editor.raw,
             self.editor.cursor,
             layout[0].width as usize,
@@ -1142,45 +855,6 @@ impl View for PickerProtocolView {
                 layout[1],
             );
         }
-        if let Some(completion) = &self.completion {
-            let first = completion
-                .selected
-                .saturating_add(1)
-                .saturating_sub(completion_height as usize);
-            let lines = if completion.candidates.is_empty() {
-                vec![Line::styled(
-                    "(no matching routes)",
-                    self.theme.picker.muted,
-                )]
-            } else {
-                completion
-                    .candidates
-                    .iter()
-                    .enumerate()
-                    .skip(first)
-                    .take(completion_height as usize)
-                    .map(|(index, candidate)| {
-                        let selected = index == completion.selected;
-                        let marker = if selected { "> " } else { "  " };
-                        let label = if candidate.label == candidate.target.reference {
-                            candidate.label.clone()
-                        } else {
-                            format!("{} ({})", candidate.label, candidate.target.reference)
-                        };
-                        let style = if selected {
-                            self.theme.picker.selected.add_modifier(Modifier::BOLD)
-                        } else {
-                            self.theme.picker.text
-                        };
-                        Line::from(vec![
-                            Span::styled(marker, self.theme.picker.marker),
-                            Span::styled(label, style),
-                        ])
-                    })
-                    .collect()
-            };
-            frame.render_widget(Paragraph::new(lines), layout[2]);
-        }
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         self.renderer.render(
@@ -1190,7 +864,7 @@ impl View for PickerProtocolView {
                 image_picker: context.image_picker,
             },
             frame,
-            layout[3],
+            layout[2],
         );
         Ok(RenderResult {
             cursor: None,
@@ -1215,38 +889,10 @@ impl FallbackInputReceiver for PickerProtocolView {
             if self.disabled_keys.contains(&key.binding_identity()) {
                 return Ok(ViewDecision::Stay);
             }
-            if (key == Key::Tab || key == Key::Enter) && self.completion.is_some() {
-                return self.completion_accept(context);
-            }
-            if key == Key::Tab {
-                self.open_completion();
-                return Ok(ViewDecision::Invalidate);
-            }
-            if key == Key::Enter
-                && self.completion.is_none()
-                && let Some(decision) = self.route_submission()?
-            {
-                return Ok(decision);
-            }
             self.apply_key(context, key)
         })();
         self.sync_auxiliary_size();
         result
-    }
-}
-
-fn cycle_completion_selection(selected: usize, length: usize, direction: isize) -> usize {
-    if length == 0 {
-        return 0;
-    }
-    if direction.is_negative() {
-        if selected == 0 {
-            length - 1
-        } else {
-            selected - 1
-        }
-    } else {
-        (selected + 1) % length
     }
 }
 
@@ -1344,27 +990,28 @@ struct VisibleEditorQuery {
 }
 
 fn visible_editor_query(
-    route_prefix: Option<&str>,
-    recognized_input_prefix_end: Option<usize>,
+    left_prefix: Option<&str>,
     raw: &str,
     cursor: usize,
     width: usize,
 ) -> VisibleEditorQuery {
     let cursor = crate::input::previous_char_boundary(raw, cursor);
-    let route_prefix = route_prefix.filter(|prefix| !prefix.is_empty());
-    let prefix = route_prefix
+    let left_prefix = left_prefix.filter(|prefix| !prefix.is_empty());
+    let prefix = left_prefix
         .map(|prefix| format!("{prefix} "))
         .unwrap_or_default();
     let prefix_width = UnicodeWidthStr::width(prefix.as_str());
+    let highlight = |output_end: usize| {
+        left_prefix
+            .filter(|prefix| prefix.len() <= output_end)
+            .map(|prefix| 0..prefix.len())
+    };
     if width <= prefix_width {
         let text = crate::ui::chrome::clip(&prefix, width);
-        let highlight = route_prefix
-            .filter(|prefix| prefix.len() <= text.len())
-            .map(|prefix| 0..prefix.len());
         return VisibleEditorQuery {
+            highlight: highlight(text.len()),
             text,
             cursor: width.saturating_sub(1) as u16,
-            highlight,
         };
     }
 
@@ -1374,14 +1021,7 @@ fn visible_editor_query(
     if input_width <= available {
         let text = format!("{prefix}{raw}");
         return VisibleEditorQuery {
-            highlight: editor_prefix_highlight(
-                route_prefix,
-                recognized_input_prefix_end,
-                prefix.len(),
-                0,
-                raw.len(),
-                text.len(),
-            ),
+            highlight: highlight(text.len()),
             text,
             cursor: (prefix_width + cursor_width) as u16,
         };
@@ -1423,32 +1063,10 @@ fn visible_editor_query(
     let local_cursor = UnicodeWidthStr::width(&raw[start..cursor]);
     let text = format!("{prefix}{marker}{visible}");
     VisibleEditorQuery {
-        highlight: editor_prefix_highlight(
-            route_prefix,
-            recognized_input_prefix_end,
-            prefix.len() + marker.len(),
-            start,
-            start.saturating_add(visible.len()),
-            text.len(),
-        ),
+        highlight: highlight(text.len()),
         text,
         cursor: (prefix_width + marker_width + local_cursor) as u16,
     }
-}
-
-fn editor_prefix_highlight(
-    route_prefix: Option<&str>,
-    recognized_input_prefix_end: Option<usize>,
-    output_start: usize,
-    input_start: usize,
-    input_end: usize,
-    output_end: usize,
-) -> Option<Range<usize>> {
-    if let Some(route_prefix) = route_prefix {
-        return (route_prefix.len() <= output_end).then_some(0..route_prefix.len());
-    }
-    let end = recognized_input_prefix_end?;
-    (input_start == 0 && end <= input_end).then_some(output_start..output_start + end)
 }
 
 impl Drop for PickerProtocolView {

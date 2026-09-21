@@ -288,24 +288,10 @@ impl CompiledConfig {
         map
     }
 
-    pub(crate) fn iter_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
-        self.views.iter()
-    }
-
     pub(crate) fn iter_public_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
         self.views
             .iter()
             .filter(|(view_ref, _)| !view_ref.starts_with("__"))
-    }
-
-    pub(crate) fn view_count(&self) -> usize {
-        self.views.len()
-    }
-
-    pub(crate) fn workflow_display_name(&self, package_id: &str) -> Option<&str> {
-        self.workflows
-            .get(package_id)
-            .map(|workflow| workflow.name.as_str())
     }
 
     pub fn resolve_view(&self, selector: &str) -> Result<String> {
@@ -341,8 +327,12 @@ impl CompiledConfig {
         self.view_aliases.get(view_ref).map(String::as_str)
     }
 
-    pub(crate) fn aliases(&self) -> &BTreeMap<String, ViewRef> {
-        &self.aliases
+    /// Suite alias for a user-facing View. Internal `__`-prefixed Views are not
+    /// navigation targets and never advertise one.
+    pub(crate) fn public_alias_for_view(&self, view_ref: &str) -> Option<&str> {
+        (!view_ref.starts_with("__"))
+            .then(|| self.alias_for_view(view_ref))
+            .flatten()
     }
 
     pub fn view_engine_type(&self, view_ref: &str) -> Result<&str> {
@@ -364,6 +354,19 @@ impl CompiledConfig {
 
     pub(crate) fn picker_default_bindings(&self) -> Option<&toml::Value> {
         self.defaults.picker.bindings.as_ref()
+    }
+
+    /// Left-side marker for non-root Picker input lines. `"$route"` is a
+    /// sentinel resolved to the target View's route label by the View factory;
+    /// any other value is a literal marker, and `None` disables it.
+    pub(crate) fn picker_left_prefix(&self) -> Option<&str> {
+        self.defaults.picker.left_prefix.as_deref()
+    }
+
+    /// Backspace behavior on an empty, prefixed Picker input line. `None`
+    /// leaves Backspace inert.
+    pub(crate) fn picker_left_prefix_backspace(&self) -> Option<LeftPrefixBackspace> {
+        self.defaults.picker.left_prefix_backspace
     }
 
     pub(crate) fn capture_default_bindings(&self) -> Option<&toml::Value> {
@@ -404,6 +407,15 @@ mod tests {
     use super::*;
     use crate::engine::EngineRegistry;
 
+    #[test]
+    fn resolve_view_accepts_aliases_and_canonical_references() {
+        let config = load_test_fixture().unwrap();
+        assert_eq!(config.resolve_view("sys").unwrap(), "sys:main");
+        assert_eq!(config.resolve_view("sys:main").unwrap(), "sys:main");
+        assert!(config.resolve_view("unknown").is_err());
+        assert!(config.resolve_view("sys:missing").is_err());
+    }
+
     fn config(source: &str) -> CompiledConfig {
         let mut value: toml::Value = toml::from_str(source).unwrap();
         if let toml::Value::Table(fields) = &mut value {
@@ -434,6 +446,26 @@ mod tests {
     }
 
     #[test]
+    fn picker_left_prefix_defaults_off_and_is_configurable() {
+        let defaults: PickerDefaults = toml::from_str("").unwrap();
+        assert!(defaults.left_prefix.is_none());
+        assert!(defaults.left_prefix_backspace.is_none());
+        let defaults: PickerDefaults = toml::from_str("left_prefix = \"$route\"").unwrap();
+        assert_eq!(defaults.left_prefix.as_deref(), Some("$route"));
+        let defaults: PickerDefaults = toml::from_str("left_prefix = \"\u{3008}\"").unwrap();
+        assert_eq!(defaults.left_prefix.as_deref(), Some("\u{3008}"));
+    }
+
+    #[test]
+    fn picker_left_prefix_backspace_is_an_opt_in_enum() {
+        let parent: PickerDefaults = toml::from_str("left_prefix_backspace = \"parent\"").unwrap();
+        assert_eq!(parent.left_prefix_backspace, Some(LeftPrefixBackspace::Parent));
+        let root: PickerDefaults = toml::from_str("left_prefix_backspace = \"root\"").unwrap();
+        assert_eq!(root.left_prefix_backspace, Some(LeftPrefixBackspace::Root));
+        assert!(toml::from_str::<PickerDefaults>("left_prefix_backspace = \"none\"").is_err());
+    }
+
+    #[test]
     fn declared_item_handler_preserves_data() {
         let source: toml::Value = toml::from_str(
             r#"
@@ -455,6 +487,56 @@ mod tests {
         assert_eq!(
             items["handler"]["items"][0]["display"],
             toml::Value::String("Example item".to_string())
+        );
+    }
+
+    #[test]
+    fn item_mode_views_may_declare_a_base_keymap() {
+        let compiled = config(
+            r#"
+            [workflows.core.commands.complete]
+            label = "Complete"
+            type = "navigate"
+            producer = "declared"
+            handler = { target = "core:default" }
+
+            [workflows.core.views.default.engine]
+            type = "picker"
+
+            [workflows.core.views.default.keymap]
+            mode = "item"
+            tab = "complete"
+            "#,
+        );
+        compiled
+            .validate_with_engines(&EngineRegistry::new())
+            .unwrap();
+        let keymap = compiled
+            .view("core:default")
+            .and_then(|view| view.keymap.as_ref())
+            .expect("keymap");
+        assert_eq!(keymap.mode, KeymapMode::Item);
+        assert!(keymap.bindings.contains_key("tab"));
+    }
+
+    #[test]
+    fn item_mode_base_keymap_still_validates_its_targets() {
+        let compiled = config(
+            r#"
+            [workflows.core.views.default.engine]
+            type = "picker"
+
+            [workflows.core.views.default.keymap]
+            mode = "item"
+            tab = "missing"
+            "#,
+        );
+        let error = compiled
+            .validate_with_engines(&EngineRegistry::new())
+            .expect_err("an unknown command must be rejected in either mode");
+        assert!(
+            error.to_string().contains("unknown command or action"),
+            "{error}"
         );
     }
 

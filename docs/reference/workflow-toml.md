@@ -116,6 +116,8 @@ Every Picker provides a preview pane, initially collapsed and toggled with `Ctrl
 
 `preview_ratio` and `preview_min_width` control the automatic outer items/preview split. `preview_default_open` controls initial visibility and defaults to false. There is no user-defined outer layout. Omitting `preview` is equivalent to `preview = { inherit = true }`: aggregate pages use the selected feed's provider when present, otherwise the host displays built-in details. Non-aggregate pages can also use omission or explicit inheritance for built-in details. An explicit page provider overrides the feed and built-in details; null responses stay empty and errors stay visible. Parameters, relative script/image paths, and custom styles resolve in the provider owner's workflow. Documents support strings, item displays, wrapped rich paragraphs, images, separators, and nested internal layouts. See [Picker Preview Documents and Producers](picker-preview.md) for exact fields, validation, ownership, and resource limits.
 
+Picker input chrome is configured with `show_input` (default `true`), `show_divider` (default `true`), and `show_left_prefix` (default `true`). `show_left_prefix = false` hides the global `[defaults.picker] left_prefix` marker for one View, such as a completion popup, and also disables that View's opt-in `left_prefix_backspace` return. The Picker engine does not parse route selectors: to make a selector followed by a space jump to a route, bind a command to `space` and resolve the alias in its script, as the development fixture's `core:route_separator` does.
+
 ### Capture
 
 Capture requires an `output` field and accepts a literal string:
@@ -201,10 +203,12 @@ A declared handler is parsed as the operation payload for the command's declared
 
 The following fields are supported in declared handlers:
 
-- `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, and optional `replace` boolean.
+- `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, optional `replace` boolean, and optional `clear_input` boolean. When `clear_input = true` and the source View has editable input (a Picker), the host consumes that input before applying the transition, so returning to the View later starts from an empty query. This is how a completion command prevents a half-typed route from reappearing on Backspace.
 - `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
 - `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
 - `run`: `mode = "foreground"`, non-empty `argv`, optional `exit` boolean, and optional `success_message` string. After successful execution, the host records this message at `INFO` level and displays it in the source View's footer (or popup bottom border) if that View remains active. Failed or cancelled execution does not emit the success message. With `exit = true`, the message is logged before exit; the UI does not pause to display it. Errors take display priority. Informational messages expire after 3 seconds; the next input or a change of active View clears them earlier. Each new informational message replaces the previous one and restarts the timeout. Expiration only clears the display; recorded logs are retained.
+
+A `navigate` or `call` `query` may additionally carry the host-reserved key `__focus` (string), or the equivalent `__engine = { focus = "..." }`. Reserved `__`-prefixed keys are accepted during query binding, removed before the target View's parameters are published, and are not part of its query schema. A Picker treats `focus` as an item identity and selects the first loaded item whose `value` or `text` equals it. This lets a command or return processor re-enter a Picker with `replace = true` while restoring a known selection instead of resetting to the first row.
 
 Popup presentation is declared in the operation handler:
 

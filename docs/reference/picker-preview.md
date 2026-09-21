@@ -44,7 +44,7 @@ preview_min_width = 24
 preview_default_open = false
 ```
 
-`preview_ratio` is a number from 0 through 1 and controls the preview share of the horizontal body. `preview_min_width` is an unsigned 16-bit minimum width for the preview pane. `preview_default_open` is a boolean and defaults to false. The host always places the items pane first and uses a one-column gap. Query, divider, and completion rows are deducted before sizing the body. If the body is empty or the minimum width cannot fit, the preview is hidden and its pending work is cancelled. Opening route completion occupies the available body and suspends the preview until it closes.
+`preview_ratio` is a number from 0 through 1 and controls the preview share of the horizontal body. `preview_min_width` is an unsigned 16-bit minimum width for the preview pane. `preview_default_open` is a boolean and defaults to false. The host always places the items pane first and uses a one-column gap. The query and divider rows are deducted before sizing the body. If the body is empty or the minimum width cannot fit, the preview is hidden and its pending work is cancelled.
 
 ## Script Protocol
 

@@ -16,6 +16,7 @@ pub(crate) enum PreparedAction {
     Navigate {
         request: NavigationRequest,
         mode: NavigationMode,
+        clear_input: bool,
     },
     Call(Box<CallRequest>),
     Return {
@@ -243,6 +244,7 @@ fn prepare_protocol_operation(
             query,
             presentation,
             replace,
+            clear_input,
         } => {
             let target = config.resolve_view(&target)?;
             let request = match query {
@@ -257,6 +259,7 @@ fn prepare_protocol_operation(
                 } else {
                     NavigationMode::Push
                 },
+                clear_input,
             })
         }
         crate::protocol::ProtocolOperation::Call {

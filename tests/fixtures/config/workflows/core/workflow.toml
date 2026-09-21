@@ -19,3 +19,51 @@ file = "scripts/items.py"
 
 [views.default.keymap]
 mode = "item"
+tab = "complete"
+space = "route_separator"
+
+# Route completion is no longer an engine feature. The core workflow declares
+# its own Tab command, which opens this popup and applies the chosen route.
+[views.completion]
+
+[views.completion.query]
+type = "object"
+input = "filter"
+filter = { type = "string", default = "" }
+
+[views.completion.engine]
+type = "picker"
+
+[views.completion.engine.config]
+show_left_prefix = false
+
+[views.completion.engine.config.items]
+producer = "script"
+[views.completion.engine.config.items.handler]
+file = "scripts/completion.py"
+
+[views.completion.keymap]
+enter = "accept"
+
+[commands.complete]
+key = "tab"
+label = "Complete route"
+type = "navigate"
+producer = "script"
+[commands.complete.handler]
+file = "scripts/complete.py"
+
+[commands.route_separator]
+key = "space"
+label = "Separate route"
+type = "navigate"
+producer = "script"
+[commands.route_separator.handler]
+file = "scripts/route_separator.py"
+
+[commands.accept]
+label = "Open route"
+type = "navigate"
+producer = "script"
+[commands.accept.handler]
+file = "scripts/completion_accept.py"

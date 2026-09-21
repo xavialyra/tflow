@@ -228,11 +228,10 @@ def main():
         keymap = inspect_view_keymap(view_ref)
 
         for item in raw_items:
-            if keymap:
-                current_bindings = item.get("bindings") or {}
-                combined = dict(keymap)
-                combined.update(current_bindings)
-                item["bindings"] = combined
+            current_bindings = item.get("bindings") or {}
+            combined = dict(keymap) if keymap else {}
+            combined.update(current_bindings)
+            item["bindings"] = combined
             add_view_badge(item, view_badge(view_ref, source))
             all_items.append(item)
 

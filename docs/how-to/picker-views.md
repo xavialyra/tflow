@@ -105,6 +105,7 @@ file = "scripts/items.py"
 
 [views.default.keymap]
 mode = "item"
+tab = "complete_route"
 ```
 
 In the Suite manifest, inject the targets into the aggregate View:
@@ -115,7 +116,9 @@ target = "core:default"
 query = { sources = ["apps:main", "calculator:main", "sys:main"] }
 ```
 
-The aggregator script fetches items headlessly from each source via `tlaunch -s $TLAUNCH_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings.
+The aggregator script fetches items headlessly from each source via `tlaunch -s $TLAUNCH_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
+
+Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View binds Tab and Space there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in `mode = "static"`.
 
 ### 4. Use a Declared List for Small Static Collections
 
@@ -195,7 +198,7 @@ Press `Ctrl+P` and select **Mixed preview** to see display rows, rich wrapped te
 "alt+j" = "preview_scroll_down"
 ```
 
-Scroll actions move three rows and clamp the stored offset immediately, including after resize. Query, divider, and completion rows reduce the available preview body; an empty body or unmet pane minimum cancels preview work. Preview scripts share one pending slot: the same mount can replace its pending request, while overflow from another mount fails in that incoming preview pane.
+Scroll actions move three rows and clamp the stored offset immediately, including after resize. The query and divider rows reduce the available preview body; an empty body or unmet pane minimum cancels preview work. Preview scripts share one pending slot: the same mount can replace its pending request, while overflow from another mount fails in that incoming preview pane.
 
 ## Troubleshooting
 

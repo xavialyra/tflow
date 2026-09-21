@@ -544,17 +544,15 @@ fn view_contract(
         .collect();
 
     let mut keymap_json = serde_json::Map::new();
-    if mode == "static" {
-        if let Some(keymap) = &view.keymap {
-            for (key, val) in &keymap.bindings {
-                if let Some(cmd_id) = val.as_str() {
-                    let resolved_fqid = config
-                        .resolve_command_fqid(member_id, cmd_id)
-                        .unwrap_or_else(|| cmd_id.to_string());
-                    keymap_json.insert(key.clone(), serde_json::Value::String(resolved_fqid));
-                } else if val.as_bool() == Some(false) {
-                    keymap_json.insert(key.clone(), serde_json::Value::Bool(false));
-                }
+    if let Some(keymap) = &view.keymap {
+        for (key, val) in &keymap.bindings {
+            if let Some(cmd_id) = val.as_str() {
+                let resolved_fqid = config
+                    .resolve_command_fqid(member_id, cmd_id)
+                    .unwrap_or_else(|| cmd_id.to_string());
+                keymap_json.insert(key.clone(), serde_json::Value::String(resolved_fqid));
+            } else if val.as_bool() == Some(false) {
+                keymap_json.insert(key.clone(), serde_json::Value::Bool(false));
             }
         }
     }

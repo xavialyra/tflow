@@ -827,14 +827,11 @@ fn route_catalog_validates_structured_query_schema_and_shape() {
 
     struct StrictCatalog;
     impl RouteCatalog for StrictCatalog {
-        fn resolve(&self, selector: &str) -> Option<RouteTarget> {
-            (selector == "strict").then(|| RouteTarget {
-                reference: "strict".to_string(),
-                label: None,
+        fn resolve(&self, selector: &str) -> Option<ViewLocation> {
+            (selector == "strict").then(|| ViewLocation {
+                target: "strict".to_string(),
+                alias: None,
             })
-        }
-        fn complete(&self, _: &str) -> Vec<RouteCandidate> {
-            Vec::new()
         }
         fn query_schema(&self, target: &str) -> Option<QuerySchema> {
             (target == "strict").then(|| QuerySchema {

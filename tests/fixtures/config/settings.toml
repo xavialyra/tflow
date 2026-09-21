@@ -5,6 +5,10 @@ image_protocol = "sixel"
 copy = ["enter"]
 back = ["escape"]
 
+[defaults.picker]
+left_prefix = "$route"
+left_prefix_backspace = "root"
+
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 toggle_preview = ["ctrl+p"]

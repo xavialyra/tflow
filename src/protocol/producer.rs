@@ -17,6 +17,7 @@ pub(crate) enum ProtocolOperation {
         query: Option<Value>,
         presentation: ViewPresentation,
         replace: bool,
+        clear_input: bool,
     },
     Call {
         target: String,
@@ -105,6 +106,8 @@ enum RawOperation {
         presentation: ViewPresentation,
         #[serde(default)]
         replace: bool,
+        #[serde(default)]
+        clear_input: bool,
     },
     Call {
         target: String,
@@ -153,11 +156,13 @@ pub(crate) fn parse_response(
                     query,
                     presentation,
                     replace,
+                    clear_input,
                 } => ProtocolOperation::Navigate {
                     target,
                     query,
                     presentation,
                     replace,
+                    clear_input,
                 },
                 RawOperation::Call {
                     target,
@@ -671,6 +676,37 @@ mod tests {
         assert!(matches!(
             null,
             ProtocolOutcome::Operation(ProtocolOperation::Return { value: Value::Null })
+        ));
+    }
+
+    #[test]
+    fn navigate_clear_input_is_optional_and_parsed() {
+        let explicit = parse_response(
+            br#"{"version":1,"operation":{"type":"navigate","target":"a:b","clear_input":true}}"#,
+            Some("navigate"),
+            "test",
+        )
+        .unwrap();
+        assert!(matches!(
+            explicit,
+            ProtocolOutcome::Operation(ProtocolOperation::Navigate {
+                clear_input: true,
+                ..
+            })
+        ));
+
+        let defaulted = parse_response(
+            br#"{"version":1,"operation":{"type":"navigate","target":"a:b"}}"#,
+            Some("navigate"),
+            "test",
+        )
+        .unwrap();
+        assert!(matches!(
+            defaulted,
+            ProtocolOutcome::Operation(ProtocolOperation::Navigate {
+                clear_input: false,
+                ..
+            })
         ));
     }
 
