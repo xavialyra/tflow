@@ -14,17 +14,17 @@ cargo build --release
 ### Usage
 
 ```bash
-# Validate your configuration without opening the TUI
-tlaunch --check
-
 # Start the launcher using the configured default view
 tlaunch
 
 # Open a specific view directly
-tlaunch apps:main
+tlaunch app
 
-# Invoke a view with structured query arguments
-tlaunch dmenu:main --index=true --prompt="Select:"
+# Pass a value to a View's declared query parameter
+tlaunch apps:weight --app="terminal"
+
+# Use dmenu with input from a pipeline
+printf '%s\n' "first" "second" | tlaunch dmenu
 ```
 
 ---

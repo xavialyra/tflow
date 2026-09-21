@@ -120,7 +120,7 @@ Arguments passed after the target view are matched against the target view's dec
 - **Boolean flags**: `--flag` (sets `flag = true`) or `--no-flag` (sets `flag = false`)
 
 ```bash
-tlaunch dmenu:main --index=true --prompt="Choose item:"
+tlaunch dmenu:main --index=true
 ```
 
 ## Contract Inspection (`inspect`)
@@ -161,4 +161,4 @@ For example, create a symlink to an alias:
 ```bash
 ln -s $(which tlaunch) ~/.local/bin/dmenu
 ```
-Running `dmenu --prompt="Select:"` executes `tlaunch` directly into the `dmenu` view with `--prompt="Select:"` bound to the view's query parameters without manual CLI dispatch flags.
+Running `dmenu` executes `tlaunch` directly into the `dmenu` view without manual CLI dispatch flags.
