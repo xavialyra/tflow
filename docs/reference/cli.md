@@ -17,9 +17,15 @@ description: "Authoritative reference for tlaunch command-line options, environm
 tlaunch [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
 tlaunch -w <WORKFLOW_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
 tlaunch -s <SUITE_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
-tlaunch inspect <VIEW>
-tlaunch inspect --all
+tlaunch --inspect <VIEW>
+tlaunch --inspect
+tlaunch --all
+tlaunch --items <VIEW> [VIEW_ARGUMENTS...]
 ```
+
+Headless modes are expressed only as long options. A bare positional is always
+a View selector, so a View or alias may be named `inspect` or `items` without
+shadowing the interface.
 
 ## Global Options
 
@@ -32,8 +38,9 @@ Global options must precede the target view selector.
 | `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Uses its local entrypoint and inherits host settings. `-` reads a workflow from stdin. |
 | `--theme <THEME>` | — | Explicit theme selector (`terminal` or custom name). Overrides configured theme. |
 | `--check` | — | Validates the configuration files and workflow manifests without launching the interactive TUI. Returns non-zero on error. |
-| `--inspect <VIEW>` | — | Prints view contract details (alias, engine, queries, commands) and exits. |
-| `--all` | — | Used with `inspect` to dump contracts for all configured views. |
+| `--inspect [<VIEW>]` | — | Prints view contract details (alias, engine, queries, commands) and exits. Omit the View reference to dump every configured View. |
+| `--items <VIEW>` | — | Runs the View's item producer and writes the strict JSON array to stdout without launching the TUI. |
+| `--all` | — | Dumps contracts for every configured View; equivalent to `--inspect` without a View reference. |
 | `-h, --help` | — | Prints version and usage information. |
 | `-V, --version` | — | Prints the version of `tlaunch`. |
 
@@ -123,14 +130,13 @@ Arguments passed after the target view are matched against the target view's dec
 tlaunch dmenu:main --index=true
 ```
 
-## Contract Inspection (`inspect`)
+## Contract Inspection (`--inspect`)
 
 You can inspect the declared interface and routing contract of any view without running the interactive TUI:
 
 ```bash
-tlaunch inspect <workflow-id>:<view-name>
-# Or using an alias or flag:
-tlaunch inspect <alias>
+tlaunch --inspect <workflow-id>:<view-name>
+# Or using an alias:
 tlaunch --inspect <alias>
 ```
 
@@ -141,13 +147,25 @@ This prints formatted details including:
 - Declared query parameters and types
 - Configured commands and keybindings
 
-To inspect every configured View, use:
+To inspect every configured View, omit the View reference (or pass `--all`):
 
 ```bash
-tlaunch inspect --all
+tlaunch --inspect
+tlaunch --all
 ```
 
 The result has a top-level `views` array. Entries are ordered by canonical View reference and use the same contract fields as a single-View inspection. The list includes every configured Engine type; producer scripts are not executed.
+
+## Item Queries (`--items`)
+
+The `--items <VIEW>` option runs the target Picker View's item producer headlessly and writes the producer's strict JSON array to stdout. It does not start the interactive TUI and never mutates the produced items:
+
+```bash
+tlaunch --items apps:main
+tlaunch --items calculator:main '2+2'
+```
+
+Query arguments after the View reference are matched against the View's declared `[views.<name>.query]` schema exactly as for direct invocation. A missing View exits with code 2; a producer failure or a non-array response exits with code 1 and writes the error to stderr.
 
 ## CLI Symlink Multiplexing (`argv[0]`)
 

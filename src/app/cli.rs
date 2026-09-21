@@ -42,14 +42,15 @@ struct Args {
     check: bool,
 
     /// Output the view contract (query schema, commands, engine) in JSON and exit.
-    #[arg(long, value_name = "VIEW", conflicts_with = "items")]
-    inspect: Option<String>,
+    /// Pass a View reference, or omit it (or add `--all`) to dump every configured View.
+    #[arg(long, value_name = "VIEW", num_args = 0..=1, conflicts_with = "items")]
+    inspect: Option<Option<String>>,
 
     /// Run the item producer of the specified view and output the strict JSON array stream to stdout.
     #[arg(long, value_name = "VIEW", conflicts_with = "inspect")]
     items: Option<String>,
 
-    /// Inspect every configured View; use as `tlaunch inspect --all`.
+    /// Dump contracts for every configured View; `--inspect` without a View also does this.
     #[arg(long)]
     all: bool,
 
@@ -84,10 +85,14 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
     if stem.is_empty() || stem == "tlaunch" {
         return args;
     }
-    if args
-        .iter()
-        .any(|a| a == "--check" || a == "--inspect" || a == "--items")
-    {
+    if args.iter().any(|a| {
+        a == "--check"
+            || a == "--all"
+            || a == "--inspect"
+            || a.starts_with("--inspect=")
+            || a == "--items"
+            || a.starts_with("--items=")
+    }) {
         return args;
     }
 
@@ -252,42 +257,36 @@ pub(crate) fn run() -> Result<i32> {
         if args.view.is_some() || !args.view_options.is_empty() {
             bail!("--check cannot be combined with a target View or View options");
         }
-        if args.inspect.is_some() || args.all {
+        if args.inspect.is_some() || args.items.is_some() || args.all {
             bail!("--check cannot be combined with inspection options");
         }
         println!("configuration is valid: {target_display}");
         return Ok(0);
     }
 
-    let inspect_target = if let Some(target) = &args.inspect {
-        if args.all {
+    let inspect_requested = args.inspect.is_some();
+    let inspect_target = args.inspect.as_ref().and_then(|value| value.as_deref());
+    // `--all` on its own, or `--inspect` without a View, both dump every configured View.
+    let inspect_all = args.all || (inspect_requested && inspect_target.is_none());
+
+    if inspect_all {
+        if args.items.is_some() {
+            bail!("inspecting every View cannot be combined with --items");
+        }
+        if inspect_target.is_some() {
             bail!("--all cannot be combined with --inspect <VIEW>");
         }
-        Some(target.as_str())
-    } else if args.view.as_deref() == Some("inspect") {
-        if args.all {
-            if !args.view_options.is_empty() {
-                bail!("inspect --all cannot be combined with a View argument");
-            }
-            let views = config
-                .iter_public_views()
-                .map(|(view_ref, view)| view_contract(&config, view_ref, view))
-                .collect::<Vec<_>>();
-            let output = serde_json::json!({ "views": views });
-            println!("{}", serde_json::to_string_pretty(&output)?);
-            return Ok(0);
+        if args.view.is_some() || !args.view_options.is_empty() {
+            bail!("inspecting every View cannot be combined with a View argument");
         }
-        let target = args
-            .view_options
-            .first()
-            .context("inspect requires a view argument, e.g. `tlaunch inspect <view>`")?;
-        Some(target.as_str())
-    } else {
-        if args.all {
-            bail!("--all requires `inspect`; use `tlaunch inspect --all`");
-        }
-        None
-    };
+        let views = config
+            .iter_public_views()
+            .map(|(view_ref, view)| view_contract(&config, view_ref, view))
+            .collect::<Vec<_>>();
+        let output = serde_json::json!({ "views": views });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(0);
+    }
 
     if let Some(target) = inspect_target {
         let view_ref = match config.resolve_view(target) {
@@ -305,31 +304,12 @@ pub(crate) fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    let items_target = if let Some(target) = &args.items {
-        Some(target.as_str())
-    } else if args.view.as_deref() == Some("items") {
-        let target = args
-            .view_options
-            .first()
-            .context("items requires a view argument, e.g. `tlaunch items <view>`")?;
-        Some(target.as_str())
-    } else {
-        None
-    };
-
-    if let Some(target) = items_target {
-        let view_options = if args.view.as_deref() == Some("items") {
-            args.view_options[1..].to_vec()
-        } else {
-            let mut opts = Vec::new();
-            if args.items.is_some()
-                && let Some(v) = &args.view
-            {
-                opts.push(v.clone());
-            }
-            opts.extend(args.view_options.iter().cloned());
-            opts
-        };
+    if let Some(target) = args.items.as_deref() {
+        let mut view_options = Vec::new();
+        if let Some(view) = &args.view {
+            view_options.push(view.clone());
+        }
+        view_options.extend(args.view_options.iter().cloned());
         return run_items_query(&config, target, &view_options);
     }
 
@@ -701,5 +681,23 @@ mod tests {
             effective_cli_args_from(vec!["/tmp/tlaunch".into(), "apps:main".into()]),
             vec!["/tmp/tlaunch", "apps:main"]
         );
+    }
+
+    #[test]
+    fn headless_flags_suppress_entrypoint_injection_in_every_spelling() {
+        for flag in [
+            "--check",
+            "--all",
+            "--inspect",
+            "--inspect=echo",
+            "--items",
+            "--items=echo",
+        ] {
+            assert_eq!(
+                effective_cli_args_from(vec!["/tmp/apps".into(), flag.into()]),
+                vec!["/tmp/apps", flag],
+                "flag {flag} must pass through unchanged"
+            );
+        }
     }
 }

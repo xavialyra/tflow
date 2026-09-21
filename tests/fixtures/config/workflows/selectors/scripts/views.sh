@@ -26,7 +26,7 @@ if not os.path.exists(suite_path):
     suite_path = os.path.join(config_root, "config.toml")
 try:
     inspected = subprocess.run(
-        ["tlaunch", "--suite", suite_path, "inspect", "--all"],
+        ["tlaunch", "--suite", suite_path, "--inspect", "--all"],
         check=True,
         capture_output=True,
         text=True,
@@ -36,7 +36,7 @@ except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
     raise SystemExit(f"could not inspect configured views: {error}")
 
 if not isinstance(catalog, dict) or not isinstance(catalog.get("views"), list):
-    raise SystemExit("inspect --all returned an invalid view catalog")
+    raise SystemExit("--inspect --all returned an invalid view catalog")
 
 tokens = query.casefold().split()
 items = []

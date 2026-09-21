@@ -1152,7 +1152,7 @@ fn single_file_workflow_fixture_inspect_and_query_mapping() {
     let inspect = launcher_command()
         .args(["--suite"])
         .arg(fixture_config())
-        .args(["inspect", "echo"])
+        .args(["--inspect", "echo"])
         .output()
         .expect("could not inspect echo workflow");
 
@@ -1173,7 +1173,7 @@ fn fixture_inspect_all_returns_sorted_view_contracts() {
     let inspect = launcher_command()
         .args(["--suite"])
         .arg(fixture_config())
-        .args(["inspect", "--all"])
+        .args(["--inspect", "--all"])
         .output()
         .expect("could not inspect all fixture views");
 
@@ -1216,24 +1216,38 @@ fn fixture_inspect_all_returns_sorted_view_contracts() {
 }
 
 #[test]
-fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
+fn inspect_all_is_self_sufficient_and_rejects_view_arguments() {
+    // `--all` on its own, `--inspect` without a View, and `--inspect --all` all dump every View.
+    for args in [vec!["--all"], vec!["--inspect"], vec!["--inspect", "--all"]] {
+        let output = launcher_command()
+            .args(["--suite"])
+            .arg(fixture_config())
+            .args(&args)
+            .output()
+            .expect("could not run inspect-all command");
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            json["views"]
+                .as_array()
+                .is_some_and(|views| !views.is_empty()),
+            "{args:?} must dump at least one View"
+        );
+    }
+
+    // A View reference cannot be combined with all-View inspection.
     let with_view = launcher_command()
         .args(["--suite"])
         .arg(fixture_config())
-        .args(["inspect", "--all", "echo"])
+        .args(["--all", "echo"])
         .output()
         .expect("could not run invalid inspect command");
     assert!(!with_view.status.success());
-    assert!(String::from_utf8_lossy(&with_view.stderr).contains("View argument"));
-
-    let without_inspect = launcher_command()
-        .args(["--suite"])
-        .arg(fixture_config())
-        .args(["--all"])
-        .output()
-        .expect("could not run invalid all command");
-    assert!(!without_inspect.status.success());
-    assert!(String::from_utf8_lossy(&without_inspect.stderr).contains("requires `inspect`"));
+    assert!(String::from_utf8_lossy(&with_view.stderr).contains("cannot be combined"));
 
     let with_check = launcher_command()
         .args(["--check", "--all", "--suite"])
@@ -1242,6 +1256,54 @@ fn inspect_all_rejects_view_arguments_and_non_inspect_usage() {
         .expect("could not run invalid check command");
     assert!(!with_check.status.success());
     assert!(String::from_utf8_lossy(&with_check.stderr).contains("inspection options"));
+}
+
+#[test]
+fn positional_inspect_is_a_view_selector_not_a_subcommand() {
+    // `tlaunch inspect --all` is no longer a valid headless mode; `inspect`
+    // stays a plain positional View selector.
+    let legacy = launcher_command()
+        .args(["--suite"])
+        .arg(fixture_config())
+        .args(["inspect", "--all"])
+        .output()
+        .expect("could not run legacy inspect invocation");
+    assert!(!legacy.status.success());
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("cannot be combined"));
+
+    // Views literally named `inspect` and `items` remain addressable.
+    let root = temporary_root();
+    let workflow = root.join("tool.toml");
+    fs::write(
+        &workflow,
+        r#"
+[workflow]
+api = 1
+name = "Tool"
+entrypoint = "inspect"
+[views.inspect.engine]
+type = "picker"
+[views.items.engine]
+type = "picker"
+"#,
+    )
+    .unwrap();
+    for target in ["inspect", "items"] {
+        let output = launcher_command()
+            .args(["-w"])
+            .arg(&workflow)
+            .args(["--inspect", target])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "inspecting {target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["view"], format!("tool:{target}"));
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1334,7 +1396,7 @@ fn default_launch_uses_only_manifest_members() {
         .env_remove("TLAUNCH_SUITE")
         .env_remove("TLAUNCH_SETTINGS")
         .env("XDG_CONFIG_HOME", &root)
-        .args(["inspect", "--all"])
+        .args(["--inspect", "--all"])
         .output()
         .unwrap();
     assert!(
@@ -1432,7 +1494,7 @@ handler={value="local"}
     let output = launcher_command()
         .args(["-w"])
         .arg(&workflow)
-        .args(["inspect", "--all"])
+        .args(["--inspect", "--all"])
         .output()
         .unwrap();
     assert!(!output.status.success());

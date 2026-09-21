@@ -2,6 +2,12 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-21
+
+- Corrected headless CLI dispatch: removed the ambiguous positional `tlaunch inspect ...` / `tlaunch items ...` subcommands, which collided with View selectors, in favor of the existing `--inspect` and `--items` long options.
+- Made `--inspect` accept an optional value and made `--all` self-sufficient: `tlaunch --inspect`, `tlaunch --all`, and `tlaunch --inspect --all` all dump every configured View, while `tlaunch --inspect <VIEW>` dumps one. No migration-style error is emitted for the removed `tlaunch inspect --all` form.
+- Extended `argv[0]` multiplexing suppression to `--all` and `--inspect=<VIEW>` / `--items=<VIEW>` forms so headless modes are never rewritten as View launches.
+
 ## 2026-09-19
 
 - Added proposed ADR 0006 (`docs/adr/0006-feed-removal-workflow-scoped-commands-and-item-bindings.md`):
