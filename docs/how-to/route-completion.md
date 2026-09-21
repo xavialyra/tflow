@@ -62,7 +62,7 @@ if route is not None:
 else:
     operation = {
         "type": "navigate",
-        "target": "core:completion",
+        "target": completion_routes.view_ref("completion"),
         "query": {"filter": prefix},
         "presentation": {"mode": "popup", "width": 72, "height": 16},
         "clear_input": True,
@@ -73,6 +73,10 @@ else:
 `pass:main` instead of offering a popup because `pass:unlock` also contains the
 substring. `clear_input` consumes the typed prefix on the way out, so returning
 to the launcher later starts from an empty line instead of the half-typed route.
+
+The popup is another View of the same workflow, so its reference is resolved from
+the mount instead of being written as `core:completion`: the manifest decides the
+member id, and one workflow package can be mounted under any name.
 
 ### 3. Add the popup View and its accept command
 
@@ -117,7 +121,7 @@ authoritative list is the suite's aliased Views, which
 ```python
 # scripts/completion_routes.py (abridged)
 suite = os.environ["TLAUNCH_SUITE"]
-owner = os.path.basename(os.environ.get("WORKFLOW_DIR") or "") or "core"
+owner = os.path.basename(os.environ.get("WORKFLOW_DIR") or "") or "core"  # see below
 binary = os.environ.get("TLAUNCH_BIN") or "tlaunch"
 result = subprocess.run(
     [binary, "-s", suite, "--inspect", "--all"],
@@ -135,9 +139,13 @@ for view in json.loads(result.stdout)["views"]:
 ```
 
 `TLAUNCH_SUITE` is set by the host for suite runs, and `WORKFLOW_DIR` for
-directory workflows, so no path needs to be hardcoded. Fuzzy matching then only
-has to test the typed tokens against the alias and the reference, and the exact
-match is a second lookup over the same list.
+directory workflows, so no path needs to be hardcoded. `owner` is the member id
+this workflow is mounted as: read the suite manifest and match the `[workflows]`
+entry whose `dir` resolves to `WORKFLOW_DIR`, because the manifest key is not
+necessarily the directory name. Falling back to the directory name keeps the
+script useful when no manifest can be read. Fuzzy matching then only has to test
+the typed tokens against the alias and the reference, and the exact match is a
+second lookup over the same list.
 
 ### 5. Make Space jump, or append
 
@@ -159,7 +167,8 @@ else:
     query["search"] = input_text + " "
     if selected_value:
         query["__focus"] = selected_value
-    operation = {"type": "navigate", "target": "core:main", "query": query, "replace": True}
+    operation = {"type": "navigate", "target": completion_routes.own_view_ref(),
+                 "query": query, "replace": True}
 ```
 
 `replace = true` re-mounts the same View, `__focus` restores the previous
@@ -188,7 +197,7 @@ Both settings live in the host settings file, not in a suite manifest.
 
 ```sh
 tlaunch -s <suite.toml> --check
-tlaunch -s <suite.toml> --items core:completion ''
+tlaunch -s <suite.toml> --items <launcher>:completion ''
 ```
 
 The first command validates the commands, popup query, and keymaps. The second
