@@ -134,6 +134,7 @@ fn grace_period_retains_item_bindings_during_loading_to_prevent_flicker() {
         bindings,
         source_view: "apps:main".to_string(),
     }]);
+    picker.items_published = true;
 
     let pub_initial = picker.current_publication();
     assert!(pub_initial.ready);
@@ -159,6 +160,82 @@ fn grace_period_retains_item_bindings_during_loading_to_prevent_flicker() {
     let pub_after_grace = picker.current_publication();
     assert!(!pub_after_grace.ready);
     assert_eq!(pub_after_grace.current()["bindings"]["apps:open"], "Enter");
+}
+
+/// Ages the running items task past the search grace period, the way a slow
+/// producer does, without waiting for real time to pass.
+fn expire_search_grace_period(picker: &mut PickerView) {
+    if let ItemsTaskState::Running { started_at, .. } = &mut picker.items_task_state {
+        *started_at = std::time::Instant::now() - SEARCH_GRACE_PERIOD * 2;
+    }
+}
+
+/// Puts the Picker into "an items task is running and has outlived the grace
+/// period" without starting a real task.
+fn start_slow_items_task(picker: &mut PickerView, mount_id: u64) -> crate::input::ViewMountId {
+    let mount = crate::input::ViewMountId(mount_id);
+    let source = crate::input::InputSourceIdentity {
+        frame: mount,
+        generation: 0,
+    };
+    let parameters = test_parameters("", source, 1);
+    picker.parameter_snapshot = Some(parameters.clone());
+    picker
+        .request_items("core:default", "", "", parameters)
+        .unwrap();
+    picker.frame.query.clear();
+    picker.frame.input_refresh = InputRefreshState::Stable;
+    picker.items_task_state =
+        ItemsTaskState::running(picker.requested_identity().expect("request").clone());
+    expire_search_grace_period(picker);
+    assert!(picker.is_loading());
+    assert!(!picker.is_in_grace_period());
+    mount
+}
+
+#[test]
+fn an_empty_published_list_survives_a_refresh_without_flashing_searching() {
+    let (_config, mut picker) = test_picker(122);
+    start_slow_items_task(&mut picker, 122);
+
+    // The producer has published an empty list: the "(no matches)" state.
+    picker.frame.results = ResultsState::Ready(String::new());
+    picker.frame.selection.clear();
+    picker.items_published = true;
+    let state = picker.render_state();
+    assert!(!state.unpublished);
+    assert!(!state.searching);
+
+    // A refresh is still in flight. The published empty list stays on screen:
+    // flipping to "(searching...)" and back is the flicker this retention
+    // exists to prevent.
+    picker.frame.results = ResultsState::Invalid;
+    assert!(picker.should_retain_items(false));
+
+    let state = picker.render_state();
+    assert!(state.items.is_empty());
+    assert_eq!(state.empty_message, "(no matches)");
+    assert!(
+        !state.searching,
+        "a retained empty list must not turn into a loading state"
+    );
+    assert!(
+        !state.unpublished,
+        "a published, if empty, list is still published"
+    );
+}
+
+#[test]
+fn the_searching_placeholder_only_covers_the_window_before_the_first_list() {
+    let (_config, mut picker) = test_picker(123);
+    start_slow_items_task(&mut picker, 123);
+
+    // Nothing has been published yet, so a slow first load must say so.
+    assert!(!picker.should_retain_items(false));
+    let state = picker.render_state();
+    assert!(state.items.is_empty());
+    assert!(state.unpublished);
+    assert!(state.searching);
 }
 
 #[test]
@@ -454,6 +531,7 @@ fn task_failure_clears_previous_items() {
     picker.frame.results = ResultsState::Ready(String::new());
     picker.frame.query.clear();
     picker.frame.selection.replace(vec![test_item("stale")]);
+    picker.items_published = true;
 
     picker
         .handle_task_failure("source failed".to_string())
@@ -462,6 +540,10 @@ fn task_failure_clears_previous_items() {
     assert!(picker.frame.selection.items.is_empty());
     assert!(matches!(picker.frame.results, ResultsState::Invalid));
     assert!(picker.frame.input_refresh.is_retry_requested());
+    assert!(
+        !picker.has_published_items(),
+        "a failed load has nothing left to retain"
+    );
 }
 
 fn response_value(

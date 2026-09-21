@@ -17,6 +17,9 @@ use serde_json::Value;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+/// How long the Picker stays blank before admitting that the *first* item list is
+/// still on its way. Once a list has been published it is retained instead, so a
+/// refresh never waits for this delay.
 const SEARCH_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(80);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,7 +169,7 @@ pub(crate) struct PickerState {
     started: bool,
     items_task_state: ItemsTaskState,
     preview_visible: bool,
-    initial_load_completed: bool,
+    items_published: bool,
     initial_focus: Option<String>,
 }
 
@@ -225,7 +228,7 @@ impl PickerView {
                 started: false,
                 items_task_state: ItemsTaskState::Idle,
                 preview_visible: false,
-                initial_load_completed: false,
+                items_published: false,
                 initial_focus: None,
             },
             services,
@@ -382,12 +385,19 @@ impl PickerView {
         }
     }
 
+    /// True while the list already in the frame may stay visible: the results
+    /// match the query, or a previously published list is still the last thing
+    /// the Picker showed. An empty published list counts too, so the
+    /// "(no matches)" state survives a refresh instead of flipping to a
+    /// loading indicator and back.
     pub(crate) fn should_retain_items(&self, results_ready: bool) -> bool {
-        results_ready || self.is_in_grace_period() || !self.frame.selection.items.is_empty()
+        results_ready || self.items_published
     }
 
-    pub(crate) fn has_completed_initial_load(&self) -> bool {
-        self.initial_load_completed
+    /// True once an item list has been published, even an empty one. Until that
+    /// happens the Picker has nothing to show and reports itself as loading.
+    pub(crate) fn has_published_items(&self) -> bool {
+        self.items_published
     }
 
     #[cfg(test)]
@@ -520,7 +530,7 @@ impl PickerView {
         let mut events = Vec::new();
         self.frame.input_refresh = InputRefreshState::Stable;
         self.items_task_state = ItemsTaskState::Idle;
-        self.initial_load_completed = true;
+        self.items_published = true;
         let ItemsResponse {
             view,
             identity,
@@ -603,7 +613,9 @@ impl PickerView {
         self.frame.pending_selection = 0;
         self.frame.selection.clear();
         self.preview.prepare(None);
-        self.initial_load_completed = true;
+        // The failed load discarded the published list, so the Picker is back to
+        // having nothing to show and reports itself as loading again.
+        self.items_published = false;
         self.schedule_retry();
     }
 

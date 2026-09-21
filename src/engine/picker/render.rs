@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct PickerRenderState {
     pub(crate) items: Arc<Vec<Item>>,
     pub(crate) selected: usize,
-    pub(crate) initial_loading: bool,
+    pub(crate) unpublished: bool,
     pub(crate) searching: bool,
     pub(crate) preview_visible: bool,
     pub(crate) preview: Option<PickerPreviewRenderState>,
@@ -39,7 +39,7 @@ pub(crate) fn render_picker(
     if state.items.is_empty() {
         let text = if state.searching {
             "(searching...)"
-        } else if state.initial_loading {
+        } else if state.unpublished {
             ""
         } else {
             &state.empty_message
@@ -213,8 +213,11 @@ impl PickerView {
         let empty_message = self.list_presentation();
         let results_ready = self.results_current(&frame.query);
         let in_grace_period = self.is_in_grace_period();
-        let initial_loading = !self.has_completed_initial_load();
-        let searching = self.is_loading() && !in_grace_period;
+        let unpublished = !self.has_published_items();
+        // The placeholder only covers the window before the first item list
+        // arrives. Afterwards the previously published list stays on screen, even
+        // when it was empty, so it never flips to a loading state and back.
+        let searching = unpublished && self.is_loading() && !in_grace_period;
         let should_retain = self.should_retain_items(results_ready);
 
         let (items, selected) = if should_retain {
@@ -228,7 +231,7 @@ impl PickerView {
         PickerRenderState {
             items,
             selected,
-            initial_loading,
+            unpublished,
             searching,
             preview_visible: self.preview_visible(),
             preview,
@@ -273,7 +276,7 @@ impl crate::engine::ViewRenderer for PickerRenderer {
             return crate::ui::chrome::EngineChrome::default();
         };
         let status = if state.items.is_empty() {
-            if state.initial_loading {
+            if state.unpublished {
                 None
             } else {
                 Some("0 of 0".to_string())
@@ -445,7 +448,7 @@ mod tests {
         let state = PickerRenderState {
             items: Arc::new(vec![item]),
             selected: 0,
-            initial_loading: false,
+            unpublished: false,
             searching: false,
             preview_visible: false,
             preview: None,
@@ -497,7 +500,7 @@ mod tests {
                 item(&["THIRD"]),
             ]),
             selected: 2,
-            initial_loading: false,
+            unpublished: false,
             searching: false,
             preview_visible: false,
             preview: None,
