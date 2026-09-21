@@ -25,13 +25,15 @@ You want to open a secondary View as a popup, return a value, and optionally dec
 For a fixed target, use a declared call handler:
 
 ```toml
-[views.main.commands.select_action]
-key = "ctrl+o"
+[views.main.keymap]
+"ctrl+o" = "select_action"
+
+[commands.select_action]
 label = "Actions"
 type = "call"
 producer = "declared"
 
-[views.main.commands.select_action.handler]
+[commands.select_action.handler]
 target = "selectors:actions"
 presentation = { mode = "popup", width = 70, height = 18 }
 ```
@@ -40,16 +42,18 @@ The target must be a configured View or alias. Popup width and height are termin
 
 ### 2. Produce Dynamic Navigation from a Selected Item
 
-When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation. If the command is declared by the selected item's feed owner and projected into an aggregate Picker, `context.parameters` is the feed owner's bound parameter snapshot; otherwise it is the command's mounted View parameters:
+When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation. `context.parameters` is the mounted View's bound parameter object; in an aggregate Picker a key dispatched through the focused item's `bindings` still carries the aggregate View's parameters, while `context.engine.state.item` remains the selected item:
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open selected item"
 type = "call"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open-selected.py"
 ```
 
@@ -84,13 +88,15 @@ The host resolves the target, validates its query schema, and commits the call. 
 Define a typed return command in the child View:
 
 ```toml
-[views.actions.commands.confirm]
-key = "enter"
+[views.actions.keymap]
+enter = "confirm"
+
+[commands.confirm]
 label = "Confirm"
 type = "return"
 producer = "declared"
 
-[views.actions.commands.confirm.handler]
+[commands.confirm.handler]
 value = "confirmed"
 ```
 
@@ -103,11 +109,11 @@ To close without a result, bind the Engine's `back`/close action or a command th
 A call can declare a post-commit return processor:
 
 ```toml
-[views.main.commands.select_action.return_processor]
+[commands.select_action.return_processor]
 type = "navigate"
 producer = "script"
 
-[views.main.commands.select_action.return_processor.handler]
+[commands.select_action.return_processor.handler]
 file = "scripts/process-action.py"
 ```
 
@@ -135,12 +141,14 @@ The caller remains mounted if processor execution or response validation fails. 
 Use a declared navigate operation with `replace = true` when the current View should not remain underneath the target:
 
 ```toml
-[views.step1.commands.next]
-key = "enter"
+[views.step1.keymap]
+enter = "next"
+
+[commands.next]
 type = "navigate"
 producer = "declared"
 
-[views.step1.commands.next.handler]
+[commands.next.handler]
 target = "workflow:step2"
 replace = true
 ```
@@ -152,13 +160,15 @@ With `replace = false` or an omitted field, the operation pushes a new stack ent
 A `replace` re-mounts the target, so a Picker starts on its first row again. Carry the previous item identity as the host-reserved `__focus` query key (or `__engine = { focus = "..." }`); the Picker selects the first loaded item whose `value` or `text` matches. Reserved `__`-prefixed keys are stripped before the target View's parameters are published.
 
 ```toml
-[views.main.commands.refresh]
-key = "ctrl+r"
+[views.main.keymap]
+"ctrl+r" = "refresh"
+
+[commands.refresh]
 label = "Refresh"
 type = "navigate"
 producer = "script"
 
-[views.main.commands.refresh.handler]
+[commands.refresh.handler]
 file = "scripts/refresh.py"
 ```
 

@@ -120,6 +120,8 @@ The aggregator script fetches items headlessly from each source via `tlaunch -s 
 
 Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View binds Tab and Space there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in `mode = "static"`.
 
+Route jumping on top of an aggregate (typing `calc` and pressing `Tab`) is built from these pieces plus a popup View; see [Add Route Completion to a Launcher](route-completion.md).
+
 ### 4. Use a Declared List for Small Static Collections
 
 No script is needed when the list is static:

@@ -65,13 +65,15 @@ items = [
   { display = "Current Date", value = "date", metadata = {} },
 ]
 
-[views.main.commands.execute]
-key = "enter"
+[views.main.keymap]
+enter = "execute"
+
+[commands.execute]
 label = "Run"
 type = "run"
 producer = "script"
 
-[views.main.commands.execute.handler]
+[commands.execute.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -96,6 +98,8 @@ sys.stdout.write("\n")
 ```
 
 The handler reads the selected item from `context.engine.state` and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
+
+Commands live at the workflow root because they are workflow-scoped: `[views.main.keymap]` is what exposes `commands.execute`, and the same command can be bound by any other view in this workflow. See [Workflow Commands](../reference/workflow-toml.md#workflow-commands).
 
 ## 4. Create the Default Suite
 
@@ -131,4 +135,5 @@ The Picker displays the two literal items. Press `Enter` to run the producer ope
 
 - Follow [Your First Workflow](first-workflow.md) to build a directory package with separate item and command scripts.
 - Read [Picker Views](../how-to/picker-views.md) for request-driven item generation.
+- Add [Route Completion to a Launcher](../how-to/route-completion.md) once several workflows share one suite entrypoint.
 - Use [workflow.toml Specification](../reference/workflow-toml.md) for the full operation and protocol reference.

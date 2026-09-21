@@ -41,18 +41,20 @@ The public context fields are:
 - `context.command`: `{ id, type }` identifying the command for `command` entry points;
 - `context.result`: the raw JSON value returned by the child View for `return` entry points.
 
-When an aggregate Picker projects a command from the selected feed owner, `context.parameters` is that feed's independent parameter snapshot. A command declared by the aggregate Picker View receives the aggregate View's parameters. Feed IDs, owner View names, mounted instance identity, task generations, cancellation handles, and scheduling data remain host-owned.
+When an aggregate Picker dispatches a key through the focused item's `bindings`, `context.parameters` is the aggregate View's parameter snapshot and `context.engine.state.item` stays the normalized selected item. Feed IDs, owner View names, mounted instance identity, task generations, cancellation handles, and scheduling data remain host-owned.
 
 ## Command Producer Example
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open selected item"
 type = "navigate"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open.sh"
 ```
 

@@ -34,10 +34,26 @@ entrypoint = "main"
 
 ## Workflow Commands
 
-`[commands.<id>]` uses the same schema as `[views.<name>.commands.<id>]`.
-These commands are defaults for every view in this workflow. A view-local
-command with the same ID replaces the workflow default. Commands keep their
-workflow script root and do not register commands in sibling workflows.
+`[commands.<id>]` declares a command owned by the workflow, not by a View, and the command does not register itself in sibling workflows:
+
+```toml
+[commands.open]
+label = "Open"
+type = "run"
+producer = "script"
+
+[commands.open.handler]
+file = "scripts/open.sh"
+```
+
+A View exposes a command by binding a key to it:
+
+```toml
+[views.main.keymap]
+enter = "open"
+```
+
+`key` on the command itself is only a fallback: a `mode = "static"` View that declares no bindings (no table, or an empty one) publishes every workflow command of its own workflow, binding the ones that declare a `key`. A View that declares `[views.<name>.keymap]` bindings publishes that table instead, and a `mode = "item"` View publishes its table plus the focused item's bindings, so a command-level `key` never applies there. `[views.<name>.commands.<id>]` is rejected because business commands belong to the workflow root.
 
 ## Style Slots
 
@@ -182,16 +198,18 @@ Producer scripts receive runtime data through their documented JSON request on s
 
 ## Commands
 
-Commands are attached to a View and use one of `navigate`, `call`, `return`, or `run`:
+Commands are workflow-scoped and use one of `navigate`, `call`, `return`, or `run`. The View that offers the command binds a key to it:
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open"
 type = "navigate"
 producer = "declared"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 target = "sys:output"
 query = { action = "date" }
 replace = false
@@ -213,13 +231,15 @@ A `navigate` or `call` `query` may additionally carry the host-reserved key `__f
 Popup presentation is declared in the operation handler:
 
 ```toml
-[views.main.commands.actions]
-key = "ctrl+o"
+[views.main.keymap]
+"ctrl+o" = "actions"
+
+[commands.actions]
 label = "Actions"
 type = "call"
 producer = "declared"
 
-[views.main.commands.actions.handler]
+[commands.actions.handler]
 target = "selectors:actions"
 presentation = { mode = "popup", width = 70, height = 18 }
 ```
@@ -229,19 +249,21 @@ presentation = { mode = "popup", width = 70, height = 18 }
 A script command uses a literal script handler. It receives one JSON request on stdin and must write exactly one version-1 response on stdout:
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open selected item"
 type = "run"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open.sh"
 ```
 
 The request contains unified `context` fields: `context.command` is `{id, type}` identifying the invoked command, `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
 
-For an aggregate Picker, a command with a physical `key` from the View that owns the current selected feed item is projected into the aggregate command area. The projected command receives that feed owner's bound parameter snapshot in `context.parameters`; a command declared by the aggregate Picker View receives the aggregate View's parameters instead. The public `context.engine.state.item` remains the normalized selected item in both cases. Owner and feed identifiers are host-owned and are not added to the script request. The host revalidates the current result and provenance before dispatching a projected command.
+In an aggregate Picker, a command arrives through the selected item: the aggregating script attaches a `bindings` map to each item, and the host dispatches the key against the focused item's binding (`enter = "apps:open"`). `context.parameters` is the aggregate View's parameter snapshot, while `context.engine.state.item` is the normalized selected item, so an item-bound command reads the selection it belongs to from the same place a View-bound command does.
 
 A script response must return an operation or an error feedback object:
 
@@ -264,20 +286,22 @@ The response operation type must match the command's declared `type`. Command sc
 A `call` command may declare a processor that runs after the child has returned and the caller has been restored:
 
 ```toml
-[views.main.commands.choose]
-key = "enter"
+[views.main.keymap]
+enter = "choose"
+
+[commands.choose]
 label = "Choose"
 type = "call"
 producer = "declared"
 
-[views.main.commands.choose.handler]
+[commands.choose.handler]
 target = "selectors:actions"
 
-[views.main.commands.choose.return_processor]
+[commands.choose.return_processor]
 type = "navigate"
 producer = "script"
 
-[views.main.commands.choose.return_processor.handler]
+[commands.choose.return_processor.handler]
 file = "scripts/process-result.sh"
 ```
 
@@ -303,12 +327,12 @@ The processor returns the same versioned operation envelope used by commands. Re
 All new producer script handlers use exactly one of these forms:
 
 ```toml
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open.sh"
 ```
 
 ```toml
-[views.main.commands.open.handler]
+[commands.open.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

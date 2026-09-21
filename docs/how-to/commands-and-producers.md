@@ -21,20 +21,22 @@ You need a command to inspect the current View state, selected Picker item, or f
 
 ### 1. Declare the Command
 
-The command declares its key, label, operation type, producer kind, and matching handler:
+Commands are workflow-scoped, so the command lives at the workflow root and the View that offers it binds a key to it:
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Open selected item"
 type = "navigate"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open.py"
 ```
 
-Declared handlers use the same operation schema without starting a script. Use `producer = "script"` when the operation must be computed at runtime.
+Declared handlers use the same operation schema without starting a script. Use `producer = "script"` when the operation must be computed at runtime. Because the command belongs to the workflow, the same command can be bound by several Views; a command-level `key` is only a fallback for a static View that declares no bindings of its own.
 
 ### 2. Read the Shared Context
 
@@ -79,21 +81,31 @@ sys.stdout.write("\n")
 
 The item is a public projection containing display text, value, and metadata. Internal provenance is intentionally absent.
 
-### 4. Use a Feed Owner's Parameters in an Aggregate Picker
+### 4. Use Item Bindings in an Aggregate Picker
 
-When an aggregate Picker selects an item from `apps:main`, a command declared by `apps:main` can be projected into the aggregate footer:
+An aggregate Picker does not project commands out of the Views it aggregates. Each published item carries a `bindings` map, and the host dispatches a key against the focused item. The source workflow declares an ordinary workflow command and binds it in its own View:
 
 ```toml
-# In the apps workflow, whose View is mounted as a feed.
-[views.main.commands.open]
-key = "ctrl+o"
+# In the apps workflow, whose View is mounted as a source.
+[views.main.keymap]
+"ctrl+o" = "open"
+
+[commands.open]
 label = "Open application"
 type = "run"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open.py"
 ```
+
+The aggregating script reads that contract headlessly and attaches it to every item it publishes. `tlaunch --inspect apps:main` reports the resolved keymap, and `tlaunch --items apps:main` reports the raw items:
+
+```python
+item["bindings"] = {"ctrl+o": "apps:open"}
+```
+
+The aggregate View must be `mode = "item"` to dispatch the focused item's bindings, and it can declare its own bindings in `[views.<name>.keymap]` as a base layer for keys that must stay reachable while the list is empty or still loading. Item bindings override base bindings for the same physical key.
 
 The command script reads the selected item through the public Engine state:
 
@@ -121,9 +133,7 @@ json.dump({
 sys.stdout.write("\n")
 ```
 
-For this projected command, `context.parameters` is the selected feed's independent bound parameter snapshot. It is not the aggregate Picker page's parameter object. `context.engine.state.item` remains the aggregate Picker's public selected item. The host recomputes the projection when selection changes and revalidates the current result before dispatch.
-
-Commands must have a physical `key` to appear in the aggregate footer. Global bindings retain precedence on conflicts. The command's configured `scope` does not replace owner resolution; the selected item's feed provenance determines which owner context the script receives. Owner and feed identifiers are not available to scripts; use the public item fields and the parameters supplied by the host.
+For an item-bound command, `context.parameters` is the aggregate Picker's bound parameter object, because the aggregate View owns the dispatch. `context.engine.state.item` is the aggregate Picker's public selected item, so the script still sees the selection the binding belongs to. Binding values are fully qualified command references (`apps:open`), so one aggregate View can dispatch commands from any workflow in the suite.
 
 ### 5. Return One Typed Response
 

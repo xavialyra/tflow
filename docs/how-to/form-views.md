@@ -82,10 +82,11 @@ This accepts `a:string:dd,b:number:null`. The compact example has no comma escap
 Add a standard return command:
 
 ```toml
-[views.edit.commands.submit]
-key = "enter"
+[views.edit.keymap]
+enter = "submit"
+
+[commands.submit]
 label = "Submit"
-scope = "view"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }

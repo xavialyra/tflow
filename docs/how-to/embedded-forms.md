@@ -33,9 +33,11 @@ type = "form"
 producer = "script"
 handler = { file = "scripts/content.py" }
 
-[views.input.commands.submit]
-key = "enter"
-scope = "view"
+[views.input.keymap]
+enter = "submit"
+
+[commands.submit]
+label = "Submit"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
@@ -65,18 +67,21 @@ Initial values can also come from a route, and omitted trailing values use the q
 A caller can use a `call` command and a return processor:
 
 ```toml
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
+label = "Open form"
 type = "call"
 producer = "declared"
-[views.main.commands.open.handler]
+[commands.open.handler]
 target = "form:input"
 query = { name = "demo", environment = "dev", enabled = true }
 
-[views.main.commands.open.return_processor]
+[commands.open.return_processor]
 type = "navigate"
 producer = "script"
-[views.main.commands.open.return_processor.handler]
+[commands.open.return_processor.handler]
 file = "scripts/received.py"
 ```
 
@@ -85,6 +90,6 @@ The processor receives the submitted object in `request["context"]["result"]`. A
 ## Troubleshooting
 
 - Keep diagnostics off stdout when returning JSON; stdout must contain one JSON value.
-- Use `scope = "view"` for form commands that operate on the active form.
+- Bind a form command in the form View's keymap so it registers with View scope, which is what the footer and the command selector show.
 - A required field or a field with an invalid type prevents submission until corrected.
 - Dynamic content scripts must return a version 1 `content` response and should derive fields from the request context.

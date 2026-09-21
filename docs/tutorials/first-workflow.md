@@ -41,13 +41,15 @@ items = [
   { display = "Shopping List", value = "shopping.txt", metadata = {} },
 ]
 
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Edit note"
 type = "run"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 script = '''#!/usr/bin/env python3
 import json
 import os
@@ -165,13 +167,15 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/list_notes.py"
 
-[views.main.commands.open]
-key = "enter"
+[views.main.keymap]
+enter = "open"
+
+[commands.open]
 label = "Edit note"
 type = "run"
 producer = "script"
 
-[views.main.commands.open.handler]
+[commands.open.handler]
 file = "scripts/open_note.py"
 ```
 
