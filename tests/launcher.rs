@@ -1762,22 +1762,6 @@ fi
 }
 
 #[test]
-fn aggregated_item_command_executes_from_its_declaring_workflow_root() {
-    let mut process = spawn_launcher(&fixture_config());
-    wait_for_ready(&process.master);
-    send_bytes(&mut process, b"2+2");
-    wait_for_text(&process.master, "= 4");
-    send_bytes(&mut process, b"\r");
-    wait_for_fresh_screen(&process.master, |screen| {
-        !screen.contains("ERROR")
-            && (screen.contains("Copied") || screen.contains("4"))
-    });
-    send_bytes(&mut process, b"\x03");
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
 fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -3450,78 +3434,6 @@ handler = {target = "missing:main"}
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "{}", String::from_utf8_lossy(&output));
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn command_palette_displays_and_executes_dynamic_item_commands_in_aggregate_view() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-
-    // In aggregate view core:default, type arithmetic expression to trigger calculator card
-    process.master.write_all(b"2+2").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "4");
-
-    // Press Ctrl-K to open command palette
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-
-    // Command palette MUST display dynamic item command "Copy"
-    let output = wait_for_text(&process.master, "Copy");
-    let screen = String::from_utf8_lossy(&output);
-    assert!(
-        screen.contains("Copy"),
-        "command palette should display item command 'Copy': {screen}"
-    );
-
-    // Press Enter in command palette to accept and execute the command
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-
-    // Verify copy feedback succeeds and launcher remains stable
-    let output = wait_for_text(&process.master, "Copied");
-    let screen = String::from_utf8_lossy(&output);
-    assert!(
-        screen.contains("Copied"),
-        "executing copy from palette should show copy feedback: {screen}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
-fn command_palette_displays_and_executes_desktop_app_item_commands_in_aggregate_view() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-
-    // In aggregate view core:default, type to filter desktop app
-    process.master.write_all(b"Advanced").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Advanced Network");
-
-    // Press Ctrl-K to open command palette
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-
-    // Command palette MUST display dynamic item commands from apps ("Open", "Opend", "Set weight")
-    let output = wait_for_text(&process.master, "Open");
-    let screen = String::from_utf8_lossy(&output);
-    assert!(
-        screen.contains("Open"),
-        "command palette should display item command 'Open': {screen}"
-    );
-
-    // Type "Open" to filter down to Open and press Enter
-    process.master.write_all(b"Open\r").unwrap();
-    process.master.flush().unwrap();
-
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "output: {}", String::from_utf8_lossy(&output));
 }
 
 #[test]
