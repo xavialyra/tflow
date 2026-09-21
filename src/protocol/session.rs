@@ -1,3 +1,6 @@
+mod handoff;
+
+use self::handoff::{NavigationHandoff, SettledFrame, paint_retained};
 use super::command_adapter::CommandService;
 use crate::command::{ChromeSnapshot, CommandHandler, CommandRegistry, CommandScope};
 use crate::input::InputEvent;
@@ -12,34 +15,18 @@ use crate::view::{
 #[cfg(test)]
 use crate::view::{ViewCommandSnapshot, ViewContext};
 use anyhow::Result;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{
+    Frame,
+    layout::{Position, Rect},
+};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const INFO_MESSAGE_DURATION: Duration = Duration::from_secs(3);
-pub(crate) const NAVIGATION_GRACE_DURATION: Duration = Duration::from_millis(150);
 
 struct InfoMessage {
     label: String,
     expires_at: Instant,
-}
-
-#[derive(Clone)]
-pub(crate) struct BaseRenderSnapshot {
-    pub(crate) instance: ViewInstanceId,
-    pub(crate) target: String,
-    pub(crate) buffer: ratatui::buffer::Buffer,
-    pub(crate) area: Rect,
-    pub(crate) result: RenderResult,
-}
-
-#[derive(Clone)]
-pub(crate) struct NavigationGrace {
-    pub(crate) target_instance: ViewInstanceId,
-    pub(crate) expires_at: Instant,
-    pub(crate) cached_buffer: ratatui::buffer::Buffer,
-    pub(crate) cached_area: Rect,
-    pub(crate) cached_render_result: RenderResult,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,9 +59,7 @@ pub(crate) struct ProtocolSession {
     active_info: Option<InfoMessage>,
     error_source: Option<ErrorSource>,
     last_diagnostic: Option<(ViewInstanceId, String)>,
-    last_rendered_base_instance: Option<ViewInstanceId>,
-    last_content_render: Option<BaseRenderSnapshot>,
-    pub(crate) navigation_grace: Option<NavigationGrace>,
+    navigation: NavigationHandoff,
     last_view_revision: u64,
 }
 
@@ -135,9 +120,7 @@ impl ProtocolSession {
             active_info: None,
             error_source: None,
             last_diagnostic: None,
-            last_rendered_base_instance: None,
-            last_content_render: None,
-            navigation_grace: None,
+            navigation: NavigationHandoff::default(),
             last_view_revision: 0,
         }
     }
@@ -181,9 +164,7 @@ impl ProtocolSession {
             active_info: None,
             error_source,
             last_diagnostic: None,
-            last_rendered_base_instance: None,
-            last_content_render: None,
-            navigation_grace: None,
+            navigation: NavigationHandoff::default(),
             last_view_revision: 0,
         }
     }
@@ -540,6 +521,16 @@ impl ProtocolSession {
         area: Rect,
         image_picker: Option<crate::terminal::ImagePicker>,
     ) -> Result<ProtocolRenderResult> {
+        self.render_at(frame, area, image_picker, Instant::now())
+    }
+
+    fn render_at(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        image_picker: Option<crate::terminal::ImagePicker>,
+        now: Instant,
+    ) -> Result<ProtocolRenderResult> {
         let active_index = self
             .router
             .stack()
@@ -569,7 +560,6 @@ impl ProtocolSession {
         let base_index = content_host.visible_base_index(self.router.stack(), active_index);
         let base_entry = base_index.and_then(|index| self.router.stack().get(index));
         let base_instance_id = base_entry.map(|entry| entry.id);
-        let base_target = base_entry.map(|entry| &entry.context.location.target);
         let is_base_loading = base_entry.is_some_and(|entry| {
             entry
                 .view
@@ -578,40 +568,10 @@ impl ProtocolSession {
                 .as_ref()
                 .is_some_and(|p| !p.ready)
         });
-        let target_is_picker = base_entry.is_some_and(|entry| {
-            entry.view.command_snapshot().engine_type == crate::workflow::config::ENGINE_PICKER
-        });
 
-        if let Some(current_base_id) = base_instance_id
-            && let Some(current_target) = base_target
-            && self.last_rendered_base_instance != Some(current_base_id)
-            && is_base_loading
-            && !target_is_picker
-            && let Some(cached) = &self.last_content_render
-            && cached.instance != current_base_id
-            && cached.target != *current_target
-            && self.navigation_grace.as_ref().map(|g| g.target_instance) != Some(current_base_id)
-        {
-            self.navigation_grace = Some(NavigationGrace {
-                target_instance: current_base_id,
-                expires_at: Instant::now() + NAVIGATION_GRACE_DURATION,
-                cached_buffer: cached.buffer.clone(),
-                cached_area: cached.area,
-                cached_render_result: cached.result.clone(),
-            });
-        }
-
-        let mut in_grace_period = false;
-        if let Some(grace) = &self.navigation_grace {
-            let expired = Instant::now() >= grace.expires_at;
-            let target_mismatch = Some(grace.target_instance) != base_instance_id;
-            let target_ready = !is_base_loading || target_is_picker;
-            if expired || target_mismatch || target_ready {
-                self.navigation_grace = None;
-            } else {
-                in_grace_period = true;
-            }
-        }
+        let retained = self
+            .navigation
+            .begin(base_instance_id, is_base_loading, now);
 
         let top_padding = base_index
             .or(Some(0))
@@ -628,52 +588,34 @@ impl ProtocolSession {
             |index, frame, rect, ctx| self.router.render_at(index, frame, rect, ctx),
         )?;
 
-        let effective_view = if in_grace_period && let Some(grace) = &self.navigation_grace {
-            let copy_width = grace.cached_area.width.min(content_area.width);
-            let copy_height = grace.cached_area.height.min(content_area.height);
-            for y in 0..copy_height {
-                for x in 0..copy_width {
-                    let src_x = grace.cached_area.x + x;
-                    let src_y = grace.cached_area.y + y;
-                    let dst_x = content_area.x + x;
-                    let dst_y = content_area.y + y;
-                    if let (Some(src), Some(dst)) = (
-                        grace.cached_buffer.cell((src_x, src_y)),
-                        frame.buffer_mut().cell_mut((dst_x, dst_y)),
-                    ) {
-                        *dst = src.clone();
-                    }
+        let covered = match &retained {
+            Some(retained) => {
+                let retain_area =
+                    base_entry.and_then(|entry| entry.view.retained_content_area(content_area));
+                paint_retained(frame, retained, content_area, retain_area)
+            }
+            None => {
+                let has_modal_overlay =
+                    base_entry.is_some_and(|entry| entry.view.has_modal_overlay());
+                if !is_base_loading
+                    && active_popup_rect.is_none()
+                    && !has_modal_overlay
+                    && let Some(base_id) = base_instance_id
+                {
+                    self.navigation.settle(SettledFrame {
+                        instance: base_id,
+                        buffer: Arc::new(frame.buffer_mut().clone()),
+                        area: content_area,
+                    });
                 }
+                None
             }
-            let mut result = grace.cached_render_result.clone();
-            if let Some(cursor) = &mut result.cursor {
-                cursor.visible = false;
-            }
-            result
-        } else {
-            let has_modal_overlay = base_entry.is_some_and(|entry| entry.view.has_modal_overlay());
-            if !is_base_loading
-                && active_popup_rect.is_none()
-                && !has_modal_overlay
-                && let Some(base_id) = base_instance_id
-                && let Some(target) = base_target
-            {
-                self.last_content_render = Some(BaseRenderSnapshot {
-                    instance: base_id,
-                    target: target.clone(),
-                    buffer: frame.buffer_mut().clone(),
-                    area: content_area,
-                    result: view.clone(),
-                });
-                self.last_rendered_base_instance = Some(base_id);
-            }
-            view
         };
 
-        if !in_grace_period
-            && active_render_area.width > 0
+        if active_render_area.width > 0
             && active_render_area.height > 0
-            && let Some(cursor) = &effective_view.cursor
+            && let Some(cursor) = &view.cursor
+            && cursor.visible
         {
             let x = active_render_area.x.saturating_add(cursor.x).min(
                 active_render_area
@@ -685,12 +627,14 @@ impl ProtocolSession {
                     .y
                     .saturating_add(active_render_area.height.saturating_sub(1)),
             );
-            if cursor.visible {
+            // Retained pixels are not this View's own content, so a cursor that
+            // lands inside the covered region would point at stale content.
+            if !covered.is_some_and(|covered| covered.contains(Position { x, y })) {
                 frame.set_cursor_position((x, y));
             }
         }
 
-        let metadata = effective_view.metadata.clone();
+        let metadata = view.metadata.clone();
         let footer_commands = self.chrome_snapshot.footer_commands();
         let footer = FooterModel {
             location: footer_location,
@@ -708,10 +652,7 @@ impl ProtocolSession {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);
         }
 
-        Ok(ProtocolRenderResult {
-            view: effective_view,
-            footer,
-        })
+        Ok(ProtocolRenderResult { view, footer })
     }
 
     fn surface_diagnostic(

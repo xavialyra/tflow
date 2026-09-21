@@ -53,6 +53,34 @@ fn navigation_input_seed_is_separate_from_the_structured_query() {
 }
 
 #[test]
+fn picker_retained_content_area_keeps_only_the_item_and_preview_body() {
+    let tasks = TaskRuntime::new();
+    let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+    let services = crate::engine::picker::PickerRuntimeServices::new(
+        fixture,
+        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
+        "core:default",
+    )
+    .view_services();
+    let view = create_protocol_view(
+        config_with_tasks(services, tasks.clone()),
+        &request("core:default"),
+        ViewInstanceId(1),
+        &MapRouteCatalog::default(),
+    )
+    .unwrap();
+
+    // Default options: one input row, one divider row, no completion.
+    let area = Rect::new(0, 0, 40, 12);
+    assert_eq!(
+        view.retained_content_area(area),
+        Some(Rect::new(0, 2, 40, 10)),
+        "the input row and divider must stay on the new instance"
+    );
+    tasks.shutdown_and_wait();
+}
+
+#[test]
 fn completion_selection_cycles_through_picker_matches() {
     assert_eq!(cycle_completion_selection(0, 3, -1), 2);
     assert_eq!(cycle_completion_selection(2, 3, 1), 0);

@@ -524,6 +524,16 @@ pub(crate) trait View {
         false
     }
 
+    /// Region of this View that may briefly display retained pixels from the
+    /// previous View while a navigation or replace target is still loading.
+    ///
+    /// The default retains the whole content area. Views that own live input,
+    /// cursors, or completion surfaces should narrow this to the region that
+    /// only displays loaded content, or return `None` to opt out entirely.
+    fn retained_content_area(&self, area: Rect) -> Option<Rect> {
+        Some(area)
+    }
+
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         ViewCommandSnapshot {
             engine_type: "test".to_string(),

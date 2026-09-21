@@ -63,6 +63,22 @@ impl View for SyntheticView {
         self.target.ends_with("_overlay")
     }
 
+    fn retained_content_area(&self, area: Rect) -> Option<Rect> {
+        if self.target.starts_with("picker_") {
+            // Stand-in for a Picker body: the first row belongs to this
+            // instance's live input and must never be covered.
+            let skip = area.height.min(1);
+            Some(Rect::new(
+                area.x,
+                area.y.saturating_add(skip),
+                area.width,
+                area.height.saturating_sub(skip),
+            ))
+        } else {
+            Some(area)
+        }
+    }
+
     fn command_snapshot(&self) -> ViewCommandSnapshot {
         let engine_type = if self.target.starts_with("picker") {
             crate::workflow::config::ENGINE_PICKER.to_string()
@@ -130,6 +146,10 @@ impl View for SyntheticView {
                         ))
                     }
                     InputEvent::Key {
+                        key: crate::input::Key::Char('y'),
+                        ..
+                    } => Ok(ViewDecision::Close),
+                    InputEvent::Key {
                         key: crate::input::Key::Char('e'),
                         ..
                     } => anyhow::bail!("protocol View failure"),
@@ -172,7 +192,11 @@ impl View for SyntheticView {
         area: Rect,
         _context: &RenderContext,
     ) -> Result<RenderResult> {
-        frame.render_widget(ratatui::widgets::Paragraph::new(self.target.clone()), area);
+        let mut lines = vec![ratatui::text::Line::from(self.target.clone())];
+        if self.target.starts_with("body_") {
+            lines.push(ratatui::text::Line::from("old body"));
+        }
+        frame.render_widget(ratatui::widgets::Paragraph::new(lines), area);
         Ok(RenderResult {
             cursor: Some(crate::view::RelativeCursor {
                 x: 1,
@@ -196,7 +220,9 @@ impl ViewFactory for Factory {
         services: &ViewServices<'_>,
     ) -> Result<Box<dyn View>> {
         let _ = services.routes.query_schema(&request.query.target);
-        let publication = if request.target.starts_with("async_") {
+        let publication = if request.target.starts_with("async_")
+            || request.target.starts_with("picker_loading")
+        {
             Some(crate::view::ViewPublication::new(Value::Null, false))
         } else {
             None
@@ -240,7 +266,9 @@ fn session() -> (
     routes.insert("grandchild", "grandchild");
     routes.insert("zero_inset", "zero_inset");
     routes.insert("async_target", "async_target");
-    routes.insert("picker_async", "picker_async");
+    routes.insert("async_child", "async_child");
+    routes.insert("picker_loading", "picker_loading");
+    routes.insert("body_root", "body_root");
     routes.insert("root_overlay", "root_overlay");
     let router = Router::new(
         Box::new(routes),
@@ -1470,11 +1498,12 @@ fn navigation_grace_retains_previous_content_during_loading() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
 
     // 1. Initial render shows "root"
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -1487,19 +1516,19 @@ fn navigation_grace_retains_previous_content_during_loading() {
     session.router.push(request("async_target")).unwrap();
     session.sync_active_commands().unwrap();
 
-    // Render during grace period: screen still displays cached "root" content
+    // Retention keeps the previous frame on screen.
     terminal
         .draw(|frame| {
-            let result = session.render(frame, frame.area(), None).unwrap();
+            let result = session.render_at(frame, frame.area(), None, now).unwrap();
             assert_eq!(result.footer.location.label(), "async_target");
         })
         .unwrap();
-    assert!(session.navigation_grace.is_some());
+    assert!(session.navigation.is_retaining());
     let buffer = terminal.backend().buffer();
     let content: String = (0..4)
         .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
         .collect();
-    assert_eq!(content, "root", "Grace period must retain previous content");
+    assert_eq!(content, "root", "retention must keep the previous content");
 }
 
 #[test]
@@ -1507,10 +1536,11 @@ fn navigation_grace_clears_immediately_when_target_becomes_ready() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
 
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
 
@@ -1519,10 +1549,10 @@ fn navigation_grace_clears_immediately_when_target_becomes_ready() {
 
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
-    assert!(session.navigation_grace.is_some());
+    assert!(session.navigation.is_retaining());
 
     // Target completes async loading and becomes ready
     session
@@ -1536,10 +1566,10 @@ fn navigation_grace_clears_immediately_when_target_becomes_ready() {
 
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
-    assert!(session.navigation_grace.is_none());
+    assert!(!session.navigation.is_retaining());
     let buffer = terminal.backend().buffer();
     let content: String = (0..12)
         .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
@@ -1548,14 +1578,15 @@ fn navigation_grace_clears_immediately_when_target_becomes_ready() {
 }
 
 #[test]
-fn navigation_grace_expires_after_timeout() {
+fn navigation_grace_expires_after_timeout_and_never_rearms() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
 
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
 
@@ -1564,35 +1595,53 @@ fn navigation_grace_expires_after_timeout() {
 
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session.render_at(frame, frame.area(), None, now).unwrap();
         })
         .unwrap();
-    assert!(session.navigation_grace.is_some());
+    assert!(session.navigation.is_retaining());
 
-    // Expire grace period
-    session.navigation_grace.as_mut().unwrap().expires_at =
-        Instant::now() - Duration::from_millis(1);
-
+    // Past the deadline the still-loading target must show its own frame.
+    let expired = now + Duration::from_millis(200);
     terminal
         .draw(|frame| {
-            session.render(frame, frame.area(), None).unwrap();
+            session
+                .render_at(frame, frame.area(), None, expired)
+                .unwrap();
         })
         .unwrap();
-    assert!(session.navigation_grace.is_none());
+    assert!(!session.navigation.is_retaining());
     let buffer = terminal.backend().buffer();
     let content: String = (0..12)
         .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
         .collect();
     assert_eq!(content, "async_target");
+
+    // A target that never finishes loading must not re-arm retention.
+    terminal
+        .draw(|frame| {
+            session
+                .render_at(
+                    frame,
+                    frame.area(),
+                    None,
+                    expired + Duration::from_millis(1),
+                )
+                .unwrap();
+        })
+        .unwrap();
+    assert!(
+        !session.navigation.is_retaining(),
+        "expired retention must not re-arm while the target keeps loading"
+    );
 }
 
 #[test]
-fn navigation_grace_does_not_trigger_for_same_target_parameter_reload() {
+fn navigation_grace_covers_a_same_target_replace() {
     let (mut session, _, _) = session();
     session.start_root(request("async_target")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
 
-    // 1. Initial async target finishes loading and renders
+    // 1. Initial async target finishes loading and renders.
     let root_id = session.router.active().unwrap().id;
     session
         .task(TaskEvent {
@@ -1607,26 +1656,32 @@ fn navigation_grace_does_not_trigger_for_same_target_parameter_reload() {
             session.render(frame, frame.area(), None).unwrap();
         })
         .unwrap();
-    assert!(session.last_content_render.is_some());
+    assert!(session.navigation.settled().is_some());
 
-    // 2. Replace with a new instance of the same target (e.g. parameter form submit)
+    // 2. Replace with a new instance of the same target, the way a Picker
+    //    multi-select toggle navigates with `replace = true`.
     session.router.replace(request("async_target")).unwrap();
     session.sync_active_commands().unwrap();
 
-    // 3. Render: should NOT trigger navigation grace because target is identical
+    // 3. Replace mounts a loading instance, so it participates in grace.
     terminal
         .draw(|frame| {
             session.render(frame, frame.area(), None).unwrap();
         })
         .unwrap();
     assert!(
-        session.navigation_grace.is_none(),
-        "Same target parameter reload must not trigger grace period"
+        session.navigation.is_retaining(),
+        "same-target replace must participate in navigation grace"
     );
+    let buffer = terminal.backend().buffer();
+    let content: String = (0..12)
+        .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+        .collect();
+    assert_eq!(content, "async_target");
 }
 
 #[test]
-fn popup_does_not_pollute_last_content_render_snapshot() {
+fn popup_does_not_settle_a_base_frame() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -1637,7 +1692,7 @@ fn popup_does_not_pollute_last_content_render_snapshot() {
             session.render(frame, frame.area(), None).unwrap();
         })
         .unwrap();
-    let cached_before = session.last_content_render.clone().unwrap();
+    let cached_before = session.navigation.settled().unwrap().clone();
 
     // 2. Push a popup on top
     let mut popup_req = request("child");
@@ -1656,50 +1711,135 @@ fn popup_does_not_pollute_last_content_render_snapshot() {
         })
         .unwrap();
 
-    // 4. last_content_render must remain the clean base snapshot, not overwritten by popup
-    let cached_after = session.last_content_render.clone().unwrap();
+    // 4. The settled base frame must not be replaced by the popup frame
+    let cached_after = session.navigation.settled().unwrap().clone();
     assert_eq!(
         cached_after.instance, cached_before.instance,
         "Popup render must not replace base snapshot instance"
     );
+    let row: String = (1..5)
+        .map(|x| cached_after.buffer.cell((x, 1)).unwrap().symbol())
+        .collect();
     assert_eq!(
-        cached_after.target, "root",
-        "Snapshot must remain the root target"
+        row, "root",
+        "Snapshot must remain the clean base frame, not the popup"
     );
 }
 
 #[test]
-fn navigation_grace_is_skipped_when_target_is_picker() {
+fn navigation_grace_for_a_loading_picker_retains_only_the_body() {
     let (mut session, _, _) = session();
-    session.start_root(request("root")).unwrap();
+    session.start_root(request("body_root")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
 
-    // 1. Initial render shows "root"
+    // 1. Render the ready previous View so a frame snapshot exists.
     terminal
         .draw(|frame| {
             session.render(frame, frame.area(), None).unwrap();
         })
         .unwrap();
+    assert!(session.navigation.settled().is_some());
 
-    // 2. Navigate to an async loading picker view
-    session.router.push(request("picker_async")).unwrap();
+    // 2. Navigate to a loading Picker target.
+    session.router.push(request("picker_loading")).unwrap();
     session.sync_active_commands().unwrap();
 
-    // 3. Render: should NOT trigger navigation grace because target is a picker
+    // 3. The Picker participates in grace, but only its body may be covered;
+    //    its own input line must stay on screen.
     terminal
         .draw(|frame| {
             let result = session.render(frame, frame.area(), None).unwrap();
-            assert_eq!(result.footer.location.label(), "picker_async");
+            assert_eq!(result.footer.location.label(), "picker_loading");
         })
         .unwrap();
     assert!(
-        session.navigation_grace.is_none(),
-        "Picker target must skip navigation grace to avoid covering input and controls"
+        session.navigation.is_retaining(),
+        "a loading Picker target must participate in navigation grace"
+    );
+
+    let buffer = terminal.backend().buffer();
+    let input_row: String = (0..14)
+        .map(|x| buffer.cell((x + 1, 1)).unwrap().symbol())
+        .collect();
+    assert_eq!(
+        input_row, "picker_loading",
+        "the new input row must not be covered by retained pixels"
+    );
+    let body_row: String = (0..8)
+        .map(|x| buffer.cell((x + 1, 2)).unwrap().symbol())
+        .collect();
+    assert_eq!(
+        body_row, "old body",
+        "the body must retain the previous frame while loading"
     );
 }
 
 #[test]
-fn modal_overlay_does_not_pollute_last_content_render_snapshot() {
+fn navigation_grace_does_not_flash_a_closed_view_when_returning() {
+    let (mut session, _, _) = session();
+    session.start_root(request("async_target")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+    // 1. The root is still loading, so it never becomes a cached frame.
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    assert!(session.navigation.settled().is_none());
+
+    // 2. Push a child that finishes loading and is snapshotted.
+    let root_id = session.router.active().unwrap().id;
+    let child = session.router.push(request("async_child")).unwrap();
+    session.sync_active_commands().unwrap();
+    session
+        .task(TaskEvent {
+            task: TaskId(1),
+            instance: child,
+            generation: 1,
+            outcome: TaskOutcome::Completed(Value::Null),
+        })
+        .unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    assert!(session.navigation.settled().is_some());
+
+    // 3. Close the child, returning to the older still-loading root.
+    session
+        .input(InputEvent::Key {
+            key: crate::input::Key::Char('y'),
+            raw: vec![b'y'],
+        })
+        .unwrap();
+    assert_eq!(session.router.active().unwrap().id, root_id);
+
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+    assert!(
+        !session.navigation.is_retaining(),
+        "returning to an older instance must not retain the closed View's frame"
+    );
+    let content: String = (0..12)
+        .map(|x| {
+            terminal
+                .backend()
+                .buffer()
+                .cell((x + 1, 1))
+                .unwrap()
+                .symbol()
+        })
+        .collect();
+    assert_eq!(content, "async_target");
+}
+
+#[test]
+fn modal_overlay_does_not_settle_a_base_frame() {
     let (mut session, _, _) = session();
     session.start_root(request("root_overlay")).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -1713,7 +1853,7 @@ fn modal_overlay_does_not_pollute_last_content_render_snapshot() {
 
     // 2. Overlay view must NOT be recorded as the clean base snapshot
     assert!(
-        session.last_content_render.is_none(),
-        "Modal overlay view must not pollute last_content_render snapshot"
+        session.navigation.settled().is_none(),
+        "Modal overlay view must not settle a base frame"
     );
 }

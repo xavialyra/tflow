@@ -815,6 +815,13 @@ impl View for PickerProtocolView {
         1
     }
 
+    fn retained_content_area(&self, area: Rect) -> Option<Rect> {
+        // The freshly mounted input line, divider, and route completion belong
+        // to this instance. Only the item list and preview may briefly show
+        // pixels retained from the View this Picker replaced.
+        Some(self.body_layout(area)[3])
+    }
+
     fn publication(&self) -> Option<&ViewPublication> {
         self.publication.as_ref()
     }
