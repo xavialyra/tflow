@@ -92,37 +92,97 @@ def workflow_cache_dir():
     cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     return os.path.join(cache_home, "tlaunch", "workflows")
 
+def package_names(root):
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        name for name in os.listdir(root)
+        if os.path.isfile(os.path.join(root, name, "workflow.toml"))
+    )
+
 def has_workflows(root):
-    return any(
-        os.path.isfile(os.path.join(root, name, "workflow.toml"))
-        for name in os.listdir(root)
-        if os.path.isdir(os.path.join(root, name))
-    ) if os.path.isdir(root) else False
+    return bool(package_names(root))
+
+def workflow_source_dir():
+    """Directory holding the shipped workflow packages, or None.
+
+    `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
+    distribution and a sibling `tlaunch-workflows/` checkout are searched so a
+    development tree works without any environment setup.
+    """
+    for name in ("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR", "TLAUNCH_WORKFLOWS_DIR"):
+        candidate = os.environ.get(name)
+        if candidate and has_workflows(candidate):
+            return os.path.realpath(candidate)
+
+    root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
+    root = os.path.realpath(root)
+    for _ in range(4):
+        for name in ("workflows", "tlaunch-workflows"):
+            candidate = os.path.join(root, name)
+            if has_workflows(candidate):
+                return os.path.realpath(candidate)
+        parent = os.path.dirname(root)
+        if parent == root:
+            break
+        root = parent
+    return None
+
+def source_signature(source):
+    """Fingerprint the source tree; any edit or added package changes it."""
+    newest = 0.0
+    files = 0
+    for package in package_names(source):
+        for root, dirs, names in os.walk(os.path.join(source, package)):
+            dirs[:] = [name for name in dirs if name != "__pycache__"]
+            for name in names:
+                files += 1
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+                except OSError:
+                    pass
+    return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
 
 def ensure_workflow_cache():
-    cache = workflow_cache_dir()
-    marker = os.path.join(cache, ".bootstrap-complete")
-    if os.path.isfile(marker) and has_workflows(cache):
-        return cache
+    """Return the cache, re-copying the source whenever the source changed.
 
-    source = os.environ.get("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR")
-    if not source or not has_workflows(source):
-        return None
+    The cache keeps a bundled install from reading a read-only or absent source
+    twice. It must not latch: the marker records the source fingerprint, so
+    editing the workflow repository refreshes the cache on the next run.
+    """
+    cache = workflow_cache_dir()
+    source = workflow_source_dir()
+    if source is None:
+        return cache if has_workflows(cache) else None
+
+    signature = source_signature(source)
+    marker = os.path.join(cache, ".bootstrap-source")
+    if has_workflows(cache):
+        try:
+            with open(marker, encoding="utf-8") as f:
+                if f.read().strip() == signature:
+                    return cache
+        except OSError:
+            pass
 
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     staging = f"{cache}.staging-{os.getpid()}"
     shutil.rmtree(staging, ignore_errors=True)
     try:
-        shutil.copytree(source, staging)
+        shutil.copytree(
+            source,
+            staging,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".bootstrap-*"),
+        )
         if not has_workflows(staging):
             return None
-        with open(os.path.join(staging, ".bootstrap-complete"), "w", encoding="utf-8") as f:
-            f.write("ready\\n")
+        with open(os.path.join(staging, ".bootstrap-source"), "w", encoding="utf-8") as f:
+            f.write(signature + "\n")
         shutil.rmtree(cache, ignore_errors=True)
         os.replace(staging, cache)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return cache if os.path.isfile(marker) else None
+    return cache if has_workflows(cache) else None
 
 def fetch_catalog():
     ensure_workflow_cache()
@@ -180,11 +240,27 @@ def main():
                 "id": cid,
                 "name": name,
                 "desc": desc,
-                "deps": c.get("dependencies", {}),
+                "deps": c.get("deps", {}),
                 "aliases": c.get("aliases", {}),
                 "feed": c.get("feed"),
                 "selected": is_sel,
                 "workflow_dir": workflow_dir,
+            },
+        })
+
+    if not items and cache is None:
+        items.append({
+            "display": "No workflow source found: set TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR, or keep tlaunch-workflows next to this distribution.",
+            "value": "",
+            "metadata": {
+                "id": "",
+                "name": "No workflow source",
+                "desc": "",
+                "deps": {},
+                "aliases": {},
+                "feed": None,
+                "selected": False,
+                "workflow_dir": None,
             },
         })
 
@@ -206,51 +282,6 @@ import sys
 
 def check_command(cmd):
     return shutil.which(cmd) is not None
-
-def generate_suite_preview(selected):
-    feeds = []
-    if "calculator" in selected:
-        feeds.append('    "calculator:main",')
-    if "apps" in selected:
-        feeds.append('    "apps:main",')
-    if "sys" in selected:
-        feeds.append('    "sys:main",')
-
-    feeds_toml = "\n".join(feeds)
-    if feeds_toml:
-        feeds_toml = f"\n  sources = [\n{feeds_toml}\n  ]"
-
-    wf_blocks = []
-    for wf in selected:
-        wf_blocks.append(f'{wf} = {{ dir = "./workflows/{wf}" }}')
-    wf_toml = "\n".join(wf_blocks)
-
-    alias_map = {
-        "apps": 'app = "apps:main"',
-        "calculator": 'calc = "calculator:main"',
-        "sys": 'sys = "sys:main"',
-        "clipboard": 'clip = "clipboard:default"',
-        "shell": 'shell = "shell:main"',
-        "dmenu": 'dmenu = "dmenu:main"',
-    }
-    alias_blocks = [alias_map[wf] for wf in selected if wf in alias_map]
-    alias_toml = "\n".join(alias_blocks)
-
-    return f"""[suite]
-api = 1
-name = "My Workspace"
-
-[suite.entrypoint]
-target = "core:main"
-query = {{{feeds_toml}
-}}
-
-[workflows]
-core = {{ dir = "./workflows/core" }}
-{wf_toml}
-
-[aliases]
-{alias_toml}"""
 
 def main():
     try:
@@ -612,6 +643,7 @@ script = '''#!/usr/bin/env python3
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 DEFAULT_CANDIDATES = [
@@ -666,51 +698,163 @@ def workflow_cache_dir():
     cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     return os.path.join(cache_home, "tlaunch", "workflows")
 
-def generate_suite_manifest(selected):
-    catalog = fetch_catalog()
-    catalog_map = {c["id"]: c for c in catalog}
+def package_names(root):
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        name for name in os.listdir(root)
+        if os.path.isfile(os.path.join(root, name, "workflow.toml"))
+    )
+
+def has_workflows(root):
+    return bool(package_names(root))
+
+def workflow_source_dir():
+    """Directory holding the shipped workflow packages, or None.
+
+    `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
+    distribution and a sibling `tlaunch-workflows/` checkout are searched so a
+    development tree works without any environment setup.
+    """
+    for name in ("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR", "TLAUNCH_WORKFLOWS_DIR"):
+        candidate = os.environ.get(name)
+        if candidate and has_workflows(candidate):
+            return os.path.realpath(candidate)
+
+    root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
+    root = os.path.realpath(root)
+    for _ in range(4):
+        for name in ("workflows", "tlaunch-workflows"):
+            candidate = os.path.join(root, name)
+            if has_workflows(candidate):
+                return os.path.realpath(candidate)
+        parent = os.path.dirname(root)
+        if parent == root:
+            break
+        root = parent
+    return None
+
+def source_signature(source):
+    """Fingerprint the source tree; any edit or added package changes it."""
+    newest = 0.0
+    files = 0
+    for package in package_names(source):
+        for root, dirs, names in os.walk(os.path.join(source, package)):
+            dirs[:] = [name for name in dirs if name != "__pycache__"]
+            for name in names:
+                files += 1
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+                except OSError:
+                    pass
+    return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
+
+def ensure_workflow_cache():
+    """Return the cache, re-copying the source whenever the source changed.
+
+    The cache keeps a bundled install from reading a read-only or absent source
+    twice. It must not latch: the marker records the source fingerprint, so
+    editing the workflow repository refreshes the cache on the next run.
+    """
+    cache = workflow_cache_dir()
+    source = workflow_source_dir()
+    if source is None:
+        return cache if has_workflows(cache) else None
+
+    signature = source_signature(source)
+    marker = os.path.join(cache, ".bootstrap-source")
+    if has_workflows(cache):
+        try:
+            with open(marker, encoding="utf-8") as f:
+                if f.read().strip() == signature:
+                    return cache
+        except OSError:
+            pass
+
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    staging = f"{cache}.staging-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        shutil.copytree(
+            source,
+            staging,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".bootstrap-*"),
+        )
+        if not has_workflows(staging):
+            return None
+        with open(os.path.join(staging, ".bootstrap-source"), "w", encoding="utf-8") as f:
+            f.write(signature + "\n")
+        shutil.rmtree(cache, ignore_errors=True)
+        os.replace(staging, cache)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return cache if has_workflows(cache) else None
+
+def core_entrypoint(cache_root):
+    """`[workflow].entrypoint` of the core package: the suite must target it.
+
+    The name belongs to the workflow package, so reading it keeps the wizard
+    working with any core package instead of assuming "main".
+    """
+    path = os.path.join(cache_root, "core", "workflow.toml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "main"
+
+    in_header = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_header = stripped == "[workflow]"
+            continue
+        if in_header and stripped.startswith("entrypoint"):
+            value = stripped.partition("=")[2].strip()
+            return value.strip("\"'") or "main"
+    return "main"
+
+def generate_suite_manifest(selected, entrypoint):
+    catalog_map = {c["id"]: c for c in fetch_catalog()}
+    selected = [wf for wf in selected if wf != "core"]
 
     feeds = []
     for wf in selected:
-        info = catalog_map.get(wf, {})
-        feed = info.get("feed")
+        feed = catalog_map.get(wf, {}).get("feed")
         if feed:
-            feeds.append(f'    "{feed}",')
+            feeds.append(feed)
 
-    feeds_toml = "\n".join(feeds)
-    if feeds_toml:
-        feeds_toml = f"\n  sources = [\n{feeds_toml}\n  ]"
+    lines = [
+        "[suite]",
+        'api = 1',
+        'name = "Default Suite"',
+        "",
+        "[suite.entrypoint]",
+        f'target = "core:{entrypoint}"',
+    ]
+    if feeds:
+        # A nested table, not an inline table: TOML 1.0 requires inline tables
+        # to fit on one line and forbids trailing commas inside them.
+        lines += ["", "[suite.entrypoint.query]", "sources = ["]
+        lines += [f'  "{feed}",' for feed in feeds]
+        lines += ["]"]
 
-    wf_lines = [f'{wf} = {{ dir = "./workflows/{wf}" }}' for wf in selected]
-    wf_toml = "\n".join(wf_lines)
+    lines += ["", "[workflows]", 'core = { dir = "./workflows/core" }']
+    lines += [f'{wf} = {{ dir = "./workflows/{wf}" }}' for wf in selected]
 
-    alias_lines = []
+    lines += ["", "[aliases]"]
     for wf in selected:
-        info = catalog_map.get(wf, {})
-        aliases = info.get("aliases", {})
-        for a_k, a_v in aliases.items():
-            alias_lines.append(f'{a_k} = "{a_v}"')
-    alias_toml = "\n".join(alias_lines)
+        for alias, target in catalog_map.get(wf, {}).get("aliases", {}).items():
+            lines.append(f'{alias} = "{target}"')
 
-    return f"""[suite]
-api = 1
-name = "Default Suite"
-
-[suite.entrypoint]
-target = "core:main"
-query = {{{feeds_toml}
-}}
-
-[workflows]
-core = {{ dir = "./workflows/core" }}
-{wf_toml}
-
-[aliases]
-{alias_toml}
-"""
+    return "\n".join(lines) + "\n"
 
 def generate_settings_manifest():
     return """# Passive host settings for tlaunch
+[defaults.picker]
+left_prefix = "$route"
+left_prefix_backspace = "root"
+
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 toggle_preview = ["ctrl+p"]
@@ -718,6 +862,29 @@ back = ["escape"]
 select_previous = ["up"]
 select_next = ["down"]
 """
+
+def patch_settings_file(path):
+    """Add the picker display keys to an existing settings file, once."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "unreadable"
+
+    if "left_prefix" in text:
+        return "kept"
+
+    display = ['left_prefix = "$route"', 'left_prefix_backspace = "root"']
+    lines = text.splitlines()
+    if "[defaults.picker]" in lines:
+        at = lines.index("[defaults.picker]") + 1
+        lines = lines[:at] + display + lines[at:]
+    else:
+        lines = ["[defaults.picker]"] + display + [""] + lines
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).rstrip("\n") + "\n")
+    return "updated"
 
 def main():
     try:
@@ -734,38 +901,93 @@ def main():
     workflows_dir = os.path.join(config_dir, "workflows")
     os.makedirs(workflows_dir, exist_ok=True)
 
-    cache_root = workflow_cache_dir()
+    cache_root = ensure_workflow_cache()
+    if cache_root is None:
+        print(
+            "No workflow source found. Set TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR to the "
+            "directory that holds the workflow packages.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    to_install = [
+        wf for wf in selected
+        if os.path.isfile(os.path.join(cache_root, wf, "workflow.toml"))
+    ]
+    missing = [wf for wf in selected if wf not in to_install]
+    if "core" not in to_install:
+        to_install.append("core")
+
     installed = []
+    for wf in to_install:
+        source = os.path.join(cache_root, wf)
+        target = os.path.join(workflows_dir, wf)
+        # Replace instead of merge: a merged copy keeps every file the source
+        # has dropped, which is how a stale script survives a reinstall.
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(
+            source,
+            target,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".bootstrap-*"),
+        )
+        installed.append(wf)
 
-    to_copy = list(selected)
-    if "core" not in to_copy:
-        to_copy.append("core")
-
-    for wf in to_copy:
-        wf_src = os.path.join(cache_root, wf)
-        if os.path.isdir(wf_src):
-            dst = os.path.join(workflows_dir, wf)
-            shutil.copytree(wf_src, dst, dirs_exist_ok=True)
-            installed.append(wf)
+    # A deselected component must leave the installed tree as well.
+    for candidate in fetch_catalog():
+        cid = candidate["id"]
+        if cid == "core" or cid in to_install:
+            continue
+        if os.path.isfile(os.path.join(cache_root, cid, "workflow.toml")):
+            shutil.rmtree(os.path.join(workflows_dir, cid), ignore_errors=True)
 
     suite_file = os.path.join(config_dir, "default.toml")
     settings_file = os.path.join(config_dir, "settings.toml")
 
-    with open(suite_file, "w", encoding="utf-8") as f:
-        f.write(generate_suite_manifest(selected))
+    # The marker's first field is the resolved source, so the summary can show
+    # where this install was copied from rather than just where it landed.
+    source_note = "unknown (cache only)"
+    try:
+        with open(os.path.join(cache_root, ".bootstrap-source"), encoding="utf-8") as f:
+            source_note = f.read().strip().split("|")[0] or source_note
+    except OSError:
+        pass
 
-    if not os.path.exists(settings_file):
+    with open(suite_file, "w", encoding="utf-8") as f:
+        f.write(generate_suite_manifest(installed, core_entrypoint(cache_root)))
+
+    if os.path.exists(settings_file):
+        settings_state = patch_settings_file(settings_file)
+    else:
         with open(settings_file, "w", encoding="utf-8") as f:
             f.write(generate_settings_manifest())
+        settings_state = "written"
+
+    check_state = "skipped (tlaunch not found)"
+    tlaunch_bin = os.environ.get("TLAUNCH_BIN") or shutil.which("tlaunch")
+    if tlaunch_bin:
+        check = subprocess.run(
+            [tlaunch_bin, "-s", suite_file, "-c", settings_file, "--check"],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
+            check_state = "ok"
+        else:
+            detail = (check.stderr or check.stdout).strip().replace("\n", " ")
+            check_state = f"FAILED: {detail}"
 
     installed_str = ", ".join(installed) if installed else "(none)"
+    missing_line = f"  Skipped:          {', '.join(missing)}\n" if missing else ""
     msg = f"""
 \033[1;32m🎉 [✓] tlaunch configuration installed successfully!\033[0m
 ============================================================
   Suite Manifest:   {suite_file}
-  Settings File:    {settings_file}
+  Settings File:    {settings_file} ({settings_state})
   Workflows Dir:    {workflows_dir}
+  Workflow Source:  {source_note}
+  Workflow Cache:   {cache_root}
   Active Workflows: {installed_str}
+{missing_line}  Config Check:     {check_state}
 ============================================================
 
 You are ready to launch! Try running:

@@ -2,6 +2,15 @@
 
 This changelog tracks updates to the `tlaunch` knowledge bundle.
 
+## 2026-09-22
+
+- Fixed the setup wizard (`distribution/init.toml`), which generated every user configuration and could only ever install stale workflows. Its cache marker latched on the first copy, so rerunning the wizard reinstalled the same snapshot no matter how often the selection changed; the marker now records a fingerprint of the workflow source (path, newest modification, file count, package list) and the cache is rebuilt whenever that changes.
+- The wizard installs by replacing each package directory instead of merging into it. A merged copy kept every file the source had dropped — a dead `items.sh`, an old `items.py` without the source badge — so a reinstall never repaired an install.
+- The generated suite manifest is now TOML 1.0: the entry point's `query` is written as a nested `[suite.entrypoint.query]` table instead of a multi-line inline table, which strict parsers reject. The generated `settings.toml` also carries the picker display defaults (`left_prefix`, `left_prefix_backspace`), and an existing settings file is patched with those two keys when they are absent.
+- The wizard no longer needs environment setup to find the workflows: `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` (or `TLAUNCH_WORKFLOWS_DIR`) wins, and a bundled `workflows/` beside the distribution or a sibling `tlaunch-workflows/` checkout is discovered by walking up from `WORKFLOW_DIR`. It reports the resolved source and cache in its summary, and the suite target is read from the core package's `[workflow].entrypoint` rather than assuming `core:main`.
+- The wizard's install step now fails loudly when the source cannot be found, reports components that were selected but are absent from the source, removes deselected components from the installed tree, keeps bytecode out of the install, and runs `--check` against what it wrote, reporting the result in its summary.
+- Added `tests/wizard.rs`: it drives the wizard's embedded scripts against a private copy of the workflow source and pins the two regressions (a cache that lags its source, a merge copy that keeps deleted files), plus the generated manifest, settings and the shipped wizard's own `--check`.
+
 ## 2026-09-21
 
 - Repaired the onboarding tutorials and the reference: `[views.<name>.commands.<id>]` was still taught throughout, but the loader has rejected it since ADR 0006 in favour of workflow-root `[commands.<id>]` plus a `[views.<name>.keymap]` binding. Every tutorial example is now validated with `--check` and `--items`, and the stale `scope = "view"` advice is gone.
