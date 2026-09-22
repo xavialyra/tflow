@@ -48,6 +48,7 @@ impl ProtocolOperation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ProtocolOutcome {
+    Noop,
     Operation(ProtocolOperation),
     Feedback {
         message: String,
@@ -60,7 +61,7 @@ impl ProtocolOutcome {
     pub(crate) fn operation(&self) -> Option<&ProtocolOperation> {
         match self {
             Self::Operation(op) => Some(op),
-            Self::Feedback { .. } => None,
+            Self::Noop | Self::Feedback { .. } => None,
         }
     }
 }
@@ -134,6 +135,9 @@ pub(crate) fn parse_response(
     expected_operation: Option<&str>,
     source_label: &str,
 ) -> Result<ProtocolOutcome> {
+    if stdout.iter().all(u8::is_ascii_whitespace) {
+        return Ok(ProtocolOutcome::Noop);
+    }
     let response: RawResponse = serde_json::from_slice(stdout).with_context(|| {
         format!(
             "{} producer must write exactly one valid JSON protocol response",
@@ -307,7 +311,7 @@ pub(crate) fn parse_declared_operation(
     let bytes = serde_json::to_vec(&envelope)?;
     match parse_response(&bytes, Some(operation_type), source_label)? {
         ProtocolOutcome::Operation(operation) => Ok(operation),
-        ProtocolOutcome::Feedback { .. } => unreachable!(),
+        ProtocolOutcome::Noop | ProtocolOutcome::Feedback { .. } => unreachable!(),
     }
 }
 

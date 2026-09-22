@@ -227,9 +227,10 @@ impl View {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ProducerKind {
+    #[default]
     Declared,
     Script,
 }
@@ -238,7 +239,9 @@ pub(crate) enum ProducerKind {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReturnProcessor {
     #[serde(rename = "type")]
-    pub(crate) operation: String,
+    #[serde(default)]
+    pub(crate) operation: Option<String>,
+    #[serde(default)]
     pub(crate) producer: ProducerKind,
     pub(crate) handler: toml::Value,
 }
@@ -251,20 +254,24 @@ pub enum CommandAction {
     #[serde(skip)]
     OpenParameters,
     Run {
+        #[serde(default)]
         producer: ProducerKind,
         handler: toml::Value,
     },
     Navigate {
+        #[serde(default)]
         producer: ProducerKind,
         handler: toml::Value,
     },
     Call {
+        #[serde(default)]
         producer: ProducerKind,
         handler: toml::Value,
         #[serde(default)]
         return_processor: Option<ReturnProcessor>,
     },
     Return {
+        #[serde(default)]
         producer: ProducerKind,
         handler: toml::Value,
     },

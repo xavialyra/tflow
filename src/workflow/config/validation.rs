@@ -96,21 +96,23 @@ fn validate_return_processor(
     match processor.producer {
         super::ProducerKind::Declared => {
             let operation = crate::protocol::parse_declared_operation(
-                &processor.operation,
+                processor
+                    .operation
+                    .as_deref()
+                    .context("declared return processor requires type")?,
                 &processor.handler,
                 &format!("{owner} declared handler"),
             )?;
             validate_operation_target(view_ref, command_id, &operation, views)?;
         }
         super::ProducerKind::Script => {
-            anyhow::ensure!(
-                matches!(
-                    processor.operation.as_str(),
-                    "navigate" | "call" | "return" | "run"
-                ),
-                "{owner} has unsupported operation {:?}",
-                processor.operation
-            );
+            if let Some(operation) = processor.operation.as_deref() {
+                anyhow::ensure!(
+                    matches!(operation, "navigate" | "call" | "return" | "run"),
+                    "{owner} has unsupported operation {:?}",
+                    operation
+                );
+            }
             super::parse_producer_script_handler(&processor.handler, script_root)
                 .with_context(|| format!("{owner} script handler"))?;
         }

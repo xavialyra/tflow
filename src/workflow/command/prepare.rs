@@ -32,6 +32,7 @@ pub(crate) enum PreparedAction {
         message: String,
         level: crate::protocol::FeedbackLevel,
     },
+    Noop,
 }
 
 pub(crate) fn prepare_command_action(
@@ -120,12 +121,13 @@ fn prepare_producer_action(
                 root,
                 &source,
                 &request,
-                Some(action.operation_type()),
+                (producer == ProducerKind::Declared).then_some(action.operation_type()),
                 cancellation,
             )?
         }
     };
     match outcome {
+        crate::protocol::ProtocolOutcome::Noop => Ok(PreparedAction::Noop),
         crate::protocol::ProtocolOutcome::Operation(operation) => prepare_protocol_operation(
             config,
             invocation,
@@ -174,7 +176,10 @@ pub(crate) fn prepare_return_processor(
     let outcome = match processor.producer {
         ProducerKind::Declared => {
             let operation = crate::protocol::parse_declared_operation(
-                &processor.operation,
+                processor
+                    .operation
+                    .as_deref()
+                    .context("declared return processor requires type")?,
                 &processor.handler,
                 &source_label,
             )?;
@@ -197,12 +202,14 @@ pub(crate) fn prepare_return_processor(
                 root,
                 &source,
                 &request,
-                Some(&processor.operation),
+                (processor.producer == ProducerKind::Declared)
+                    .then_some(processor.operation.as_deref().unwrap_or("")),
                 cancellation,
             )?
         }
     };
     match outcome {
+        crate::protocol::ProtocolOutcome::Noop => Ok(PreparedAction::Noop),
         crate::protocol::ProtocolOutcome::Operation(operation) => prepare_protocol_operation(
             config,
             invocation,
