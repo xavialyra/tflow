@@ -71,7 +71,7 @@ impl ViewCommandProvider for StaticViewCommandProvider {
             .config
             .view(&self.target)
             .and_then(|view| view.keymap.as_ref())
-            .is_some_and(|keymap| !keymap.bindings.is_empty());
+            .is_some_and(|keymap| !keymap.is_empty());
 
         if declared {
             return Ok(source.declared_entries(&page));
@@ -264,9 +264,10 @@ impl<'a> ViewCommandSource<'a> {
         ))
     }
 
-    /// The View's own `[views.<name>.keymap]` table. A `mode = "static"` View
-    /// publishes exactly these; a `mode = "item"` View publishes them as the
-    /// base layer that the focused item's bindings override per physical key.
+    /// The View's own `[views.<name>.keymap]` table. A `keymap_mode = "view"`
+    /// View publishes exactly these; a `keymap_mode = "item_merge"` View
+    /// publishes them as the base layer that the focused item's bindings
+    /// override per physical key.
     fn declared_entries(
         &self,
         page: &crate::workflow::command::CommandOwnerContext,
@@ -279,7 +280,6 @@ impl<'a> ViewCommandSource<'a> {
             return Vec::new();
         };
         keymap
-            .bindings
             .iter()
             .filter(|(_, value)| value.as_bool() != Some(false))
             .filter_map(|(key_str, value)| {
@@ -315,11 +315,9 @@ impl ProtocolCommandService {
 
     pub(crate) fn view_command_provider(&self, target: &str) -> Box<dyn ViewCommandProvider> {
         let member_id = crate::workflow::config::package_id(target);
-        let is_item_mode = self
-            .config
-            .view(target)
-            .and_then(|v| v.keymap.as_ref())
-            .is_some_and(|k| k.mode == crate::workflow::config::KeymapMode::Item);
+        let is_item_mode = self.config.view(target).is_some_and(|v| {
+            v.keymap_mode == crate::workflow::config::KeymapMode::ItemMerge
+        });
         if is_item_mode {
             Box::new(ItemViewCommandProvider {
                 target: target.to_string(),
@@ -999,7 +997,7 @@ mod tests {
         }
     }
 
-    /// The fixture's `core:default` is `mode = "item"` with a base keymap.
+    /// The fixture's `core:default` is `keymap_mode = "item_merge"` with a base keymap.
     fn item_mode_snapshot(
         config: &Arc<crate::workflow::config::CompiledConfig>,
         item_bindings: Option<serde_json::Value>,

@@ -105,7 +105,7 @@ The aggregating script reads that contract headlessly and attaches it to every i
 item["bindings"] = {"ctrl+o": "apps:open"}
 ```
 
-The aggregate View must be `mode = "item"` to dispatch the focused item's bindings, and it can declare its own bindings in `[views.<name>.keymap]` as a base layer for keys that must stay reachable while the list is empty or still loading. Item bindings override base bindings for the same physical key.
+The aggregate View must set `keymap_mode = "item_merge"` to dispatch the focused item's bindings, and it can declare its own bindings in `[views.<name>.keymap]` as a base layer for keys that must stay reachable while the list is empty or still loading. Item bindings override base bindings for the same physical key.
 
 The command script reads the selected item through the public Engine state:
 

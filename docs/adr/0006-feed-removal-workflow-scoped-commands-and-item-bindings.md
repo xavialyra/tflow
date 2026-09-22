@@ -16,7 +16,7 @@ description: "Abolish view-level feeds and command projection in favor of workfl
 
 - **Status**: Accepted
 - **Date**: 2026-09-19
-- **Revised**: `mode = "item"` may declare a base keymap that the focused Item overrides (see Mode B). The original decision made the two modes mutually exclusive.
+- **Revised**: an `item_merge` View may declare a base keymap that the focused Item overrides (see Mode B). The original decision made the two modes mutually exclusive.
 - **Scope**: `workflow/config`, `engine/picker`, `command/registry`, `protocol/contracts`, `app/cli`, `suite` manifest entrypoint.
 - **Related decisions**: [ADR 0002](0002-static-configuration-and-script-boundaries.md), [ADR 0004](0004-scoped-command-registration.md), [ADR 0005](0005-manifest-driven-suites-and-self-contained-workflows.md).
 - **Supersedes**: ADR 0002 Picker feed aggregation and command projection contracts.
@@ -96,19 +96,21 @@ handler = { file = "scripts/open_dir.sh" }
 
 ---
 
-### 3. Explicit View Binding Strategies (`mode = "static"` vs `mode = "item"`)
+### 3. Explicit View Binding Strategies (`keymap_mode = "view"` vs `keymap_mode = "item_merge"`)
+
+> **Revised (2026-09-22)**: the strategy moved out of the binding table. It is now the View-level `keymap_mode` field (`"view"` default, `"item_merge"` for item-driven Views); `[views.<name>.keymap]` is a pure key-to-command table.
 
 A View governs how keyboard inputs map to commands. Views choose one of two binding strategies:
 
 ```toml
-# View Keymap Specification
-[views.main.keymap]
-mode = "static" | "item" # Defaults to "static" if omitted
+# View Keymap Mode Specification
+[views.main]
+keymap_mode = "view" | "item_merge" # Defaults to "view" if omitted
 ```
 
-#### Mode A: Static Mode (`mode = "static"`, Default)
+#### Mode A: View Mode (`keymap_mode = "view"`, Default)
 Suitable for 95% of standard single-purpose views (e.g., calculator, application launcher, dmenu):
-- **Omission Rule**: If `mode` is omitted, `mode = "static"` is assumed by default.
+- **Omission Rule**: If `keymap_mode` is omitted, `keymap_mode = "view"` is assumed by default.
 - Key bindings map directly and immutably to local workflow commands:
   ```toml
   [views.main.keymap]
@@ -118,35 +120,37 @@ Suitable for 95% of standard single-purpose views (e.g., calculator, application
   ```
 - Items produced by data scripts remain pure data (e.g., `[{"display": "...", "value": "..."}]`) and are prohibited from altering key mappings.
 
-#### Mode B: Item-Driven Mode (`mode = "item"`)
+#### Mode B: Item-Driven Mode (`keymap_mode = "item_merge"`)
 Dedicated to aggregate launchers (e.g., `hub`) or heterogeneous menus:
 - The View delegates key dispatch to the focused Item:
   ```toml
-  [views.main.keymap]
-  mode = "item"
+  [views.main]
+  keymap_mode = "item_merge"
   ```
 - In this mode, physical key dispatch consults the `bindings` dictionary attached to the currently focused Item.
-- The View may still declare its own bindings in the same table. They form a **base layer**, and the focused Item's bindings **override them per physical key**:
+- The View may still declare its own bindings in `[views.main.keymap]`. They form a **base layer**, and the focused Item's bindings **override them per physical key**:
   ```toml
+  [views.main]
+  keymap_mode = "item_merge"
+
   [views.main.keymap]
-  mode = "item"
   "ctrl+r" = "refresh"
   ```
   The base layer is independent of item data, so a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. This is the supported way to give an aggregate View a permanent key; do not rely on every item carrying the binding.
-- Precedence within one View: focused Item binding > View base binding > Engine keymap. A base binding for a key that is also an Engine default removes that Engine binding for this View, exactly as in `mode = "static"`.
+- Precedence within one View: focused Item binding > View base binding > Engine keymap. A base binding for a key that is also an Engine default removes that Engine binding for this View, exactly as in `keymap_mode = "view"`.
 - Item bindings are plain strings, so an Item can rebind a base key but cannot tombstone one. Reserve `false` tombstones for the View's own table.
 
 ---
 
 ### 4. Zero-Lock Dispatch-Time Resolution for Item Bindings
 
-> **Revised**: the implementation does not resolve item bindings at dispatch time. A `mode = "item"` View republishes its View scope (the base keymap plus the focused item's bindings, item winning per key) through `CommandRegistry::replace_scope` whenever the active publication changes, and the registry reports no change when the entries are identical. The design below is the original target, not the current code.
+> **Revised**: the implementation does not resolve item bindings at dispatch time. A `keymap_mode = "item_merge"` View republishes its View scope (the base keymap plus the focused item's bindings, item winning per key) through `CommandRegistry::replace_scope` whenever the active publication changes, and the registry reports no change when the entries are identical. The design below is the original target, not the current code.
 
 To permanently eliminate lock contention on `CommandRegistry` during high-frequency cursor navigation (e.g. holding `j` or rapid typing):
 
 - **No Registry Thrashing**: The selection change event does **not** call `CommandRegistry::replace_scope`. The global command registry remains 100% read-only throughout item navigation.
 - **Dispatch-Time Late-Binding**:
-  1. In `mode = "item"` views, the active View registers standard delegated slot receivers in `CommandScope::View` during view mount (e.g., routing `Enter` to the item-action dispatcher).
+  1. In `keymap_mode = "item_merge"` views, the active View registers standard delegated slot receivers in `CommandScope::View` during view mount (e.g., routing `Enter` to the item-action dispatcher).
   2. When a physical key is pressed, the dispatcher asks the `Picker` engine for the currently focused item's binding for that key (e.g. `"enter" -> "apps:open"`).
   3. The dispatcher resolves the command directly against the static session command pool and executes its handler, completely bypassing registry writes.
 - **Passive Footer Inspection**: The Chrome Footer reads the focused item's bound command metadata directly from the static session command pool during passive draw passes without acquiring write locks or publishing `CommandsChanged` events.

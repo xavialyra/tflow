@@ -54,7 +54,6 @@ file = "scripts/received.py"
 
 [commands.submit]
 label = "Submit"
-scope = "view"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }

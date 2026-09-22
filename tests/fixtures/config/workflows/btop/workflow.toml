@@ -24,7 +24,6 @@ tab = "next"
 
 [commands.next]
 label = "Next resource"
-scope = "view"
 type = "navigate"
 producer = "script"
 
@@ -33,7 +32,6 @@ file = "scripts/next.sh"
 
 [commands.reset]
 label = "Reset monitor"
-scope = "view"
 type = "navigate"
 producer = "declared"
 

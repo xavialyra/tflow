@@ -293,9 +293,10 @@ impl CompiledConfig {
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
             let wf_id = super::package_id(view_ref);
             if let Some(keymap) = &view.keymap {
-                // Both modes may declare bindings. `mode = "item"` only adds the
-                // focused item's bindings on top of them (item wins per key).
-                for (key, val) in &keymap.bindings {
+                // Both modes may declare bindings. `keymap_mode = "item_merge"`
+                // only adds the focused item's bindings on top of them (item
+                // wins per key).
+                for (key, val) in keymap {
                     if val.as_bool() == Some(false) {
                         continue;
                     }

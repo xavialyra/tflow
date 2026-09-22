@@ -84,7 +84,7 @@ where
     let mut rebound = HashSet::new();
 
     for (source, value) in patch {
-        if source == "mode" || source.is_empty() {
+        if source.is_empty() {
             continue;
         }
         let key = Key::parse_binding(source)

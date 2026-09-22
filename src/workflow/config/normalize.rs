@@ -26,18 +26,8 @@ fn normalize_keymap_table(
     table: &mut toml::map::Map<String, toml::Value>,
     label: &str,
 ) -> anyhow::Result<()> {
-    let mode_val = table.remove("mode");
     let entries = std::mem::replace(table, toml::map::Map::new());
     let mut normalized = toml::map::Map::new();
-    if let Some(mode) = mode_val {
-        let mode_str = mode
-            .as_str()
-            .with_context(|| format!("{label} keymap mode must be a string"))?;
-        if mode_str != "static" && mode_str != "item" {
-            anyhow::bail!("{label} keymap mode must be \"static\" or \"item\", got {:?}", mode_str);
-        }
-        normalized.insert("mode".to_string(), mode);
-    }
 
     let mut source_by_key = BTreeMap::new();
     for (source, value) in entries {

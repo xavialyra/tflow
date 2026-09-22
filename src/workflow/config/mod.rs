@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn item_mode_views_may_declare_a_base_keymap() {
+    fn item_merge_views_may_declare_a_base_keymap() {
         let compiled = config(
             r#"
             [workflows.core.commands.complete]
@@ -500,34 +500,35 @@ mod tests {
             producer = "declared"
             handler = { target = "core:default" }
 
+            [workflows.core.views.default]
+            keymap_mode = "item_merge"
+
             [workflows.core.views.default.engine]
             type = "picker"
 
             [workflows.core.views.default.keymap]
-            mode = "item"
             tab = "complete"
             "#,
         );
         compiled
             .validate_with_engines(&EngineRegistry::new())
             .unwrap();
-        let keymap = compiled
-            .view("core:default")
-            .and_then(|view| view.keymap.as_ref())
-            .expect("keymap");
-        assert_eq!(keymap.mode, KeymapMode::Item);
-        assert!(keymap.bindings.contains_key("tab"));
+        let view = compiled.view("core:default").expect("view");
+        assert_eq!(view.keymap_mode, KeymapMode::ItemMerge);
+        assert!(view.keymap.as_ref().expect("keymap").contains_key("tab"));
     }
 
     #[test]
-    fn item_mode_base_keymap_still_validates_its_targets() {
+    fn item_merge_base_keymap_still_validates_its_targets() {
         let compiled = config(
             r#"
+            [workflows.core.views.default]
+            keymap_mode = "item_merge"
+
             [workflows.core.views.default.engine]
             type = "picker"
 
             [workflows.core.views.default.keymap]
-            mode = "item"
             tab = "missing"
             "#,
         );

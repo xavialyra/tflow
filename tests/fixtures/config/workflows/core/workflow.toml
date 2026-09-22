@@ -3,6 +3,9 @@ api = 1
 name = "core"
 entrypoint = "default"
 
+[views.default]
+keymap_mode = "item_merge"
+
 [views.default.query]
 type = "object"
 input = "search"
@@ -21,7 +24,6 @@ producer = "script"
 file = "scripts/items.py"
 
 [views.default.keymap]
-mode = "item"
 tab = "complete"
 space = "route_separator"
 

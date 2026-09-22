@@ -42,7 +42,6 @@ enter = "open"
 
 [commands.accept]
 label = "Select"
-scope = "selection"
 type = "return"
 producer = "script"
 [commands.accept.handler]

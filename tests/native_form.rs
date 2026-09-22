@@ -112,14 +112,12 @@ enter = "submit"
 
 [commands.submit]
 label = "Submit string values"
-scope = "view"
 type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
 
 [commands.details]
 label = "Edit details"
-scope = "view"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:dynamic" }
@@ -130,7 +128,6 @@ handler = { file = "scripts/returned.py" }
 
 [commands.string_form]
 label = "String form"
-scope = "view"
 type = "call"
 producer = "declared"
 handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
@@ -468,7 +465,6 @@ fn view_command_precedes_workflow_command_and_editor_even_when_form_is_invalid()
         [workflows.example.views.form.commands.cancel]
         key = "ctrl+u"
         label = "View cancel"
-        scope = "view"
         type = "return"
         producer = "declared"
         handler = { value = "VIEW_COMMAND_WON" }

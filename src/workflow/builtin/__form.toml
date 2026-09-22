@@ -82,7 +82,6 @@ enter = "accept"
 
 [commands.accept]
 label = "Apply"
-scope = "selection"
 type = "return"
 producer = "script"
 [commands.accept.handler]

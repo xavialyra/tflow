@@ -544,9 +544,9 @@ fn view_contract(
     view_ref: &str,
     view: &crate::workflow::config::View,
 ) -> serde_json::Value {
-    let mode = match view.keymap.as_ref().map(|k| k.mode) {
-        Some(crate::workflow::config::KeymapMode::Item) => "item",
-        _ => "static",
+    let keymap_mode = match view.keymap_mode {
+        crate::workflow::config::KeymapMode::ItemMerge => "item_merge",
+        crate::workflow::config::KeymapMode::View => "view",
     };
     let member_id = crate::workflow::config::package_id(view_ref);
     let commands = config.workflow_commands(member_id);
@@ -557,7 +557,7 @@ fn view_contract(
 
     let mut keymap_json = serde_json::Map::new();
     if let Some(keymap) = &view.keymap {
-        for (key, val) in &keymap.bindings {
+        for (key, val) in keymap {
             if let Some(cmd_id) = val.as_str() {
                 let resolved_fqid = config
                     .resolve_command_fqid(member_id, cmd_id)
@@ -573,7 +573,7 @@ fn view_contract(
         "alias": config.alias_for_view(view_ref),
         "engine": view.selected_engine_type(),
         "query": view.query,
-        "mode": mode,
+        "keymap_mode": keymap_mode,
         "commands": commands_json,
         "keymap": keymap_json,
     })

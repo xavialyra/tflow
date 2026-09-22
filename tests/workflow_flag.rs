@@ -431,7 +431,6 @@ items = [{ display = "Streamed choice", value = "chosen" }]
 enter = "accept"
 [commands.accept]
 type = "return"
-scope = "selection"
 producer = "script"
 [commands.accept.handler]
 script = '''#!/usr/bin/env python3

@@ -1283,7 +1283,6 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         [workflows.core.views.default.commands.inspect]
         key = "enter"
         label = "Inspect"
-        scope = "view"
         type = "run"
 
         producer = "declared"
@@ -2181,7 +2180,6 @@ fn command_palette_opens_for_an_empty_aggregate_view() {
         items = []
         [workflows.core.views.default.commands.aggregate]
         label = "Aggregate command"
-        scope = "view"
         type = "return"
         producer = "declared"
         handler = { value = "aggregate" }
@@ -2485,8 +2483,8 @@ fn item_bindings_dispatch_and_display_in_footer() {
         handler = { mode = "foreground", argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"], exit = true }
 
         [workflows.core.views.default]
+        keymap_mode = "item_merge"
         [workflows.core.views.default.keymap]
-        mode = "item"
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -3340,8 +3338,8 @@ fn aggregate_view_footer_commands_survive_a_slow_refresh() {
         handler = { mode = "foreground", argv = ["sh", "-c", "printf 'opened\\n'"], exit = true }
 
         [workflows.slow.views.main]
+        keymap_mode = "item_merge"
         [workflows.slow.views.main.keymap]
-        mode = "item"
         [workflows.slow.views.main.engine]
         type = "picker"
         [workflows.slow.views.main.engine.config.items]

@@ -72,21 +72,21 @@ pub(crate) struct CaptureDefaults {
     pub(crate) bindings: Option<toml::Value>,
 }
 
+/// How a View's own `[views.<name>.keymap]` table is interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum KeymapMode {
+    /// The table (or, when absent or empty, the commands' own `key`) is the
+    /// whole View scope. The default.
     #[default]
-    Static,
-    Item,
+    View,
+    /// The table is a base layer; the focused item's `bindings` override it
+    /// per physical key, and the command-level `key` fallback does not apply.
+    ItemMerge,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
-pub struct ViewKeymap {
-    #[serde(default)]
-    pub mode: KeymapMode,
-    #[serde(flatten)]
-    pub bindings: BTreeMap<String, toml::Value>,
-}
+/// The View's own `[views.<name>.keymap]` bindings, keyed by physical key.
+pub type ViewKeymap = BTreeMap<String, toml::Value>;
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -203,6 +203,8 @@ pub struct View {
     pub cancel_exit_code: Option<u8>,
     #[serde(default, rename = "query")]
     pub(crate) query: Option<toml::Table>,
+    #[serde(default)]
+    pub keymap_mode: KeymapMode,
     #[serde(default)]
     pub keymap: Option<ViewKeymap>,
 }
@@ -408,7 +410,6 @@ impl CommandBinding {
         Some(Command {
             key: self.key(id).map(str::to_string),
             label: self.label(id)?.to_string(),
-            scope: None,
             action: self.command_action(id)?,
         })
     }
@@ -420,9 +421,6 @@ pub struct Command {
     pub key: Option<String>,
     #[serde(default)]
     pub label: String,
-    #[serde(default, skip_serializing)]
-    #[allow(dead_code)]
-    pub scope: Option<String>,
     #[serde(flatten)]
     pub action: CommandAction,
 }

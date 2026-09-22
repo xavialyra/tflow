@@ -53,7 +53,7 @@ A View exposes a command by binding a key to it:
 enter = "open"
 ```
 
-`key` on the command itself is only a fallback: a `mode = "static"` View that declares no bindings (no table, or an empty one) publishes every workflow command of its own workflow, binding the ones that declare a `key`. A View that declares `[views.<name>.keymap]` bindings publishes that table instead, and a `mode = "item"` View publishes its table plus the focused item's bindings, so a command-level `key` never applies there. `[views.<name>.commands.<id>]` is rejected because business commands belong to the workflow root.
+`key` on the command itself is only a fallback: a View whose `keymap_mode` is the default `"view"` and which declares no bindings (no table, or an empty one) publishes every workflow command of its own workflow, binding the ones that declare a `key`. A View that declares `[views.<name>.keymap]` bindings publishes that table instead, and a View with `keymap_mode = "item_merge"` publishes its table plus the focused item's bindings, so a command-level `key` never applies there. `[views.<name>.commands.<id>]` is rejected because business commands belong to the workflow root.
 
 ## Style Slots
 
@@ -71,7 +71,7 @@ type = "object"
 mode = { type = "string", default = "normal" }
 ```
 
-`alias` is prohibited on workflow views; suite `[aliases]` owns public shorthand routes. Query fields are validated before a target View is mounted.
+`alias` is prohibited on workflow views; suite `[aliases]` owns public shorthand routes. Query fields are validated before a target View is mounted. The optional `keymap_mode` field selects how `[views.<name>.keymap]` is interpreted (`"view"`, the default, or `"item_merge"`); see [Commands](#commands).
 
 ## Engine Configuration
 
