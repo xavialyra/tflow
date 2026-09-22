@@ -5,11 +5,15 @@ on:
     branches:
       - main
       - master
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+# Release assets are assembled from this workflow's build output when a release is published.
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,10 +51,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Upload release binary
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp target/release/tflow release/tflow-linux-x86_64
+          cp distribution/install.sh release/install.sh
+          cp examples/init.toml release/init.toml
+
+      - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
           name: tflow-linux-x86_64-${{ github.sha }}
-          path: target/release/tflow
+          path: release
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --generate-notes

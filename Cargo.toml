@@ -1,6 +1,6 @@
 [package]
 name = "tflow"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 description = "A generic TUI workflow host for View-based CLI workflows"
 license = "MIT"

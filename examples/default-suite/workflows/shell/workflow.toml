@@ -1,0 +1,12 @@
+[workflow]
+api = 1
+name = "shell"
+entrypoint = "main"
+
+[views.main]
+
+[views.main.engine]
+type = "embedded"
+
+[views.main.engine.config]
+command = ["sh"]

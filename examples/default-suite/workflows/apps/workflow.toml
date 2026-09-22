@@ -1,0 +1,76 @@
+[workflow]
+api = 1
+name = "applications"
+entrypoint = "main"
+
+[views.main]
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+preview_ratio = 0.35
+preview_min_width = 24
+preview_default_open = false
+input_placeholder = "Search applications"
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/apps.py"
+
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
+
+[views.main.keymap]
+enter = "open"
+"ctrl+o" = "open_detached"
+"ctrl+w" = "weight"
+
+[views.weight]
+[views.weight.query]
+type = "object"
+input = "app"
+app = { type = "string", default = "" }
+
+[views.weight.engine]
+type = "form"
+
+[views.weight.engine.config.content]
+producer = "script"
+[views.weight.engine.config.content.handler]
+file = "scripts/weight-content.py"
+
+[views.weight.keymap]
+enter = "save"
+
+[commands.open]
+label = "Open"
+type = "run"
+producer = "script"
+[commands.open.handler]
+file = "scripts/open.py"
+
+# Same launcher as `open`, without waiting for the activation call to return.
+[commands.open_detached]
+label = "Open detached"
+type = "run"
+producer = "script"
+[commands.open_detached.handler]
+file = "scripts/open.py"
+
+[commands.weight]
+label = "Set weight"
+type = "call"
+producer = "script"
+[commands.weight.handler]
+file = "scripts/weight-popup.py"
+
+[commands.save]
+label = "Save"
+type = "return"
+producer = "script"
+[commands.save.handler]
+file = "scripts/set-weight.py"

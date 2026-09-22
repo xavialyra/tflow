@@ -1,0 +1,30 @@
+[suite]
+api = 1
+name = "Default Example Suite"
+
+[suite.entrypoint]
+target = "core:main"
+
+[suite.entrypoint.query]
+sources = [
+  "calculator:main",
+  "apps:main",
+  "sys:main",
+]
+
+[workflows]
+core = { dir = "./workflows/core" }
+calculator = { dir = "./workflows/calculator" }
+apps = { dir = "./workflows/apps" }
+sys = { dir = "./workflows/sys" }
+clipboard = { dir = "./workflows/clipboard" }
+shell = { dir = "./workflows/shell" }
+dmenu = { dir = "./workflows/dmenu" }
+
+[aliases]
+calc = "calculator:main"
+app = "apps:main"
+sys = "sys:main"
+clip = "clipboard:default"
+shell = "shell:main"
+dmenu = "dmenu:main"

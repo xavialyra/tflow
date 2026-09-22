@@ -105,16 +105,31 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Directory holding the workflow packages, or None.
-
-    Only the explicit `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` override is read; it is a
-    debug helper. A git source will be added here later, and the tree is never
-    searched implicitly.
-    """
-    candidate = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
-    if candidate and has_workflows(candidate):
+    """Use a checkout when available, otherwise clone the repository cache."""
+    candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
+    if has_workflows(candidate):
         return os.path.realpath(candidate)
-    return None
+
+    cache = os.path.join(workflow_cache_dir(), "repository")
+    source = os.path.join(cache, "examples", "default-suite", "workflows")
+    if has_workflows(source):
+        return source
+
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    staging = f"{cache}.staging-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", staging],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        if not has_workflows(os.path.join(staging, "examples", "default-suite", "workflows")):
+            raise RuntimeError("Cloned repository has no example workflows")
+        os.replace(staging, cache)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return source if has_workflows(source) else None
 
 def source_signature(source):
     """Fingerprint the source tree; any edit or added package changes it."""
@@ -238,7 +253,7 @@ def main():
 
     if not items and cache is None:
         items.append({
-            "display": "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the directory that holds the workflow packages.",
+            "display": "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the example suite workflows directory.",
             "value": "",
             "metadata": {
                 "id": "",
@@ -698,16 +713,31 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Directory holding the workflow packages, or None.
-
-    Only the explicit `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` override is read; it is a
-    debug helper. A git source will be added here later, and the tree is never
-    searched implicitly.
-    """
-    candidate = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
-    if candidate and has_workflows(candidate):
+    """Use a checkout when available, otherwise clone the repository cache."""
+    candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
+    if has_workflows(candidate):
         return os.path.realpath(candidate)
-    return None
+
+    cache = os.path.join(workflow_cache_dir(), "repository")
+    source = os.path.join(cache, "examples", "default-suite", "workflows")
+    if has_workflows(source):
+        return source
+
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    staging = f"{cache}.staging-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", staging],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        if not has_workflows(os.path.join(staging, "examples", "default-suite", "workflows")):
+            raise RuntimeError("Cloned repository has no example workflows")
+        os.replace(staging, cache)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return source if has_workflows(source) else None
 
 def source_signature(source):
     """Fingerprint the source tree; any edit or added package changes it."""
@@ -879,8 +909,7 @@ def main():
     cache_root = ensure_workflow_cache()
     if cache_root is None:
         print(
-            "No workflow source found. Set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the "
-            "directory that holds the workflow packages.",
+            "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the example suite workflows directory.",
             file=sys.stderr,
         )
         sys.exit(1)

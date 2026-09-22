@@ -1,0 +1,11 @@
+# Passive host settings for the default example suite
+[defaults.picker]
+left_prefix = "$route"
+left_prefix_backspace = "root"
+
+[defaults.picker.bindings]
+exit = ["ctrl+c", "ctrl+d"]
+toggle_preview = ["ctrl+p"]
+back = ["escape"]
+select_previous = ["up"]
+select_next = ["down"]

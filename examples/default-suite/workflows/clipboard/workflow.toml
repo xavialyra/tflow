@@ -1,0 +1,51 @@
+[workflow]
+api = 1
+name = "Clipboard History"
+entrypoint = "default"
+
+[styles.history_icon]
+foreground = "scheme:accent"
+bold = true
+
+[styles.history_icon.selected]
+foreground = "scheme:accent"
+bold = true
+
+[views.default]
+
+[views.default.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+content_type = { type = "string", default = "all" }
+
+[views.default.engine]
+type = "picker"
+
+[views.default.engine.config]
+preview_ratio = 0.35
+preview_min_width = 24
+preview_default_open = true
+
+[views.default.engine.config.items]
+producer = "script"
+
+[views.default.engine.config.items.handler]
+file = "scripts/items.py"
+
+[views.default.engine.config.preview]
+producer = "script"
+[views.default.engine.config.preview.handler]
+file = "scripts/preview.py"
+
+[views.default.keymap]
+escape = "back"
+"ctrl+p" = "toggle_preview"
+enter = "copy"
+
+[commands.copy]
+label = "Restore"
+type = "run"
+producer = "script"
+[commands.copy.handler]
+file = "scripts/restore.py"

@@ -5,7 +5,7 @@
 `tflow` is a programmable framework for building interactive terminal workflows. It provides the structure for defining interfaces, commands, data flow, and user interaction; a launcher is only one of the applications that can be built with it.
 
 > [!WARNING]
-> `tflow` is currently in beta. The workflow and producer protocols are not stable yet and may change as the framework evolves. Suggestions, use cases, and bug reports are welcome in [issue](../../issues).
+> `tflow` is currently in alpha. The workflow and producer protocols are not stable yet and may change without backwards compatibility. Suggestions, use cases, and bug reports are welcome in the [GitHub issue tracker](https://github.com/xavialyra/tflow/issues).
 >
 > `tflow` currently supports Linux only.
 
@@ -20,13 +20,39 @@
 
 ## Quick Start
 
-### Build from source
+### Download a GitHub build
+
+For Linux x86_64, run the installer published with the latest GitHub Release:
 
 ```bash
-cargo build --release
+curl -fL https://github.com/xavialyra/tflow/releases/latest/download/install.sh | sh
 ```
 
-The binary is available at `./target/release/tflow`. Add it to your `PATH` if you want to invoke it from any directory.
+Optional example setup:
+
+```bash
+curl -fL https://github.com/xavialyra/tflow/releases/latest/download/init.toml | tflow -w -
+```
+
+### Build from source
+
+You need Git and a Rust toolchain with Cargo.
+
+```bash
+git clone https://github.com/xavialyra/tflow.git
+cd tflow
+cargo build --release
+install -Dm755 target/release/tflow ~/.local/bin/tflow
+```
+
+Optional example setup:
+
+```bash
+mkdir -p ~/.config/tflow
+cp -r examples/default-suite/. ~/.config/tflow/
+```
+
+## Usage examples
 
 ### Run a workflow
 
@@ -75,7 +101,7 @@ This allows a workflow to be used as a temporary, self-contained terminal tool w
 
 ## Documentation
 
-The documentation is organized using the Diátaxis framework and structured as an Open Knowledge Format (OKF v0.2) bundle under [`docs/`](docs/index.md).
+The documentation is organized using the Diátaxis framework and structured as an Open Knowledge Format (OKF v0.2) bundle under [`docs/`](docs/index.md). See the [full project documentation](https://github.com/xavialyra/tflow/tree/main/docs) for the complete guide set.
 
 - **[Tutorials](docs/tutorials/index.md)**
   - [Getting Started](docs/tutorials/getting-started.md)

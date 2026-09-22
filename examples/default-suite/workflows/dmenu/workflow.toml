@@ -1,0 +1,46 @@
+[workflow]
+api = 1
+name = "dmenu"
+entrypoint = "main"
+
+[views.main]
+cancel_exit_code = 1
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/items.sh"
+
+[views.main.query]
+type = "object"
+input = "initial"
+initial = { type = "string", default = "" }
+index = { type = "boolean", default = false }
+with-nth = { type = "string", nullable = true }
+accept-nth = { type = "string", nullable = true }
+match-nth = { type = "string", nullable = true }
+nth-delimiter = { type = "string", nullable = true }
+
+[views.main.keymap]
+"escape" = "exit"
+enter = "accept"
+"" = "copy"
+
+[commands.accept]
+label = "Accept"
+type = "return"
+producer = "script"
+[commands.accept.handler]
+file = "scripts/result.sh"
+
+[commands.copy]
+label = "Copy selection"
+type = "return"
+producer = "script"
+[commands.copy.handler]
+file = "scripts/result.sh"

@@ -1,0 +1,33 @@
+[workflow]
+api = 1
+name = "sys"
+entrypoint = "main"
+
+[views.main]
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/items.sh"
+
+[views.main.keymap]
+enter = "run"
+
+[commands.run]
+label = "Run"
+type = "navigate"
+producer = "script"
+[commands.run.handler]
+file = "scripts/command.sh"
+
+[views.output.engine]
+type = "capture"
+
+[views.output.engine.config.output]
+producer = "script"
+[views.output.engine.config.output.handler]
+file = "scripts/run.sh"

@@ -1,0 +1,73 @@
+[workflow]
+api = 1
+name = "core"
+entrypoint = "main"
+
+[views.main]
+keymap_mode = "item_merge"
+
+[views.main.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+sources = { type = "array<string>", default = [] }
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+input_placeholder = "Type a route or search"
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+file = "scripts/items.py"
+
+# The aggregate View is item-driven: each aggregated item carries the bindings
+# of the View it came from. The table below is the base layer that stays
+# available while the list is empty or still loading.
+[views.main.keymap]
+tab = "complete"
+space = "separate_route"
+
+[views.completion.query]
+type = "object"
+input = "filter"
+filter = { type = "string", default = "" }
+
+[views.completion.engine]
+type = "picker"
+
+# The popup shows no route marker of its own, even when
+# `[defaults.picker] left_prefix` renders one for other non-root Views.
+[views.completion.engine.config]
+show_left_prefix = false
+
+[views.completion.engine.config.items]
+producer = "script"
+[views.completion.engine.config.items.handler]
+file = "scripts/completion.py"
+
+[views.completion.keymap]
+enter = "accept_route"
+
+[commands.complete]
+label = "Complete route"
+type = "navigate"
+producer = "script"
+[commands.complete.handler]
+file = "scripts/complete.py"
+
+[commands.separate_route]
+label = "Separate route"
+type = "navigate"
+producer = "script"
+[commands.separate_route.handler]
+file = "scripts/route_separator.py"
+
+[commands.accept_route]
+label = "Open route"
+type = "navigate"
+producer = "script"
+[commands.accept_route.handler]
+file = "scripts/completion_accept.py"
