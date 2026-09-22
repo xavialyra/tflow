@@ -98,8 +98,6 @@ handler = { file = "scripts/open_dir.sh" }
 
 ### 3. Explicit View Binding Strategies (`keymap_mode = "view"` vs `keymap_mode = "item_merge"`)
 
-> **Revised (2026-09-22)**: the strategy moved out of the binding table. It is now the View-level `keymap_mode` field (`"view"` default, `"item_merge"` for item-driven Views); `[views.<name>.keymap]` is a pure key-to-command table.
-
 A View governs how keyboard inputs map to commands. Views choose one of two binding strategies:
 
 ```toml

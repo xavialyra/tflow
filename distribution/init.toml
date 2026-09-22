@@ -105,28 +105,15 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Directory holding the shipped workflow packages, or None.
+    """Directory holding the workflow packages, or None.
 
-    `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
-    distribution and a sibling `tflow-workflows/` checkout are searched so a
-    development tree works without any environment setup.
+    Only the explicit `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` override is read; it is a
+    debug helper. A git source will be added here later, and the tree is never
+    searched implicitly.
     """
-    for name in ("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", "TFLOW_WORKFLOWS_DIR"):
-        candidate = os.environ.get(name)
-        if candidate and has_workflows(candidate):
-            return os.path.realpath(candidate)
-
-    root = os.environ.get("TFLOW_WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
-    root = os.path.realpath(root)
-    for _ in range(4):
-        for name in ("workflows", "tflow-workflows"):
-            candidate = os.path.join(root, name)
-            if has_workflows(candidate):
-                return os.path.realpath(candidate)
-        parent = os.path.dirname(root)
-        if parent == root:
-            break
-        root = parent
+    candidate = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
+    if candidate and has_workflows(candidate):
+        return os.path.realpath(candidate)
     return None
 
 def source_signature(source):
@@ -147,14 +134,14 @@ def source_signature(source):
 def ensure_workflow_cache():
     """Return the cache, re-copying the source whenever the source changed.
 
-    The cache keeps a bundled install from reading a read-only or absent source
-    twice. It must not latch: the marker records the source fingerprint, so
-    editing the workflow repository refreshes the cache on the next run.
+    The marker records the source fingerprint, so editing the workflow source
+    refreshes the cache on the next run. With no source configured this returns
+    None rather than trusting whatever the cache happens to hold.
     """
     cache = workflow_cache_dir()
     source = workflow_source_dir()
     if source is None:
-        return cache if has_workflows(cache) else None
+        return None
 
     signature = source_signature(source)
     marker = os.path.join(cache, ".bootstrap-source")
@@ -251,7 +238,7 @@ def main():
 
     if not items and cache is None:
         items.append({
-            "display": "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR, or keep tflow-workflows next to this distribution.",
+            "display": "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the directory that holds the workflow packages.",
             "value": "",
             "metadata": {
                 "id": "",
@@ -711,28 +698,15 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Directory holding the shipped workflow packages, or None.
+    """Directory holding the workflow packages, or None.
 
-    `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
-    distribution and a sibling `tflow-workflows/` checkout are searched so a
-    development tree works without any environment setup.
+    Only the explicit `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` override is read; it is a
+    debug helper. A git source will be added here later, and the tree is never
+    searched implicitly.
     """
-    for name in ("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", "TFLOW_WORKFLOWS_DIR"):
-        candidate = os.environ.get(name)
-        if candidate and has_workflows(candidate):
-            return os.path.realpath(candidate)
-
-    root = os.environ.get("TFLOW_WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
-    root = os.path.realpath(root)
-    for _ in range(4):
-        for name in ("workflows", "tflow-workflows"):
-            candidate = os.path.join(root, name)
-            if has_workflows(candidate):
-                return os.path.realpath(candidate)
-        parent = os.path.dirname(root)
-        if parent == root:
-            break
-        root = parent
+    candidate = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
+    if candidate and has_workflows(candidate):
+        return os.path.realpath(candidate)
     return None
 
 def source_signature(source):
@@ -753,14 +727,14 @@ def source_signature(source):
 def ensure_workflow_cache():
     """Return the cache, re-copying the source whenever the source changed.
 
-    The cache keeps a bundled install from reading a read-only or absent source
-    twice. It must not latch: the marker records the source fingerprint, so
-    editing the workflow repository refreshes the cache on the next run.
+    The marker records the source fingerprint, so editing the workflow source
+    refreshes the cache on the next run. With no source configured this returns
+    None rather than trusting whatever the cache happens to hold.
     """
     cache = workflow_cache_dir()
     source = workflow_source_dir()
     if source is None:
-        return cache if has_workflows(cache) else None
+        return None
 
     signature = source_signature(source)
     marker = os.path.join(cache, ".bootstrap-source")
