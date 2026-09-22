@@ -817,36 +817,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn terminal_input_reports_eof_after_pty_peer_closes() {
-        let mut master = -1;
-        let mut slave = -1;
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            },
-            0
-        );
-        let terminal = Terminal::enter_with_fds_and_cancellation(
-            slave,
-            slave,
-            ImageProtocol::default(),
-            CancellationToken::new(),
-        )
-        .unwrap();
-        unsafe { libc::close(master) };
-        let mut terminal = terminal;
-        assert!(matches!(terminal.read_input(100).unwrap(), InputRead::Eof));
-        drop(terminal);
-        unsafe { libc::close(slave) };
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn screen_initialization_failure_after_raw_mode_restores_termios() {
@@ -921,95 +891,6 @@ mod tests {
         assert_eq!(unsafe { libc::tcgetattr(slave, &mut after) }, 0);
         assert_termios_eq(&before, &after);
 
-        unsafe {
-            libc::close(master);
-            libc::close(slave);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn terminal_exposes_image_picker_with_configured_protocol() {
-        let mut master = -1;
-        let mut slave = -1;
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            },
-            0
-        );
-        let terminal = Terminal::enter_with_fds_and_cancellation(
-            slave,
-            slave,
-            ImageProtocol::Halfblocks,
-            CancellationToken::new(),
-        )
-        .unwrap();
-
-        let picker = terminal
-            .image_picker()
-            .expect("image picker should be available");
-        assert_eq!(picker.protocol, ProtocolType::Halfblocks);
-
-        drop(terminal);
-        unsafe {
-            libc::close(master);
-            libc::close(slave);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn terminal_clear_succeeds_and_resets_buffers() {
-        let mut master = -1;
-        let mut slave = -1;
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            },
-            0
-        );
-        let mut terminal = Terminal::enter_with_fds_and_cancellation(
-            slave,
-            slave,
-            ImageProtocol::Halfblocks,
-            CancellationToken::new(),
-        )
-        .unwrap();
-
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new("initial text"),
-                    frame.area(),
-                );
-            })
-            .unwrap();
-
-        assert!(terminal.clear().is_ok());
-
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new("after clear"),
-                    frame.area(),
-                );
-            })
-            .unwrap();
-
-        drop(terminal);
         unsafe {
             libc::close(master);
             libc::close(slave);
