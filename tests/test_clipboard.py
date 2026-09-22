@@ -86,6 +86,44 @@ class ClipboardTests(unittest.TestCase):
             if query == "image png":
                 self.assertIn("1x1", result[0]["display"]["rows"][1]["cells"][1]["text"])
 
+    def test_content_type_and_search_parameters(self):
+        history = {"3": ("needle image", PNG), "2": ("text", b"needle image text"), "1": ("needle binary", b"\x00\xff")}
+
+        def run(argv):
+            data = (
+                "".join(f"{key}\t{value[0]}\n" for key, value in history.items()).encode()
+                if argv[1] == "list" else history[argv[2]][1]
+            )
+            return subprocess.CompletedProcess(argv, 0, data, b"")
+
+        cases = [
+            ({}, {}, ["3", "2", "1"]),
+            ({"content_type": "all"}, {}, ["3", "2", "1"]),
+            ({"content_type": "image"}, {}, ["3"]),
+            ({"content_type": "text"}, {}, ["2"]),
+            ({"content_type": "binary"}, {}, ["1"]),
+            ({"content_type": "image", "search": "needle"}, {}, ["3"]),
+            ({"content_type": "text", "search": "missing"}, {}, []),
+            ({"content_type": "text", "search": "missing"}, {"input": "needle"}, ["2"]),
+            ({"content_type": "text", "search": "missing"}, {"input": ""}, ["2"]),
+        ]
+        with patch.object(items, "run", side_effect=run) as mocked, patch.object(items.shutil, "which", return_value="mock"):
+            for parameters, state, expected in cases:
+                with self.subTest(parameters=parameters, state=state):
+                    output = io.StringIO()
+                    request = {"entrypoint": "picker-items", "context": {"parameters": parameters, "engine": {"state": state}}}
+                    with patch("sys.stdin", io.StringIO(json.dumps(request))), patch("sys.stdout", output):
+                        items.main()
+                    self.assertEqual([item["value"] for item in json.loads(output.getvalue())["items"]], expected)
+            self.assertEqual(sum(call.args[0][1] == "decode" for call in mocked.call_args_list), 3)
+
+    def test_invalid_content_type_is_rejected_before_reading_history(self):
+        for value in ("video", "", None, [], 1):
+            with self.subTest(value=value), patch.object(items, "run") as mocked:
+                with self.assertRaisesRegex(ValueError, "content_type must be one of"):
+                    items.search_history([], value)
+                mocked.assert_not_called()
+
     def test_warm_search_and_incremental_refresh(self):
         history = {"3": ("image", PNG), "2": ("short label", b"hidden body needle"), "1": ("old", b"old")}
         calls = []

@@ -167,7 +167,11 @@ def store_item(connection, entry_id, label):
     return item
 
 
-def search_history(tokens):
+def search_history(tokens, content_type="all"):
+    kinds = {"all": None, "text": "TEXT", "image": "IMAGE", "binary": "FILE"}
+    if not isinstance(content_type, str) or content_type not in kinds:
+        raise ValueError("content_type must be one of: all, text, image, binary")
+    kind = kinds[content_type]
     directory = cache_directory()
     source = history_source()
     # Serialize refreshes so a cancelled/older query cannot overwrite a newer
@@ -211,6 +215,8 @@ def search_history(tokens):
                 f"SELECT id, item FROM entries WHERE {condition}", tokens
             ).fetchall():
                 item = format_display(json.loads(serialized))
+                if kind is not None and item["metadata"]["title"].split(" · ", 1)[0] != kind:
+                    continue
                 thumbnail = item["metadata"].get("thumbnail")
                 if thumbnail and not Path(thumbnail).is_file():
                     item = store_item(connection, entry_id, entries[entry_id])
@@ -230,13 +236,16 @@ def main():
     if shutil.which("cliphist") is None:
         raise RuntimeError("clipboard history requires cliphist")
 
-    state = request.get("context", {}).get("engine", {}).get("state", {})
-    query = state.get("input", "") if isinstance(state, dict) else ""
+    context = request.get("context", {})
+    parameters = context.get("parameters", {})
+    state = context.get("engine", {}).get("state", {})
+    search = parameters.get("search", "")
+    query = state.get("input", search) if isinstance(state, dict) else search
     if not isinstance(query, str):
         raise ValueError("picker query must be a string")
     tokens = query.casefold().split()
 
-    matches = search_history(tokens)
+    matches = search_history(tokens, parameters.get("content_type", "all"))
     json.dump({"version": 1, "items": matches}, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
 
