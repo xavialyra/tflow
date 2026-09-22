@@ -159,6 +159,12 @@ def ensure_workflow_cache():
     if source is None:
         return None
 
+    repository_source = os.path.join(
+        workflow_cache_dir(), "repository", "examples", "default-suite", "workflows"
+    )
+    if os.path.realpath(source) == os.path.realpath(repository_source):
+        return source
+
     signature = source_signature(source)
     marker = os.path.join(cache, ".bootstrap-source")
     if has_workflows(cache):
@@ -766,6 +772,12 @@ def ensure_workflow_cache():
     source = workflow_source_dir()
     if source is None:
         return None
+
+    repository_source = os.path.join(
+        workflow_cache_dir(), "repository", "examples", "default-suite", "workflows"
+    )
+    if os.path.realpath(source) == os.path.realpath(repository_source):
+        return source
 
     signature = source_signature(source)
     marker = os.path.join(cache, ".bootstrap-source")
