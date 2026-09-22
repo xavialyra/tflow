@@ -36,10 +36,7 @@ impl fmt::Debug for PickerItemsDefinition {
 }
 
 impl PickerItemsDefinition {
-    pub(crate) fn new(
-        projection: Arc<PickerItemsProjection>,
-        view_ref: &str,
-    ) -> Result<Arc<Self>> {
+    pub(crate) fn new(projection: Arc<PickerItemsProjection>, view_ref: &str) -> Result<Arc<Self>> {
         let (_, view) = projection.target_view();
         let items = view.items.as_ref().map(toml_to_json).transpose()?;
         Ok(Arc::new(Self {
@@ -313,7 +310,9 @@ pub(crate) fn load_items_for_definition_with_outcome(
             }
         }
         Err(err) => {
-            result.errors.push(format!("{}: {}", definition.view_ref, err));
+            result
+                .errors
+                .push(format!("{}: {}", definition.view_ref, err));
             ItemsLoadOutcome {
                 result: Ok(result),
                 managed_child_reaped,
@@ -473,10 +472,7 @@ fn run_items_provider(
                     };
                 }
             };
-            let source = match parse_producer_script_handler(
-                &handler,
-                definition.workflow_root(),
-            ) {
+            let source = match parse_producer_script_handler(&handler, definition.workflow_root()) {
                 Ok(source) => source,
                 Err(error) => {
                     return ItemsScriptOutcome {
@@ -537,12 +533,8 @@ pub(crate) fn run_items_producer_raw(
             let engine_state = serde_json::json!({
                 "input": raw_input,
             });
-            let request = crate::protocol::items_request(
-                parameters,
-                &Value::Null,
-                "picker",
-                &engine_state,
-            );
+            let request =
+                crate::protocol::items_request(parameters, &Value::Null, "picker", &engine_state);
             let outcome = crate::protocol::run_script_items_response(
                 view_ref,
                 &source_label,

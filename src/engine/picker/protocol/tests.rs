@@ -1129,7 +1129,10 @@ mod preview_correlation_tests {
         let first_context = ViewContext::new(first, page);
         open_preview_and_drive(&mut first_view, &tasks, &first_context, true, "Details");
         first_view
-            .event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &first_context)
+            .event(
+                ViewEvent::Lifecycle(LifecycleEvent::Closing),
+                &first_context,
+            )
             .unwrap();
         drop(first_view);
 
@@ -1151,7 +1154,10 @@ mod preview_correlation_tests {
             "a parameter-updating remount must render the cached preview: {content}"
         );
         second_view
-            .event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &second_context)
+            .event(
+                ViewEvent::Lifecycle(LifecycleEvent::Closing),
+                &second_context,
+            )
             .unwrap();
         drop(second_view);
         tasks.shutdown_and_wait();

@@ -241,20 +241,20 @@ impl<'a> ViewCommandSource<'a> {
             .split_once(':')
             .map(|(workflow, _)| workflow)
             .unwrap_or(self.member_id);
-        let action = create_command_action(
-            std::sync::Arc::clone(self.config),
-            std::sync::Arc::clone(self.invocation),
-            self.cancellation.clone(),
-            self.caller,
-            std::sync::Arc::clone(self.active_snapshot),
-            crate::workflow::command::CommandRef {
+        let action = create_command_action(CommandActionInput {
+            config: std::sync::Arc::clone(self.config),
+            invocation: std::sync::Arc::clone(self.invocation),
+            cancellation: self.cancellation.clone(),
+            caller: self.caller,
+            active_snapshot: std::sync::Arc::clone(self.active_snapshot),
+            command_ref: crate::workflow::command::CommandRef {
                 view: self.target.to_string(),
                 id: id.clone(),
             },
-            cmd.clone(),
-            page.clone(),
-            cmd_wf.to_string(),
-        );
+            command: cmd.clone(),
+            page: page.clone(),
+            cmd_wf: cmd_wf.to_string(),
+        });
         Some(crate::command::CommandEntry::new(
             id,
             Some(cmd.label.clone()),
@@ -315,9 +315,10 @@ impl ProtocolCommandService {
 
     pub(crate) fn view_command_provider(&self, target: &str) -> Box<dyn ViewCommandProvider> {
         let member_id = crate::workflow::config::package_id(target);
-        let is_item_mode = self.config.view(target).is_some_and(|v| {
-            v.keymap_mode == crate::workflow::config::KeymapMode::ItemMerge
-        });
+        let is_item_mode = self
+            .config
+            .view(target)
+            .is_some_and(|v| v.keymap_mode == crate::workflow::config::KeymapMode::ItemMerge);
         if is_item_mode {
             Box::new(ItemViewCommandProvider {
                 target: target.to_string(),
@@ -340,7 +341,7 @@ impl ProtocolCommandService {
     }
 }
 
-fn create_command_action(
+struct CommandActionInput {
     config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
     invocation: std::sync::Arc<crate::workflow::InvocationContext>,
     cancellation: crate::lifecycle::CancellationToken,
@@ -350,7 +351,22 @@ fn create_command_action(
     command: crate::workflow::config::Command,
     page: crate::workflow::command::CommandOwnerContext,
     cmd_wf: String,
+}
+
+fn create_command_action(
+    input: CommandActionInput,
 ) -> std::sync::Arc<dyn crate::command::CommandAction> {
+    let CommandActionInput {
+        config,
+        invocation,
+        cancellation,
+        caller,
+        active_snapshot,
+        command_ref,
+        command,
+        page,
+        cmd_wf,
+    } = input;
     std::sync::Arc::new(move || {
         let snap_opt = active_snapshot.read().unwrap().clone();
         if snap_opt.as_ref().is_some_and(|snap| {
@@ -1068,10 +1084,7 @@ mod tests {
         let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let service = item_mode_service(&config);
         let context = ViewContext::new(ViewInstanceId(51), "core:default");
-        let snapshot = item_mode_snapshot(
-            &config,
-            Some(serde_json::json!({"tab": "core:accept"})),
-        );
+        let snapshot = item_mode_snapshot(&config, Some(serde_json::json!({"tab": "core:accept"})));
 
         let entries = service.build_view_commands(&context, &snapshot).unwrap();
         let bound: Vec<(String, Option<String>)> = entries

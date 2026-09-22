@@ -178,9 +178,9 @@ pub(super) fn compile_parameter_schema(view: &Value) -> Result<ParameterSchema> 
         fields.insert(name.clone(), compile_field(name, value)?);
     }
     if let Some(input_field) = &input {
-        let field = fields.get(input_field).with_context(|| {
-            format!("query input references unknown field {:?}", input_field)
-        })?;
+        let field = fields
+            .get(input_field)
+            .with_context(|| format!("query input references unknown field {:?}", input_field))?;
         if field.value_type != ParameterType::String {
             bail!(
                 "query input field {:?} must be of type string, found {}",

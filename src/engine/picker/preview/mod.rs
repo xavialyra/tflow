@@ -549,9 +549,7 @@ impl PickerPreview {
             // triggered the self-navigation. Only script previews need this:
             // declared and inherited documents install synchronously during
             // `start` and never expose the loading status.
-            let cached = is_script
-                .then(|| self.preview_cache.get(&owner))
-                .flatten();
+            let cached = is_script.then(|| self.preview_cache.get(&owner)).flatten();
             if let Some(cached) = cached {
                 // Image decoding still waits for `start`, so an input-path call
                 // never starts a task.

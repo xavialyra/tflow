@@ -2,8 +2,8 @@ use super::*;
 use crate::command::{CommandEntry, CommandRegistry, CommandScope};
 use crate::protocol::ProtocolCommandService;
 use crate::view::{
-    EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, View, ViewContext,
-    ViewFactory, ViewMetadata, ViewServices,
+    EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, View, ViewContext, ViewFactory,
+    ViewMetadata, ViewServices,
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Position};
 use serde_json::Value;

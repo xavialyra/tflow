@@ -441,17 +441,18 @@ impl ProtocolSession {
 
         self.last_view_revision = active_revision;
 
-        let (view_entries, engine_entries) = if let Some((_, ref context, ref snapshot)) = active_info {
-            let view_entries = self.commands.build_view_commands(context, snapshot)?;
-            let engine_entries = self
-                .router
-                .active()
-                .map(|a| a.view.engine_commands(context))
-                .unwrap_or_default();
-            (view_entries, engine_entries)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (view_entries, engine_entries) =
+            if let Some((_, ref context, ref snapshot)) = active_info {
+                let view_entries = self.commands.build_view_commands(context, snapshot)?;
+                let engine_entries = self
+                    .router
+                    .active()
+                    .map(|a| a.view.engine_commands(context))
+                    .unwrap_or_default();
+                (view_entries, engine_entries)
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
         let mut changed = false;
         let mut reg = self.registry.write().unwrap();

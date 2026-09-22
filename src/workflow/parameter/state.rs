@@ -285,7 +285,10 @@ impl ParameterRegistry {
             }
             bail!("query input cannot be parsed because input is not configured");
         };
-        let field = schema.fields.get(input_field).expect("query field disappeared");
+        let field = schema
+            .fields
+            .get(input_field)
+            .expect("query field disappeared");
         let value = Value::String(source.to_string());
         field.validate(&value)?;
         let mut values = state.values.clone();
@@ -582,7 +585,8 @@ impl ParameterBinding {
                 .values
                 .insert("query".to_string(), Value::String(query.to_string()));
         } else {
-            let empty_or_null = snapshot.values.as_str().is_some_and(|s| s.is_empty()) || snapshot.values.is_null();
+            let empty_or_null =
+                snapshot.values.as_str().is_some_and(|s| s.is_empty()) || snapshot.values.is_null();
             if !empty_or_null {
                 let object = snapshot
                     .values
@@ -732,9 +736,7 @@ mod tests {
     fn object_query_uses_defaults_and_materializes_values() {
         let registry = ParameterRegistry::compile(&config()).unwrap();
         let mut state = registry.instantiate("trans:default").unwrap();
-        registry
-            .update_input(&mut state, "good morning")
-            .unwrap();
+        registry.update_input(&mut state, "good morning").unwrap();
         assert_eq!(
             registry.parameter_values(&state).unwrap(),
             serde_json::json!({"source": null, "target": null, "text": "good morning"})
@@ -968,7 +970,11 @@ mod tests {
             }}}}}
         }))
         .expect_err("legacy input_order must be rejected");
-        assert!(error.to_string().contains("input_order has been replaced by input"));
+        assert!(
+            error
+                .to_string()
+                .contains("input_order has been replaced by input")
+        );
     }
 
     #[test]
@@ -1138,7 +1144,10 @@ mod tests {
         let err = registry
             .bind_cli("calc:main", &["2+2".to_string(), "extra".to_string()])
             .unwrap_err();
-        assert!(err.to_string().contains("accepts at most one positional query argument"));
+        assert!(
+            err.to_string()
+                .contains("accepts at most one positional query argument")
+        );
     }
 
     #[test]
@@ -1155,7 +1164,10 @@ mod tests {
         }))
         .unwrap();
         let state = registry
-            .bind_cli("apps:main", &["firefox".to_string(), "--limit=20".to_string()])
+            .bind_cli(
+                "apps:main",
+                &["firefox".to_string(), "--limit=20".to_string()],
+            )
             .unwrap();
         assert_eq!(
             registry.parameter_values(&state).unwrap(),
@@ -1165,7 +1177,10 @@ mod tests {
 
         // Reject duplicate assignment via positional and explicit flag
         let err = registry
-            .bind_cli("apps:main", &["firefox".to_string(), "--search=chrome".to_string()])
+            .bind_cli(
+                "apps:main",
+                &["firefox".to_string(), "--search=chrome".to_string()],
+            )
             .unwrap_err();
         assert!(err.to_string().contains("may be specified only once"));
     }
@@ -1184,6 +1199,9 @@ mod tests {
         let err = registry
             .bind_cli("form:main", &["positional".to_string()])
             .unwrap_err();
-        assert!(err.to_string().contains("does not declare an interactive input field"));
+        assert!(
+            err.to_string()
+                .contains("does not declare an interactive input field")
+        );
     }
 }

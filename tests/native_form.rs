@@ -229,7 +229,12 @@ json.dump({"version": 1, "operation": {"type": "return", "value": state["values"
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o755);
-        for script in ["content.py", "returned.py", "string-content.py", "submit.py"] {
+        for script in [
+            "content.py",
+            "returned.py",
+            "string-content.py",
+            "submit.py",
+        ] {
             fs::set_permissions(scripts_dir.join(script), perms.clone()).unwrap();
         }
     }

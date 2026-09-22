@@ -452,8 +452,7 @@ mod tests {
 
     #[test]
     fn script_starts_as_prepared_work_and_restarts_after_reactivation() {
-        let root =
-            std::env::temp_dir().join(format!("tflow-capture-start-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tflow-capture-start-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let script = root.join("capture.sh");
         let marker = root.join("started");

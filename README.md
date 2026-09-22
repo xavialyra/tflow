@@ -6,6 +6,8 @@
 
 > [!WARNING]
 > `tflow` is currently in beta. The workflow and producer protocols are not stable yet and may change as the framework evolves. Suggestions, use cases, and bug reports are welcome in [issue](../../issues).
+>
+> `tflow` currently supports Linux only.
 
 ## Features
 

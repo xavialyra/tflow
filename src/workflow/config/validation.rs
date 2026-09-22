@@ -181,7 +181,9 @@ impl CompiledConfig {
             self.engine(&self.entrypoint)?;
             if let Some(query) = &self.entrypoint_query {
                 self.validate_parameter_values(&self.entrypoint, query)
-                    .with_context(|| format!("invalid suite entrypoint query for {:?}", self.entrypoint))?;
+                    .with_context(|| {
+                        format!("invalid suite entrypoint query for {:?}", self.entrypoint)
+                    })?;
             }
         }
         engines.validate_defaults(&self.defaults)?;
@@ -301,7 +303,11 @@ impl CompiledConfig {
                         continue;
                     }
                     let Some(cmd_target) = val.as_str() else {
-                        bail!("view {:?} keymap binding {:?} must be an action, command, or false", view_ref, key);
+                        bail!(
+                            "view {:?} keymap binding {:?} must be an action, command, or false",
+                            view_ref,
+                            key
+                        );
                     };
                     let is_command = self.find_command(wf_id, cmd_target).is_some();
                     let is_action = crate::engine::is_picker_action(cmd_target)

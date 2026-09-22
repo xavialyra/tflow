@@ -276,19 +276,21 @@ impl ImageProtocolCache {
         self.collect();
 
         for desired in desired {
-            if let Some(state) = self.entries.get(&desired.key) {
-                if !matches!(state, CachedProtocol::Failed(_)) {
-                    if let Some(pos) = self.order.iter().position(|k| *k == desired.key) {
-                        self.order.remove(pos);
-                    }
-                    self.order.push_back(desired.key);
-                    continue;
+            if let Some(state) = self.entries.get(&desired.key)
+                && !matches!(state, CachedProtocol::Failed(_))
+            {
+                if let Some(pos) = self.order.iter().position(|k| *k == desired.key) {
+                    self.order.remove(pos);
                 }
+                self.order.push_back(desired.key);
+                continue;
             }
 
             while self.entries.len() >= PROTOCOL_CACHE_CAPACITY {
                 if let Some(oldest) = self.order.pop_front() {
-                    if let Some(CachedProtocol::Pending(cancellation)) = self.entries.remove(&oldest) {
+                    if let Some(CachedProtocol::Pending(cancellation)) =
+                        self.entries.remove(&oldest)
+                    {
                         cancellation.store(true, Ordering::Release);
                     }
                 } else {
@@ -309,7 +311,8 @@ impl ImageProtocolCache {
             {
                 self.submissions += 1;
             }
-            self.entries.insert(key, CachedProtocol::Pending(cancellation));
+            self.entries
+                .insert(key, CachedProtocol::Pending(cancellation));
             self.order.push_back(key);
         }
     }
@@ -529,18 +532,32 @@ mod tests {
         let ready = key(1, 2);
         let cancelled = Arc::new(AtomicBool::new(false));
         let retained = Arc::new(AtomicBool::new(false));
-        cache.entries.insert(obsolete, CachedProtocol::Pending(Arc::clone(&cancelled)));
-        cache.entries.insert(current, CachedProtocol::Pending(Arc::clone(&retained)));
-        cache.entries.insert(ready, CachedProtocol::Ready(Box::new(
-            encode_protocol(Arc::clone(&image), picker, ready.area).unwrap(),
-        )));
+        cache
+            .entries
+            .insert(obsolete, CachedProtocol::Pending(Arc::clone(&cancelled)));
+        cache
+            .entries
+            .insert(current, CachedProtocol::Pending(Arc::clone(&retained)));
+        cache.entries.insert(
+            ready,
+            CachedProtocol::Ready(Box::new(
+                encode_protocol(Arc::clone(&image), picker, ready.area).unwrap(),
+            )),
+        );
         cache.order.extend([obsolete, current, ready]);
-        cache.completion_tx.send(ProtocolCompletion {
-            key: obsolete,
-            result: Err("late completion".to_string()),
-        }).unwrap();
+        cache
+            .completion_tx
+            .send(ProtocolCompletion {
+                key: obsolete,
+                result: Err("late completion".to_string()),
+            })
+            .unwrap();
 
-        cache.update(vec![DesiredImageProtocol { key: current, image, picker }]);
+        cache.update(vec![DesiredImageProtocol {
+            key: current,
+            image,
+            picker,
+        }]);
 
         assert!(cancelled.load(Ordering::Acquire));
         assert!(!retained.load(Ordering::Acquire));
@@ -562,10 +579,9 @@ mod tests {
         let mut cache = ImageProtocolCache::new();
         let cancellation = Arc::new(AtomicBool::new(false));
         let k = key(0, 1);
-        cache.entries.insert(
-            k,
-            CachedProtocol::Pending(Arc::clone(&cancellation)),
-        );
+        cache
+            .entries
+            .insert(k, CachedProtocol::Pending(Arc::clone(&cancellation)));
         cache.order.push_back(k);
 
         cache.clear();

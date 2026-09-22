@@ -3,9 +3,7 @@ mod process;
 mod runner;
 mod script;
 
-pub(crate) use inline::{
-    parse_shebang, prepare_inline_script_command, verify_interpreter,
-};
+pub(crate) use inline::{parse_shebang, prepare_inline_script_command, verify_interpreter};
 pub(crate) use process::{
     ForegroundTerminalReclaimError, PreparedProcess, ProcessGroupGuard, run_foreground_process,
 };

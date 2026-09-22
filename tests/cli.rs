@@ -1498,7 +1498,9 @@ handler={value="local"}
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("ADR 0006 promotes business commands"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("ADR 0006 promotes business commands")
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1615,7 +1617,8 @@ fn items_query_mode_outputs_valid_json_array_exit_0() {
         .expect("could not run items query");
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let items: serde_json::Value = serde_json::from_str(&stdout).expect("output must be valid JSON");
+    let items: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output must be valid JSON");
     assert!(items.is_array());
     assert_eq!(items.as_array().unwrap().len(), 2);
     assert_eq!(items[0]["display"], "Item 1");
@@ -1753,4 +1756,3 @@ fn items_query_mode_accepts_plain_and_object_positional_queries() {
     assert_eq!(items[0]["value"], "4");
     assert_eq!(items[0]["bindings"]["enter"], "calculator:copy");
 }
-

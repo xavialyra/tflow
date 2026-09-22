@@ -1,13 +1,7 @@
-use super::{
-    CompiledConfig, Defaults, RawConfig, View, ViewRef, WorkflowMetadata,
-};
+use super::{CompiledConfig, Defaults, RawConfig, View, ViewRef, WorkflowMetadata};
 use crate::workflow::parameter::ParameterRegistry;
 use anyhow::{Result, bail};
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 impl CompiledConfig {
     #[allow(clippy::too_many_arguments)]

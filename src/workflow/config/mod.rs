@@ -264,7 +264,9 @@ impl CompiledConfig {
         cmd_id: &str,
     ) -> Option<String> {
         if cmd_id.contains(':') {
-            self.all_commands.contains_key(cmd_id).then(|| cmd_id.to_string())
+            self.all_commands
+                .contains_key(cmd_id)
+                .then(|| cmd_id.to_string())
         } else {
             let fqid = format!("{current_workflow}:{cmd_id}");
             if self.all_commands.contains_key(&fqid) {
@@ -377,7 +379,8 @@ impl CompiledConfig {
 #[cfg(test)]
 pub(crate) fn load_test_fixture() -> Result<CompiledConfig> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/default.toml");
-    let settings = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/settings.toml");
+    let settings =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/settings.toml");
     let loaded = CompiledConfig::load_suite_unvalidated(&path, Some(&settings))?;
     let config = loaded.compile()?;
     let engines = crate::engine::EngineRegistry::new();
@@ -459,7 +462,10 @@ mod tests {
     #[test]
     fn picker_left_prefix_backspace_is_an_opt_in_enum() {
         let parent: PickerDefaults = toml::from_str("left_prefix_backspace = \"parent\"").unwrap();
-        assert_eq!(parent.left_prefix_backspace, Some(LeftPrefixBackspace::Parent));
+        assert_eq!(
+            parent.left_prefix_backspace,
+            Some(LeftPrefixBackspace::Parent)
+        );
         let root: PickerDefaults = toml::from_str("left_prefix_backspace = \"root\"").unwrap();
         assert_eq!(root.left_prefix_backspace, Some(LeftPrefixBackspace::Root));
         assert!(toml::from_str::<PickerDefaults>("left_prefix_backspace = \"none\"").is_err());

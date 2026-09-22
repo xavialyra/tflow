@@ -377,13 +377,17 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
     // Render with protocol cache
     let mut protocols = ImageProtocolCache::new();
     let theme = Theme::terminal();
-    let picker = Some(crate::terminal::ImagePicker::test_halfblocks());
+    let picker = crate::terminal::ImagePicker::test_halfblocks();
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
     terminal
         .draw(|frame| {
-            preview
-                .render_state()
-                .render(frame, frame.area(), &theme, picker, &mut protocols);
+            preview.render_state().render(
+                frame,
+                frame.area(),
+                &theme,
+                Some(picker),
+                &mut protocols,
+            );
         })
         .unwrap();
 
@@ -391,16 +395,20 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
     for _ in 0..100 {
         terminal
             .draw(|frame| {
-                preview
-                    .render_state()
-                    .render(frame, frame.area(), &theme, picker, &mut protocols);
+                preview.render_state().render(
+                    frame,
+                    frame.area(),
+                    &theme,
+                    Some(picker),
+                    &mut protocols,
+                );
             })
             .unwrap();
         let key = image_protocol::ImageProtocolKey::new(
             0,
             &initial_arc,
             ratatui::layout::Size::new(40, 10),
-            picker.unwrap(),
+            picker,
         );
         if protocols.protocol(key).is_some() {
             break;
@@ -411,7 +419,7 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         0,
         &initial_arc,
         ratatui::layout::Size::new(40, 10),
-        picker.unwrap(),
+        picker,
     );
     assert!(
         protocols.protocol(key).is_some(),
@@ -440,9 +448,13 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
     // 3. Render: Protocol cache must hit immediately on the very first frame without resubmitting!
     terminal
         .draw(|frame| {
-            preview
-                .render_state()
-                .render(frame, frame.area(), &theme, picker, &mut protocols);
+            preview.render_state().render(
+                frame,
+                frame.area(),
+                &theme,
+                Some(picker),
+                &mut protocols,
+            );
         })
         .unwrap();
     assert!(

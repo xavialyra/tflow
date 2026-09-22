@@ -672,10 +672,8 @@ mod tests {
 
     #[test]
     fn mismatched_task_generation_or_revision_cannot_consume_capture_completion() {
-        let root = std::env::temp_dir().join(format!(
-            "tflow-capture-correlation-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tflow-capture-correlation-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let script = root.join("capture.sh");
         fs::write(

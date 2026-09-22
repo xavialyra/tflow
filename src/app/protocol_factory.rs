@@ -177,17 +177,16 @@ impl ViewFactory for ProtocolViewFactory {
                     parameter_binding,
                     theme: self.theme.clone(),
                     left_prefix,
-                    prefix_backspace: self
-                        .config
-                        .picker_left_prefix_backspace()
-                        .map(|value| match value {
+                    prefix_backspace: self.config.picker_left_prefix_backspace().map(|value| {
+                        match value {
                             crate::workflow::config::LeftPrefixBackspace::Parent => {
                                 PrefixBackspace::Parent
                             }
                             crate::workflow::config::LeftPrefixBackspace::Root => {
                                 PrefixBackspace::Root
                             }
-                        }),
+                        }
+                    }),
                     runtime_snapshot,
                     tasks: services
                         .host
