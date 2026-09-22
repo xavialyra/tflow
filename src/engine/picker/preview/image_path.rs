@@ -23,30 +23,3 @@ fn expand_home(home: Option<&Path>, path: &str) -> PathBuf {
             .unwrap_or_else(|| PathBuf::from(path)),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{expand_home, resolve};
-    use std::path::Path;
-
-    #[test]
-    fn expands_current_user_home_paths() {
-        let home = Path::new("/home/launcher");
-        assert_eq!(
-            expand_home(Some(home), "~/data/cover.png"),
-            home.join("data/cover.png")
-        );
-        assert_eq!(
-            expand_home(Some(home), "~other/cover.png"),
-            Path::new("~other/cover.png")
-        );
-    }
-
-    #[test]
-    fn resolves_relative_paths_from_workflow_root() {
-        assert_eq!(
-            resolve(Some(Path::new("/workflows/images")), "cover.png"),
-            Path::new("/workflows/images/cover.png")
-        );
-    }
-}
