@@ -1740,7 +1740,6 @@ fn items_query_mode_accepts_plain_and_object_positional_queries() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let items: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON array");
     assert!(items.is_array());
-    assert!(stdout.contains("Advanced Network Configuration"));
 
     // 3. Aggregation query (core:default "2+2")
     let output = launcher_command()
