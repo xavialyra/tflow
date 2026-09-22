@@ -3,6 +3,7 @@ mod command;
 mod diagnostics;
 mod engine;
 mod execution;
+mod identity;
 mod input;
 mod lifecycle;
 mod protocol;

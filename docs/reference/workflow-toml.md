@@ -16,7 +16,7 @@ description: "Authoritative reference for workflow manifests, static View config
 Workflows define custom Views, keybindings, actions, and Engines. They are mounted explicitly by a suite or run directly with `-w`, and support two physical layouts:
 
 1. **Single-file workflow**: `workflows/<id>.toml`. The workflow ID is the file stem. Relative external script files are not allowed; use inline producer scripts or absolute host binaries.
-2. **Directory workflow**: `workflows/<id>/workflow.toml`. The directory is the workflow root. Relative script files are confined to that root, and `$WORKFLOW_DIR` is provided to child processes.
+2. **Directory workflow**: `workflows/<id>/workflow.toml`. The directory is the workflow root. Relative script files are confined to that root, and `$TFLOW_WORKFLOW_DIR` is provided to child processes.
 
 ## Workflow Header
 
@@ -132,7 +132,7 @@ Every Picker provides a preview pane, initially collapsed and toggled with `Ctrl
 
 `preview_ratio` and `preview_min_width` control the automatic outer items/preview split. `preview_default_open` controls initial visibility and defaults to false. There is no user-defined outer layout. Omitting `preview` is equivalent to `preview = { inherit = true }`: aggregate pages use the selected feed's provider when present, otherwise the host displays built-in details. Non-aggregate pages can also use omission or explicit inheritance for built-in details. An explicit page provider overrides the feed and built-in details; null responses stay empty and errors stay visible. Parameters, relative script/image paths, and custom styles resolve in the provider owner's workflow. Documents support strings, item displays, wrapped rich paragraphs, images, separators, and nested internal layouts. See [Picker Preview Documents and Producers](picker-preview.md) for exact fields, validation, ownership, and resource limits.
 
-Picker input chrome is configured with `show_input` (default `true`), `show_divider` (default `true`), and `show_left_prefix` (default `true`). `show_left_prefix = false` hides the global `[defaults.picker] left_prefix` marker for one View, such as a completion popup, and also disables that View's opt-in `left_prefix_backspace` return. The Picker engine does not parse route selectors: to make a selector followed by a space jump to a route, bind a command to `space` and resolve the alias in its script, as the development fixture's `core:route_separator` does.
+Picker input chrome is configured with `show_input` (default `true`), `show_divider` (default `true`), and `show_left_prefix` (default `true`). `show_left_prefix = false` hides the global `[defaults.picker] left_prefix` marker for one View, such as a popup View, and also disables that View's opt-in `left_prefix_backspace` return. `input_placeholder` (unset by default) is a literal hint rendered in muted `picker.placeholder` styling while the query input is empty, after any left prefix and with the pseudo-cursor kept visible ahead of it. It is presentation only: it never becomes part of the query, the editor buffer, or the published input state, and it is clipped to the available query-row width.
 
 ### Capture
 
@@ -191,8 +191,8 @@ Embedded process configuration is static View configuration. Dynamic Embedded ar
 
 Child processes inherit the caller's environment. The host adds only these workflow-facing variables:
 
-- `WORKFLOW_DIR`: the absolute root of a directory workflow, provided to workflow scripts, foreground commands, and Embedded processes.
-- `LAUNCHER_INPUT`: the current rendered input text, provided to Embedded processes only.
+- `TFLOW_WORKFLOW_DIR`: the absolute root of a directory workflow, provided to workflow scripts, foreground commands, and Embedded processes.
+- `TFLOW_INPUT`: the current rendered input text, provided to Embedded processes only.
 
 Producer scripts receive runtime data through their documented JSON request on stdin. They do not receive query, selection, command, or View state through launcher-specific environment variables.
 
@@ -221,7 +221,7 @@ A declared handler is parsed as the operation payload for the command's declared
 
 The following fields are supported in declared handlers:
 
-- `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, optional `replace` boolean, and optional `clear_input` boolean. When `clear_input = true` and the source View has editable input (a Picker), the host consumes that input before applying the transition, so returning to the View later starts from an empty query. This is how a completion command prevents a half-typed route from reappearing on Backspace.
+- `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, optional `replace` boolean, and optional `clear_input` boolean. When `clear_input = true` and the source View has editable input (a Picker), the host consumes that input before applying the transition, so returning to the View later starts from an empty query.
 - `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
 - `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
 - `run`: `mode = "foreground"`, non-empty `argv`, optional `exit` boolean, and optional `success_message` string. After successful execution, the host records this message at `INFO` level and displays it in the source View's footer (or popup bottom border) if that View remains active. Failed or cancelled execution does not emit the success message. With `exit = true`, the message is logged before exit; the UI does not pause to display it. Errors take display priority. Informational messages expire after 3 seconds; the next input or a change of active View clears them earlier. Each new informational message replaces the previous one and restarts the timeout. Expiration only clears the display; recorded logs are retained.
@@ -367,6 +367,6 @@ Configuration without a producer is static: its values are deserialized and vali
 
 ## Multi-line Inline Scripts
 
-Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` (falling back to `$XDG_CACHE_HOME/tflow/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
+Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` (falling back to `$XDG_CACHE_HOME/tflow/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$TFLOW_WORKFLOW_DIR` for directory workflows.
 
 For root configuration, see [settings.toml Specification](settings-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).

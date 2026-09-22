@@ -46,12 +46,13 @@ fn navigation_input_seed_is_separate_from_the_structured_query() {
 
 #[test]
 fn left_prefix_is_rendered_only_when_present() {
-    let hidden = visible_editor_query(None, "", 0, 20);
+    let hidden = visible_editor_query(None, None, "", 0, 20);
     assert_eq!(hidden.text, "");
     assert_eq!(hidden.cursor, 0);
     assert_eq!(hidden.highlight, None);
+    assert_eq!(hidden.placeholder, None);
 
-    let shown = visible_editor_query(Some("\u{3008}"), "", 0, 20);
+    let shown = visible_editor_query(Some("\u{3008}"), None, "", 0, 20);
     assert_eq!(shown.text, "\u{3008} ");
     // The full-width glyph is two columns plus its separating space.
     assert_eq!(shown.cursor, 3);
@@ -59,8 +60,55 @@ fn left_prefix_is_rendered_only_when_present() {
 }
 
 #[test]
+fn input_placeholder_fills_an_empty_query_only() {
+    let hinted = visible_editor_query(None, Some("Search"), "", 0, 20);
+    // The leading cell is the cursor; the hint starts after it.
+    assert_eq!(hinted.text, " Search");
+    assert_eq!(hinted.highlight, None);
+    assert_eq!(hinted.placeholder, Some(1.." Search".len()));
+    assert_eq!(hinted.cursor, 0);
+
+    let typed = visible_editor_query(None, Some("Search"), "ab", 2, 20);
+    assert_eq!(typed.text, "ab");
+    assert_eq!(typed.placeholder, None);
+}
+
+#[test]
+fn input_placeholder_follows_a_left_prefix() {
+    let query = visible_editor_query(Some("sys"), Some("Search"), "", 0, 20);
+    assert_eq!(query.text, "sys  Search");
+    assert_eq!(query.highlight, Some(0.."sys".len()));
+    assert_eq!(query.placeholder, Some("sys  ".len().."sys  Search".len()));
+    assert_eq!(query.cursor, 4);
+}
+
+#[test]
+fn input_placeholder_is_clipped_at_narrow_widths() {
+    // One column is reserved for the cursor before the hint is clipped.
+    let clipped = visible_editor_query(None, Some("Search the catalog"), "", 0, 8);
+    assert_eq!(clipped.text, " Sear...");
+    assert_eq!(clipped.placeholder, Some(1..clipped.text.len()));
+
+    // A prefix that leaves no room must render the prefix alone, never a hint.
+    let no_room = visible_editor_query(Some("sys"), Some("Search"), "", 0, 3);
+    assert_eq!(no_room.text, "sys");
+    assert_eq!(no_room.placeholder, None);
+
+    // A single free column shows only the cursor, with no hint text.
+    let cursor_only = visible_editor_query(Some("sys"), Some("Search"), "", 0, 5);
+    assert_eq!(cursor_only.text, "sys  ");
+    assert_eq!(cursor_only.placeholder, None);
+    assert_eq!(cursor_only.cursor, 4);
+
+    // An empty hint behaves as if it were absent.
+    let empty = visible_editor_query(None, Some(""), "", 0, 20);
+    assert_eq!(empty.text, "");
+    assert_eq!(empty.placeholder, None);
+}
+
+#[test]
 fn left_prefix_precedes_typed_input() {
-    let query = visible_editor_query(Some("sys"), "ab", 2, 20);
+    let query = visible_editor_query(Some("sys"), None, "ab", 2, 20);
     assert_eq!(query.text, "sys ab");
     // The marker shares the accent style; typed text does not.
     assert_eq!(query.highlight, Some(0.."sys".len()));
@@ -69,13 +117,87 @@ fn left_prefix_precedes_typed_input() {
 
 #[test]
 fn left_prefix_is_clipped_but_preserved_at_tiny_widths() {
-    let query = visible_editor_query(Some("\u{3008}"), "abcdef", 6, 3);
+    let query = visible_editor_query(Some("\u{3008}"), None, "abcdef", 6, 3);
     assert_eq!(query.text, "\u{3008} ");
     assert_eq!(query.highlight, Some(0.."\u{3008}".len()));
 
-    let single = visible_editor_query(Some("\u{3008}"), "abcdef", 6, 1);
+    let single = visible_editor_query(Some("\u{3008}"), None, "abcdef", 6, 1);
     assert_eq!(single.text, "\u{3008}");
     assert_eq!(single.highlight, Some(0.."\u{3008}".len()));
+}
+
+#[test]
+fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
+    let tasks = TaskRuntime::new();
+    let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+    let services = crate::engine::picker::PickerRuntimeServices::new(
+        fixture,
+        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
+        "core:default",
+    )
+    .view_services();
+    let mut config = config_with_tasks(services, tasks.clone());
+    config
+        .engine
+        .fields
+        .insert("input_placeholder".into(), Value::String("Search".into()));
+    let mut view =
+        create_protocol_view(config, &request("core:default"), ViewInstanceId(1)).unwrap();
+
+    let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    let size = crate::view::TerminalSize {
+        width: 40,
+        height: 4,
+    };
+    let render_context = RenderContext::for_terminal(size);
+    let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
+    let render = |view: &dyn View, terminal: &mut Terminal<TestBackend>| {
+        terminal
+            .draw(|frame| {
+                view.render(frame, frame.area(), &render_context).unwrap();
+            })
+            .unwrap();
+    };
+
+    render(view.as_ref(), &mut terminal);
+    let buffer = terminal.backend().buffer();
+    let row: String = (0..size.width)
+        .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+        .collect();
+    assert_eq!(row.trim_end(), "\u{2588}Search");
+    // The cursor keeps its own cell; the hint starts right after it and keeps
+    // the dedicated placeholder style.
+    let cursor = ResolvedTheme::terminal().picker.cursor;
+    let cursor_cell = buffer.cell((0, 0)).unwrap();
+    assert_eq!(cursor_cell.symbol(), PSEUDO_CURSOR_SYMBOL);
+    assert_eq!(cursor_cell.style().fg, cursor.fg);
+    let placeholder = ResolvedTheme::terminal().picker.placeholder;
+    assert_eq!(buffer.cell((1, 0)).unwrap().symbol(), "S");
+    assert_eq!(buffer.cell((1, 0)).unwrap().style().fg, placeholder.fg);
+    assert_eq!(buffer.cell((1, 0)).unwrap().style().bg, placeholder.bg);
+
+    // Typing proves the hint was presentation only: the fresh query starts at
+    // the cursor with no leftover placeholder text behind it.
+    view.event(
+        ViewEvent::Input(InputEvent::Key {
+            key: Key::Char('a'),
+            raw: vec![b'a'],
+        }),
+        &context,
+    )
+    .unwrap();
+    render(view.as_ref(), &mut terminal);
+    let buffer = terminal.backend().buffer();
+    let row: String = (0..size.width)
+        .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+        .collect();
+    assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "a");
+    assert!(
+        !row.contains("Search"),
+        "placeholder survived typing: {row:?}"
+    );
+
+    tasks.shutdown_and_wait();
 }
 
 #[test]
@@ -584,9 +706,9 @@ fn static_display_options_reach_picker_rendering_and_input() {
                 &root.join("suite.toml"),
                 None,
             )
-                .unwrap()
-                .compile()
-                .unwrap(),
+            .unwrap()
+            .compile()
+            .unwrap(),
         );
         let engines = crate::engine::EngineRegistry::new();
         fixture.validate_with_engines(&engines).unwrap();
@@ -768,12 +890,8 @@ fn picker_preview_declared_image_renders_after_decode_and_encoding() {
             "document": {"type": "image", "path": image_path.to_string_lossy()}
         }),
     );
-    let mut view = create_protocol_view(
-        picker_config,
-        &request("core:default"),
-        ViewInstanceId(1),
-    )
-    .unwrap();
+    let mut view =
+        create_protocol_view(picker_config, &request("core:default"), ViewInstanceId(1)).unwrap();
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
     let size = crate::view::TerminalSize {
         width: 80,
@@ -828,8 +946,7 @@ mod preview_correlation_tests {
     use super::*;
     #[test]
     fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
-        let temp =
-            std::env::temp_dir().join(format!("tflow-proto-preview-{}", std::process::id()));
+        let temp = std::env::temp_dir().join(format!("tflow-proto-preview-{}", std::process::id()));
         let config = crate::engine::picker::create_preview_test_suite(&temp);
         let engines = crate::engine::EngineRegistry::new();
         let tasks = TaskRuntime::new();
@@ -864,12 +981,7 @@ mod preview_correlation_tests {
                 serde_json::json!({"search":"","owner":"browser"}),
             ),
         );
-        let mut view = create_protocol_view(
-            protocol_config,
-            &request,
-            instance,
-        )
-        .unwrap();
+        let mut view = create_protocol_view(protocol_config, &request, instance).unwrap();
         let context = ViewContext::new(instance, page);
         view.event(
             ViewEvent::Resize(crate::view::TerminalSize {
@@ -937,8 +1049,7 @@ mod preview_correlation_tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(
-            content.contains("Mixed preview")
-                && content.contains("Details"),
+            content.contains("Mixed preview") && content.contains("Details"),
             "{content}"
         );
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
@@ -948,5 +1059,166 @@ mod preview_correlation_tests {
         drop(view);
         tasks.shutdown_and_wait();
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn a_remount_reuses_the_cached_preview_before_the_script_reruns() {
+        let temp = std::env::temp_dir().join(format!(
+            "tflow-proto-preview-remount-{}",
+            std::process::id()
+        ));
+        let config = crate::engine::picker::create_preview_test_suite(&temp);
+        let engines = crate::engine::EngineRegistry::new();
+        let tasks = TaskRuntime::new();
+        let page = "browser:main";
+        let cache = crate::engine::PreviewDocumentCache::default();
+        let request = NavigationRequest::new(
+            page,
+            ParsedQuery::new(
+                page,
+                "query",
+                serde_json::json!({"search":"","owner":"browser"}),
+            ),
+        );
+        // The remount is a self-navigation that updates a parameter, so the
+        // request identity differs while the preview provider stays the same.
+        let changed_request = NavigationRequest::new(
+            page,
+            ParsedQuery::new(
+                page,
+                "query",
+                serde_json::json!({"search":"changed","owner":"browser"}),
+            ),
+        );
+
+        let build = |instance: ViewInstanceId| {
+            let mut services = crate::engine::picker::mount_data(
+                &config,
+                &Value::Null,
+                page,
+                MountTaskLease::new(ViewMountId(instance.0)),
+            )
+            .unwrap();
+            services.set_preview_cache(cache.clone());
+            let definition = engines.definition(&config, page).unwrap();
+            PickerProtocolConfig {
+                identity: ViewIdentity::new(page, "picker"),
+                engine: crate::engine::project_engine_config(
+                    &config,
+                    page,
+                    &definition,
+                    Value::Null,
+                )
+                .unwrap(),
+                bindings: crate::engine::project_binding_config(&config, page, &definition)
+                    .unwrap(),
+                services,
+                parameter_binding: config.parameter_binding(page).unwrap(),
+                theme: ResolvedTheme::terminal(),
+                left_prefix: None,
+                prefix_backspace: None,
+                runtime_snapshot: serde_json::json!({"view":{}}),
+                tasks: tasks.clone(),
+            }
+        };
+
+        // First mount: run items and the preview script to completion so the
+        // shared cache holds the rendered document.
+        let first = ViewInstanceId(911);
+        let mut first_view = create_protocol_view(build(first), &request, first).unwrap();
+        let first_context = ViewContext::new(first, page);
+        open_preview_and_drive(&mut first_view, &tasks, &first_context, true, "Details");
+        first_view
+            .event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &first_context)
+            .unwrap();
+        drop(first_view);
+
+        // Make the second preview script hang, so only the cache can paint.
+        std::fs::write(
+            temp.join("workflows/browser/scripts/preview.py"),
+            "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
+        )
+        .unwrap();
+
+        let second = ViewInstanceId(912);
+        let mut second_view =
+            create_protocol_view(build(second), &changed_request, second).unwrap();
+        let second_context = ViewContext::new(second, page);
+        let content =
+            open_preview_and_drive(&mut second_view, &tasks, &second_context, false, "Details");
+        assert!(
+            content.contains("Details"),
+            "a parameter-updating remount must render the cached preview: {content}"
+        );
+        second_view
+            .event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &second_context)
+            .unwrap();
+        drop(second_view);
+        tasks.shutdown_and_wait();
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    fn open_preview_and_drive(
+        view: &mut Box<dyn View>,
+        tasks: &TaskRuntime,
+        context: &ViewContext,
+        deliver_preview: bool,
+        want: &str,
+    ) -> String {
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 80,
+                height: 24,
+            }),
+            context,
+        )
+        .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), context)
+            .unwrap();
+        view.event(
+            ViewEvent::Input(InputEvent::Key {
+                key: Key::Ctrl('p'),
+                raw: vec![0x10],
+            }),
+            context,
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut content = String::new();
+        while std::time::Instant::now() < deadline {
+            view.event(ViewEvent::Tick, context).unwrap();
+            for event in tasks.drain_events() {
+                if event.task == TaskId(2) && !deliver_preview {
+                    continue;
+                }
+                view.event(ViewEvent::Task(event), context).unwrap();
+            }
+            terminal
+                .draw(|frame| {
+                    view.render(
+                        frame,
+                        frame.area(),
+                        &RenderContext::for_terminal(crate::view::TerminalSize {
+                            width: 80,
+                            height: 24,
+                        }),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+            content = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            if content.contains(want) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        content
     }
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::protocol::contracts::{TaskEvent, TaskId, ViewInstanceId};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ViewLocation {
     pub(crate) target: String,
     pub(crate) alias: Option<String>,

@@ -559,19 +559,21 @@ impl ProtocolSession {
 
         let base_index = content_host.visible_base_index(self.router.stack(), active_index);
         let base_entry = base_index.and_then(|index| self.router.stack().get(index));
-        let base_instance_id = base_entry.map(|entry| entry.id);
-        let is_base_loading = base_entry.is_some_and(|entry| {
-            entry
-                .view
-                .command_snapshot()
-                .publication
-                .as_ref()
-                .is_some_and(|p| !p.ready)
-        });
+        let active_instance_id = self.router.stack()[active_index].id;
+        let is_active_loading = self.router.stack()[active_index]
+            .view
+            .command_snapshot()
+            .publication
+            .as_ref()
+            .is_some_and(|p| !p.ready);
 
+        // Grace is keyed on the topmost instance, so a freshly pushed popup
+        // participates exactly like a freshly mounted base View: the surface it
+        // would take over stays on screen until the instance publishes or the
+        // window expires.
         let retained = self
             .navigation
-            .begin(base_instance_id, is_base_loading, now);
+            .begin(Some(active_instance_id), is_active_loading, now);
 
         let top_padding = base_index
             .or(Some(0))
@@ -588,25 +590,17 @@ impl ProtocolSession {
             |index, frame, rect, ctx| self.router.render_at(index, frame, rect, ctx),
         )?;
 
+        // While the target is loading, keep the previous frame's pixels. A
+        // freshly pushed popup is covered instead of cleared, so the surface
+        // underneath stays put until the popup can render itself.
         let covered = match &retained {
             Some(retained) => {
-                let retain_area =
-                    base_entry.and_then(|entry| entry.view.retained_content_area(content_area));
+                let retain_area = active_popup_rect.or_else(|| {
+                    base_entry.and_then(|entry| entry.view.retained_content_area(content_area))
+                });
                 paint_retained(frame, retained, content_area, retain_area)
             }
-            None => {
-                if !is_base_loading
-                    && active_popup_rect.is_none()
-                    && let Some(base_id) = base_instance_id
-                {
-                    self.navigation.settle(SettledFrame {
-                        instance: base_id,
-                        buffer: Arc::new(frame.buffer_mut().clone()),
-                        area: content_area,
-                    });
-                }
-                None
-            }
+            None => None,
         };
 
         if active_render_area.width > 0
@@ -633,7 +627,7 @@ impl ProtocolSession {
 
         let metadata = view.metadata.clone();
         let footer_commands = self.chrome_snapshot.footer_commands();
-        let footer = FooterModel {
+        let current_footer = FooterModel {
             location: footer_location,
             status: chrome_snapshot.status.or(metadata.status),
             error: self.active_error.clone().or(chrome_snapshot.error),
@@ -641,12 +635,50 @@ impl ProtocolSession {
             commands: footer_commands,
             overflow_command: self.chrome_snapshot.overflow_command(),
         };
+        // Chrome grace uses the same retention decision as the pixels: while the
+        // active instance loads, keep the settled status and commands so the
+        // footer does not blank before the target publishes. Location and live
+        // notifications always track the current frame.
+        let footer = match &retained {
+            Some(retained) => FooterModel {
+                location: current_footer.location.clone(),
+                status: current_footer
+                    .status
+                    .clone()
+                    .or_else(|| retained.settled.footer.status.clone()),
+                error: current_footer.error.clone(),
+                info: current_footer.info.clone(),
+                commands: if current_footer.commands.is_empty() {
+                    retained.settled.footer.commands.clone()
+                } else {
+                    current_footer.commands.clone()
+                },
+                overflow_command: current_footer
+                    .overflow_command
+                    .clone()
+                    .or_else(|| retained.settled.footer.overflow_command.clone()),
+            },
+            None => current_footer,
+        };
         let footer_area = content_host.footer_area(area);
-        if let Some(popup_rect) = active_popup_rect {
+        if let Some(popup_rect) = active_popup_rect.filter(|_| retained.is_none()) {
             content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
             footer_renderer.render_blank(frame, footer_area, &self.theme);
         } else {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);
+        }
+
+        // A settled top instance owns the surface; this frame becomes the
+        // candidate the next navigation or popup push may retain. A popup frame
+        // is never settled, so returning to the base never resurrects overlay
+        // pixels.
+        if !is_active_loading && active_popup_rect.is_none() {
+            self.navigation.settle(SettledFrame {
+                instance: active_instance_id,
+                buffer: Arc::new(frame.buffer_mut().clone()),
+                area: content_area,
+                footer: footer.clone(),
+            });
         }
 
         Ok(ProtocolRenderResult { view, footer })

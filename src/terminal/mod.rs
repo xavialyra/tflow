@@ -2,6 +2,7 @@ mod sanitize;
 
 pub(crate) use sanitize::{sanitize_terminal_text, sanitize_text};
 
+use crate::identity::PRODUCT;
 use crate::lifecycle::CancellationToken;
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, encoded_len, engine::general_purpose::STANDARD};
@@ -209,7 +210,7 @@ impl Terminal {
         cancellation: CancellationToken,
     ) -> Result<Self> {
         if unsafe { libc::isatty(input_fd) } != 1 {
-            bail!("tflow needs to run inside a terminal");
+            bail!("{PRODUCT} needs to run inside a terminal");
         }
 
         set_fd_cloexec(input_fd)?;

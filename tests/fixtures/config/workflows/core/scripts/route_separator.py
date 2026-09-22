@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import completion_routes
 
 # The command is bound through this View's item bindings, so it always targets
-# the aggregate entry View it was defined for.
-SELF = "core:default"
+# the aggregate entry View it was defined for. The reference is resolved from
+# the mount, because the suite decides the member id.
+SELF = completion_routes.own_view_ref()
 INPUT_FIELD = "search"
 
 request = json.load(sys.stdin)

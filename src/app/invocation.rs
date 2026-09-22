@@ -1,4 +1,5 @@
 use super::SessionOutcome;
+use crate::identity::PRODUCT;
 use crate::lifecycle::CancellationToken;
 use crate::workflow::config::CompiledConfig;
 use anyhow::{Context, Result, bail};
@@ -136,7 +137,7 @@ fn create_input_file() -> Result<(PathBuf, File)> {
             elapsed.as_nanos() as u64 ^ sequence.rotate_left(17)
         });
         let path = directory.join(format!(
-            "tflow-input-{}-{random:016x}",
+            "{PRODUCT}-input-{}-{random:016x}",
             std::process::id(),
         ));
         match open_private_file(&path) {

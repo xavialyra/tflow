@@ -200,7 +200,13 @@ impl View for SyntheticView {
                 visible: true,
             }),
             metadata: ViewMetadata {
-                status: Some(self.target.clone()),
+                status: if self.target.starts_with("async_")
+                    && self.publication.as_ref().is_some_and(|p| !p.ready)
+                {
+                    None
+                } else {
+                    Some(self.target.clone())
+                },
                 error: None,
                 bindings: None,
             },
@@ -266,6 +272,8 @@ fn session() -> (
     routes.insert("picker_loading", "picker_loading");
     routes.insert("body_root", "body_root");
     routes.insert("root_overlay", "root_overlay");
+    routes.insert("async_bare", "async_bare");
+    routes.insert("async_popup", "async_popup");
     let router = Router::new(
         Box::new(routes),
         Box::new(Factory {
@@ -1710,6 +1718,116 @@ fn popup_does_not_settle_a_base_frame() {
     assert_eq!(
         row, "root",
         "Snapshot must remain the clean base frame, not the popup"
+    );
+}
+
+#[test]
+fn navigation_grace_keeps_the_previous_footer_status_until_ready() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
+
+    // 1. Settle the previous View, whose chrome provides the footer status.
+    terminal
+        .draw(|frame| {
+            session.render_at(frame, frame.area(), None, now).unwrap();
+        })
+        .unwrap();
+    assert!(session.navigation.settled().is_some());
+
+    // 2. Navigate to a target that reports no status while loading.
+    let target_id = session.router.push(request("async_bare")).unwrap();
+    session.sync_active_commands().unwrap();
+
+    terminal
+        .draw(|frame| {
+            let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
+            assert_eq!(rendered.footer.location.label(), "async_bare");
+            assert_eq!(
+                rendered.footer.status.as_deref(),
+                Some("root"),
+                "the footer must keep the settled status while the target loads"
+            );
+        })
+        .unwrap();
+    assert!(session.navigation.is_retaining());
+
+    // 3. Once ready, the target's own status replaces the carried one.
+    session
+        .task(TaskEvent {
+            task: TaskId(1),
+            instance: target_id,
+            generation: 1,
+            outcome: TaskOutcome::Completed(Value::Null),
+        })
+        .unwrap();
+    terminal
+        .draw(|frame| {
+            let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
+            assert_eq!(rendered.footer.status.as_deref(), Some("async_bare"));
+        })
+        .unwrap();
+    assert!(!session.navigation.is_retaining());
+}
+
+#[test]
+fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
+
+    terminal
+        .draw(|frame| {
+            session.render_at(frame, frame.area(), None, now).unwrap();
+        })
+        .unwrap();
+    assert!(session.navigation.settled().is_some());
+
+    // The popup occupies (10, 2) .. (29, 6) inside a 40x10 terminal.
+    let mut popup_req = request("async_popup");
+    popup_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(20),
+        height: Some(5),
+    };
+    let popup_id = session.router.push(popup_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // While loading, the popup is deferred: no border, and the app footer keeps
+    // the settled status instead of blanking for the popup.
+    terminal
+        .draw(|frame| {
+            let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
+            assert_eq!(rendered.footer.status.as_deref(), Some("root"));
+        })
+        .unwrap();
+    assert!(session.navigation.is_retaining());
+    assert_ne!(
+        terminal.backend().buffer().cell((10, 2)).unwrap().symbol(),
+        "┌",
+        "a deferred popup must not draw its border"
+    );
+
+    // Once it publishes, the popup appears with its own border.
+    session
+        .task(TaskEvent {
+            task: TaskId(1),
+            instance: popup_id,
+            generation: 1,
+            outcome: TaskOutcome::Completed(Value::Null),
+        })
+        .unwrap();
+    terminal
+        .draw(|frame| {
+            session.render_at(frame, frame.area(), None, now).unwrap();
+        })
+        .unwrap();
+    assert!(!session.navigation.is_retaining());
+    assert_eq!(
+        terminal.backend().buffer().cell((10, 2)).unwrap().symbol(),
+        "┌"
     );
 }
 

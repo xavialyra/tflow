@@ -8,6 +8,7 @@
 //! loading cannot re-arm stale pixels every frame.
 
 use crate::protocol::contracts::ViewInstanceId;
+use crate::ui::chrome::FooterModel;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -28,6 +29,9 @@ pub(super) struct SettledFrame {
     pub(super) instance: ViewInstanceId,
     pub(super) buffer: Arc<Buffer>,
     pub(super) area: Rect,
+    /// The footer the settled frame rendered, so the chrome can keep showing the
+    /// previous status and commands while the next View loads.
+    pub(super) footer: FooterModel,
 }
 
 /// The frame a render should retain, together with the deadline for retaining it.
@@ -35,7 +39,7 @@ pub(super) struct SettledFrame {
 pub(super) struct RetainedFrame {
     pub(super) instance: ViewInstanceId,
     pub(super) expires_at: Instant,
-    settled: SettledFrame,
+    pub(super) settled: SettledFrame,
 }
 
 #[derive(Default)]
@@ -162,6 +166,7 @@ mod tests {
             instance: ViewInstanceId(instance),
             buffer: Arc::new(Buffer::empty(Rect::new(0, 0, 4, 2))),
             area: Rect::new(0, 0, 4, 2),
+            footer: FooterModel::default(),
         }
     }
 

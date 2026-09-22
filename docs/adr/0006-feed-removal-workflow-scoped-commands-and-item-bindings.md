@@ -130,7 +130,7 @@ Dedicated to aggregate launchers (e.g., `hub`) or heterogeneous menus:
   ```toml
   [views.main.keymap]
   mode = "item"
-  "tab" = "complete_route"
+  "ctrl+r" = "refresh"
   ```
   The base layer is independent of item data, so a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. This is the supported way to give an aggregate View a permanent key; do not rely on every item carrying the binding.
 - Precedence within one View: focused Item binding > View base binding > Engine keymap. A base binding for a key that is also an Engine default removes that Engine binding for this View, exactly as in `mode = "static"`.

@@ -37,6 +37,18 @@ items = [
 
 `display` may be a plain string or a structured display value. `value` is optional and is exposed as a string when present. `metadata` defaults to an empty JSON object.
 
+Add `input_placeholder` to show a muted hint while the query is empty. It is purely presentational and can be combined with `show_input`, `show_divider`, `show_left_prefix`, and a `[defaults.picker] left_prefix` marker:
+
+```toml
+[views.main.engine.config]
+input_placeholder = "Type to filter…"
+items = [
+  { display = "Show date", value = "date", metadata = {} },
+]
+```
+
+Style the hint with `[picker.placeholder]` in the theme. The pseudo-cursor stays visible in the input's first cell and the hint starts right after it; with a left prefix the hint is rendered after the prefix, and typing replaces the hint without ever entering the query value.
+
 ### 2. Load Items from a Producer
 
 Use an item producer when the complete collection must be computed at request time:
@@ -105,7 +117,7 @@ file = "scripts/items.py"
 
 [views.default.keymap]
 mode = "item"
-tab = "complete_route"
+enter = "open"
 ```
 
 In the Suite manifest, inject the targets into the aggregate View:
@@ -118,9 +130,7 @@ query = { sources = ["apps:main", "calculator:main", "sys:main"] }
 
 The aggregator script fetches items headlessly from each source via `tflow -s $TFLOW_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
 
-Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View binds Tab and Space there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in `mode = "static"`.
-
-Route jumping on top of an aggregate (typing `calc` and pressing `Tab`) is built from these pieces plus a popup View; see [Add Route Completion to a Launcher](route-completion.md).
+Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View declares its own base keys there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in `mode = "static"`.
 
 ### 4. Use a Declared List for Small Static Collections
 

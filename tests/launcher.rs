@@ -8,12 +8,11 @@ use std::time::Duration;
 
 use support::{
     current_screen, discard_pending_master_output, fixture_config,
-    run_tty_invocation_with_blocked_stdout_signal,
-    spawn_launcher, spawn_launcher_with_args, spawn_launcher_with_args_and_env,
-    spawn_launcher_with_redirected_stdout, temporary_root, wait_for_fresh_screen,
-    wait_for_fresh_text, wait_for_launcher_exit, wait_for_launcher_exit_without_reading,
-    wait_for_nonempty_file, wait_for_output, wait_for_process_exit, wait_for_ready,
-    wait_for_stable_text, wait_for_text, write_test_config,
+    run_tty_invocation_with_blocked_stdout_signal, spawn_launcher, spawn_launcher_with_args,
+    spawn_launcher_with_args_and_env, spawn_launcher_with_redirected_stdout, temporary_root,
+    wait_for_fresh_screen, wait_for_fresh_text, wait_for_launcher_exit,
+    wait_for_launcher_exit_without_reading, wait_for_nonempty_file, wait_for_output,
+    wait_for_process_exit, wait_for_ready, wait_for_stable_text, wait_for_text, write_test_config,
 };
 
 fn write_workflow_script(root: &Path, workflow: &str, file: &str, source: &str) {
@@ -313,7 +312,7 @@ fn foreground_command_failure_resumes_the_launcher_terminal() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/fail.sh\"" ] }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/fail.sh\"" ] }
         "#,
     )
     .unwrap();
@@ -364,7 +363,7 @@ fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/sleep.sh\"" ] }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/sleep.sh\"" ] }
         "#,
     )
     .unwrap();
@@ -417,7 +416,7 @@ fn foreground_command_uses_the_controlling_terminal_and_restores_the_launcher() 
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/read-terminal.sh\"" ] }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/read-terminal.sh\"" ] }
         "#,
     )
     .unwrap();
@@ -487,7 +486,7 @@ fn foreground_command_cancellation_restores_terminal_and_reaps_descendant() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/foreground.sh\""], exit = true }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/foreground.sh\""], exit = true }
         "#,
     )
     .unwrap();
@@ -640,7 +639,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         label = "Exit"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/exit.sh\""], exit = true }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/exit.sh\""], exit = true }
         "#,
     )
     .unwrap();
@@ -791,7 +790,7 @@ fn application_launch_detaches_started_process_from_launcher_group() {
         label = "Open"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"], exit = true }
+        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"], exit = true }
         "#,
     )
     .unwrap();
@@ -968,7 +967,7 @@ fn explicit_embedded_view_receives_typed_query_input() {
         [workflows.core.views.direct.engine]
         type = "embedded"
         [workflows.core.views.direct.engine.config]
-        command = ["sh", "-lc", "printf 'input=%s\\n' \"$LAUNCHER_INPUT\""]
+        command = ["sh", "-lc", "printf 'input=%s\\n' \"$TFLOW_INPUT\""]
         [workflows.core.views.direct.query]
         type = "object"
         input = "text"
@@ -1972,8 +1971,7 @@ fn backspace_chain_screen(settings: &str, expected_item: &str, expected_input: &
     process.master.write_all(b"e").unwrap();
     process.master.flush().unwrap();
     let screen = wait_for_fresh_screen(&process.master, |visible| {
-        visible.contains(expected_item)
-            && visible.lines().any(|line| line.trim() == expected_input)
+        visible.contains(expected_item) && visible.lines().any(|line| line.trim() == expected_input)
     });
 
     process.master.write_all(b"\x03").unwrap();
@@ -2019,6 +2017,57 @@ fn left_prefix_backspace_unset_leaves_backspace_inert() {
         "leaf e\u{2588}",
     );
     assert!(screen.contains("Leaf entry"), "{screen}");
+}
+
+#[test]
+fn fixture_input_placeholder_shows_until_the_user_types() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
+    wait_for_ready(&process.master);
+
+    // core:default declares `input_placeholder` in the shared fixture, so the
+    // empty query row shows the hint instead of a lone cursor cell.
+    let entry = wait_for_text(&process.master, "Enter Open");
+    let entry = String::from_utf8_lossy(&entry);
+    let visible = entry.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible
+            .lines()
+            .any(|line| line.trim() == "\u{2588}Type a route or search"),
+        "entry placeholder was not rendered: {visible}"
+    );
+
+    // Typing replaces the hint: it was presentation, never query input.
+    process.master.write_all(b"s").unwrap();
+    process.master.flush().unwrap();
+    let typed = wait_for_fresh_screen(&process.master, |visible| {
+        !visible.contains("Type a route or search")
+    });
+    let typed = String::from_utf8_lossy(&typed);
+    let visible = typed.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible.lines().any(|line| line.trim() == "s\u{2588}"),
+        "typing did not replace the placeholder: {visible}"
+    );
+
+    // A pushed View keeps its own hint, rendered after the route prefix.
+    process.master.write_all(b"\x15").unwrap();
+    process.master.flush().unwrap();
+    process.master.write_all(b"app ").unwrap();
+    process.master.flush().unwrap();
+    let child = wait_for_text(&process.master, "Search applications");
+    let child = String::from_utf8_lossy(&child);
+    let visible = child.rsplit("--- visible screen ---").next().unwrap();
+    assert!(
+        visible.lines().any(|line| line
+            .trim_start()
+            .starts_with("app \u{2588}Search applications")),
+        "pushed placeholder was not rendered after the prefix: {visible}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
 }
 
 #[test]
@@ -2316,7 +2365,10 @@ fn core_tab_command_routes_directly_when_only_one_route_matches() {
     process.master.flush().unwrap();
     let output = wait_for_text(&process.master, "Show date");
     let visible = String::from_utf8_lossy(&output).into_owned();
-    assert!(!visible.contains("(sys:main)"), "completion popup opened: {visible}");
+    assert!(
+        !visible.contains("(sys:main)"),
+        "completion popup opened: {visible}"
+    );
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
@@ -3390,7 +3442,9 @@ fn completion_jump_consumes_the_picker_input() {
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let returned = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "\u{2588}")
+        visible
+            .lines()
+            .any(|line| line.trim() == "\u{2588}Type a route or search")
             && !visible.contains("Show system information")
             && visible
                 .lines()
@@ -3418,7 +3472,9 @@ fn completion_jump_consumes_the_picker_input() {
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     let cancelled = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "\u{2588}")
+        visible
+            .lines()
+            .any(|line| line.trim() == "\u{2588}Type a route or search")
             && visible
                 .lines()
                 .last()

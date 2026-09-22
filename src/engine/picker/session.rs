@@ -38,6 +38,9 @@ pub(super) struct PickerOptions {
     pub(super) show_divider: bool,
     pub(super) show_left_prefix: bool,
     pub(super) prefix_backspace: Option<PrefixBackspace>,
+    /// Hint rendered in an empty query input. Purely presentational: it never
+    /// becomes part of the editor buffer or the published input state.
+    pub(super) input_placeholder: Option<String>,
 }
 
 impl Default for PickerOptions {
@@ -47,6 +50,7 @@ impl Default for PickerOptions {
             show_divider: true,
             show_left_prefix: true,
             prefix_backspace: None,
+            input_placeholder: None,
         }
     }
 }
@@ -223,7 +227,12 @@ impl PickerView {
         Self::new_with_preview(
             view,
             services,
-            super::preview::parse(0.35, 24, None).expect("default picker preview is valid"),
+            super::preview::parse(
+                super::DEFAULT_PREVIEW_RATIO,
+                super::DEFAULT_PREVIEW_MIN_WIDTH,
+                None,
+            )
+            .expect("default picker preview is valid"),
         )
     }
 
@@ -232,6 +241,7 @@ impl PickerView {
         services: PickerViewServices,
         preview: PickerPreviewConfig,
     ) -> Self {
+        let preview_cache = services.preview_cache.clone();
         Self {
             state: PickerState {
                 frame: PickerFrame::new(view),
@@ -248,7 +258,7 @@ impl PickerView {
             services,
             items_task: None,
             items_completion: None,
-            preview: PickerPreview::new(preview),
+            preview: PickerPreview::new(preview, preview_cache),
             preview_content_size: None,
         }
     }

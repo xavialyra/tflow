@@ -34,10 +34,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 use serde_json::Value;
-use std::{
-    collections::HashSet,
-    ops::Range,
-};
+use std::{collections::HashSet, ops::Range};
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -100,6 +97,13 @@ pub(crate) fn create_protocol_view(
             .and_then(Value::as_bool)
             .unwrap_or(true),
         prefix_backspace: config.prefix_backspace,
+        // An empty hint is treated as no hint so it never renders a blank row.
+        input_placeholder: config
+            .engine
+            .field("input_placeholder")
+            .and_then(Value::as_str)
+            .filter(|placeholder| !placeholder.is_empty())
+            .map(str::to_string),
     };
     let (preview_ratio, preview_min_width, preview_visible) = super::preview_options(
         config.engine.field("preview_ratio"),
@@ -810,6 +814,7 @@ impl View for PickerProtocolView {
         let left_prefix = self.rendered_left_prefix();
         let query = visible_editor_query(
             left_prefix,
+            self.options.input_placeholder.as_deref(),
             &self.editor.raw,
             self.editor.cursor,
             layout[0].width as usize,
@@ -836,6 +841,19 @@ impl View for PickerProtocolView {
                     self.theme.picker.input_prefix,
                 ));
                 offset = highlight.end;
+            }
+            if let Some(placeholder) = query.placeholder.clone() {
+                if placeholder.start > offset {
+                    spans.push(Span::styled(
+                        query.text[offset..placeholder.start].to_string(),
+                        self.theme.picker.text,
+                    ));
+                }
+                spans.push(Span::styled(
+                    query.text[placeholder.clone()].to_string(),
+                    self.theme.picker.placeholder,
+                ));
+                offset = placeholder.end;
             }
             if offset < query.text.len() {
                 spans.push(Span::styled(
@@ -987,10 +1005,14 @@ struct VisibleEditorQuery {
     text: String,
     cursor: u16,
     highlight: Option<Range<usize>>,
+    /// Byte range of the rendered input placeholder, if any. Never overlaps
+    /// `highlight`: it only exists while the raw input is empty.
+    placeholder: Option<Range<usize>>,
 }
 
 fn visible_editor_query(
     left_prefix: Option<&str>,
+    placeholder: Option<&str>,
     raw: &str,
     cursor: usize,
     width: usize,
@@ -1012,6 +1034,7 @@ fn visible_editor_query(
             highlight: highlight(text.len()),
             text,
             cursor: width.saturating_sub(1) as u16,
+            placeholder: None,
         };
     }
 
@@ -1019,11 +1042,34 @@ fn visible_editor_query(
     let input_width = UnicodeWidthStr::width(raw);
     let cursor_width = UnicodeWidthStr::width(&raw[..cursor]);
     if input_width <= available {
+        if raw.is_empty()
+            && let Some(placeholder) = placeholder.filter(|placeholder| !placeholder.is_empty())
+        {
+            // Reserve the input's first cell for the pseudo-cursor: the block
+            // stays visible while the hint renders after it, instead of the
+            // hint sitting on the cursor cell and hiding it.
+            let budget = available.saturating_sub(1);
+            let clipped = if budget == 0 {
+                String::new()
+            } else {
+                crate::ui::chrome::clip(placeholder, budget)
+            };
+            let cursor_cell = prefix.len();
+            let text = format!("{prefix} {clipped}");
+            let placeholder = (!clipped.is_empty()).then(|| cursor_cell + 1..text.len());
+            return VisibleEditorQuery {
+                highlight: highlight(cursor_cell),
+                placeholder,
+                text,
+                cursor: prefix_width as u16,
+            };
+        }
         let text = format!("{prefix}{raw}");
         return VisibleEditorQuery {
             highlight: highlight(text.len()),
             text,
             cursor: (prefix_width + cursor_width) as u16,
+            placeholder: None,
         };
     }
 
@@ -1066,6 +1112,7 @@ fn visible_editor_query(
         highlight: highlight(text.len()),
         text,
         cursor: (prefix_width + marker_width + local_cursor) as u16,
+        placeholder: None,
     }
 }
 

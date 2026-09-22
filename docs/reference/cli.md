@@ -67,7 +67,7 @@ The `-w, --workflow <PATH>` option allows executing an isolated workflow directl
    - Scripts referenced by relative paths in the manifest are resolved relative to this directory.
 2. **Directory workflow package**:
    - Points to a directory containing a `workflow.toml` for one atomic workflow.
-   - Sets `WORKFLOW_DIR` to the package directory.
+   - Sets `TFLOW_WORKFLOW_DIR` to the package directory.
 
 ### Entry Point Resolution in Workflow Mode
 
@@ -101,8 +101,8 @@ Make the file executable (`chmod +x quick-picker.toml`) and execute it directly:
 
 Child processes inherit the caller's environment. The launcher adds only these workflow-specific variables:
 
-- `WORKFLOW_DIR` for scripts, foreground `run` commands, and Embedded processes belonging to a directory workflow. It contains that workflow's root directory.
-- `LAUNCHER_INPUT` for Embedded processes only. It contains the current View input projection.
+- `TFLOW_WORKFLOW_DIR` for scripts, foreground `run` commands, and Embedded processes belonging to a directory workflow. It contains that workflow's root directory.
+- `TFLOW_INPUT` for Embedded processes only. It contains the current View input projection.
 
 Producer scripts receive query, selection, command, and return data as their documented JSON request on stdin. That data is not copied into launcher-specific environment variables. Ordinary caller variables such as `PATH`, `HOME`, `TERM`, and locale settings remain inherited, and the launcher does not proactively clear pre-existing variables with other names.
 

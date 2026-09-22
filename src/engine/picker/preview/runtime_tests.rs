@@ -39,7 +39,11 @@ fn request(source: PreviewSource, metadata: Value) -> PreviewRequest {
     }
 }
 fn preview() -> PickerPreview {
-    let mut preview = PickerPreview::new(parse(0.35, 24, None).unwrap());
+    preview_with_cache(&PreviewDocumentCache::default())
+}
+
+fn preview_with_cache(cache: &PreviewDocumentCache) -> PickerPreview {
+    let mut preview = PickerPreview::new(parse(0.35, 24, None).unwrap(), cache.clone());
     preview.set_visible(true);
     preview
 }
@@ -198,8 +202,7 @@ fn preview_protocol_schema_output_and_process_failures_are_renderable_errors() {
 #[test]
 fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
     let (tasks, starter) = runtime();
-    let root =
-        std::env::temp_dir().join(format!("tflow-preview-document-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("tflow-preview-document-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     image::DynamicImage::new_rgb8(2, 2)
         .save(root.join("art.png"))
@@ -233,8 +236,7 @@ fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
 
 #[test]
 fn preview_fixture_script_roundtrip_decodes_its_workflow_relative_image() {
-    let root =
-        std::env::temp_dir().join(format!("tflow-preview-roundtrip-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("tflow-preview-roundtrip-{}", std::process::id()));
     let scripts = root.join("scripts");
     std::fs::create_dir_all(&scripts).unwrap();
     image::DynamicImage::new_rgb8(2, 2)
@@ -344,14 +346,17 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
     let root = std::env::temp_dir().join(format!("test-preview-cache-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let img_path = root.join("icon.png");
-    image::DynamicImage::new_rgba8(4, 4).save(&img_path).unwrap();
+    image::DynamicImage::new_rgba8(4, 4)
+        .save(&img_path)
+        .unwrap();
 
     let (tasks, starter) = runtime();
     let mut preview = preview();
     let doc = document::parse(json!({
         "type": "image",
         "path": img_path.to_string_lossy()
-    })).unwrap();
+    }))
+    .unwrap();
     let req1 = request(PreviewSource::Declared(doc.clone()), json!({"id": 1}));
     let req2 = request(PreviewSource::Declared(doc), json!({"id": 2}));
 
@@ -408,7 +413,10 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         ratatui::layout::Size::new(40, 10),
         picker.unwrap(),
     );
-    assert!(protocols.protocol(key).is_some(), "protocol should be ready");
+    assert!(
+        protocols.protocol(key).is_some(),
+        "protocol should be ready"
+    );
 
     // 2. Switch to second item (same image path)
     preview.prepare(Some(req2));
@@ -425,10 +433,7 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         "cached image should be immediately loaded"
     );
     assert!(
-        Arc::ptr_eq(
-            preview.images[0].image.as_ref().unwrap(),
-            &initial_arc
-        ),
+        Arc::ptr_eq(preview.images[0].image.as_ref().unwrap(), &initial_arc),
         "should reuse exact same Arc allocation"
     );
 
@@ -445,6 +450,75 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         "protocol cache must hit immediately on first frame"
     );
 
+    preview.deactivate();
+    tasks.shutdown_and_wait();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn remount_renders_cached_script_document_without_a_loading_flash() {
+    let (tasks, starter) = runtime();
+    let cache = PreviewDocumentCache::default();
+
+    // The first mount runs the script and populates the shared cache.
+    let mut first = preview_with_cache(&cache);
+    first.prepare(Some(request(source(ECHO), json!({"body": "cached body"}))));
+    ready(&mut first);
+    first.start(&starter).unwrap();
+    collect(&mut first, &starter);
+    assert!(matches!(first.document, Some(document::Document::Text(ref s)) if s == "cached body"));
+    first.deactivate();
+
+    // A self-navigation updates parameters, so the request identity changes
+    // while the preview provider does not. The second instance still paints the
+    // cached provider document before the refresh script has run.
+    let mut second = preview_with_cache(&cache);
+    second.prepare(Some(request(source(ECHO), json!({"body": "changed"}))));
+    let render = second.render_state();
+    assert!(
+        matches!(render.document, Some(document::Document::Text(ref s)) if s == "cached body"),
+        "a parameter-updating remount must render the cached provider document"
+    );
+    assert_eq!(render.status, None);
+
+    // The refresh still runs and replaces the cached pixels with fresh output.
+    ready(&mut second);
+    second.start(&starter).unwrap();
+    collect(&mut second, &starter);
+    assert!(
+        matches!(second.render_state().document, Some(document::Document::Text(ref s)) if s == "changed")
+    );
+    second.deactivate();
+    tasks.shutdown_and_wait();
+}
+
+#[test]
+fn cached_document_defers_image_decode_until_start_has_authority() {
+    let (tasks, starter) = runtime();
+    let root = std::env::temp_dir().join(format!("tflow-preview-defer-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    image::DynamicImage::new_rgb8(2, 2)
+        .save(root.join("art.png"))
+        .unwrap();
+    let doc = document::parse(json!({"type":"image","path":"art.png"})).unwrap();
+    let mut prepared = request(PreviewSource::Declared(doc.clone()), json!({}));
+    prepared.root = Some(root.clone());
+
+    let mut preview = preview();
+    preview.prepared = Some(prepared);
+    preview.install_document_inner(doc, false);
+    assert!(preview.document.is_some());
+    assert!(
+        preview.task.is_none(),
+        "a deferred install must not start an image decode task"
+    );
+    assert!(!preview.pending_images.is_empty());
+
+    preview.start(&starter);
+    assert!(
+        preview.task.is_some(),
+        "start must launch the deferred image decode"
+    );
     preview.deactivate();
     tasks.shutdown_and_wait();
     let _ = std::fs::remove_dir_all(root);

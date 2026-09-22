@@ -2,6 +2,7 @@ use super::SessionOutcome;
 use super::{App, InputArtifact, InvocationResult, LoadedApp, finish};
 use crate::diagnostics::RuntimeLog;
 use crate::engine::EngineRegistry;
+use crate::identity::{ENV_BIN, ENV_SUITE, PRODUCT};
 use crate::lifecycle::SignalGuard;
 use crate::terminal::{ImageProtocol as TerminalImageProtocol, Terminal};
 use crate::ui::theme::{self, ThemeLoadOptions};
@@ -82,7 +83,7 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
         .unwrap_or("")
         .to_string();
 
-    if stem.is_empty() || stem == "tflow" {
+    if stem.is_empty() || stem == PRODUCT {
         return args;
     }
     if args.iter().any(|a| {
@@ -207,7 +208,25 @@ impl CompiledConfig {
     }
 }
 
+/// Publish the running executable for producer scripts in every mode.
+///
+/// Workflows resolve their own references and re-enter the host through
+/// `TFLOW_BIN`, so the variable must be set before headless dispatch
+/// (`--check`, `--inspect`, `--items`) as well as before the interactive
+/// terminal starts. Scripts must never guess a build directory instead.
+fn publish_binary_path() {
+    if std::env::var_os(ENV_BIN).is_some() {
+        return;
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        unsafe {
+            std::env::set_var(ENV_BIN, &current_exe);
+        }
+    }
+}
+
 pub(crate) fn run() -> Result<i32> {
+    publish_binary_path();
     let cli_args = effective_cli_args();
     let args = Args::parse_from(cli_args);
     let settings_path = args.settings.as_deref();
@@ -339,13 +358,6 @@ pub(crate) fn run() -> Result<i32> {
     )?);
 
     let runtime_log = RuntimeLog::open(config.log_file.as_deref());
-    if let Ok(current_exe) = std::env::current_exe() {
-        if std::env::var_os("TFLOW_BIN").is_none() {
-            unsafe {
-                std::env::set_var("TFLOW_BIN", &current_exe);
-            }
-        }
-    }
     let signal_guard =
         SignalGuard::install().context("could not install launcher signal handlers")?;
     let cancellation = signal_guard.cancellation_token();
@@ -647,14 +659,15 @@ fn write_final_output(
 }
 
 fn default_suite_path() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("TFLOW_SUITE") {
+    if let Some(path) = env::var_os(ENV_SUITE) {
         return Ok(PathBuf::from(path));
     }
     if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(path).join("tflow/default.toml"));
+        return Ok(PathBuf::from(path).join(PRODUCT).join("default.toml"));
     }
     if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".config/tflow/default.toml"));
+        let config_home = PathBuf::from(home).join(".config").join(PRODUCT);
+        return Ok(config_home.join("default.toml"));
     }
     bail!("cannot locate default suite: set XDG_CONFIG_HOME or use -s <PATH>");
 }

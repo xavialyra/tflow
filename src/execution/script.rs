@@ -1,4 +1,5 @@
 use crate::execution::{BoundedCommandOutcome, run_bounded_command_with_stdin_outcome};
+use crate::identity::{ENV_SUITE, ENV_WORKFLOW_DIR};
 use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
 use crate::lifecycle::CancellationToken;
@@ -70,10 +71,10 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 let mut process = ProcessCommand::new(&argv[0]);
                 process.args(&argv[1..]);
                 if let Some(root) = root {
-                    process.env("WORKFLOW_DIR", root);
+                    process.env(ENV_WORKFLOW_DIR, root);
                 }
-                if let Ok(suite_path) = std::env::var("TFLOW_SUITE") {
-                    process.env("TFLOW_SUITE", suite_path);
+                if let Ok(suite_path) = std::env::var(ENV_SUITE) {
+                    process.env(ENV_SUITE, suite_path);
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
@@ -140,10 +141,10 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 process.args(&shebang.args);
                 process.arg(script_path).args(args);
                 if let Some(root) = root {
-                    process.env("WORKFLOW_DIR", root);
+                    process.env(ENV_WORKFLOW_DIR, root);
                 }
-                if let Ok(suite_path) = std::env::var("TFLOW_SUITE") {
-                    process.env("TFLOW_SUITE", suite_path);
+                if let Ok(suite_path) = std::env::var(ENV_SUITE) {
+                    process.env(ENV_SUITE, suite_path);
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,

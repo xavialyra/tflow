@@ -1,4 +1,5 @@
 use crate::execution::PreparedProcess;
+use crate::identity::ENV_WORKFLOW_DIR;
 use crate::lifecycle::CancellationToken;
 use crate::workflow::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
@@ -309,15 +310,12 @@ fn command_root<'a>(
         .or_else(|| config.workflow_root(command_invocation.source_view()))
 }
 
-fn prepared_direct_process(
-    root: Option<&Path>,
-    argv: Vec<String>,
-) -> Result<PreparedProcess> {
+fn prepared_direct_process(root: Option<&Path>, argv: Vec<String>) -> Result<PreparedProcess> {
     anyhow::ensure!(!argv.is_empty(), "run operation argv must not be empty");
     let mut environment = Vec::new();
     if let Some(root) = root {
         environment.push((
-            "WORKFLOW_DIR".to_string(),
+            ENV_WORKFLOW_DIR.to_string(),
             root.to_string_lossy().into_owned(),
         ));
     }

@@ -47,7 +47,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 
 ## 3. Route Resolution and Query Contracts
 
-- **Prefix Routing**: The engine does not parse route selectors. A workflow that wants "type an alias, then Space to jump" binds a command to `space` and resolves the alias in its own script, as the development fixture's `core:route_separator` does. The host still renders the current View's suite alias as an optional left prefix and can return to the parent or root on Backspace through `[defaults.picker] left_prefix_backspace`.
+- **Left Prefix Display**: The host renders the current View's suite alias as an optional left prefix on the input line, and when `[defaults.picker] left_prefix_backspace` opts in, Backspace returns to the parent or root View while that prefix is rendered. The prefix is presentational and never changes key handling.
 - **Route Query Scope**: Arguments passed via CLI or navigation actions are validated against the target view's declared `[views.<name>.query]` schema before the view is mounted.
 
 ## 4. View Lifecycle Sequences

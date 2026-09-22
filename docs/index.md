@@ -37,7 +37,6 @@ This documentation is organized into four core categories following the **Diáta
 *Cross-cutting workflow tasks:*
 - [Commands and Producer Scripts](how-to/commands-and-producers.md) — Configure commands and read the shared producer context.
 - [View Navigation & Popups](how-to/view-navigation-and-popups.md) — Configure popup modals, view stack transitions, and call/return flows.
-- [Add Route Completion to a Launcher](how-to/route-completion.md) — Tab and Space route jumping for an aggregate launcher View.
 - [Custom Themes](how-to/custom-themes.md) — Define flat color schemes and component style overrides.
 
 ### 3. [Reference](reference/index.md)

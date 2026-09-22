@@ -59,7 +59,7 @@ For a runnable parameter form with initial values, validation, and caller proces
 
 The active command registry handles matching bindings according to `View > Engine > Host` precedence before input reaches the child PTY. When a popup or command selector is active, input is directed to that top View while the embedded process remains managed by its View lifecycle.
 
-Embedded processes inherit the caller's environment. Directory workflows receive `WORKFLOW_DIR`; the current rendered input is available as `LAUNCHER_INPUT` for Embedded processes only. Runtime command data is not interpolated into the Embedded argv array.
+Embedded processes inherit the caller's environment. Directory workflows receive `TFLOW_WORKFLOW_DIR`; the current rendered input is available as `TFLOW_INPUT` for Embedded processes only. Runtime command data is not interpolated into the Embedded argv array.
 
 ## Troubleshooting
 

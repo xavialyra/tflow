@@ -29,6 +29,7 @@ type = "picker"
 preview_ratio = 0.52
 preview_min_width = 36
 preview_default_open = true
+input_placeholder = "Search components"
 
 [views.main.engine.config.items]
 producer = "script"
@@ -115,7 +116,7 @@ def workflow_source_dir():
         if candidate and has_workflows(candidate):
             return os.path.realpath(candidate)
 
-    root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
+    root = os.environ.get("TFLOW_WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
     root = os.path.realpath(root)
     for _ in range(4):
         for name in ("workflows", "tflow-workflows"):
@@ -721,7 +722,7 @@ def workflow_source_dir():
         if candidate and has_workflows(candidate):
             return os.path.realpath(candidate)
 
-    root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
+    root = os.environ.get("TFLOW_WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
     root = os.path.realpath(root)
     for _ in range(4):
         for name in ("workflows", "tflow-workflows"):

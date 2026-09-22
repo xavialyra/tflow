@@ -75,7 +75,7 @@ impl Sandbox {
             .arg(self.script_path())
             .env("TFLOW_BIN", binary_path())
             .env(
-                "WORKFLOW_DIR",
+                "TFLOW_WORKFLOW_DIR",
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("distribution"),
             )
             .env("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", &self.source)

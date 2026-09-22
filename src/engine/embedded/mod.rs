@@ -16,6 +16,7 @@ use super::{
     RuntimeFactoryContext, require_field, validate_fields,
 };
 use crate::execution::PreparedProcess;
+use crate::identity::{ENV_INPUT, ENV_WORKFLOW_DIR};
 use crate::input::keymap::KeymapAction;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
@@ -184,12 +185,12 @@ pub(super) fn create_view(
         command
     };
     let mut environment = vec![(
-        "LAUNCHER_INPUT".to_string(),
+        ENV_INPUT.to_string(),
         context.parameters.raw_input().to_string(),
     )];
     if let Some(root) = context.config.workflow_root.as_ref() {
         environment.push((
-            "WORKFLOW_DIR".to_string(),
+            ENV_WORKFLOW_DIR.to_string(),
             root.to_string_lossy().into_owned(),
         ));
     }

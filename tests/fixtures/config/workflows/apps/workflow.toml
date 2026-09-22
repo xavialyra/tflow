@@ -12,6 +12,7 @@ type = "picker"
 preview_ratio = 0.35
 preview_min_width = 24
 preview_default_open = false
+input_placeholder = "Search applications"
 
 [views.main.engine.config.items]
 producer = "script"

@@ -89,6 +89,7 @@ pub(crate) struct ChromeTheme {
 pub(crate) struct PickerTheme {
     pub(crate) text: Style,
     pub(crate) muted: Style,
+    pub(crate) placeholder: Style,
     pub(crate) input_prefix: Style,
     pub(crate) cursor: Style,
     pub(crate) selected: Style,
@@ -174,6 +175,13 @@ impl ResolvedTheme {
             raw.picker.muted.as_ref(),
             default_raw.picker.muted.as_ref().unwrap(),
             "picker.muted",
+        )?
+        .normal;
+
+        let picker_placeholder = resolve_component(
+            raw.picker.placeholder.as_ref(),
+            default_raw.picker.placeholder.as_ref().unwrap(),
+            "picker.placeholder",
         )?
         .normal;
 
@@ -351,6 +359,7 @@ impl ResolvedTheme {
             picker: PickerTheme {
                 text: picker_text,
                 muted: picker_muted,
+                placeholder: picker_placeholder,
                 input_prefix: picker_input_prefix,
                 cursor: picker_cursor,
                 selected: picker_selected,
@@ -692,6 +701,8 @@ pub(super) struct RawPickerTheme {
     pub(super) text: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) muted: Option<RawStyleBinding>,
+    #[serde(default)]
+    pub(super) placeholder: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) input_prefix: Option<RawStyleBinding>,
     #[serde(default)]

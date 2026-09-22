@@ -1,6 +1,7 @@
 use crate::engine::{
-    EngineRegistry, PickerProtocolConfig, PrefixBackspace, create_capture_protocol_view,
-    create_embedded_protocol_view, create_picker_protocol_view, picker_mount_data,
+    EngineRegistry, PickerProtocolConfig, PrefixBackspace, PreviewDocumentCache,
+    create_capture_protocol_view, create_embedded_protocol_view, create_picker_protocol_view,
+    picker_mount_data,
 };
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
@@ -21,6 +22,9 @@ pub(crate) struct ProtocolViewFactory {
     theme: ResolvedTheme,
     cancellation: CancellationToken,
     engines: EngineRegistry,
+    /// One cache per session so a Picker remounted by navigation or `replace`
+    /// reuses the document another instance already rendered.
+    preview_cache: PreviewDocumentCache,
 }
 
 impl ProtocolViewFactory {
@@ -37,6 +41,7 @@ impl ProtocolViewFactory {
             theme,
             cancellation,
             engines,
+            preview_cache: PreviewDocumentCache::default(),
         }
     }
 
@@ -125,12 +130,14 @@ impl ProtocolViewFactory {
         target: &str,
         instance: ViewInstanceId,
     ) -> Result<crate::engine::PickerViewServices> {
-        picker_mount_data(
+        let mut services = picker_mount_data(
             &self.config,
             self.invocation.input_value(),
             target,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(instance.0)),
-        )
+        )?;
+        services.set_preview_cache(self.preview_cache.clone());
+        Ok(services)
     }
 }
 

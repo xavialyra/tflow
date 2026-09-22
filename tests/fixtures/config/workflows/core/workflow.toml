@@ -12,6 +12,9 @@ sources = { type = "array<string>", default = [] }
 [views.default.engine]
 type = "picker"
 
+[views.default.engine.config]
+input_placeholder = "Type a route or search"
+
 [views.default.engine.config.items]
 producer = "script"
 [views.default.engine.config.items.handler]

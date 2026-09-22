@@ -22,7 +22,7 @@ Workflows operate under these boundaries:
 
 - **Directory workflow confinement**: In `workflows/<workflow-id>/workflow.toml`, producer `handler.file` paths are resolved and validated within the workflow root.
 - **Single-file isolation**: A single-file workflow cannot reference a relative external script file. Use a producer `handler.script` or an absolute host binary/file path.
-- **Caller working directory**: Host process invocations preserve the caller's `$PWD`. Directory workflows receive `$WORKFLOW_DIR` for companion resources.
+- **Caller working directory**: Host process invocations preserve the caller's `$PWD`. Directory workflows receive `$TFLOW_WORKFLOW_DIR` for companion resources.
 - **Inline materialization**: Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` (with cache fallback) using `0600` permissions and source attribution comments. The host interprets shebang arguments and can invoke scripts from a `noexec` filesystem.
 - **Path traversal prevention**: Relative traversal attempts and symlink escapes are rejected during `--check` and runtime preparation.
 - **Special file rejection**: Configuration and script files cannot be device nodes, sockets, or named pipes.

@@ -7,6 +7,30 @@ import os
 import subprocess
 import sys
 
+
+def workflow_owner():
+    """Member id this package is mounted as; the suite decides it, not us."""
+    root = os.path.realpath(os.environ.get("TFLOW_WORKFLOW_DIR") or "")
+    try:
+        import tomllib
+
+        with open(os.environ["TFLOW_SUITE"], "rb") as handle:
+            workflows = tomllib.load(handle).get("workflows") or {}
+        base = os.path.dirname(os.path.abspath(os.environ["TFLOW_SUITE"]))
+        for member, entry in workflows.items():
+            target = (entry or {}).get("dir") or (entry or {}).get("file")
+            if isinstance(target, str) and os.path.realpath(
+                os.path.join(base, target)
+            ) == root:
+                return member
+    except Exception:
+        pass
+    name = os.path.basename(root)
+    if not name:
+        raise SystemExit("cannot resolve the workflow owner; set TFLOW_WORKFLOW_DIR")
+    return name
+
+
 request = json.load(sys.stdin)
 context = request.get("context", {})
 engine = context.get("engine", {})
@@ -15,18 +39,13 @@ query = state.get("input", "") if isinstance(state, dict) else ""
 if not isinstance(query, str):
     raise SystemExit("view selector query must be a string")
 
-workflow_dir = os.environ.get("WORKFLOW_DIR")
-if not workflow_dir:
-    raise SystemExit("view selector requires WORKFLOW_DIR")
-config_root = os.path.abspath(os.path.join(workflow_dir, os.pardir, os.pardir))
-suite_path = os.path.join(config_root, "default.toml")
-if not os.path.exists(suite_path):
-    suite_path = os.path.join(config_root, "suite.toml")
-if not os.path.exists(suite_path):
-    suite_path = os.path.join(config_root, "config.toml")
+suite = os.environ.get("TFLOW_SUITE")
+if not suite:
+    raise SystemExit("view selector requires TFLOW_SUITE")
+binary = os.environ.get("TFLOW_BIN") or "tflow"
 try:
     inspected = subprocess.run(
-        ["tflow", "--suite", suite_path, "--inspect", "--all"],
+        [binary, "--suite", suite, "--inspect", "--all"],
         check=True,
         capture_output=True,
         text=True,
@@ -38,6 +57,7 @@ except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
 if not isinstance(catalog, dict) or not isinstance(catalog.get("views"), list):
     raise SystemExit("--inspect --all returned an invalid view catalog")
 
+own_prefix = f"{workflow_owner()}:"
 tokens = query.casefold().split()
 items = []
 for view in catalog["views"]:
@@ -48,7 +68,8 @@ for view in catalog["views"]:
     engine_type = view.get("engine")
     if not isinstance(view_ref, str) or not view_ref or not isinstance(engine_type, str):
         continue
-    if view_ref == "selectors:views":
+    # The selector workflow owns this UI; its own Views are not targets.
+    if view_ref.startswith(own_prefix):
         continue
     searchable = " ".join(
         value for value in (alias if isinstance(alias, str) else "", view_ref, engine_type)

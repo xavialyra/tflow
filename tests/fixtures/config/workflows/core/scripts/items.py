@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
+"""Aggregate the items of sibling Views into the core launcher.
+
+The host exposes ``TFLOW_WORKFLOW_DIR`` (this package's absolute root) and
+``TFLOW_BIN`` (the running executable), and the suite manifest in
+``TFLOW_SUITE`` names every mounted member. The resolvers below use those host
+values instead of guessing a checkout layout or a binary location, so the same
+script works from an installed configuration, a test fixture, and a standalone
+``-w`` run.
+"""
 import json
 import os
 import subprocess
 import sys
+
 try:
     import tomllib
-except ImportError:
+except ImportError:  # Python < 3.11: no manifest, fall back to the directory name.
     tomllib = None
+
 
 def main():
     try:
@@ -28,25 +39,51 @@ def main():
 
     sources = parameters.get("sources") or []
 
-    suite_file = os.environ.get("TFLOW_SUITE")
     tflow_bin = os.environ.get("TFLOW_BIN") or "tflow"
+    # Installed layout: <config>/workflows/<member>/{scripts/,workflow.toml}
+    workflows_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    config_root = os.path.dirname(workflows_dir)
+    suite_file = os.environ.get("TFLOW_SUITE") or os.path.join(
+        config_root, "default.toml"
+    )
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    core_wf_dir = os.path.dirname(script_dir)
-    fixtures_wf_dir = os.path.dirname(core_wf_dir)
-    config_dir = os.path.dirname(fixtures_wf_dir)
-    if not suite_file:
-        suite_file = os.path.join(config_dir, "default.toml")
+    suite_cache = {}
 
-    # Locate debug binary if tflow is not in PATH
-    if not os.path.isabs(tflow_bin) and not any(
-        os.access(os.path.join(p, tflow_bin), os.X_OK)
-        for p in os.environ.get("PATH", "").split(os.pathsep)
-    ):
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(config_dir))))
-        candidate = os.path.join(repo_root, "target", "debug", "tflow")
-        if os.path.isfile(candidate):
-            tflow_bin = candidate
+    def read_suite():
+        if "manifest" not in suite_cache:
+            suite_cache["manifest"] = load_suite()
+        return suite_cache["manifest"]
+
+    def load_suite():
+        if tomllib is None or not os.path.isfile(suite_file):
+            return {}
+        try:
+            with open(suite_file, "rb") as handle:
+                manifest = tomllib.load(handle)
+            return manifest if isinstance(manifest, dict) else {}
+        except Exception:
+            return {}
+
+    roots_cache = {}
+
+    def member_roots():
+        """Every mounted member as ``member id -> absolute package root``."""
+        if "roots" not in roots_cache:
+            roots = {}
+            base = os.path.dirname(os.path.abspath(suite_file))
+            for member, entry in (read_suite().get("workflows") or {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                target = entry.get("dir") or entry.get("file")
+                if isinstance(target, str):
+                    roots[member] = os.path.realpath(os.path.join(base, target))
+            roots_cache["roots"] = roots
+        return roots_cache["roots"]
+
+    def member_root(member):
+        return member_roots().get(member) or os.path.join(workflows_dir, member)
 
     child_req = {
         "version": 1,
@@ -64,15 +101,9 @@ def main():
             if isinstance(alias, str) and alias:
                 return alias
 
-        if tomllib is not None and os.path.isfile(suite_file):
-            try:
-                with open(suite_file, "rb") as f:
-                    aliases = tomllib.load(f).get("aliases", {})
-                for alias, target in aliases.items():
-                    if target == view_ref:
-                        return alias
-            except Exception:
-                pass
+        for alias, target in (read_suite().get("aliases") or {}).items():
+            if target == view_ref:
+                return alias
         return view_ref
 
     def add_view_badge(item, badge):
@@ -116,7 +147,7 @@ def main():
             constraints.append({"Length": badge_width})
 
     def inspect_view_keymap(view_ref):
-        if tflow_bin and os.path.exists(suite_file):
+        if os.path.exists(suite_file):
             cmd = [tflow_bin, "-s", suite_file, "--inspect", view_ref]
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -129,36 +160,35 @@ def main():
             except Exception:
                 pass
 
-        # General fallback: reflectively read workflow.toml
-        parts = view_ref.split(":")
-        wf_name = parts[0]
-        v_name = parts[1] if len(parts) > 1 else "main"
-        wf_toml = os.path.join(fixtures_wf_dir, wf_name, "workflow.toml")
+        # Degraded fallback: reflectively read the member's workflow.toml.
+        member, _, view_name = view_ref.partition(":")
+        view_name = view_name or "main"
+        wf_toml = os.path.join(member_root(member), "workflow.toml")
         if os.path.exists(wf_toml):
             try:
-                with open(wf_toml, "r", encoding="utf-8") as f:
-                    content = f.read()
+                with open(wf_toml, "r", encoding="utf-8") as handle:
+                    content = handle.read()
                 in_keymap = False
                 keymap = {}
                 for line in content.splitlines():
                     line = line.strip()
                     if line.startswith("[") and line.endswith("]"):
-                        in_keymap = line == f"[views.{v_name}.keymap]"
+                        in_keymap = line == f"[views.{view_name}.keymap]"
                         continue
                     if in_keymap and "=" in line and not line.startswith("#"):
                         k, v = [p.strip() for p in line.split("=", 1)]
                         k = k.strip("\"'")
                         v = v.strip("\"'")
                         if k:
-                            keymap[k] = f"{wf_name}:{v}"
+                            keymap[k] = f"{member}:{v}"
                 return keymap
             except Exception:
                 pass
         return {}
 
     def fetch_items_for_view(view_ref):
-        # 1. Primary: Use headless CLI extraction with query propagation
-        if tflow_bin and os.path.exists(suite_file):
+        # 1. Primary: use the host's headless producer extraction.
+        if os.path.exists(suite_file):
             cmd = [tflow_bin, "-s", suite_file, "--items", view_ref]
             if query:
                 cmd.append(query)
@@ -173,16 +203,15 @@ def main():
             except Exception:
                 pass
 
-        # 2. General directory-reflection fallback
-        parts = view_ref.split(":")
-        wf_name = parts[0]
-        wf_dir = os.path.join(fixtures_wf_dir, wf_name)
+        # 2. Degraded fallback: run the member's own items producer directly.
+        member, _, _ = view_ref.partition(":")
+        wf_dir = member_root(member)
         if os.path.isdir(wf_dir):
-            for script_name in ["items.py", "items.sh", f"{wf_name}.py", f"{wf_name}.sh"]:
+            for script_name in ["items.py", "items.sh", f"{member}.py", f"{member}.sh"]:
                 script_path = os.path.join(wf_dir, "scripts", script_name)
                 if os.path.exists(script_path):
                     env = dict(os.environ)
-                    env["WORKFLOW_DIR"] = wf_dir
+                    env["TFLOW_WORKFLOW_DIR"] = wf_dir
                     try:
                         res = subprocess.run(
                             [script_path],
@@ -243,6 +272,7 @@ def main():
 
     output = {"version": 1, "items": filtered_items}
     print(json.dumps(output))
+
 
 if __name__ == "__main__":
     main()

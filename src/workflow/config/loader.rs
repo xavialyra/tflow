@@ -2,6 +2,7 @@ use super::{
     CompiledConfig, RawConfig, RawSettings, RawSuiteManifest, View, Workflow, WorkflowHeader,
     WorkflowMount, normalize::normalize_view_keymaps, validate_settings_purity,
 };
+use crate::identity::{ENV_SETTINGS, ENV_SUITE, PRODUCT};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
@@ -76,13 +77,14 @@ pub(super) fn resolve_settings(
         return Ok((settings, Some(base_dir)));
     }
 
-    let candidate = if let Some(path) = std::env::var_os("TFLOW_SETTINGS") {
+    let candidate = if let Some(path) = std::env::var_os(ENV_SETTINGS) {
         return resolve_settings(Some(Path::new(&path)));
     } else if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        let p = PathBuf::from(path).join("tflow/settings.toml");
+        let p = PathBuf::from(path).join(PRODUCT).join("settings.toml");
         if p.is_file() { Some(p) } else { None }
     } else if let Some(home) = std::env::var_os("HOME") {
-        let p = PathBuf::from(home).join(".config/tflow/settings.toml");
+        let config_home = PathBuf::from(home).join(".config").join(PRODUCT);
+        let p = config_home.join("settings.toml");
         if p.is_file() { Some(p) } else { None }
     } else {
         None
@@ -153,7 +155,10 @@ pub(super) fn parse_atomic_workflow_package(
 
     if let Some(views_table) = views_value.as_table() {
         for (view_name, view_table) in views_table {
-            if view_table.as_table().is_some_and(|t| t.contains_key("commands")) {
+            if view_table
+                .as_table()
+                .is_some_and(|t| t.contains_key("commands"))
+            {
                 bail!(
                     "view {:?} in workflow {:?} cannot define [commands]; ADR 0006 promotes business commands to workflow root [commands]",
                     view_name,
@@ -616,7 +621,7 @@ impl CompiledConfig {
             .canonicalize()
             .unwrap_or_else(|_| suite_file.clone());
         unsafe {
-            std::env::set_var("TFLOW_SUITE", &canonical_suite);
+            std::env::set_var(ENV_SUITE, &canonical_suite);
         }
 
         let (settings, settings_dir) = resolve_settings(settings_path)?;

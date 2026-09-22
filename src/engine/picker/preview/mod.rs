@@ -25,6 +25,70 @@ pub(crate) struct PickerPreviewConfig {
 const DEBOUNCE_DURATION: std::time::Duration = std::time::Duration::from_millis(80);
 const GRACE_PERIOD_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
 const DECODE_CACHE_CAPACITY: usize = 32;
+const DOCUMENT_CACHE_CAPACITY: usize = 32;
+
+/// Provider-keyed cache of fully rendered preview documents, shared by every
+/// Picker View instance of one session. A fresh mount whose preview provider was
+/// rendered before paints the cached document immediately instead of flashing
+/// `Loading preview…` while the script re-runs. The refresh still happens in the
+/// background, so the cached pixels are replaced as soon as new output arrives.
+///
+/// The key is the provider owner, not the full request identity, because a
+/// self-navigation (`replace = true` to the same View) exists precisely to
+/// update parameters such as a Picker's selected set; those parameters are part
+/// of the request identity, so an identity key would always miss the remount it
+/// is meant to cover.
+#[derive(Clone, Default)]
+pub(crate) struct PreviewDocumentCache {
+    inner: Arc<std::sync::Mutex<PreviewDocumentCacheInner>>,
+}
+
+#[derive(Default)]
+struct PreviewDocumentCacheInner {
+    entries: std::collections::HashMap<String, CachedPreview>,
+    order: std::collections::VecDeque<String>,
+}
+
+#[derive(Clone)]
+struct CachedPreview {
+    document: Option<document::Document>,
+}
+
+impl PreviewDocumentCache {
+    fn get(&self, owner: &str) -> Option<CachedPreview> {
+        let mut inner = self.lock();
+        let cached = inner.entries.get(owner).cloned()?;
+        if let Some(position) = inner.order.iter().position(|key| key == owner) {
+            inner.order.remove(position);
+        }
+        inner.order.push_back(owner.to_owned());
+        Some(cached)
+    }
+
+    fn insert(&self, owner: String, document: Option<document::Document>) {
+        let mut inner = self.lock();
+        if inner.entries.contains_key(&owner) {
+            if let Some(position) = inner.order.iter().position(|key| key == &owner) {
+                inner.order.remove(position);
+            }
+        } else {
+            while inner.entries.len() >= DOCUMENT_CACHE_CAPACITY {
+                let Some(oldest) = inner.order.pop_front() else {
+                    break;
+                };
+                inner.entries.remove(&oldest);
+            }
+        }
+        inner.order.push_back(owner.clone());
+        inner.entries.insert(owner, CachedPreview { document });
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PreviewDocumentCacheInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -226,6 +290,7 @@ pub(super) struct PickerPreview {
     selection: Option<String>,
     images: Vec<PreviewImageState>,
     task: Option<ImageTask>,
+    pending_images: Vec<(usize, std::path::PathBuf)>,
     prepared: Option<PreviewRequest>,
     script_task: Option<crate::task::TaskHandle<Option<document::Document>>>,
     due: Option<std::time::Instant>,
@@ -239,6 +304,7 @@ pub(super) struct PickerPreview {
     content_size: Option<(u16, u16)>,
     decode_cache: std::collections::HashMap<std::path::PathBuf, Arc<DynamicImage>>,
     decode_order: std::collections::VecDeque<std::path::PathBuf>,
+    preview_cache: PreviewDocumentCache,
 }
 
 #[derive(Clone, Default)]
@@ -307,7 +373,7 @@ impl PickerPreviewRenderState {
 }
 
 impl PickerPreview {
-    pub(super) fn new(config: PickerPreviewConfig) -> Self {
+    pub(super) fn new(config: PickerPreviewConfig, preview_cache: PreviewDocumentCache) -> Self {
         Self {
             config,
             visible: false,
@@ -315,6 +381,7 @@ impl PickerPreview {
             selection: None,
             images: Vec::new(),
             task: None,
+            pending_images: Vec::new(),
             prepared: None,
             script_task: None,
             due: None,
@@ -328,6 +395,7 @@ impl PickerPreview {
             content_size: None,
             decode_cache: std::collections::HashMap::new(),
             decode_order: std::collections::VecDeque::new(),
+            preview_cache,
         }
     }
 
@@ -396,6 +464,7 @@ impl PickerPreview {
         self.revision = self.revision.wrapping_add(1);
         self.selection = None;
         self.task.take();
+        self.pending_images.clear();
         self.prepared = None;
         self.script_task = None;
         self.due = None;
@@ -410,6 +479,7 @@ impl PickerPreview {
     fn cancel_pending(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.task.take();
+        self.pending_images.clear();
         self.script_task = None;
         self.due = None;
         self.grace_due = None;
@@ -467,15 +537,31 @@ impl PickerPreview {
         }
         self.cancel_pending();
         let now = std::time::Instant::now();
+        let is_script = matches!(request.source, PreviewSource::Script(_));
+        let owner = request.owner.clone();
         self.selection = Some(request.identity.clone());
         self.due = Some(now + DEBOUNCE_DURATION);
+        self.prepared = Some(request);
         if self.document.is_none() {
-            self.package = request.owner.split(':').next().unwrap_or("").to_owned();
-            self.status = Some("Loading preview…".into());
+            self.package = owner.split(':').next().unwrap_or("").to_owned();
+            // A script document cached for this provider can render immediately,
+            // even though the request identity changed with the parameters that
+            // triggered the self-navigation. Only script previews need this:
+            // declared and inherited documents install synchronously during
+            // `start` and never expose the loading status.
+            let cached = is_script
+                .then(|| self.preview_cache.get(&owner))
+                .flatten();
+            if let Some(cached) = cached {
+                // Image decoding still waits for `start`, so an input-path call
+                // never starts a task.
+                self.install_document_inner(cached.document, false);
+            } else {
+                self.status = Some("Loading preview…".into());
+            }
         } else {
             self.grace_due = Some(now + GRACE_PERIOD_DURATION);
         }
-        self.prepared = Some(request);
     }
 
     pub(super) fn set_content_size(&mut self, size: Option<(u16, u16)>) {
@@ -506,7 +592,10 @@ impl PickerPreview {
         if let Some(mut task) = self.script_task.take() {
             use crate::task::TaskCompletion;
             match task.try_recv() {
-                Ok(TaskCompletion::Completed(document)) => self.install_document(document),
+                Ok(TaskCompletion::Completed(document)) => {
+                    self.cache_document(document.as_ref());
+                    self.install_document(document)
+                }
                 Ok(TaskCompletion::Failed(error)) => {
                     self.grace_due = None;
                     self.document = None;
@@ -526,6 +615,10 @@ impl PickerPreview {
                     self.error = true;
                 }
             }
+        }
+        if !self.pending_images.is_empty() {
+            let pending = std::mem::take(&mut self.pending_images);
+            self.start_images(pending);
         }
         let request = self.prepared.as_ref()?;
         match &request.source {
@@ -583,13 +676,31 @@ impl PickerPreview {
         }
     }
 
+    fn cache_document(&self, document: Option<&document::Document>) {
+        let Some(owner) = self.prepared.as_ref().map(|r| r.owner.clone()) else {
+            return;
+        };
+        self.preview_cache.insert(owner, document.cloned());
+    }
+
     fn install_document(&mut self, document: Option<document::Document>) {
+        self.install_document_inner(document, true);
+    }
+
+    /// Install a document, either starting image decoding now (post-commit host
+    /// authority) or deferring it to the next `start` call.
+    fn install_document_inner(
+        &mut self,
+        document: Option<document::Document>,
+        decode_images: bool,
+    ) {
         self.grace_due = None;
         self.scroll = 0;
         if let Some(prepared) = &self.prepared {
             self.package = prepared.owner.split(':').next().unwrap_or("").to_owned();
         }
         self.status = document.is_none().then(|| "(no preview)".into());
+        self.error = false;
         let mut paths = Vec::new();
         if let Some(document) = &document {
             document.images(&mut paths);
@@ -611,7 +722,12 @@ impl PickerPreview {
             }
         }
         self.document = document;
-        self.start_images(uncached);
+        if decode_images {
+            self.pending_images.clear();
+            self.start_images(uncached);
+        } else {
+            self.pending_images = uncached;
+        }
     }
 
     fn start_images(&mut self, images: Vec<(usize, std::path::PathBuf)>) {
@@ -811,8 +927,8 @@ pub(super) fn item_value(item: &Item) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageProtocolCache, Item, PickerPreview, PreviewImageState, PreviewSource, item_value,
-        parse,
+        ImageProtocolCache, Item, PickerPreview, PreviewDocumentCache, PreviewImageState,
+        PreviewSource, item_value, parse,
     };
     use crate::ui::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
@@ -829,7 +945,7 @@ mod tests {
             Some(json!({"producer": "declared", "document": "summary"})),
         )
         .unwrap();
-        let mut preview = PickerPreview::new(config);
+        let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.set_visible(true);
 
         let (items, preview_area) = preview.render_state().areas(Rect::new(0, 0, 80, 10));
@@ -872,7 +988,7 @@ mod tests {
             }})),
         )
         .unwrap();
-        let mut preview = PickerPreview::new(config);
+        let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.selection = Some("selected".to_string());
         let PreviewSource::Declared(document) = preview.source().clone() else {
             unreachable!()
@@ -901,7 +1017,7 @@ mod tests {
             Some(json!({"producer":"declared", "document":{"type":"image", "path":"image.png"}})),
         )
         .unwrap();
-        let mut preview = PickerPreview::new(config);
+        let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.set_visible(true);
         let PreviewSource::Declared(document) = preview.source().clone() else {
             unreachable!()

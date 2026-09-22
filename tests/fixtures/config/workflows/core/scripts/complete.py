@@ -39,7 +39,7 @@ if route is not None:
 else:
     operation = {
         "type": "navigate",
-        "target": "core:completion",
+        "target": completion_routes.view_ref("completion"),
         "query": {"filter": prefix},
         "presentation": {"mode": "popup", "width": 72, "height": 16},
         "clear_input": True,

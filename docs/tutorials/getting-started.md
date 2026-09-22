@@ -135,5 +135,4 @@ The Picker displays the two literal items. Press `Enter` to run the producer ope
 
 - Follow [Your First Workflow](first-workflow.md) to build a directory package with separate item and command scripts.
 - Read [Picker Views](../how-to/picker-views.md) for request-driven item generation.
-- Add [Route Completion to a Launcher](../how-to/route-completion.md) once several workflows share one suite entrypoint.
 - Use [workflow.toml Specification](../reference/workflow-toml.md) for the full operation and protocol reference.

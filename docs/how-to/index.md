@@ -27,8 +27,5 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 - **[View Navigation & Popups](view-navigation-and-popups.md)**
   Configure declared or script-produced navigation, popup calls, return values, and post-commit processors.
 
-- **[Add Route Completion to a Launcher](route-completion.md)**
-  Give an aggregate Picker a Tab and Space completion flow with a popup route list.
-
 - **[Custom Themes](custom-themes.md)**
   Create flat color schemes and override component and workflow styles.

@@ -155,6 +155,6 @@ Use stderr for diagnostics. Extra stdout, unknown fields, a second JSON document
 
 ## Environment and Limits
 
-Producer scripts inherit the caller's environment. Directory workflows receive `WORKFLOW_DIR`; producer runtime data arrives through JSON stdin rather than launcher-specific environment variables. The standard timeout is 10 seconds, default producer stdout is 1 MiB, Picker item stdout is 64 MiB, and stderr is 64 KiB.
+Producer scripts inherit the caller's environment. Directory workflows receive `TFLOW_WORKFLOW_DIR`; producer runtime data arrives through JSON stdin rather than launcher-specific environment variables. The standard timeout is 10 seconds, default producer stdout is 1 MiB, Picker item stdout is 64 MiB, and stderr is 64 KiB.
 
 For exact request and response schemas, see [Producer Protocol](../reference/producer-protocol.md). For operation targets, query binding, calls, and returns, see [View Navigation and Popups](view-navigation-and-popups.md).

@@ -57,12 +57,12 @@ The loader scans `workflows/` and uniformly resolves two physical layouts:
    - Primary vehicle for distribution and lightweight recipes.
    - Self-contained definitions invoking system binaries or inline scripts.
    - Namespace resolves to `<id>`.
-   - **No External Relative Scripts**: Single-file workflows are strictly self-contained and prohibited from referencing relative external script files (`script = "path/to/file"`), ensuring no ambiguous `$WORKFLOW_DIR` boundary or leakage across sibling workflows.
+   - **No External Relative Scripts**: Single-file workflows are strictly self-contained and prohibited from referencing relative external script files (`script = "path/to/file"`), ensuring no ambiguous `$TFLOW_WORKFLOW_DIR` boundary or leakage across sibling workflows.
 2. **Directory Workflows (`workflows/<id>/workflow.toml`)**:
    - Suited for complex workflows requiring private test suites, multi-file Python/Bash scripts, or local static assets.
    - Namespace resolves to `<id>`.
    - Relative producer script references in manifests (e.g., `handler.file = "scripts/feed.sh"`) are confined to the workflow root and resolved by the host before execution.
-   - The host injects `WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tflow/workflows/<id>`) for inter-script asset references.
+   - The host injects `TFLOW_WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tflow/workflows/<id>`) for inter-script asset references.
 3. **Host-Side Absolute Path Resolution (Zero `$PATH` Pollution)**:
    - The host does not prepend or mutate the child process `$PATH`, completely eliminating the risk of system command hijacking (e.g., shadowing `git`, `cat`, `test`) and environment leakage to sub-processes.
 
@@ -100,7 +100,7 @@ printf '%s\n' "checkout producer"
 ### 4. Working Directory (CWD) Invariant
 
 - **Strict Caller Context Preservation**: The child process working directory (CWD) strictly remains the user's current terminal directory (`$PWD`) at invocation time.
-- **Decoupling Context from Assets**: CWD is never modified by the host to point inside workflow directories. User workspace context (e.g., current Git repository or file tree) is fully preserved, while workflow internal assets are located exclusively via host-resolved absolute paths or `$WORKFLOW_DIR`.
+- **Decoupling Context from Assets**: CWD is never modified by the host to point inside workflow directories. User workspace context (e.g., current Git repository or file tree) is fully preserved, while workflow internal assets are located exclusively via host-resolved absolute paths or `$TFLOW_WORKFLOW_DIR`.
 
 ### 5. Multiplexed CLI Entry (`argv[0]`) & Schema Inspection
 

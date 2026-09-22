@@ -1,3 +1,4 @@
+use crate::identity::PRODUCT;
 use anyhow::{Context, Result, bail};
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -73,18 +74,19 @@ fn is_executable_file(path: &Path) -> bool {
 
 pub(crate) fn scripts_cache_dir() -> PathBuf {
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR") {
-        let path = PathBuf::from(runtime_dir).join("tflow/scripts");
+        let path = PathBuf::from(runtime_dir).join(PRODUCT).join("scripts");
         if path.exists() || fs::create_dir_all(&path).is_ok() {
             return path;
         }
     }
     if let Some(cache_home) = env::var_os("XDG_CACHE_HOME") {
-        return PathBuf::from(cache_home).join("tflow/scripts");
+        return PathBuf::from(cache_home).join(PRODUCT).join("scripts");
     }
     if let Some(home) = env::var_os("HOME") {
-        return PathBuf::from(home).join(".cache/tflow/scripts");
+        let cache_home = PathBuf::from(home).join(".cache").join(PRODUCT);
+        return cache_home.join("scripts");
     }
-    env::temp_dir().join("tflow/scripts")
+    env::temp_dir().join(PRODUCT).join("scripts")
 }
 
 fn sanitize_identifier(id: &str) -> String {
@@ -111,7 +113,7 @@ pub(crate) fn format_attributed_script(
     script_body: &str,
 ) -> String {
     let attribution =
-        format!("# [tflow] source: workflows/{workflow_id}.toml -> [{source_label}]");
+        format!("# [{PRODUCT}] source: workflows/{workflow_id}.toml -> [{source_label}]");
     let mut lines = script_body.lines();
     if let Some(first_line) = lines.next()
         && first_line.starts_with("#!")

@@ -14,6 +14,7 @@ pub(crate) use self::display::SlotToken;
 pub(crate) use self::items::run_items_producer_raw;
 use self::items::{ItemsRequest, PickerItemsDefinition, PickerItemsLoader};
 use self::keymap::PickerKeymap;
+pub(crate) use self::preview::PreviewDocumentCache;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
 use self::session::PickerOptions;
@@ -25,8 +26,7 @@ use super::{
 use crate::input::keymap::KeymapAction;
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
-    CompiledConfig, Defaults, ProducerKind, View, parse_producer_script_handler,
-    toml_to_json,
+    CompiledConfig, Defaults, ProducerKind, View, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -55,6 +55,9 @@ pub(crate) struct PickerViewServices {
     page_commands: BTreeMap<String, BTreeMap<String, Value>>,
     workflow_roots: BTreeMap<String, PathBuf>,
     preview_sources: BTreeMap<String, preview::PreviewSource>,
+    /// Session-scoped cache shared by every Picker instance mounted by one
+    /// factory, so a remount with the same request identity does not flash.
+    preview_cache: PreviewDocumentCache,
     launch_input: Value,
     task_services: Option<Arc<PickerTaskServices>>,
 }
@@ -69,6 +72,10 @@ impl PickerViewServices {
             .as_ref()
             .expect("picker task services are not installed")
             .start_items(starter, request)
+    }
+
+    pub(crate) fn set_preview_cache(&mut self, cache: PreviewDocumentCache) {
+        self.preview_cache = cache;
     }
 }
 
@@ -232,10 +239,14 @@ const CONFIG_FIELDS: &[&str] = &[
     "show_input",
     "show_divider",
     "show_left_prefix",
+    "input_placeholder",
 ];
 
 /// Subset of [`CONFIG_FIELDS`] that must deserialize as a boolean.
 const BOOLEAN_FIELDS: &[&str] = &["show_input", "show_divider", "show_left_prefix"];
+
+/// Subset of [`CONFIG_FIELDS`] that must deserialize as a string.
+const STRING_FIELDS: &[&str] = &["input_placeholder"];
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
@@ -257,6 +268,10 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
         ])
 }
 
+/// Default preview share of the split and its minimum pane width.
+const DEFAULT_PREVIEW_RATIO: f64 = 0.35;
+const DEFAULT_PREVIEW_MIN_WIDTH: u16 = 24;
+
 pub(super) fn preview_options(
     preview_ratio: Option<&Value>,
     preview_min_width: Option<&Value>,
@@ -269,7 +284,7 @@ pub(super) fn preview_options(
                 .context("picker preview_ratio must be a number")
         })
         .transpose()?
-        .unwrap_or(0.35);
+        .unwrap_or(DEFAULT_PREVIEW_RATIO);
     anyhow::ensure!(
         ratio.is_finite() && (0.0..=1.0).contains(&ratio),
         "picker preview_ratio must be between 0 and 1"
@@ -282,7 +297,7 @@ pub(super) fn preview_options(
                 .context("picker preview_min_width must be an unsigned 16-bit integer")
         })
         .transpose()?
-        .unwrap_or(24);
+        .unwrap_or(u64::from(DEFAULT_PREVIEW_MIN_WIDTH));
     anyhow::ensure!(
         min_width <= u16::MAX as u64,
         "picker preview_min_width must be an unsigned 16-bit integer"
@@ -309,6 +324,13 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
             && !matches!(value, toml::Value::Boolean(_))
         {
             bail!("view {:?} picker {} must be a boolean", name, field);
+        }
+    }
+    for field in STRING_FIELDS {
+        if let Some(value) = view.engine_field(field)
+            && !matches!(value, toml::Value::String(_))
+        {
+            bail!("view {:?} picker {} must be a string", name, field);
         }
     }
     let preview_ratio = view
@@ -654,18 +676,49 @@ sys.stdout.write("\n")
         std::fs::set_permissions(browser_scripts.join("preview.py"), perms).unwrap();
     }
 
-    crate::workflow::config::CompiledConfig::load_suite_unvalidated(
-        &temp.join("suite.toml"),
-        None,
-    )
-    .unwrap()
-    .compile()
-    .unwrap()
+    crate::workflow::config::CompiledConfig::load_suite_unvalidated(&temp.join("suite.toml"), None)
+        .unwrap()
+        .compile()
+        .unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_placeholder_must_be_a_string() {
+        for field in STRING_FIELDS {
+            for value in ["true", "0", "[]", "{}"] {
+                let view: View = toml::from_str(&format!(
+                    "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = {value}\n"
+                ))
+                .unwrap();
+                let result = validate_config(EngineValidationContext {
+                    view_ref: "core:menu",
+                    view: &view,
+                    script_root: None,
+                });
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("core:menu"), "{error}");
+                assert!(
+                    error.contains(&format!("{field} must be a string")),
+                    "{error}"
+                );
+            }
+
+            let view: View = toml::from_str(&format!(
+                "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = \"Search\"\n"
+            ))
+            .unwrap();
+            validate_config(EngineValidationContext {
+                view_ref: "core:menu",
+                view: &view,
+                script_root: None,
+            })
+            .unwrap();
+        }
+    }
 
     #[test]
     fn display_options_must_be_boolean() {

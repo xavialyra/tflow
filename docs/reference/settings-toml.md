@@ -82,7 +82,7 @@ Global engine defaults can be adjusted at the root level.
   # left_prefix = "〈"
   ```
 
-  Backspace only navigates while a left prefix is actually rendered — a Picker with `show_left_prefix = false` (such as a completion popup) never returns on Backspace. What Backspace then does is opt-in; see `left_prefix_backspace`. The engine itself does not parse route selectors; a workflow that wants "selector + space jumps" binds a command to `space` and resolves the alias in its script.
+  Backspace only navigates while a left prefix is actually rendered — a Picker with `show_left_prefix = false` (such as a popup View) never returns on Backspace. What Backspace then does is opt-in; see `left_prefix_backspace`.
 - `left_prefix_backspace` (string, default unset): what Backspace does on an empty input line of a non-root Picker that renders a left prefix. `"parent"` returns to the parent View, like Escape; `"root"` returns to the root View in one step; leaving it unset keeps Backspace inert. It has no effect without a rendered prefix, so the per-view `show_left_prefix` option also disables it.
 
   ```toml

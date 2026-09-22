@@ -616,6 +616,10 @@ fn picker_input_prefix_and_chrome_footer_title_resolve() {
             foreground = "scheme:accent"
             bold = true
 
+            [picker.placeholder]
+            foreground = "scheme:status_col"
+            dim = true
+
             [picker.cursor]
             foreground = "scheme:accent"
             background = "scheme:border_col"
@@ -643,6 +647,14 @@ fn picker_input_prefix_and_chrome_footer_title_resolve() {
             .input_prefix
             .add_modifier
             .contains(Modifier::BOLD)
+    );
+    assert_eq!(theme.picker.placeholder.fg, Some(Color::Gray));
+    assert!(
+        theme
+            .picker
+            .placeholder
+            .add_modifier
+            .contains(Modifier::DIM)
     );
     assert_eq!(theme.picker.cursor.fg, Some(Color::Yellow));
     assert_eq!(theme.picker.cursor.bg, Some(Color::Green));

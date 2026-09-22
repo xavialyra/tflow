@@ -65,6 +65,10 @@ background = "scheme:background"
 foreground = "scheme:muted"
 background = "scheme:background"
 
+[picker.placeholder]
+foreground = "scheme:muted"
+background = "scheme:background"
+
 [picker.selected]
 foreground = "scheme:foreground"
 background = "scheme:selection"

@@ -101,7 +101,7 @@ Route definitions, query schemas, Engine types, preview pane sizing, preview pro
 
 Producer stdout must contain exactly one complete JSON object. Surrounding whitespace is allowed, but diagnostics, a second JSON document, malformed JSON, unknown fields, unsupported `version`, a mismatched operation type, a nonzero exit status, or an invalid operation schema is failure. Diagnostics belong on stderr.
 
-Script handlers use exactly one non-empty `file` or inline `script` field. Relative files in directory workflows stay below the workflow root. The host preserves the caller's `$PWD` and provides `$WORKFLOW_DIR` to directory workflow processes.
+Script handlers use exactly one non-empty `file` or inline `script` field. Relative files in directory workflows stay below the workflow root. The host preserves the caller's `$PWD` and provides `$TFLOW_WORKFLOW_DIR` to directory workflow processes.
 
 The default script policy is a 10-second timeout, 1 MiB stdout, and 64 KiB stderr. Picker item producers use the 64 MiB stdout bound. Managed child processes are cancelled and reaped through the shared execution layer. These controls do not sandbox trusted workflow code.
 

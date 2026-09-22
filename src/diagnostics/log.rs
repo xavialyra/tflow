@@ -1,3 +1,4 @@
+use crate::identity::PRODUCT;
 use crate::terminal::sanitize_text;
 use serde_json::json;
 use std::env;
@@ -245,7 +246,7 @@ fn default_log_path(xdg_state_home: Option<&Path>, home: Option<&Path>) -> io::R
                 "neither XDG_STATE_HOME nor HOME is set to an absolute path",
             )
         })?;
-    Ok(state_home.join("tflow/runtime.jsonl"))
+    Ok(state_home.join(PRODUCT).join("runtime.jsonl"))
 }
 
 fn timestamp() -> (String, String) {
