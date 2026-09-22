@@ -1,4 +1,4 @@
-#!/usr/bin/env -S tlaunch -w
+#!/usr/bin/env -S tflow -w
 [workflow]
 api = 1
 name = "quick-picker"

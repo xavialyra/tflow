@@ -1,15 +1,16 @@
 # Documentation Changelog
 
-This changelog tracks updates to the `tlaunch` knowledge bundle.
+This changelog tracks updates to the `tflow` knowledge bundle.
 
 ## 2026-09-22
 
 - Fixed the setup wizard (`distribution/init.toml`), which generated every user configuration and could only ever install stale workflows. Its cache marker latched on the first copy, so rerunning the wizard reinstalled the same snapshot no matter how often the selection changed; the marker now records a fingerprint of the workflow source (path, newest modification, file count, package list) and the cache is rebuilt whenever that changes.
 - The wizard installs by replacing each package directory instead of merging into it. A merged copy kept every file the source had dropped — a dead `items.sh`, an old `items.py` without the source badge — so a reinstall never repaired an install.
 - The generated suite manifest is now TOML 1.0: the entry point's `query` is written as a nested `[suite.entrypoint.query]` table instead of a multi-line inline table, which strict parsers reject. The generated `settings.toml` also carries the picker display defaults (`left_prefix`, `left_prefix_backspace`), and an existing settings file is patched with those two keys when they are absent.
-- The wizard no longer needs environment setup to find the workflows: `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` (or `TLAUNCH_WORKFLOWS_DIR`) wins, and a bundled `workflows/` beside the distribution or a sibling `tlaunch-workflows/` checkout is discovered by walking up from `WORKFLOW_DIR`. It reports the resolved source and cache in its summary, and the suite target is read from the core package's `[workflow].entrypoint` rather than assuming `core:main`.
+- The wizard no longer needs environment setup to find the workflows: `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` (or `TFLOW_WORKFLOWS_DIR`) wins, and a bundled `workflows/` beside the distribution or a sibling `tflow-workflows/` checkout is discovered by walking up from `WORKFLOW_DIR`. It reports the resolved source and cache in its summary, and the suite target is read from the core package's `[workflow].entrypoint` rather than assuming `core:main`.
 - The wizard's install step now fails loudly when the source cannot be found, reports components that were selected but are absent from the source, removes deselected components from the installed tree, keeps bytecode out of the install, and runs `--check` against what it wrote, reporting the result in its summary.
 - Added `tests/wizard.rs`: it drives the wizard's embedded scripts against a private copy of the workflow source and pins the two regressions (a cache that lags its source, a merge copy that keeps deleted files), plus the generated manifest, settings and the shipped wizard's own `--check`.
+- Renamed the product from `tlaunch` to `tflow`: the crate and binary, the CLI environment variables (`TFLOW_SUITE`, `TFLOW_SETTINGS`, `TFLOW_BIN`, `TFLOW_WORKFLOWS_BOOTSTRAP_DIR`, `TFLOW_WORKFLOWS_DIR`), the configuration, state, and cache paths (`$XDG_CONFIG_HOME/tflow`, `$XDG_STATE_HOME/tflow/runtime.jsonl`, `$XDG_CACHE_HOME/tflow`), and the runtime script, sandbox, and temporary-directory prefixes, plus every tutorial, how-to, reference, ADR, and the setup wizard. The pre-release policy applies: no aliases, shims, or legacy paths are provided, so an existing `~/.config/tlaunch` installation and any user script reading `TLAUNCH_*` must be recreated. (The 2026-09-09 entry below keeps the name that was current then.)
 
 ## 2026-09-21
 
@@ -33,8 +34,8 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 ## 2026-09-21
 
-- Corrected headless CLI dispatch: removed the ambiguous positional `tlaunch inspect ...` / `tlaunch items ...` subcommands, which collided with View selectors, in favor of the existing `--inspect` and `--items` long options.
-- Made `--inspect` accept an optional value and made `--all` self-sufficient: `tlaunch --inspect`, `tlaunch --all`, and `tlaunch --inspect --all` all dump every configured View, while `tlaunch --inspect <VIEW>` dumps one. No migration-style error is emitted for the removed `tlaunch inspect --all` form.
+- Corrected headless CLI dispatch: removed the ambiguous positional `tflow inspect ...` / `tflow items ...` subcommands, which collided with View selectors, in favor of the existing `--inspect` and `--items` long options.
+- Made `--inspect` accept an optional value and made `--all` self-sufficient: `tflow --inspect`, `tflow --all`, and `tflow --inspect --all` all dump every configured View, while `tflow --inspect <VIEW>` dumps one. No migration-style error is emitted for the removed `tflow inspect --all` form.
 - Extended `argv[0]` multiplexing suppression to `--all` and `--inspect=<VIEW>` / `--items=<VIEW>` forms so headless modes are never rewritten as View launches.
 
 ## 2026-09-19
@@ -44,8 +45,8 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
   - Formulated promotion of business commands from View tables to Workflow root level (`[commands.<id>]`), establishing Suite-level fully qualified command identifiers (`<workflow>:<command>`).
   - Specified explicit binary View binding strategies (`mode = "static"` vs `mode = "item"`), with `mode = "static"` as the default for single-purpose workflows.
   - Specified zero-lock dispatch-time late-binding for dynamic `mode = "item"` views, completely bypassing `CommandRegistry` write locks during cursor navigation.
-  - Decomposed headless aggregation into two orthogonal, non-mutating query interfaces: `tlaunch --items` (strict JSON array data stream with error propagation) and `tlaunch --inspect` (metadata/command contract inspection), leaving combinator logic explicitly to user scripts.
-  - Added query parameter injection for `[suite.entrypoint]` and sandboxed child process environment inheritance via `$TLAUNCH_SUITE`.
+  - Decomposed headless aggregation into two orthogonal, non-mutating query interfaces: `tflow --items` (strict JSON array data stream with error propagation) and `tflow --inspect` (metadata/command contract inspection), leaving combinator logic explicitly to user scripts.
+  - Added query parameter injection for `[suite.entrypoint]` and sandboxed child process environment inheritance via `$TFLOW_SUITE`.
   - Registered ADR 0006 as `Proposed` pending implementation milestones.
 
 ## 2026-09-19
@@ -64,7 +65,7 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 - Added accepted ADR 0005 (`docs/adr/0005-manifest-driven-suites-and-self-contained-workflows.md`):
   - Defined manifest-driven workflow suite orchestration (`[suite]`), strict two-tier non-nesting, and 100% self-contained atomic workflow contracts (`[workflow]`).
   - Disambiguated CLI dispatch semantics: `-w, --workflow <PATH>` for single atomic workflows vs `-s, --suite <PATH>` for multi-workflow suite manifests.
-  - Decoupled passive host environment (`~/.config/tlaunch/settings.toml`) from workflow governance, eliminating `default_view` and `disabled_workflows` sanitization hacks.
+  - Decoupled passive host environment (`~/.config/tflow/settings.toml`) from workflow governance, eliminating `default_view` and `disabled_workflows` sanitization hacks.
   - Centralized routing aliases into suite manifest `[aliases]` tables, stripping aliases from individual workflow views to eliminate collision.
   - Rejected suite-level private themes in favor of surgical semantic style slot overrides (`[styles.<id>.<slot>]`) inheriting active global theme schemes.
   - Standardized ephemeral pipeline execution (`npx` / UNIX pipe streaming) with `/dev/tty` TUI isolation and stdout structured output.
@@ -72,7 +73,7 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 ## 2026-09-17
 
-- Updated the CLI Reference (`docs/reference/cli.md`): documented `-w, --workflow <PATH>` for running single-file workflows (`.toml`) and directory packages in isolated mode; documented zero-configuration in-memory fallback when global `config.toml` is absent; specified entry point resolution prioritizing `alias = "main"` globally and requiring `alias = "main"` or explicit view selection in isolated workflow mode; documented the `--theme <THEME>` flag; and documented Shebang integration for executable workflow files (`#!/usr/bin/env -S tlaunch -w`).
+- Updated the CLI Reference (`docs/reference/cli.md`): documented `-w, --workflow <PATH>` for running single-file workflows (`.toml`) and directory packages in isolated mode; documented zero-configuration in-memory fallback when global `config.toml` is absent; specified entry point resolution prioritizing `alias = "main"` globally and requiring `alias = "main"` or explicit view selection in isolated workflow mode; documented the `--theme <THEME>` flag; and documented Shebang integration for executable workflow files (`#!/usr/bin/env -S tflow -w`).
 
 ## 2026-09-16
 
@@ -123,7 +124,7 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 
 - Documented optional `run.success_message` for host-generated INFO feedback after successful external commands, including clipboard workflows and immediate-exit logging.
 
-- Added `tlaunch inspect --all` to export stable JSON contracts for every configured View, including alias, Engine, query, and command metadata.
+- Added `tflow inspect --all` to export stable JSON contracts for every configured View, including alias, Engine, query, and command metadata.
 
 ## 2026-09-09
 
@@ -158,7 +159,7 @@ This changelog tracks updates to the `tlaunch` knowledge bundle.
 - Initialized Architecture Decision Records (ADRs) under `docs/adr/`:
   - Created `docs/adr/index.md` registry.
   - Added `docs/adr/0001-decentralized-workflow-extensions.md` (ADR 0001).
-  - Established decentralized workflow layout under `$XDG_CONFIG_HOME/tlaunch/workflows/`.
+  - Established decentralized workflow layout under `$XDG_CONFIG_HOME/tflow/workflows/`.
   - Defined dual-mode coexistence (single-file `.toml` and directory packages) and inline script execution.
   - Formulated CLI entry multiplexing (`argv[0]`) and inspection.
   - Linked ADR registry to root `docs/index.md` under Architecture Governance.

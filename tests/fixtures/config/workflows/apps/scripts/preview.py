@@ -63,7 +63,7 @@ def icon_names(icon):
 
 def get_cache_dir():
     cache_dir = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_dir, "tlaunch")
+    return os.path.join(cache_dir, "tflow")
 
 
 def load_icon_cache():

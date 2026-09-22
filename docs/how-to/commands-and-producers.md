@@ -99,7 +99,7 @@ producer = "script"
 file = "scripts/open.py"
 ```
 
-The aggregating script reads that contract headlessly and attaches it to every item it publishes. `tlaunch --inspect apps:main` reports the resolved keymap, and `tlaunch --items apps:main` reports the raw items:
+The aggregating script reads that contract headlessly and attaches it to every item it publishes. `tflow --inspect apps:main` reports the resolved keymap, and `tflow --items apps:main` reports the raw items:
 
 ```python
 item["bindings"] = {"ctrl+o": "apps:open"}

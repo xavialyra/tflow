@@ -82,5 +82,5 @@ A Capture producer cannot change the target route, query schema, Engine type, ke
 
 - `output` is required for a Capture View.
 - Return exactly one version-1 JSON object; extra stdout text invalidates the response.
-- Use `tlaunch --check` to validate the producer handler before launch.
+- Use `tflow --check` to validate the producer handler before launch.
 - Use [Producer Protocol](../reference/producer-protocol.md) for response validation, timeouts, cancellation, and output limits.

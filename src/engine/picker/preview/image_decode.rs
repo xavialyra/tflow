@@ -275,7 +275,7 @@ mod tests {
     use std::time::Duration;
 
     fn temporary_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("tlaunch-image-{}-{name}", std::process::id()))
+        std::env::temp_dir().join(format!("tflow-image-{}-{name}", std::process::id()))
     }
 
     #[test]

@@ -9,7 +9,7 @@ params = context.get("parameters", {})
 app = params.get("app", "")
 
 root = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-path = os.path.join(root, "tlaunch", "app-weights.json")
+path = os.path.join(root, "tflow", "app-weights.json")
 
 weight = 0
 pinned = False

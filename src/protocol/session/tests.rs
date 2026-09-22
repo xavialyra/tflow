@@ -626,7 +626,7 @@ fn command_call_records_caller_and_runs_non_null_return_continuation() {
     };
 
     let stdin_path =
-        std::env::temp_dir().join(format!("tlaunch-protocol-session-{}", std::process::id()));
+        std::env::temp_dir().join(format!("tflow-protocol-session-{}", std::process::id()));
     std::fs::write(&stdin_path, b"first\n").unwrap();
     let invocation = Arc::new(
         crate::workflow::InvocationContext::new(

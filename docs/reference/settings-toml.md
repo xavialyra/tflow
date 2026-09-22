@@ -6,12 +6,12 @@ tags:
   - toml
   - specification
   - session
-description: "Authoritative reference for tlaunch root configuration, defaults, themes, and session bindings."
+description: "Authoritative reference for tflow root configuration, defaults, themes, and session bindings."
 ---
 
 # settings.toml Specification
 
-The passive host environment lives at `$XDG_CONFIG_HOME/tlaunch/settings.toml`.
+The passive host environment lives at `$XDG_CONFIG_HOME/tflow/settings.toml`.
 Both standalone workflows and suites inherit it. The historical `config.toml`
 combination of environment and workflow discovery is no longer supported.
 
@@ -20,7 +20,7 @@ combination of environment and workflow discovery is no longer supported.
 ```toml
 theme = "theme_name"
 image_protocol = "kitty"
-log_file = "/tmp/tlaunch.log"
+log_file = "/tmp/tflow.log"
 
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]

@@ -14,7 +14,7 @@ fn temporary_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = env::temp_dir().join(format!("tlaunch-theme-{}-{suffix}", std::process::id()));
+    let path = env::temp_dir().join(format!("tflow-theme-{}-{suffix}", std::process::id()));
     fs::create_dir_all(&path).unwrap();
     path
 }

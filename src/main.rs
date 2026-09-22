@@ -2,7 +2,7 @@ use anyhow::Error;
 use std::io::{self, Write};
 
 fn main() {
-    let exit_code = match tlaunch::run() {
+    let exit_code = match tflow::run() {
         Ok(exit_code) => exit_code,
         Err(error) => {
             report_error(&error);

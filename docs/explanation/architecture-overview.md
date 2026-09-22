@@ -6,12 +6,12 @@ tags:
   - domains
   - design
   - boundaries
-description: "High-level overview of tlaunch's domain separation, module layout, and 14 architectural dependency rules."
+description: "High-level overview of tflow's domain separation, module layout, and 14 architectural dependency rules."
 ---
 
 # Architecture Overview and Domain Boundaries
 
-`tlaunch` is designed as an extensible terminal workflow host. Its long-term architectural structure strictly separates **configuration**, **session state**, **engine behavior**, and **terminal rendering** into distinct domains.
+`tflow` is designed as an extensible terminal workflow host. Its long-term architectural structure strictly separates **configuration**, **session state**, **engine behavior**, and **terminal rendering** into distinct domains.
 
 A module may expose a small crate-level facade, but code must live in the narrowest domain that owns its behavior.
 

@@ -29,7 +29,7 @@ fn check_validates_isolated_single_file_workflow() {
         .args(["--check", "-w"])
         .arg(&workflow_file)
         .output()
-        .expect("could not run tlaunch --check -w");
+        .expect("could not run tflow --check -w");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -69,7 +69,7 @@ fn check_validates_isolated_workflow_directory() {
         .args(["--check", "--workflow"])
         .arg(&package_dir)
         .output()
-        .expect("could not run tlaunch --check --workflow");
+        .expect("could not run tflow --check --workflow");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -140,15 +140,15 @@ fn isolated_workflow_works_without_global_config() {
     )
     .unwrap();
 
-    // Unset TLAUNCH_SETTINGS and point XDG_CONFIG_HOME to an empty dir
+    // Unset TFLOW_SETTINGS and point XDG_CONFIG_HOME to an empty dir
     let output = launcher_command()
-        .env_remove("TLAUNCH_SETTINGS")
-        .env_remove("TLAUNCH_SUITE")
+        .env_remove("TFLOW_SETTINGS")
+        .env_remove("TFLOW_SUITE")
         .env("XDG_CONFIG_HOME", root.join("empty_xdg"))
         .args(["--check", "-w"])
         .arg(&workflow_file)
         .output()
-        .expect("could not run tlaunch without config");
+        .expect("could not run tflow without config");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -351,7 +351,7 @@ fn shebang_workflow_fixture_invoked_directly_as_executable_script() {
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.display(), original_path);
 
-    // Directly execute quick-picker.toml with executable permissions to verify shebang dispatch (#!/usr/bin/env -S tlaunch -w)
+    // Directly execute quick-picker.toml with executable permissions to verify shebang dispatch (#!/usr/bin/env -S tflow -w)
     let output = Command::new(&fixture)
         .env("PATH", &new_path)
         .arg("--check")

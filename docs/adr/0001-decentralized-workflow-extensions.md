@@ -20,9 +20,9 @@ description: "Architecture Decision Record establishing decentralized workflow p
 
 ## Context
 
-`tlaunch` is an extensible terminal workflow host designed for keyboard-driven navigation and command orchestration. In the host runtime, views are governed by explicit query schemas, structured view stacks (with modal popup and call/return boundaries), and bounded producer protocols.
+`tflow` is an extensible terminal workflow host designed for keyboard-driven navigation and command orchestration. In the host runtime, views are governed by explicit query schemas, structured view stacks (with modal popup and call/return boundaries), and bounded producer protocols.
 
-Historically, external views and commands were bundled as "plugins" located strictly in subdirectories under `$XDG_CONFIG_HOME/tlaunch/plugins/<id>/plugin.toml`. As adoption patterns matured, several architectural tensions emerged:
+Historically, external views and commands were bundled as "plugins" located strictly in subdirectories under `$XDG_CONFIG_HOME/tflow/plugins/<id>/plugin.toml`. As adoption patterns matured, several architectural tensions emerged:
 
 1. **Category Mismatch**: Units previously modeled as "plugins" are strictly declarative workflow specifications (view definitions, routing aliases, query schemas, and command triggers) rather than invasive host plugins.
 2. **High Sharing Friction**: Requiring a multi-level subdirectory and companion physical script files creates friction for terminal enthusiasts who share standalone recipes across Gists, dotfiles, or discussion forums.
@@ -44,7 +44,7 @@ Historically, external views and commands were bundled as "plugins" located stri
 ### 1. Domain Terminology and Storage Layout: Transition to `workflows/`
 
 - **Nomenclature**: The term `plugin` is replaced by **`workflow`**. Manifest files represent declarative workflow packages rather than internal engine plugins.
-- **Directory Convention**: Workflows reside in `$XDG_CONFIG_HOME/tlaunch/workflows/`.
+- **Directory Convention**: Workflows reside in `$XDG_CONFIG_HOME/tflow/workflows/`.
 - **Deterministic Namespace Mapping**: The workflow namespace ID is directly derived from the file stem or directory name. No ordering prefixes are used; all workflows exist as orthogonal peers.
 - **Explicit Conflict Rejection**: If duplicate workflow IDs (including collisions between a single-file `workflows/<id>.toml` and a directory `workflows/<id>/`) or duplicate view aliases are detected across manifests, the configuration compiler aborts with an immediate fatal error detailing both conflicting source paths. Silent shadowing, heuristic precedence overrides, or runtime alias rebinding are strictly prohibited.
 - **Clean Break**: No backwards compatibility is maintained for legacy `plugins/` directories or `[plugin]` table headers. As this tool is pre-release, the host cleanly and exclusively recognizes `workflows/` and `[workflow]` without legacy shims.
@@ -62,7 +62,7 @@ The loader scans `workflows/` and uniformly resolves two physical layouts:
    - Suited for complex workflows requiring private test suites, multi-file Python/Bash scripts, or local static assets.
    - Namespace resolves to `<id>`.
    - Relative producer script references in manifests (e.g., `handler.file = "scripts/feed.sh"`) are confined to the workflow root and resolved by the host before execution.
-   - The host injects `WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tlaunch/workflows/<id>`) for inter-script asset references.
+   - The host injects `WORKFLOW_DIR` pointing to the workflow's root directory (`$XDG_CONFIG_HOME/tflow/workflows/<id>`) for inter-script asset references.
 3. **Host-Side Absolute Path Resolution (Zero `$PATH` Pollution)**:
    - The host does not prepend or mutate the child process `$PATH`, completely eliminating the risk of system command hijacking (e.g., shadowing `git`, `cat`, `test`) and environment leakage to sub-processes.
 
@@ -84,7 +84,7 @@ printf '%s\n' "checkout producer"
 """
 ```
 
-- **Execution Model**: Inline scripts are materialized to temporary read-only files under `$XDG_RUNTIME_DIR/tlaunch/scripts/` (falling back to `$XDG_CACHE_HOME/tlaunch/scripts/`).
+- **Execution Model**: Inline scripts are materialized to temporary read-only files under `$XDG_RUNTIME_DIR/tflow/scripts/` (falling back to `$XDG_CACHE_HOME/tflow/scripts/`).
   - Leveraging `$XDG_RUNTIME_DIR` mounts directly into `tmpfs` (RAM), delivering in-memory execution speed without physical disk wear.
   - Strict user-only permissions (`0600`) prevent unauthorized access or tampering in shared environments.
   - Written via atomic file creation (`<hash>.<pid>.tmp` renamed to `<hash>`) to guarantee race-free concurrency.
@@ -95,7 +95,7 @@ printf '%s\n' "checkout producer"
   - The host directly invokes the interpreter (`Command::new(interpreter)...`), passing the temporary script path as an argument. Because the script is opened in read-only mode by the system interpreter (rather than executed directly via kernel `execve`), inline scripts are completely immune to `noexec` restrictions across `/tmp`, `/run`, or cache directories.
 - **Deterministic Diagnostics & Source Attribution**:
   - File-backed execution preserves line numbers and clear stack traces when scripts fail, while keeping standard input/output fully attached for interactive terminal workflows.
-  - **Source Attribution**: The host embeds human-readable origin comments immediately following the shebang (e.g., `# [tlaunch] source: workflows/<id>.toml -> [views.<name>.commands.<key>]`). Temporary files incorporate semantic prefixes (`<id>_<command>_<hash>`), ensuring that any runtime stack trace or syntax error printed to stderr identifies the originating workflow and command definition.
+  - **Source Attribution**: The host embeds human-readable origin comments immediately following the shebang (e.g., `# [tflow] source: workflows/<id>.toml -> [views.<name>.commands.<key>]`). Temporary files incorporate semantic prefixes (`<id>_<command>_<hash>`), ensuring that any runtime stack trace or syntax error printed to stderr identifies the originating workflow and command definition.
 
 ### 4. Working Directory (CWD) Invariant
 
@@ -104,9 +104,9 @@ printf '%s\n' "checkout producer"
 
 ### 5. Multiplexed CLI Entry (`argv[0]`) & Schema Inspection
 
-- **Symlink Multiplexing via Existing CLI Pipeline**: If the launcher binary is executed under an `argv[0]` alias matching a configured view (e.g. via `ln -s tlaunch ~/.local/bin/dmenu`), it is syntactically equivalent to running `tlaunch <argv[0]> "$@"`. The host canonicalizes `argv[0]` to the target view identifier and delegates directly to the existing CLI argument and query parameter binding pipeline (`bind_invocation_parameters`), requiring no separate CLI engine or competing execution path.
+- **Symlink Multiplexing via Existing CLI Pipeline**: If the launcher binary is executed under an `argv[0]` alias matching a configured view (e.g. via `ln -s tflow ~/.local/bin/dmenu`), it is syntactically equivalent to running `tflow <argv[0]> "$@"`. The host canonicalizes `argv[0]` to the target view identifier and delegates directly to the existing CLI argument and query parameter binding pipeline (`bind_invocation_parameters`), requiring no separate CLI engine or competing execution path.
 - **CLI Flag to Query Mapping**: Trailing CLI arguments are passed as explicit CLI flags matching fields in `[views.<name>.query]`. Undeclared flags are rejected with a validation error. Interactive text input maps directly to the single field specified by `input = "<field>"`.
-- **Contract Inspection**: A dedicated CLI mode (`tlaunch --inspect <view>`) outputs the view's query schema, command bindings, and return types, enabling automatic shell completion generation. Headless modes stay behind long options so positional arguments always remain View selectors.
+- **Contract Inspection**: A dedicated CLI mode (`tflow --inspect <view>`) outputs the view's query schema, command bindings, and return types, enabling automatic shell completion generation. Headless modes stay behind long options so positional arguments always remain View selectors.
 
 ### 6. Alignment with M3 Theming (Historical Contract)
 
@@ -120,7 +120,7 @@ The M3 contract below records the original decision. It was superseded on 2026-0
 ## Consequences
 
 ### Positive
-- **Frictionless Sharing**: A workflow can be shared as a single text block or Gist. Installation requires only dropping the file into `~/.config/tlaunch/workflows/`.
+- **Frictionless Sharing**: A workflow can be shared as a single text block or Gist. Installation requires only dropping the file into `~/.config/tflow/workflows/`.
 - **Decoupled Architecture**: Workflows are treated as pure declarative bundles, cleanly separated from host engine mechanics.
 - **CWD Predictability**: CLI workflows seamlessly operate on the user's active terminal directory without path-context distortion.
 - **Interpreter Versatility**: Inline scripts support arbitrary shebang interpreters with accurate line-number diagnostics.

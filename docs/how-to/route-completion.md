@@ -120,9 +120,9 @@ authoritative list is the suite's aliased Views, which
 
 ```python
 # scripts/completion_routes.py (abridged)
-suite = os.environ["TLAUNCH_SUITE"]
+suite = os.environ["TFLOW_SUITE"]
 owner = os.path.basename(os.environ.get("WORKFLOW_DIR") or "") or "core"  # see below
-binary = os.environ.get("TLAUNCH_BIN") or "tlaunch"
+binary = os.environ.get("TFLOW_BIN") or "tflow"
 result = subprocess.run(
     [binary, "-s", suite, "--inspect", "--all"],
     capture_output=True, text=True, timeout=10,
@@ -138,7 +138,7 @@ for view in json.loads(result.stdout)["views"]:
                    "metadata": {"alias": alias}})
 ```
 
-`TLAUNCH_SUITE` is set by the host for suite runs, and `WORKFLOW_DIR` for
+`TFLOW_SUITE` is set by the host for suite runs, and `WORKFLOW_DIR` for
 directory workflows, so no path needs to be hardcoded. `owner` is the member id
 this workflow is mounted as: read the suite manifest and match the `[workflows]`
 entry whose `dir` resolves to `WORKFLOW_DIR`, because the manifest key is not
@@ -196,8 +196,8 @@ Both settings live in the host settings file, not in a suite manifest.
 ## Verification
 
 ```sh
-tlaunch -s <suite.toml> --check
-tlaunch -s <suite.toml> --items <launcher>:completion ''
+tflow -s <suite.toml> --check
+tflow -s <suite.toml> --items <launcher>:completion ''
 ```
 
 The first command validates the commands, popup query, and keymaps. The second

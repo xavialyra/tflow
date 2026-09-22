@@ -1,6 +1,6 @@
 # Technical Reference
 
-The Reference section contains formal specifications, configuration schemas, command-line arguments, and protocol boundary definitions for `tlaunch`.
+The Reference section contains formal specifications, configuration schemas, command-line arguments, and protocol boundary definitions for `tflow`.
 
 ## References
 

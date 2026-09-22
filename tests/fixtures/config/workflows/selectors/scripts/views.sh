@@ -26,7 +26,7 @@ if not os.path.exists(suite_path):
     suite_path = os.path.join(config_root, "config.toml")
 try:
     inspected = subprocess.run(
-        ["tlaunch", "--suite", suite_path, "--inspect", "--all"],
+        ["tflow", "--suite", suite_path, "--inspect", "--all"],
         check=True,
         capture_output=True,
         text=True,

@@ -90,7 +90,7 @@ DEFAULT_CANDIDATES = [
 
 def workflow_cache_dir():
     cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_home, "tlaunch", "workflows")
+    return os.path.join(cache_home, "tflow", "workflows")
 
 def package_names(root):
     if not os.path.isdir(root):
@@ -106,11 +106,11 @@ def has_workflows(root):
 def workflow_source_dir():
     """Directory holding the shipped workflow packages, or None.
 
-    `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
-    distribution and a sibling `tlaunch-workflows/` checkout are searched so a
+    `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
+    distribution and a sibling `tflow-workflows/` checkout are searched so a
     development tree works without any environment setup.
     """
-    for name in ("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR", "TLAUNCH_WORKFLOWS_DIR"):
+    for name in ("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", "TFLOW_WORKFLOWS_DIR"):
         candidate = os.environ.get(name)
         if candidate and has_workflows(candidate):
             return os.path.realpath(candidate)
@@ -118,7 +118,7 @@ def workflow_source_dir():
     root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
     root = os.path.realpath(root)
     for _ in range(4):
-        for name in ("workflows", "tlaunch-workflows"):
+        for name in ("workflows", "tflow-workflows"):
             candidate = os.path.join(root, name)
             if has_workflows(candidate):
                 return os.path.realpath(candidate)
@@ -250,7 +250,7 @@ def main():
 
     if not items and cache is None:
         items.append({
-            "display": "No workflow source found: set TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR, or keep tlaunch-workflows next to this distribution.",
+            "display": "No workflow source found: set TFLOW_WORKFLOWS_BOOTSTRAP_DIR, or keep tflow-workflows next to this distribution.",
             "value": "",
             "metadata": {
                 "id": "",
@@ -350,7 +350,7 @@ def main():
         "Keybindings & Fast Actions:\n"
         "  • [Tab]         Toggle selected workflow\n"
         "  • [Ctrl+T]      Try Now! (Zero-side-effect sandbox session)\n"
-        "  • [Enter]       Install to ~/.config/tlaunch (Writes Suite & Settings)\n"
+        "  • [Enter]       Install to ~/.config/tflow (Writes Suite & Settings)\n"
         "  • [Ctrl+A/R]    Select All / Clear All\n"
         "  • [Esc]         Exit Setup Wizard"
     )
@@ -548,11 +548,11 @@ import subprocess
 import sys
 import tempfile
 
-def resolve_tlaunch_bin():
-    if os.environ.get("TLAUNCH_BIN"):
-        return os.environ["TLAUNCH_BIN"]
-    which = shutil.which("tlaunch")
-    return which if which else "tlaunch"
+def resolve_tflow_bin():
+    if os.environ.get("TFLOW_BIN"):
+        return os.environ["TFLOW_BIN"]
+    which = shutil.which("tflow")
+    return which if which else "tflow"
 
 def generate_settings_content():
     return """[defaults.picker.bindings]
@@ -585,19 +585,19 @@ def main():
         print("Selected workflow is not available in the cache.", file=sys.stderr)
         sys.exit(1)
 
-    tlaunch_bin = resolve_tlaunch_bin()
+    tflow_bin = resolve_tflow_bin()
 
     runner_script = f"""
 import os, sys, shutil, tempfile, subprocess
 
 workflow_id = {json.dumps(workflow_id)}
 workflow_source = {json.dumps(workflow_source)}
-tlaunch_bin = {json.dumps(tlaunch_bin)}
+tflow_bin = {json.dumps(tflow_bin)}
 
 if not workflow_source or not os.path.isdir(workflow_source):
     raise SystemExit(f"cached workflow is not available for {workflow_id!r}")
 
-tmpdir = tempfile.mkdtemp(prefix="tlaunch-sandbox-")
+tmpdir = tempfile.mkdtemp(prefix="tflow-sandbox-")
 try:
     workflow_dir = os.path.join(tmpdir, workflow_id)
     shutil.copytree(workflow_source, workflow_dir)
@@ -608,8 +608,8 @@ try:
 
     print(f"\\n\\033[1;33m>>> Trying workflow: {workflow_id} (zero-side-effect sandbox)\\033[0m")
     env = os.environ.copy()
-    env["TLAUNCH_SETTINGS"] = settings_path
-    subprocess.run([tlaunch_bin, "-w", workflow_dir, "-c", settings_path], env=env)
+    env["TFLOW_SETTINGS"] = settings_path
+    subprocess.run([tflow_bin, "-w", workflow_dir, "-c", settings_path], env=env)
 finally:
     shutil.rmtree(tmpdir, ignore_errors=True)
     print("\\033[1;32m[✓] Cleaned sandbox environment. Zero files were touched.\\033[0m\\n")
@@ -688,15 +688,15 @@ def fetch_catalog():
 def resolve_target_dirs():
     xdg_config = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config:
-        config_dir = os.path.join(xdg_config, "tlaunch")
+        config_dir = os.path.join(xdg_config, "tflow")
     else:
         home = os.environ.get("HOME", os.path.expanduser("~"))
-        config_dir = os.path.join(home, ".config", "tlaunch")
+        config_dir = os.path.join(home, ".config", "tflow")
     return config_dir
 
 def workflow_cache_dir():
     cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_home, "tlaunch", "workflows")
+    return os.path.join(cache_home, "tflow", "workflows")
 
 def package_names(root):
     if not os.path.isdir(root):
@@ -712,11 +712,11 @@ def has_workflows(root):
 def workflow_source_dir():
     """Directory holding the shipped workflow packages, or None.
 
-    `TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
-    distribution and a sibling `tlaunch-workflows/` checkout are searched so a
+    `TFLOW_WORKFLOWS_BOOTSTRAP_DIR` wins. A bundled `workflows/` beside this
+    distribution and a sibling `tflow-workflows/` checkout are searched so a
     development tree works without any environment setup.
     """
-    for name in ("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR", "TLAUNCH_WORKFLOWS_DIR"):
+    for name in ("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", "TFLOW_WORKFLOWS_DIR"):
         candidate = os.environ.get(name)
         if candidate and has_workflows(candidate):
             return os.path.realpath(candidate)
@@ -724,7 +724,7 @@ def workflow_source_dir():
     root = os.environ.get("WORKFLOW_DIR") or os.path.dirname(os.path.realpath(__file__))
     root = os.path.realpath(root)
     for _ in range(4):
-        for name in ("workflows", "tlaunch-workflows"):
+        for name in ("workflows", "tflow-workflows"):
             candidate = os.path.join(root, name)
             if has_workflows(candidate):
                 return os.path.realpath(candidate)
@@ -850,7 +850,7 @@ def generate_suite_manifest(selected, entrypoint):
     return "\n".join(lines) + "\n"
 
 def generate_settings_manifest():
-    return """# Passive host settings for tlaunch
+    return """# Passive host settings for tflow
 [defaults.picker]
 left_prefix = "$route"
 left_prefix_backspace = "root"
@@ -904,7 +904,7 @@ def main():
     cache_root = ensure_workflow_cache()
     if cache_root is None:
         print(
-            "No workflow source found. Set TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR to the "
+            "No workflow source found. Set TFLOW_WORKFLOWS_BOOTSTRAP_DIR to the "
             "directory that holds the workflow packages.",
             file=sys.stderr,
         )
@@ -962,11 +962,11 @@ def main():
             f.write(generate_settings_manifest())
         settings_state = "written"
 
-    check_state = "skipped (tlaunch not found)"
-    tlaunch_bin = os.environ.get("TLAUNCH_BIN") or shutil.which("tlaunch")
-    if tlaunch_bin:
+    check_state = "skipped (tflow not found)"
+    tflow_bin = os.environ.get("TFLOW_BIN") or shutil.which("tflow")
+    if tflow_bin:
         check = subprocess.run(
-            [tlaunch_bin, "-s", suite_file, "-c", settings_file, "--check"],
+            [tflow_bin, "-s", suite_file, "-c", settings_file, "--check"],
             capture_output=True,
             text=True,
         )
@@ -979,7 +979,7 @@ def main():
     installed_str = ", ".join(installed) if installed else "(none)"
     missing_line = f"  Skipped:          {', '.join(missing)}\n" if missing else ""
     msg = f"""
-\033[1;32m🎉 [✓] tlaunch configuration installed successfully!\033[0m
+\033[1;32m🎉 [✓] tflow configuration installed successfully!\033[0m
 ============================================================
   Suite Manifest:   {suite_file}
   Settings File:    {settings_file} ({settings_state})
@@ -991,10 +991,10 @@ def main():
 ============================================================
 
 You are ready to launch! Try running:
-  \033[1;36mtlaunch\033[0m               # Open unified launcher (core)
-  \033[1;36mtlaunch app\033[0m           # Search & launch applications
-  \033[1;36mtlaunch calc\033[0m          # Quick math calculator
-  \033[1;36mtlaunch sys\033[0m           # Power and session menu
+  \033[1;36mtflow\033[0m               # Open unified launcher (core)
+  \033[1;36mtflow app\033[0m           # Search & launch applications
+  \033[1;36mtflow calc\033[0m          # Quick math calculator
+  \033[1;36mtflow sys\033[0m           # Power and session menu
 """
 
     json.dump(

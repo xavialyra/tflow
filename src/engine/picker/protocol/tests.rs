@@ -556,7 +556,7 @@ fn invalid_input_keeps_the_active_task_registered_until_its_stale_completion_is_
 #[test]
 fn static_display_options_reach_picker_rendering_and_input() {
     let root = std::env::temp_dir().join(format!(
-        "tlaunch-picker-display-options-{}",
+        "tflow-picker-display-options-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(root.join("workflows")).unwrap();
@@ -829,7 +829,7 @@ mod preview_correlation_tests {
     #[test]
     fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
         let temp =
-            std::env::temp_dir().join(format!("tlaunch-proto-preview-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tflow-proto-preview-{}", std::process::id()));
         let config = crate::engine::picker::create_preview_test_suite(&temp);
         let engines = crate::engine::EngineRegistry::new();
         let tasks = TaskRuntime::new();

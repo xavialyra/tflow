@@ -25,7 +25,7 @@ description: "Abolish view-level feeds and command projection in favor of workfl
 
 ## Context
 
-In ADR 0005, `tlaunch` established a flat, two-tier architecture separating orchestration suites (`[suite]`) from atomic workflows (`[workflow]`). However, legacy mechanisms rooted in ADR 0002's Picker feeds specification (`[[views.<name>.engine.config.feeds]]`) remained in the system, introducing severe architectural contradictions:
+In ADR 0005, `tflow` established a flat, two-tier architecture separating orchestration suites (`[suite]`) from atomic workflows (`[workflow]`). However, legacy mechanisms rooted in ADR 0002's Picker feeds specification (`[[views.<name>.engine.config.feeds]]`) remained in the system, introducing severe architectural contradictions:
 
 1. **Leaky Self-Containment and Dependency Inversion**:
    In the test fixtures and existing configurations, the `core` workflow hardcoded cross-workflow references:
@@ -35,7 +35,7 @@ In ADR 0005, `tlaunch` established a flat, two-tier architecture separating orch
    [[views.default.engine.config.feeds]]
    view = "apps:main"
    ```
-   Executing `core` standalone (`tlaunch -w core/workflow.toml`) crashed during compilation because `calculator:main` and `apps:main` were absent. An atomic workflow was coerced into behaving as an asymmetric "God workflow", directly violating the zero-coupling chip invariant of ADR 0005.
+   Executing `core` standalone (`tflow -w core/workflow.toml`) crashed during compilation because `calculator:main` and `apps:main` were absent. An atomic workflow was coerced into behaving as an asymmetric "God workflow", directly violating the zero-coupling chip invariant of ADR 0005.
 
 2. **Conflation of View Commands and Item Actions**:
    Business actions targeting individual items (e.g., launching an application, copying a calculation result) were erroneously declared as properties of the *View* (`[views.main.commands.*]`). To support heterogeneous items in aggregate views, the host had to perform internal **Command Projection**: tracking each item's hidden provenance (`snapshot.owner_view`), extracting commands from the owner View, and synthesizing parameter snapshots. This created high-complexity state synchronization and black-box context manipulation.
@@ -157,12 +157,12 @@ To permanently eliminate lock contention on `CommandRegistry` during high-freque
 
 To avoid collision with suite aliases and member workflow names (where a view or alias named `query` would cause CLI parsing ambiguity and concept overloading), the host exposes two strictly orthogonal, non-mutating flag interfaces:
 
-#### 1. Data Query Interface (`tlaunch --items <view_ref> [QUERY_OPTIONS...]`)
+#### 1. Data Query Interface (`tflow --items <view_ref> [QUERY_OPTIONS...]`)
 - Runs the item producer of the specified view and outputs the strict JSON array stream to stdout.
 - **Strict JSON Array Protocol & Error Propagation**: The host validates that the target view's producer returns a valid JSON array. Non-zero producer exit codes or schema violations are propagated directly to stderr with a non-zero exit code (exit code 1 for runtime errors, 2 for missing views), ensuring calling scripts fail fast instead of ingesting corrupted pipelines.
 - **Zero-Mutation Invariant**: The host returns the exact JSON array emitted by the producer without field injection, binding synthesis, or automatic namespace qualification.
 
-#### 2. Contract Inspection Interface (`tlaunch --inspect <view_ref>`)
+#### 2. Contract Inspection Interface (`tflow --inspect <view_ref>`)
 - Emits the static metadata and binding contract of the target view in the current suite context:
   ```json
   {
@@ -187,8 +187,8 @@ Aggregation scripts run as standard external processes (Python, Bash, JQ) and ex
 import json, subprocess
 
 # 1. Fetch unmutated raw items via --items flag
-apps_raw = json.loads(subprocess.check_output(["tlaunch", "--items", "apps:main"]))
-calc_raw = json.loads(subprocess.check_output(["tlaunch", "--items", "calc:main"]))
+apps_raw = json.loads(subprocess.check_output(["tflow", "--items", "apps:main"]))
+calc_raw = json.loads(subprocess.check_output(["tflow", "--items", "calc:main"]))
 
 # 2. Explicitly attach command bindings
 apps_items = [{**i, "bindings": {"enter": "apps:open"}} for i in apps_raw]
@@ -225,8 +225,8 @@ query = { sources = ["apps:main", "calc:main"] }
 
 #### 2. Environment Sandboxing
 When executing producer scripts, the host exports:
-- `TLAUNCH_SUITE`: The absolute filesystem path to the active suite manifest.
-- When child scripts invoke `tlaunch --items` or `tlaunch --inspect`, the CLI automatically resolves within the parent suite's configuration sandbox, eliminating context drift.
+- `TFLOW_SUITE`: The absolute filesystem path to the active suite manifest.
+- When child scripts invoke `tflow --items` or `tflow --inspect`, the CLI automatically resolves within the parent suite's configuration sandbox, eliminating context drift.
 
 ---
 
@@ -235,14 +235,14 @@ When executing producer scripts, the host exports:
 ### Positive
 - **Architectural Purity**: Completely dismantles the asymmetric "God workflow" pattern (`core`); all workflows become 100% self-contained, independent chips.
 - **Extreme Extensibility**: Advanced launcher logic (prefix sigils like `=`, fuzzy scoring, grouping, debouncing) moves entirely to user/author aggregation scripts without engine changes.
-- **Zero Black-Box Mutation**: `tlaunch --items` is an idempotent, pure UNIX filter.
+- **Zero Black-Box Mutation**: `tflow --items` is an idempotent, pure UNIX filter.
 - **Registry Stability**: Keeps high-frequency item selection separated from static command dispatch tables, avoiding lock contention and priority inversion.
 - **Reusable Hubs**: Hub workflows become pure parameterizable utilities driven by `suite.entrypoint.query`.
 
 ### Implementation Milestones & Verification Requirements
 This ADR is marked **Proposed** until the following five implementation milestones are completed:
 
-1. **CLI & Query Protocol**: Implement `tlaunch --items <view_ref>` with end-to-end integration tests covering stdout array output, parameter passing, and non-zero exit code error propagation.
+1. **CLI & Query Protocol**: Implement `tflow --items <view_ref>` with end-to-end integration tests covering stdout array output, parameter passing, and non-zero exit code error propagation.
 2. **De-aggregation Cleanup**: Fully remove `FeedInstance`, `is_feeds_page`, `expand_feed_patterns`, and `snapshot.owner_view` from `src/engine/picker/`, `src/workflow/config/`, and `src/protocol/command_adapter.rs`. Delete `tests/fixtures/config/workflows/core/`.
 3. **Workflow Root Commands Migration**: Migrate workflow commands from `[views.<name>.commands]` to root `[commands]`, while issuing clear deprecation diagnostics for legacy locations.
 4. **Item Binding Dispatch Verification**: Implement dispatch-time late-binding in the Picker engine and verify that high-speed cursor scrolling performs zero `CommandRegistry` write locks.

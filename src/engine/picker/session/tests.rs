@@ -1013,7 +1013,7 @@ mod preview_provider_tests {
     #[test]
     fn preview_uses_raw_route_input_with_object_parameters_and_stays_suspended_in_background() {
         let temp =
-            std::env::temp_dir().join(format!("tlaunch-session-preview-1-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tflow-session-preview-1-{}", std::process::id()));
         let config = crate::engine::picker::create_preview_test_suite(&temp);
         let tasks = TaskRuntime::new();
         let mount = crate::input::ViewMountId(1001);

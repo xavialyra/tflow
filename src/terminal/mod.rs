@@ -209,7 +209,7 @@ impl Terminal {
         cancellation: CancellationToken,
     ) -> Result<Self> {
         if unsafe { libc::isatty(input_fd) } != 1 {
-            bail!("tlaunch needs to run inside a terminal");
+            bail!("tflow needs to run inside a terminal");
         }
 
         set_fd_cloexec(input_fd)?;

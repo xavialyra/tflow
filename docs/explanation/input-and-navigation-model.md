@@ -11,7 +11,7 @@ description: "Detailed explanation of route resolution, lossless input transport
 
 # Input and Navigation Model
 
-The input and navigation subsystem is the operational backbone of `tlaunch`. It decouples raw terminal input transport, route management, view lifecycle states, and engine-specific interactions.
+The input and navigation subsystem is the operational backbone of `tflow`. It decouples raw terminal input transport, route management, view lifecycle states, and engine-specific interactions.
 
 ## 1. Core Model & Boundaries
 

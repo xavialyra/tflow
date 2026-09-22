@@ -1,6 +1,6 @@
-# tlaunch
+# tflow
 
-`tlaunch` is an extensible terminal workflow host. It coordinates workflow-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
+`tflow` is an extensible terminal workflow host. It coordinates workflow-owned **Views** powered by `picker`, `capture`, or `embedded` (PTY) engines, enabling keyboard-driven navigation, command execution, and interactive terminal workflows.
 
 ## Quick Start
 
@@ -8,23 +8,23 @@
 
 ```bash
 cargo build --release
-# The binary is available at ./target/release/tlaunch
+# The binary is available at ./target/release/tflow
 ```
 
 ### Usage
 
 ```bash
 # Start the launcher using the configured default view
-tlaunch
+tflow
 
 # Open a specific view directly
-tlaunch app
+tflow app
 
 # Pass a value to a View's declared query parameter
-tlaunch apps:weight --app="terminal"
+tflow apps:weight --app="terminal"
 
 # Use dmenu with input from a pipeline
-printf '%s\n' "first" "second" | tlaunch dmenu
+printf '%s\n' "first" "second" | tflow dmenu
 ```
 
 ---

@@ -808,7 +808,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::env::temp_dir().join(format!("tlaunch-pty-path-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tflow-pty-path-{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let working_dir = root.join("workflow");
         let bin_dir = working_dir.join("bin");

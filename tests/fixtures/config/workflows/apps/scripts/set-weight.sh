@@ -24,7 +24,7 @@ except (TypeError, ValueError):
 pinned = bool(values.get("pinned") if "pinned" in values else values.get("pin", False))
 
 root = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-path = os.path.join(root, "tlaunch", "app-weights.json")
+path = os.path.join(root, "tflow", "app-weights.json")
 os.makedirs(os.path.dirname(path), exist_ok=True)
 try:
     with open(path, encoding="utf-8") as f:

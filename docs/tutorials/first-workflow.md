@@ -23,7 +23,7 @@ In this tutorial, you will create a workflow called `notes` with a Picker list a
 
 ## Option A: Single-file Workflow
 
-Create `~/.config/tlaunch/workflows/notes.toml`:
+Create `~/.config/tflow/workflows/notes.toml`:
 
 ```toml
 [workflow]
@@ -78,21 +78,21 @@ sys.stdout.write("\n")
 Run validation and launch it:
 
 ```bash
-tlaunch -w ~/.config/tlaunch/workflows/notes.toml --check
-tlaunch -w ~/.config/tlaunch/workflows/notes.toml
+tflow -w ~/.config/tflow/workflows/notes.toml --check
+tflow -w ~/.config/tflow/workflows/notes.toml
 ```
 
-The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tlaunch`.
+The producer script is materialized by the host and receives JSON on stdin. Its stdout contains only the operation envelope. The editor runs with the caller's current working directory, so relative note paths resolve from the directory where you launch `tflow`.
 
 ## Option B: Directory Package Workflow
 
 Use a package when the workflow has multiple scripts or assets:
 
 ```bash
-mkdir -p ~/.config/tlaunch/workflows/notes/scripts
+mkdir -p ~/.config/tflow/workflows/notes/scripts
 ```
 
-Create `~/.config/tlaunch/workflows/notes/scripts/list_notes.py`:
+Create `~/.config/tflow/workflows/notes/scripts/list_notes.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -116,7 +116,7 @@ json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 ```
 
-Create `~/.config/tlaunch/workflows/notes/scripts/open_note.py`:
+Create `~/.config/tflow/workflows/notes/scripts/open_note.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -146,11 +146,11 @@ sys.stdout.write("\n")
 Make both scripts executable:
 
 ```bash
-chmod +x ~/.config/tlaunch/workflows/notes/scripts/list_notes.py
-chmod +x ~/.config/tlaunch/workflows/notes/scripts/open_note.py
+chmod +x ~/.config/tflow/workflows/notes/scripts/list_notes.py
+chmod +x ~/.config/tflow/workflows/notes/scripts/open_note.py
 ```
 
-Create `~/.config/tlaunch/workflows/notes/workflow.toml`:
+Create `~/.config/tflow/workflows/notes/workflow.toml`:
 
 ```toml
 [workflow]
@@ -182,8 +182,8 @@ file = "scripts/open_note.py"
 Validate and run:
 
 ```bash
-tlaunch -w ~/.config/tlaunch/workflows/notes --check
-tlaunch -w ~/.config/tlaunch/workflows/notes
+tflow -w ~/.config/tflow/workflows/notes --check
+tflow -w ~/.config/tflow/workflows/notes
 ```
 
 ## Next Steps

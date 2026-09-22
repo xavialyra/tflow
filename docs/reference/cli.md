@@ -6,7 +6,7 @@ tags:
   - arguments
   - flags
   - configuration
-description: "Authoritative reference for tlaunch command-line options, environment variables, and direct invocation."
+description: "Authoritative reference for tflow command-line options, environment variables, and direct invocation."
 ---
 
 # Command-Line Interface (CLI) Reference
@@ -14,13 +14,13 @@ description: "Authoritative reference for tlaunch command-line options, environm
 ## Synopsis
 
 ```text
-tlaunch [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
-tlaunch -w <WORKFLOW_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
-tlaunch -s <SUITE_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
-tlaunch --inspect <VIEW>
-tlaunch --inspect
-tlaunch --all
-tlaunch --items <VIEW> [VIEW_ARGUMENTS...]
+tflow [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
+tflow -w <WORKFLOW_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
+tflow -s <SUITE_PATH> [OPTIONS] [VIEW] [VIEW_ARGUMENTS...]
+tflow --inspect <VIEW>
+tflow --inspect
+tflow --all
+tflow --items <VIEW> [VIEW_ARGUMENTS...]
 ```
 
 Headless modes are expressed only as long options. A bare positional is always
@@ -33,8 +33,8 @@ Global options must precede the target view selector.
 
 | Option | Environment Variable | Description |
 | :--- | :--- | :--- |
-| `-c, --settings <PATH>` | `TLAUNCH_SETTINGS` | Passive host settings; `--config` is an alias for this flag. |
-| `-s, --suite <PATH>` | `TLAUNCH_SUITE` | Explicit suite manifest; mutually exclusive with `-w`. |
+| `-c, --settings <PATH>` | `TFLOW_SETTINGS` | Passive host settings; `--config` is an alias for this flag. |
+| `-s, --suite <PATH>` | `TFLOW_SUITE` | Explicit suite manifest; mutually exclusive with `-w`. |
 | `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Uses its local entrypoint and inherits host settings. `-` reads a workflow from stdin. |
 | `--theme <THEME>` | — | Explicit theme selector (`terminal` or custom name). Overrides configured theme. |
 | `--check` | — | Validates the configuration files and workflow manifests without launching the interactive TUI. Returns non-zero on error. |
@@ -42,16 +42,16 @@ Global options must precede the target view selector.
 | `--items <VIEW>` | — | Runs the View's item producer and writes the strict JSON array to stdout without launching the TUI. |
 | `--all` | — | Dumps contracts for every configured View; equivalent to `--inspect` without a View reference. |
 | `-h, --help` | — | Prints version and usage information. |
-| `-V, --version` | — | Prints the version of `tlaunch`. |
+| `-V, --version` | — | Prints the version of `tflow`. |
 
 ## Configuration Search Precedence
 
-Settings resolve from `--settings`, then `TLAUNCH_SETTINGS`, then
-`$XDG_CONFIG_HOME/tlaunch/settings.toml` (or `$HOME/.config/tlaunch/settings.toml`
+Settings resolve from `--settings`, then `TFLOW_SETTINGS`, then
+`$XDG_CONFIG_HOME/tflow/settings.toml` (or `$HOME/.config/tflow/settings.toml`
 when XDG_CONFIG_HOME is unset). Absent default settings use built-in defaults.
 
-Without `-w` or `-s`, the launcher loads `TLAUNCH_SUITE` when set, otherwise
-`$XDG_CONFIG_HOME/tlaunch/default.toml` (or `$HOME/.config/tlaunch/default.toml`).
+Without `-w` or `-s`, the launcher loads `TFLOW_SUITE` when set, otherwise
+`$XDG_CONFIG_HOME/tflow/default.toml` (or `$HOME/.config/tflow/default.toml`).
 Workflow directories are never scanned for implicit membership. Suite manifests
 explicitly mount their members; suites cannot mount suites.
 
@@ -81,10 +81,10 @@ use `/dev/tty`. Invocation results go to stdout.
 
 ### Shebang / Executable Script Integration
 
-Single-file workflows can be made directly executable by adding a `tlaunch -w` Shebang at the top of the file:
+Single-file workflows can be made directly executable by adding a `tflow -w` Shebang at the top of the file:
 
 ```toml
-#!/usr/bin/env -S tlaunch -w
+#!/usr/bin/env -S tflow -w
 [workflow]
 api = 1
 name = "quick-picker"
@@ -113,9 +113,9 @@ Without an explicit view, suite execution uses `[suite].entrypoint`. A member ke
 You can also open a specific view directly:
 
 ```bash
-tlaunch <workflow-id>:<view-name> [ARGUMENTS...]
+tflow <workflow-id>:<view-name> [ARGUMENTS...]
 # Or using an alias:
-tlaunch <alias> [ARGUMENTS...]
+tflow <alias> [ARGUMENTS...]
 ```
 
 ### Direct Invocation Arguments
@@ -127,7 +127,7 @@ Arguments passed after the target view are matched against the target view's dec
 - **Boolean flags**: `--flag` (sets `flag = true`) or `--no-flag` (sets `flag = false`)
 
 ```bash
-tlaunch dmenu:main --index=true
+tflow dmenu:main --index=true
 ```
 
 ## Contract Inspection (`--inspect`)
@@ -135,9 +135,9 @@ tlaunch dmenu:main --index=true
 You can inspect the declared interface and routing contract of any view without running the interactive TUI:
 
 ```bash
-tlaunch --inspect <workflow-id>:<view-name>
+tflow --inspect <workflow-id>:<view-name>
 # Or using an alias:
-tlaunch --inspect <alias>
+tflow --inspect <alias>
 ```
 
 This prints formatted details including:
@@ -150,8 +150,8 @@ This prints formatted details including:
 To inspect every configured View, omit the View reference (or pass `--all`):
 
 ```bash
-tlaunch --inspect
-tlaunch --all
+tflow --inspect
+tflow --all
 ```
 
 The result has a top-level `views` array. Entries are ordered by canonical View reference and use the same contract fields as a single-View inspection. The list includes every configured Engine type; producer scripts are not executed.
@@ -161,22 +161,22 @@ The result has a top-level `views` array. Entries are ordered by canonical View 
 The `--items <VIEW>` option runs the target Picker View's item producer headlessly and writes the producer's strict JSON array to stdout. It does not start the interactive TUI and never mutates the produced items:
 
 ```bash
-tlaunch --items apps:main
-tlaunch --items calculator:main '2+2'
+tflow --items apps:main
+tflow --items calculator:main '2+2'
 ```
 
 Query arguments after the View reference are matched against the View's declared `[views.<name>.query]` schema exactly as for direct invocation. A missing View exits with code 2; a producer failure or a non-array response exits with code 1 and writes the error to stderr.
 
 ## CLI Symlink Multiplexing (`argv[0]`)
 
-`tlaunch` supports direct entry point multiplexing based on `argv[0]`:
+`tflow` supports direct entry point multiplexing based on `argv[0]`:
 
-When `tlaunch` is invoked via a symlink, hardlink, or copy whose file stem matches a declared view alias or `<workflow-id>:<view-name>`:
+When `tflow` is invoked via a symlink, hardlink, or copy whose file stem matches a declared view alias or `<workflow-id>:<view-name>`:
 1. The matching view is resolved and launched immediately.
 2. Any trailing command-line flags or arguments are directly bound to the target view's query schema.
 
 For example, create a symlink to an alias:
 ```bash
-ln -s $(which tlaunch) ~/.local/bin/dmenu
+ln -s $(which tflow) ~/.local/bin/dmenu
 ```
-Running `dmenu` executes `tlaunch` directly into the `dmenu` view without manual CLI dispatch flags.
+Running `dmenu` executes `tflow` directly into the `dmenu` view without manual CLI dispatch flags.

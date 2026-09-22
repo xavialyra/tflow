@@ -1,5 +1,5 @@
 ---
-title: "Getting Started with tlaunch"
+title: "Getting Started with tflow"
 type: "tutorial"
 tags:
   - onboarding
@@ -9,7 +9,7 @@ tags:
 description: "Build, configure, validate, and launch a minimal workflow using literal items and a JSON command producer."
 ---
 
-# Getting Started with tlaunch
+# Getting Started with tflow
 
 This tutorial builds the binary, creates a minimal single-file workflow, and launches a Picker whose command is backed by a version-1 producer script.
 
@@ -18,19 +18,19 @@ This tutorial builds the binary, creates a minimal single-file workflow, and lau
 Ensure Rust and Cargo are installed, then build the binary:
 
 ```bash
-git clone https://github.com/example/tlaunch.git
-cd tlaunch
+git clone https://github.com/example/tflow.git
+cd tflow
 cargo build --release
 ```
 
-The binary is `target/release/tlaunch`. Add it to your `$PATH` or invoke it by its path.
+The binary is `target/release/tflow`. Add it to your `$PATH` or invoke it by its path.
 
 ## 2. Create the Configuration Directory
 
-`tlaunch` discovers configuration using the XDG Base Directory layout:
+`tflow` discovers configuration using the XDG Base Directory layout:
 
 ```text
-$XDG_CONFIG_HOME/tlaunch/
+$XDG_CONFIG_HOME/tflow/
 ├── settings.toml  # optional host settings
 ├── default.toml   # explicit suite manifest
 └── workflows/
@@ -43,12 +43,12 @@ $XDG_CONFIG_HOME/tlaunch/
 If `$XDG_CONFIG_HOME` is unset, the default is `$HOME/.config`. Create the workflow directory:
 
 ```bash
-mkdir -p ~/.config/tlaunch/workflows
+mkdir -p ~/.config/tflow/workflows
 ```
 
 ## 3. Create a Minimal Workflow
 
-Create `~/.config/tlaunch/workflows/hello.toml`:
+Create `~/.config/tflow/workflows/hello.toml`:
 
 ```toml
 [workflow]
@@ -103,7 +103,7 @@ Commands live at the workflow root because they are workflow-scoped: `[views.mai
 
 ## 4. Create the Default Suite
 
-Create `~/.config/tlaunch/default.toml`:
+Create `~/.config/tflow/default.toml`:
 
 ```toml
 [suite]
@@ -120,13 +120,13 @@ hello = { file = "./workflows/hello.toml" }
 Run validation before opening the TUI:
 
 ```bash
-tlaunch --check
+tflow --check
 ```
 
 Then launch it:
 
 ```bash
-tlaunch
+tflow
 ```
 
 The Picker displays the two literal items. Press `Enter` to run the producer operation. The foreground command inherits the caller's working directory and the launcher exits because the operation sets `exit = true`.

@@ -136,7 +136,7 @@ fn create_input_file() -> Result<(PathBuf, File)> {
             elapsed.as_nanos() as u64 ^ sequence.rotate_left(17)
         });
         let path = directory.join(format!(
-            "tlaunch-input-{}-{random:016x}",
+            "tflow-input-{}-{random:016x}",
             std::process::id(),
         ));
         match open_private_file(&path) {

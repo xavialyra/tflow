@@ -12,7 +12,7 @@ description: "Configure static and script-produced navigation, popup calls, retu
 
 # How to Configure View Navigation and Popups
 
-`tlaunch` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation. For the shared command request context and script response contract, see [Commands and Producer Scripts](commands-and-producers.md).
+`tflow` keeps Views in a Router-owned stack. Producer operations are validated before they are applied, then use the same target binding and transition path as built-in navigation. For the shared command request context and script response contract, see [Commands and Producer Scripts](commands-and-producers.md).
 
 ## Problem
 
@@ -190,5 +190,5 @@ sys.stdout.write("\n")
 
 - Put script diagnostics on stderr; stdout must contain one JSON response object.
 - Use an actual newline after JSON. Writing the literal characters `\\n` produces invalid protocol output.
-- Check the workflow with `tlaunch --check` before testing transitions.
+- Check the workflow with `tflow --check` before testing transitions.
 - A successful call return with no processor restores the caller and discards the unconsumed result.

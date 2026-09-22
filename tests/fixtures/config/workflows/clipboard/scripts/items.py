@@ -39,7 +39,7 @@ def image_format(data):
 def cache_directory():
     # Keep clipboard content private, including the search index.
     root = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
-    directory = root / f"tui-launcher-clipboard-{os.getuid()}"
+    directory = root / f"tflow-clipboard-{os.getuid()}"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     stat = directory.lstat()
     if directory.is_symlink() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:

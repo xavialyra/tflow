@@ -18,7 +18,7 @@ You want the launcher to match your terminal or desktop colors, with specific st
 
 ### 1. Create a Theme File
 
-Create `themes/nord.toml` beside your `settings.toml` (normally under `~/.config/tlaunch/`):
+Create `themes/nord.toml` beside your `settings.toml` (normally under `~/.config/tflow/`):
 
 ```toml
 # themes/nord.toml
@@ -73,11 +73,11 @@ theme = "nord"
 Validate the configuration and try the theme:
 
 ```bash
-tlaunch --check --theme nord
-tlaunch --theme nord
+tflow --check --theme nord
+tflow --theme nord
 ```
 
-Use `tlaunch --theme terminal` to select the built-in theme. Omitting `theme` from the configuration also uses it. Each user theme extends this single baseline; themes cannot load other themes.
+Use `tflow --theme terminal` to select the built-in theme. Omitting `theme` from the configuration also uses it. Each user theme extends this single baseline; themes cannot load other themes.
 
 ### 3. Customize Workflow Slots
 

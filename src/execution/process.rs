@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn normal_completion_kills_background_processes_in_the_group() {
         let pid_file =
-            std::env::temp_dir().join(format!("tlaunch-normal-descendant-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tflow-normal-descendant-{}", std::process::id()));
         fs::remove_file(&pid_file).ok();
         let script = format!("sleep 30 & echo $! > {}; exit 0", pid_file.display());
         let prepared = PreparedProcess {
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn cancellation_kills_a_signal_resistant_descendant() {
         let pid_file = std::env::temp_dir().join(format!(
-            "tlaunch-foreground-descendant-{}",
+            "tflow-foreground-descendant-{}",
             std::process::id()
         ));
         fs::remove_file(&pid_file).ok();

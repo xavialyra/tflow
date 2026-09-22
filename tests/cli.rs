@@ -219,7 +219,7 @@ fn check_rejects_unknown_defaults_fields() {
             .arg("--settings")
             .arg(root.join("settings.toml"))
             .output()
-            .expect("could not run tlaunch --check");
+            .expect("could not run tflow --check");
 
         assert!(!output.status.success(), "stderr: {:?}", output.stderr);
         assert!(
@@ -255,7 +255,7 @@ fn check_rejects_picker_binding_conflicts_with_defaults() {
         .arg("--settings")
         .arg(root.join("settings.toml"))
         .output()
-        .expect("could not run tlaunch --check");
+        .expect("could not run tflow --check");
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
@@ -291,7 +291,7 @@ fn check_rejects_capture_binding_conflicts_with_defaults() {
         .arg("--settings")
         .arg(root.join("settings.toml"))
         .output()
-        .expect("could not run tlaunch --check");
+        .expect("could not run tflow --check");
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
@@ -309,13 +309,13 @@ fn cli_theme_selection_does_not_require_an_existing_current_directory() {
         let current_dir = temporary_root();
         let output = Command::new("sh")
             .current_dir(&current_dir)
-            .args(["-c", "rmdir \"$PWD\" && exec \"$@\"", "tlaunch"])
+            .args(["-c", "rmdir \"$PWD\" && exec \"$@\"", "tflow"])
             .arg(binary_path())
             .args(["--check", "--suite"])
             .arg(fixture_config())
             .args(["--theme", theme])
             .output()
-            .expect("could not run tlaunch from a missing current directory");
+            .expect("could not run tflow from a missing current directory");
 
         assert!(output.status.success(), "stderr: {:?}", output.stderr);
     }
@@ -1260,7 +1260,7 @@ fn inspect_all_is_self_sufficient_and_rejects_view_arguments() {
 
 #[test]
 fn positional_inspect_is_a_view_selector_not_a_subcommand() {
-    // `tlaunch inspect --all` is no longer a valid headless mode; `inspect`
+    // `tflow inspect --all` is no longer a valid headless mode; `inspect`
     // stays a plain positional View selector.
     let legacy = launcher_command()
         .args(["--suite"])
@@ -1309,7 +1309,7 @@ type = "picker"
 #[test]
 fn discovered_settings_resolve_themes_from_the_settings_directory() {
     let root = temporary_root();
-    let settings_dir = root.join("xdg/tlaunch");
+    let settings_dir = root.join("xdg/tflow");
     fs::create_dir_all(settings_dir.join("themes")).unwrap();
     fs::write(settings_dir.join("settings.toml"), "theme = 'global'\n").unwrap();
     fs::write(
@@ -1320,7 +1320,7 @@ fn discovered_settings_resolve_themes_from_the_settings_directory() {
     let workflow = root.join("tool.toml");
     fs::write(&workflow, "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
     let output = launcher_command()
-        .env_remove("TLAUNCH_SETTINGS")
+        .env_remove("TFLOW_SETTINGS")
         .env("XDG_CONFIG_HOME", root.join("xdg"))
         .args(["--check", "--workflow"])
         .arg(&workflow)
@@ -1337,7 +1337,7 @@ fn discovered_settings_resolve_themes_from_the_settings_directory() {
     )
     .unwrap();
     let output = launcher_command()
-        .env_remove("TLAUNCH_SETTINGS")
+        .env_remove("TFLOW_SETTINGS")
         .env("XDG_CONFIG_HOME", root.join("xdg"))
         .args(["--check", "--workflow"])
         .arg(&workflow)
@@ -1382,7 +1382,7 @@ fn manifest_dispatch_rejects_wrong_types_and_nested_suites() {
 #[test]
 fn default_launch_uses_only_manifest_members() {
     let root = temporary_root();
-    let config_dir = root.join("tlaunch");
+    let config_dir = root.join("tflow");
     fs::create_dir_all(config_dir.join("workflows")).unwrap();
     fs::write(config_dir.join("workflows/tool.toml"), "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
     // Invalid unmounted files must not affect an explicitly mounted session.
@@ -1393,8 +1393,8 @@ fn default_launch_uses_only_manifest_members() {
     .unwrap();
     fs::write(config_dir.join("default.toml"), "[suite]\napi = 1\nname = 'Default'\nentrypoint = 'tool:main'\n[workflows]\ntool = { file = 'workflows/tool.toml' }\n").unwrap();
     let output = launcher_command()
-        .env_remove("TLAUNCH_SUITE")
-        .env_remove("TLAUNCH_SETTINGS")
+        .env_remove("TFLOW_SUITE")
+        .env_remove("TFLOW_SETTINGS")
         .env("XDG_CONFIG_HOME", &root)
         .args(["--inspect", "--all"])
         .output()
@@ -1524,7 +1524,7 @@ fn settings_cannot_register_business_commands() {
 fn explicit_settings_environment_path_must_exist() {
     let root = temporary_root();
     let output = launcher_command()
-        .env("TLAUNCH_SETTINGS", root.join("missing.toml"))
+        .env("TFLOW_SETTINGS", root.join("missing.toml"))
         .args(["--workflow"])
         .arg(support::quick_picker_fixture())
         .arg("--check")

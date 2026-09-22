@@ -28,8 +28,8 @@ def main():
 
     sources = parameters.get("sources") or []
 
-    suite_file = os.environ.get("TLAUNCH_SUITE")
-    tlaunch_bin = os.environ.get("TLAUNCH_BIN") or "tlaunch"
+    suite_file = os.environ.get("TFLOW_SUITE")
+    tflow_bin = os.environ.get("TFLOW_BIN") or "tflow"
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     core_wf_dir = os.path.dirname(script_dir)
@@ -38,15 +38,15 @@ def main():
     if not suite_file:
         suite_file = os.path.join(config_dir, "default.toml")
 
-    # Locate debug binary if tlaunch is not in PATH
-    if not os.path.isabs(tlaunch_bin) and not any(
-        os.access(os.path.join(p, tlaunch_bin), os.X_OK)
+    # Locate debug binary if tflow is not in PATH
+    if not os.path.isabs(tflow_bin) and not any(
+        os.access(os.path.join(p, tflow_bin), os.X_OK)
         for p in os.environ.get("PATH", "").split(os.pathsep)
     ):
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(config_dir))))
-        candidate = os.path.join(repo_root, "target", "debug", "tlaunch")
+        candidate = os.path.join(repo_root, "target", "debug", "tflow")
         if os.path.isfile(candidate):
-            tlaunch_bin = candidate
+            tflow_bin = candidate
 
     child_req = {
         "version": 1,
@@ -116,8 +116,8 @@ def main():
             constraints.append({"Length": badge_width})
 
     def inspect_view_keymap(view_ref):
-        if tlaunch_bin and os.path.exists(suite_file):
-            cmd = [tlaunch_bin, "-s", suite_file, "--inspect", view_ref]
+        if tflow_bin and os.path.exists(suite_file):
+            cmd = [tflow_bin, "-s", suite_file, "--inspect", view_ref]
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 if res.returncode == 0 and res.stdout.strip():
@@ -158,8 +158,8 @@ def main():
 
     def fetch_items_for_view(view_ref):
         # 1. Primary: Use headless CLI extraction with query propagation
-        if tlaunch_bin and os.path.exists(suite_file):
-            cmd = [tlaunch_bin, "-s", suite_file, "--items", view_ref]
+        if tflow_bin and os.path.exists(suite_file):
+            cmd = [tflow_bin, "-s", suite_file, "--items", view_ref]
             if query:
                 cmd.append(query)
             try:

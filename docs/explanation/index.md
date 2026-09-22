@@ -1,6 +1,6 @@
 # Architecture & Concepts (Explanation)
 
-This section provides understanding-oriented explanations of `tlaunch`'s design philosophy, internal architectural boundaries, and runtime invariants.
+This section provides understanding-oriented explanations of `tflow`'s design philosophy, internal architectural boundaries, and runtime invariants.
 
 ## Articles
 

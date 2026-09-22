@@ -57,7 +57,7 @@ The successful JSON result is written to stdout. Redirect it when calling the la
 ```sh
 cargo run --quiet -- --suite tests/fixtures/config/default.toml \
   form:input --name="Ada's project" --environment=prod --enabled=false \
-  > /tmp/tlaunch-form-result.json
+  > /tmp/tflow-form-result.json
 ```
 
 Initial values can also come from a route, and omitted trailing values use the query defaults. Escape cancels with the view's configured `cancel_exit_code` of 1 and produces no result.

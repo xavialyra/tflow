@@ -1883,6 +1883,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tflow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "avt",
+ "base64",
+ "clap",
+ "image",
+ "libc",
+ "ratatui",
+ "ratatui-image",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "signal-hook",
+ "toml",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,27 +1963,6 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
-
-[[package]]
-name = "tlaunch"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "avt",
- "base64",
- "clap",
- "image",
- "libc",
- "ratatui",
- "ratatui-image",
- "serde",
- "serde_json",
- "shell-words",
- "signal-hook",
- "toml",
- "unicode-segmentation",
- "unicode-width 0.2.2",
-]
 
 [[package]]
 name = "toml"

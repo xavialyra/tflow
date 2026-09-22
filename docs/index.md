@@ -1,20 +1,20 @@
 ---
 okf_version: "0.2"
-title: "tlaunch Knowledge Bundle"
-description: "Architecture, developer guides, and configuration references for tlaunch"
+title: "tflow Knowledge Bundle"
+description: "Architecture, developer guides, and configuration references for tflow"
 generated:
   by: "maintainers"
   at: "2026-09-05"
 tags:
-  - tlaunch
+  - tflow
   - terminal
   - workflow
   - rust
 ---
 
-# tlaunch Documentation
+# tflow Documentation
 
-Welcome to the `tlaunch` knowledge base. `tlaunch` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, native form, or embedded PTY engines.
+Welcome to the `tflow` knowledge base. `tflow` is an extensible terminal workflow host where configurations define workflow-owned Views powered by picker, capture, native form, or embedded PTY engines.
 
 This documentation is organized into four core categories following the **Diátaxis** framework, packaged as an **Open Knowledge Format (OKF v0.2)** bundle for both human developers and autonomous AI agents.
 
@@ -22,7 +22,7 @@ This documentation is organized into four core categories following the **Diáta
 
 ### 1. [Tutorials](tutorials/index.md)
 *Learning-oriented paths for beginners and new contributors.*
-- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tlaunch`.
+- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tflow`.
 - [Your First Workflow](tutorials/first-workflow.md) — Create a complete workflow with custom views and items.
 
 ### 2. [How-To Guides](how-to/index.md)

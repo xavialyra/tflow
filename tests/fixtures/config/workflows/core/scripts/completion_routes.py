@@ -17,10 +17,10 @@ import subprocess
 
 
 def collect_routes():
-    suite = os.environ.get("TLAUNCH_SUITE")
+    suite = os.environ.get("TFLOW_SUITE")
     if not suite or not os.path.exists(suite):
         return []
-    binary = os.environ.get("TLAUNCH_BIN") or "tlaunch"
+    binary = os.environ.get("TFLOW_BIN") or "tflow"
     try:
         result = subprocess.run(
             [binary, "-s", suite, "--inspect", "--all"],

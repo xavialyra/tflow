@@ -11,7 +11,7 @@ value = item.get("value") if isinstance(item, dict) else None
 if not isinstance(value, str):
     raise SystemExit("apps command requires a selected item with a value")
 state_home = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-path = os.path.join(state_home, "tlaunch", "app-weights.json")
+path = os.path.join(state_home, "tflow", "app-weights.json")
 os.makedirs(os.path.dirname(path), exist_ok=True)
 try:
     with open(path, encoding="utf-8") as f:

@@ -199,7 +199,7 @@ fn preview_protocol_schema_output_and_process_failures_are_renderable_errors() {
 fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
     let (tasks, starter) = runtime();
     let root =
-        std::env::temp_dir().join(format!("tlaunch-preview-document-{}", std::process::id()));
+        std::env::temp_dir().join(format!("tflow-preview-document-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     image::DynamicImage::new_rgb8(2, 2)
         .save(root.join("art.png"))
@@ -234,7 +234,7 @@ fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
 #[test]
 fn preview_fixture_script_roundtrip_decodes_its_workflow_relative_image() {
     let root =
-        std::env::temp_dir().join(format!("tlaunch-preview-roundtrip-{}", std::process::id()));
+        std::env::temp_dir().join(format!("tflow-preview-roundtrip-{}", std::process::id()));
     let scripts = root.join("scripts");
     std::fs::create_dir_all(&scripts).unwrap();
     image::DynamicImage::new_rgb8(2, 2)

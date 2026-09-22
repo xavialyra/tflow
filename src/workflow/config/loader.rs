@@ -76,13 +76,13 @@ pub(super) fn resolve_settings(
         return Ok((settings, Some(base_dir)));
     }
 
-    let candidate = if let Some(path) = std::env::var_os("TLAUNCH_SETTINGS") {
+    let candidate = if let Some(path) = std::env::var_os("TFLOW_SETTINGS") {
         return resolve_settings(Some(Path::new(&path)));
     } else if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        let p = PathBuf::from(path).join("tlaunch/settings.toml");
+        let p = PathBuf::from(path).join("tflow/settings.toml");
         if p.is_file() { Some(p) } else { None }
     } else if let Some(home) = std::env::var_os("HOME") {
-        let p = PathBuf::from(home).join(".config/tlaunch/settings.toml");
+        let p = PathBuf::from(home).join(".config/tflow/settings.toml");
         if p.is_file() { Some(p) } else { None }
     } else {
         None
@@ -616,7 +616,7 @@ impl CompiledConfig {
             .canonicalize()
             .unwrap_or_else(|_| suite_file.clone());
         unsafe {
-            std::env::set_var("TLAUNCH_SUITE", &canonical_suite);
+            std::env::set_var("TFLOW_SUITE", &canonical_suite);
         }
 
         let (settings, settings_dir) = resolve_settings(settings_path)?;

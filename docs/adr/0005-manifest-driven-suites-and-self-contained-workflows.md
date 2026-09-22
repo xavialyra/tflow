@@ -22,10 +22,10 @@ description: "Establish manifest-driven workflow suite orchestration, strict two
 
 ## Context
 
-In ADR 0001, `tlaunch` transitioned from legacy plugins to decentralized workflow packages residing in `$XDG_CONFIG_HOME/tlaunch/workflows/` and introduced single-file workflows with Shebang integration (`#!/usr/bin/env -S tlaunch -w`). While this simplified dotfiles management, subsequent operational adoption and architectural analysis revealed severe structural tensions:
+In ADR 0001, `tflow` transitioned from legacy plugins to decentralized workflow packages residing in `$XDG_CONFIG_HOME/tflow/workflows/` and introduced single-file workflows with Shebang integration (`#!/usr/bin/env -S tflow -w`). While this simplified dotfiles management, subsequent operational adoption and architectural analysis revealed severe structural tensions:
 
 1. **Category Confusion between Global Environment and Session Orchestration**:
-   `config.toml` simultaneously served as the passive host environment specification (`image_protocol`, `theme`, `defaults`) and the multi-workflow session controller (`default_view`, `disabled_workflows`). When running standalone single workflows (`tlaunch -w file.toml`), the loader had to perform ad-hoc mutation (`table.remove("default_view")`) to avoid dangling-reference crashes.
+   `config.toml` simultaneously served as the passive host environment specification (`image_protocol`, `theme`, `defaults`) and the multi-workflow session controller (`default_view`, `disabled_workflows`). When running standalone single workflows (`tflow -w file.toml`), the loader had to perform ad-hoc mutation (`table.remove("default_view")`) to avoid dangling-reference crashes.
 2. **Global Alias Collisions and Lost Self-Containment**:
    ADR 0001 enforced strict global uniqueness for `alias` declared in `[views.<name>]`. To be runnable standalone without explicit view flags, single-file workflows were coerced into declaring `alias = "main"`. When multiple workflows declaring `alias = "main"` were installed into `workflows/`, the configuration compiler aborted with fatal alias collision errors. Global aliases destroyed workflow reusability.
 3. **The Multi-Workflow Grouping Dilemma**:
@@ -94,23 +94,23 @@ The CLI interface formally differentiates atomic workflow execution from suite o
 
 | Flag | Long Name | Target File Header | Description | Shebang Declaration |
 | :--- | :--- | :--- | :--- | :--- |
-| **`-w`** | **`--workflow`** | `[workflow]` | Executes a single, self-contained atomic workflow. | `#!/usr/bin/env -S tlaunch -w` |
-| **`-s`** | **`--suite`** | `[suite]` | Mounts and executes an orchestration suite manifest. | `#!/usr/bin/env -S tlaunch -s` |
+| **`-w`** | **`--workflow`** | `[workflow]` | Executes a single, self-contained atomic workflow. | `#!/usr/bin/env -S tflow -w` |
+| **`-s`** | **`--suite`** | `[suite]` | Mounts and executes an orchestration suite manifest. | `#!/usr/bin/env -S tflow -s` |
 
 - **Type-Strict Validation**: Passing a `[suite]` manifest to `-w` or a `[workflow]` file to `-s` fails immediately during argument validation with an explicit diagnostic and corrective tip.
-- **Default Launch (`tlaunch` without flags)**: Automatically executes the user's default suite manifest located at `$XDG_CONFIG_HOME/tlaunch/default.toml`.
+- **Default Launch (`tflow` without flags)**: Automatically executes the user's default suite manifest located at `$XDG_CONFIG_HOME/tflow/default.toml`.
 
 ---
 
 ### 4. Pure Global Environment Baseline (`settings.toml`)
 
-The root configuration file at `$XDG_CONFIG_HOME/tlaunch/settings.toml` is strictly reserved for the passive host environment:
+The root configuration file at `$XDG_CONFIG_HOME/tflow/settings.toml` is strictly reserved for the passive host environment:
 
 ```toml
-# ~/.config/tlaunch/settings.toml
+# ~/.config/tflow/settings.toml
 image_protocol = "kitty"
 theme = "catppuccin"
-log_file = "/tmp/tlaunch.log"
+log_file = "/tmp/tflow.log"
 
 [defaults.picker.bindings]
 select_next = ["down", "ctrl+j"]
@@ -171,7 +171,7 @@ dim = true
 
 ### 7. Ephemeral Pipeline Execution Contract (`npx` / UNIX Stream)
 
-For headless or ephemeral execution (`curl ... | npx -y tlaunch -w -`):
+For headless or ephemeral execution (`curl ... | npx -y tflow -w -`):
 
 - **Standard Input (`stdin`)**: Streamed TOML specifications passed via `-w -` are ingested into memory without physical disk writes.
 - **Controlling Terminal (`/dev/tty`)**: Terminal rendering and keyboard event polling strictly attach to `/dev/tty`, isolating user interaction from piped data streams.
@@ -184,7 +184,7 @@ For headless or ephemeral execution (`curl ... | npx -y tlaunch -w -`):
 ### A. Atomic Workflow Schema (`<id>.toml`)
 
 ```toml
-#!/usr/bin/env -S tlaunch -w
+#!/usr/bin/env -S tflow -w
 [workflow]
 api = 1
 name = "Git Checkout"
@@ -209,7 +209,7 @@ handler = { value = "item.value" }
 ### B. Suite Manifest Schema (`<suite>.toml`)
 
 ```toml
-#!/usr/bin/env -S tlaunch -s
+#!/usr/bin/env -S tflow -s
 [suite]
 api = 1
 name = "System Ops"
@@ -232,7 +232,7 @@ foreground = "scheme:accent"
 
 ### Positive
 - **Guaranteed Reusability**: Any workflow can be shared, moved, or executed standalone without broken dependencies or alias collisions.
-- **Zero Ambiguity**: `-w` runs a workflow; `-s` runs a suite manifest; `tlaunch` runs the default suite.
+- **Zero Ambiguity**: `-w` runs a workflow; `-s` runs a suite manifest; `tflow` runs the default suite.
 - **No Transitive Complexity**: Clamping structural depth to 1 eliminates cyclic dependencies, deep paths, and diamond dependency resolution.
 - **Sanitization Elimination**: `settings.toml` is completely decoupled from workflow selection, eliminating runtime field mutation.
 - **Cohesive Theming**: Preserves user terminal theming sovereignty while providing surgical slot overrides.

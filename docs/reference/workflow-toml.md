@@ -367,6 +367,6 @@ Configuration without a producer is static: its values are deserialized and vali
 
 ## Multi-line Inline Scripts
 
-Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tlaunch/scripts/` (falling back to `$XDG_CACHE_HOME/tlaunch/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
+Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` (falling back to `$XDG_CACHE_HOME/tflow/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$WORKFLOW_DIR` for directory workflows.
 
 For root configuration, see [settings.toml Specification](settings-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).

@@ -72,8 +72,8 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 if let Some(root) = root {
                     process.env("WORKFLOW_DIR", root);
                 }
-                if let Ok(suite_path) = std::env::var("TLAUNCH_SUITE") {
-                    process.env("TLAUNCH_SUITE", suite_path);
+                if let Ok(suite_path) = std::env::var("TFLOW_SUITE") {
+                    process.env("TFLOW_SUITE", suite_path);
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
@@ -142,8 +142,8 @@ pub(crate) fn run_resolved_script_with_stdin_outcome_with_limit(
                 if let Some(root) = root {
                     process.env("WORKFLOW_DIR", root);
                 }
-                if let Ok(suite_path) = std::env::var("TLAUNCH_SUITE") {
-                    process.env("TLAUNCH_SUITE", suite_path);
+                if let Ok(suite_path) = std::env::var("TFLOW_SUITE") {
+                    process.env("TFLOW_SUITE", suite_path);
                 }
                 let outcome = run_bounded_command_with_stdin_outcome(
                     process,
@@ -303,7 +303,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "tlaunch-script-{}-{timestamp}-{sequence}",
+            "tflow-script-{}-{timestamp}-{sequence}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -502,7 +502,7 @@ mod tests {
         let outside = root
             .parent()
             .unwrap()
-            .join(format!("tlaunch-script-outside-{}", std::process::id()));
+            .join(format!("tflow-script-outside-{}", std::process::id()));
         fs::write(&outside, "printf 'null'\n").unwrap();
         symlink(&outside, root.join("outside.sh")).unwrap();
         assert!(validate_script_target(&root, "outside.sh").is_err());

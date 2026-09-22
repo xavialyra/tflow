@@ -50,7 +50,7 @@ impl Sandbox {
         fs::create_dir_all(root.join("cache")).expect("could not create the cache root");
         fs::create_dir_all(root.join("config")).expect("could not create the config root");
         Self {
-            config: root.join("config/tlaunch"),
+            config: root.join("config/tflow"),
             root,
             source,
         }
@@ -73,16 +73,16 @@ impl Sandbox {
         });
         let output = Command::new("python3")
             .arg(self.script_path())
-            .env("TLAUNCH_BIN", binary_path())
+            .env("TFLOW_BIN", binary_path())
             .env(
                 "WORKFLOW_DIR",
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("distribution"),
             )
-            .env("TLAUNCH_WORKFLOWS_BOOTSTRAP_DIR", &self.source)
+            .env("TFLOW_WORKFLOWS_BOOTSTRAP_DIR", &self.source)
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env_remove("TLAUNCH_SUITE")
-            .env_remove("TLAUNCH_SETTINGS")
+            .env_remove("TFLOW_SUITE")
+            .env_remove("TFLOW_SETTINGS")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -116,7 +116,7 @@ target = "core:default"
 query = { sources = ["apps:main", "calculator:main", "sys:main"] }
 ```
 
-The aggregator script fetches items headlessly from each source via `tlaunch -s $TLAUNCH_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
+The aggregator script fetches items headlessly from each source via `tflow -s $TFLOW_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `mode = "item"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
 
 Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View binds Tab and Space there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in `mode = "static"`.
 

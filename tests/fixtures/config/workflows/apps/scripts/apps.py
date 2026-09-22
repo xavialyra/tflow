@@ -6,12 +6,12 @@ import time
 
 def get_cache_file():
     cache_dir = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_dir, "tlaunch", "desktop-apps-v3.list")
+    return os.path.join(cache_dir, "tflow", "desktop-apps-v3.list")
 
 
 def get_weights_file():
     state_dir = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(state_dir, "tlaunch", "app-weights.json")
+    return os.path.join(state_dir, "tflow", "app-weights.json")
 
 
 def load_weights():

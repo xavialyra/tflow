@@ -82,7 +82,7 @@ fn effective_cli_args_from(args: Vec<String>) -> Vec<String> {
         .unwrap_or("")
         .to_string();
 
-    if stem.is_empty() || stem == "tlaunch" {
+    if stem.is_empty() || stem == "tflow" {
         return args;
     }
     if args.iter().any(|a| {
@@ -340,9 +340,9 @@ pub(crate) fn run() -> Result<i32> {
 
     let runtime_log = RuntimeLog::open(config.log_file.as_deref());
     if let Ok(current_exe) = std::env::current_exe() {
-        if std::env::var_os("TLAUNCH_BIN").is_none() {
+        if std::env::var_os("TFLOW_BIN").is_none() {
             unsafe {
-                std::env::set_var("TLAUNCH_BIN", &current_exe);
+                std::env::set_var("TFLOW_BIN", &current_exe);
             }
         }
     }
@@ -647,14 +647,14 @@ fn write_final_output(
 }
 
 fn default_suite_path() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("TLAUNCH_SUITE") {
+    if let Some(path) = env::var_os("TFLOW_SUITE") {
         return Ok(PathBuf::from(path));
     }
     if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(path).join("tlaunch/default.toml"));
+        return Ok(PathBuf::from(path).join("tflow/default.toml"));
     }
     if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".config/tlaunch/default.toml"));
+        return Ok(PathBuf::from(home).join(".config/tflow/default.toml"));
     }
     bail!("cannot locate default suite: set XDG_CONFIG_HOME or use -s <PATH>");
 }
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn injects_the_entrypoint_stem_for_all_noncanonical_entrypoints() {
-        for stem in ["apps", "tlaunch-app", "launcher-app"] {
+        for stem in ["apps", "tflow-app", "launcher-app"] {
             assert_eq!(
                 effective_cli_args_from(vec![format!("/tmp/{stem}"), "--mode=full".into()]),
                 vec![
@@ -676,8 +676,8 @@ mod tests {
             );
         }
         assert_eq!(
-            effective_cli_args_from(vec!["/tmp/tlaunch".into(), "apps:main".into()]),
-            vec!["/tmp/tlaunch", "apps:main"]
+            effective_cli_args_from(vec!["/tmp/tflow".into(), "apps:main".into()]),
+            vec!["/tmp/tflow", "apps:main"]
         );
     }
 
