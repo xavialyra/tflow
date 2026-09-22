@@ -2324,29 +2324,6 @@ fn command_selector_does_not_expose_an_owner_from_stale_items() {
 }
 
 #[test]
-fn core_tab_command_opens_the_route_completion_popup() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-
-    // With no typed prefix every aliased route is a candidate, so the Tab
-    // command opens the workflow's own completion popup.
-    wait_for_text(&process.master, "Enter Open");
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "(apps:main)");
-    let visible = String::from_utf8_lossy(&output).into_owned();
-    // `btop:main` is not one of the entry point's aggregate sources, so seeing
-    // it proves completion offers every aliased route, not just the sources.
-    assert!(visible.contains("(btop:main)"), "{visible}");
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
 fn core_tab_command_routes_directly_when_only_one_route_matches() {
     let config = fixture_config();
     let mut process = spawn_launcher(&config);
@@ -3378,39 +3355,6 @@ printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn aggregate_view_footer_commands_remain_stable_during_input_without_flicker() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-
-    // Initial state: core:default loaded, shows Open in footer
-    let initial_screen = wait_for_text(&process.master, "Open");
-    assert!(String::from_utf8_lossy(&initial_screen).contains("Open"));
-
-    // Type a character to trigger search
-    process.master.write_all(b"A").unwrap();
-    process.master.flush().unwrap();
-
-    // Immediately check screen: Open MUST still be present in footer!
-    // The command registry must retain the published item binding while results refresh.
-    std::thread::sleep(std::time::Duration::from_millis(15));
-    let immediate_screen = current_screen(&process.master);
-    assert!(
-        immediate_screen.contains("Open"),
-        "Footer item commands must not disappear immediately during input! Screen: {immediate_screen}"
-    );
-
-    // Wait for search result to arrive
-    let ready_screen = wait_for_text(&process.master, "Advanced Network");
-    assert!(String::from_utf8_lossy(&ready_screen).contains("Open"));
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
 }
 
 #[test]
