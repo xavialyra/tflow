@@ -198,8 +198,6 @@ pub struct Terminal {
     cancellation: CancellationToken,
     active: bool,
     screen_active: bool,
-    #[cfg(test)]
-    fail_next_foreground_resume: bool,
 }
 
 impl Terminal {
@@ -257,8 +255,6 @@ impl Terminal {
             cancellation,
             active: true,
             screen_active: false,
-            #[cfg(test)]
-            fail_next_foreground_resume: false,
         };
         terminal.resume_screen()?;
         rollback.disarm();
@@ -315,10 +311,6 @@ impl Terminal {
         if !self.active {
             bail!("launcher terminal is not active");
         }
-        #[cfg(test)]
-        if std::mem::take(&mut self.fail_next_foreground_resume) {
-            bail!("injected launcher terminal resume failure");
-        }
         let mut raw = self.original;
         unsafe { libc::cfmakeraw(&mut raw) };
         let settings_result =
@@ -339,11 +331,6 @@ impl Terminal {
         }
         self.invalidate_renderer();
         settings_result.and(screen_result)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_next_foreground_resume(&mut self) {
-        self.fail_next_foreground_resume = true;
     }
 
     pub fn resume_screen(&mut self) -> Result<()> {

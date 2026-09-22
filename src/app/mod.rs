@@ -398,8 +398,3 @@ fn report_or_propagate_protocol_error(
     report(&error.to_string());
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
