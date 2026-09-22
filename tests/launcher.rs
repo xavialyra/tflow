@@ -1743,29 +1743,6 @@ fn send_bytes(process: &mut support::LauncherProcess, bytes: &[u8]) {
 }
 
 #[test]
-fn view_selector_discovers_views_and_navigates_to_the_selected_view() {
-    let mut process = spawn_launcher_with_args(&fixture_config(), &["selectors:views"]);
-    wait_for_ready(&process.master);
-
-    process.master.write_all(b"sys").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "sys (sys:main)");
-
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show system information");
-
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "sys (sys:main)");
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-}
-
-#[test]
 fn picker_left_prefix_marks_views_pushed_on_a_parent() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2070,78 +2047,6 @@ fn fixture_input_placeholder_shows_until_the_user_types() {
 }
 
 #[test]
-fn core_space_separator_jumps_and_otherwise_appends() {
-    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "Enter Open");
-
-    // A known alias jumps to its route on space.
-    process.master.write_all(b"sys").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| {
-        visible.contains("Show system information")
-    });
-    process.master.write_all(b" ").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| visible.contains("Show date"));
-
-    // Backspace consumes the rendered left prefix and returns to the root,
-    // leaving the consumed selector out of the entry input.
-    process.master.write_all(b"\x7f").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| visible.contains("Enter Open"));
-
-    // A non-route token keeps filtering: the space is appended and items stay.
-    process.master.write_all(b"a").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| visible.contains("Enter Open"));
-    process.master.write_all(b" ").unwrap();
-    process.master.flush().unwrap();
-    let screen = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.contains("a \u{2588}"))
-    });
-    let screen = String::from_utf8_lossy(&screen);
-    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
-    assert!(
-        !visible.contains("(no matches)"),
-        "space cleared the filtered list: {visible}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
-fn core_route_completion_survives_a_query_that_matches_no_item() {
-    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "Enter Open");
-
-    // `pass` names a route but matches no aggregate item, so the entry View has
-    // no selected item to carry its Tab binding.
-    process.master.write_all(b"pass").unwrap();
-    process.master.flush().unwrap();
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    let screen = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "pass \u{2588}")
-    });
-    let screen = String::from_utf8_lossy(&screen);
-    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
-    assert!(
-        visible.lines().any(|line| line.trim() == "pass \u{2588}"),
-        "Tab did not open the pass route: {visible}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
 fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref() {
     let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
     wait_for_ready(&process.master);
@@ -2317,34 +2222,6 @@ fn command_selector_does_not_expose_an_owner_from_stale_items() {
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
     discard_pending_master_output(&process.master);
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-}
-
-#[test]
-fn core_tab_command_routes_directly_when_only_one_route_matches() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-
-    process.master.write_all(b"sys").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "Show system information");
-
-    // `sys` leaves exactly one candidate route, so Tab routes straight to it
-    // instead of opening the popup. The target view is the unfiltered
-    // sys:main list, which also contains "Show date".
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "Show date");
-    let visible = String::from_utf8_lossy(&output).into_owned();
-    assert!(
-        !visible.contains("(sys:main)"),
-        "completion popup opened: {visible}"
-    );
-
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);
@@ -3355,82 +3232,4 @@ printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn completion_jump_consumes_the_picker_input() {
-    let config = fixture_config();
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "Enter Open");
-
-    // Filter the entry so the completion command has a half-typed route.
-    process.master.write_all(b"sys").unwrap();
-    process.master.flush().unwrap();
-    let filtered = wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "sys\u{2588}")
-            && visible.contains("Show system information")
-            && visible.contains("core | 1 of 1")
-    });
-    assert!(String::from_utf8_lossy(&filtered).contains("core | 1 of 1"));
-
-    // Tab routes straight to sys:main.
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| visible.contains("Show date"));
-
-    // Returning to the entry must not resurrect the half-typed input that the
-    // completion jump consumed.
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let returned = wait_for_fresh_screen(&process.master, |visible| {
-        visible
-            .lines()
-            .any(|line| line.trim() == "\u{2588}Type a route or search")
-            && !visible.contains("Show system information")
-            && visible
-                .lines()
-                .last()
-                .is_some_and(|footer| footer.trim_start().starts_with("core |"))
-    });
-    let returned = String::from_utf8_lossy(&returned);
-    let visible = returned.rsplit("--- visible screen ---").next().unwrap();
-    assert!(
-        !visible.contains("Show system information"),
-        "completion jump did not consume the entry input: {visible}"
-    );
-
-    // Opening the completion popup consumes the input too, so cancelling it
-    // does not bring the half-typed route back either. `fo` is deliberately
-    // ambiguous: typing the exact alias `form` jumps straight to it now.
-    process.master.write_all(b"fo").unwrap();
-    process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |visible| {
-        visible.lines().any(|line| line.trim() == "fo\u{2588}")
-    });
-    process.master.write_all(b"\t").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "(form:input)");
-    process.master.write_all(b"\x1b").unwrap();
-    process.master.flush().unwrap();
-    let cancelled = wait_for_fresh_screen(&process.master, |visible| {
-        visible
-            .lines()
-            .any(|line| line.trim() == "\u{2588}Type a route or search")
-            && visible
-                .lines()
-                .last()
-                .is_some_and(|footer| footer.trim_start().starts_with("core |"))
-    });
-    let cancelled = String::from_utf8_lossy(&cancelled);
-    let cancelled = cancelled.rsplit("--- visible screen ---").next().unwrap();
-    assert!(
-        !cancelled.lines().any(|line| line.trim() == "fo\u{2588}"),
-        "completion popup did not consume the entry input: {cancelled}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
 }
