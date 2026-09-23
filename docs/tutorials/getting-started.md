@@ -6,19 +6,31 @@ tags:
   - quickstart
   - setup
   - producers
-description: "Build, configure, validate, and launch a minimal workflow using literal items and a JSON command producer."
+description: "Understand workflows, suites, and settings, then configure, validate, and launch your first workflow."
 ---
 
 # Getting Started with tflow
 
-This tutorial builds the binary, creates a minimal single-file workflow, and launches a Picker whose command is backed by a version-1 producer script.
+This tutorial explains the configuration files, creates a minimal workflow and default suite, and launches an interactive list (a Picker).
+
+## Understand the Configuration Files
+
+| Concept | Purpose | File in this tutorial |
+| --- | --- | --- |
+| **Workflow** | Defines a tool's views and commands. It can run on its own or be included in a suite. | `workflows/hello.toml` |
+| **Suite** | Groups workflows, selects the initial view, and optionally defines shorthand names (aliases). | `default.toml` |
+| **Settings** | Sets shared preferences such as theme, image protocol, and default keys. Applies to both standalone workflows and suites. | `settings.toml` (optional) |
+
+Running `tflow` loads the default suite. Use `tflow -s <suite.toml>` to choose another suite, or `tflow -w <workflow.toml>` to run a workflow directly without a suite. Settings are optional; built-in defaults apply when the default settings file is absent.
+
+A suite lists its workflows explicitly: placing a file in `workflows/` does not automatically add it. Views and commands belong in workflow files; shared preferences belong in settings.
 
 ## 1. Install
 
-Ensure Rust and Cargo are installed, then build the binary:
+If `tflow` is already installed, continue to step 2. Otherwise, install Rust and Cargo, then build the binary. This tutorial also requires Python 3 for the example command.
 
 ```bash
-git clone https://github.com/example/tflow.git
+git clone https://github.com/xavialyra/tflow.git
 cd tflow
 cargo build --release
 ```
@@ -40,15 +52,18 @@ $XDG_CONFIG_HOME/tflow/
         └── scripts/
 ```
 
-If `$XDG_CONFIG_HOME` is unset, the default is `$HOME/.config`. Create the workflow directory:
+If `$XDG_CONFIG_HOME` is unset, the default is `$HOME/.config`. Set a shell variable for the configuration directory and use it throughout this tutorial:
 
 ```bash
-mkdir -p ~/.config/tflow/workflows
+tflow_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/tflow"
+mkdir -p "$tflow_config_dir/workflows"
 ```
+
+The `git/` directory above illustrates a directory workflow package; it is not needed for this tutorial.
 
 ## 3. Create a Minimal Workflow
 
-Create `~/.config/tflow/workflows/hello.toml`:
+Save the following as `$tflow_config_dir/workflows/hello.toml`:
 
 ```toml
 [workflow]
@@ -103,7 +118,7 @@ Commands live at the workflow root because they are workflow-scoped: `[views.mai
 
 ## 4. Create the Default Suite
 
-Create `~/.config/tflow/default.toml`:
+Save the following as `$tflow_config_dir/default.toml`:
 
 ```toml
 [suite]
@@ -115,7 +130,21 @@ entrypoint = "hello:main"
 hello = { file = "./workflows/hello.toml" }
 ```
 
-## 5. Validate and Launch
+The `[workflows]` table registers `hello` as the name of this workflow in the suite. Its file path is relative to `default.toml`. The entrypoint `hello:main` opens the `main` view in that workflow. You can also run `tflow hello` to open the workflow's own entrypoint.
+
+## 5. Customize Settings (Optional)
+
+You can customize key bindings in `$tflow_config_dir/settings.toml`. For example, the following configuration changes the keys for moving between items. If that file already exists, update the matching entries instead of replacing it:
+
+```toml
+[defaults.picker.bindings]
+select_previous = ["up", "ctrl+k"]
+select_next = ["down", "ctrl+j"]
+```
+
+These defaults apply to Pickers in both suite and standalone workflow sessions. You can skip this file to keep the built-in defaults. See the [settings reference](../reference/settings-toml.md) for themes and other preferences, and the [suite reference](../reference/suite-toml.md) for orchestrating multiple workflows and aliases.
+
+## 6. Validate and Launch
 
 Run validation before opening the TUI:
 
@@ -133,6 +162,8 @@ The Picker displays the two literal items. Press `Enter` to run the producer ope
 
 ## Next Steps
 
+- Use the [settings.toml Specification](../reference/settings-toml.md) to customize shared preferences.
+- Use the [Suite Manifest Specification](../reference/suite-toml.md) to organize workflows, entrypoints, and routing aliases.
 - Follow [Your First Workflow](first-workflow.md) to build a directory package with separate item and command scripts.
 - Read [Picker Views](../how-to/picker-views.md) for request-driven item generation.
 - Use [workflow.toml Specification](../reference/workflow-toml.md) for the full operation and protocol reference.

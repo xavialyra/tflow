@@ -22,7 +22,7 @@ This documentation is organized into four core categories following the **Diáta
 
 ### 1. [Tutorials](tutorials/index.md)
 *Learning-oriented paths for beginners and new contributors.*
-- [Getting Started](tutorials/getting-started.md) — Install, configure your first view, and run `tflow`.
+- [Getting Started](tutorials/getting-started.md) — Understand workflows, suites, and settings, then configure and run `tflow`.
 - [Your First Workflow](tutorials/first-workflow.md) — Create a complete workflow with custom views and items.
 
 ### 2. [How-To Guides](how-to/index.md)
@@ -42,7 +42,8 @@ This documentation is organized into four core categories following the **Diáta
 ### 3. [Reference](reference/index.md)
 *Authoritative, technical specifications and syntax references.*
 - [CLI Reference](reference/cli.md) — Command-line flags, configuration check mode, and direct view invocation.
-- [settings.toml and Suite Specification](reference/settings-toml.md) — Root configuration format, theme selection, and session command overrides.
+- [settings.toml Specification](reference/settings-toml.md) — Root passive host settings, global engine defaults, and style slot overrides.
+- [Suite Manifest Specification](reference/suite-toml.md) — Suite manifests, explicit workflow mounting, aliases, and entrypoints.
 - [Theme TOML Specification](reference/theme-toml.md) — Flat scheme colors, built-in defaults, and style merge rules.
 - [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
 - [Picker Preview](reference/picker-preview.md) — Preview sources, feed ownership, nested documents, scrolling, and limits.

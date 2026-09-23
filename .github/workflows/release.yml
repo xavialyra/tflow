@@ -1,26 +1,20 @@
-name: Build
+name: Release
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - 'v*'
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Release assets are assembled from this workflow's build output when a release is published.
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Check, test, and build
+  release:
+    name: Build and Publish Release
     runs-on: ubuntu-latest
 
     steps:
@@ -31,22 +25,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
-          components: rustfmt, clippy
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check compilation
-        run: cargo check --all-targets --all-features
-
       - name: Run tests
         run: cargo test --all-targets --all-features
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build release binary
         run: cargo build --release
@@ -58,16 +42,9 @@ jobs:
           cp distribution/install.sh release/install.sh
           cp examples/init.toml release/init.toml
 
-      - name: Upload release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: tflow-linux-x86_64-${{ github.sha }}
-          path: release
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --generate-notes
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}"
+          gh release create "$TAG_NAME" release/* --generate-notes

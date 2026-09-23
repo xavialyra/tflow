@@ -6,27 +6,53 @@ tags:
   - toml
   - specification
   - session
-description: "Authoritative reference for tflow root configuration, defaults, themes, and session bindings."
+  - settings
+description: "Authoritative reference for tflow passive host settings, global engine defaults, image protocols, and keybindings."
 ---
 
 # settings.toml Specification
 
-The passive host environment lives at `$XDG_CONFIG_HOME/tflow/settings.toml`.
-Both standalone workflows and suites inherit it. The historical `config.toml`
-combination of environment and workflow discovery is no longer supported.
+The passive host configuration file lives at `$XDG_CONFIG_HOME/tflow/settings.toml`. It defines the ambient execution environment, global display protocols, default keybindings, and engine-level behavior.
+
+Both standalone workflows (`-w`) and suite orchestration sessions (`-s`) inherit `settings.toml`. Orchestration concerns (such as mounting workflows, defining aliases, and session entrypoints) are strictly prohibited here and belong exclusively in a [Suite Manifest](suite-toml.md).
+
+---
+
+## File Resolution Order
+
+The host discovers `settings.toml` using the following precedence:
+
+1. Path specified by `--settings <PATH>` on the CLI.
+2. Path provided via the `TFLOW_SETTINGS` environment variable.
+3. `$XDG_CONFIG_HOME/tflow/settings.toml` (if it exists).
+4. `~/.config/tflow/settings.toml` (standard fallback).
+5. If no settings file is located, built-in defaults apply.
+
+---
 
 ## Schema Overview
 
 ```toml
-theme = "theme_name"
+theme = "nord"
 image_protocol = "kitty"
 log_file = "/tmp/tflow.log"
+
+[defaults.picker]
+left_prefix = "$route"
+left_prefix_backspace = "root"
 
 [defaults.picker.bindings]
 exit = ["ctrl+c", "ctrl+d"]
 back = ["escape"]
-select_previous = ["up"]
-select_next = ["down"]
+clear_input = ["ctrl+u"]
+select_previous = ["up", "ctrl+k"]
+select_next = ["down", "ctrl+j"]
+toggle_preview = ["ctrl+p"]
+preview_scroll_up = ["ctrl+u"]
+preview_scroll_down = ["ctrl+d"]
+
+[defaults.capture.bindings]
+exit = ["ctrl+c", "escape"]
 
 [styles.git.staged]
 foreground = "scheme:accent"
@@ -34,82 +60,99 @@ bold = false
 underline = true
 ```
 
-`theme` names `themes/<name>.toml` beside settings. Omission uses the terminal
-theme; `--theme` overrides selection. Semantic slot overrides merge individual
-fields over workflow and suite values, including explicit `false` modifiers.
-Theme-file workflow overrides are applied after these layers.
+---
 
-Settings reject `default_view`, `disabled_workflows`, workflow mounts, aliases,
-and suite/workflow headers. Session orchestration belongs in a suite manifest.
+## Root Configuration Fields
 
-## Suite Manifest
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `theme` | string | Unset (terminal default) | Theme name loaded from `themes/<name>.toml` beside the settings file. Overridden by CLI `--theme`. |
+| `image_protocol` | string | `"halfblocks"` | Protocol used for rendering images in previews. Options: `"halfblocks"`, `"kitty"`, `"sixel"`, `"iterm2"`. |
+| `log_file` | string (path) | Unset | Destination path for host debug and execution logs. |
+| `defaults` | table | `{}` | Global defaults applied across all views for specific engines. |
+| `styles` | table | `{}` | Global semantic style overrides for mounted workflow slots. |
 
-Default launch loads `default.toml`; `-s <PATH>` selects another suite.
-
-```toml
-[suite]
-api = 1
-name = "Tools"
-entrypoint = "git:branches"
-
-[workflows]
-git = { file = "./git.toml" }
-docker = { dir = "./docker" }
-
-[aliases]
-co = "git:branches"
-
-[styles.git.staged]
-foreground = "scheme:accent"
-```
-
-Each member mounts one atomic workflow. The member key automatically routes to
-its local entrypoint. An explicit alias cannot redirect a member name to a
-different view; a repeated alias with the same target is allowed. Suites reject
-`theme`, `image_protocol`, `log_file`, and `defaults`; these belong to settings.
-Suites cannot mount suites or define views. See [ADR 0005](../adr/0005-manifest-driven-suites-and-self-contained-workflows.md).
+---
 
 ## Engine Defaults (`[defaults.<engine>]`)
 
-Global engine defaults can be adjusted at the root level.
+Global engine defaults define baseline behaviors inherited by all matching views unless explicitly overridden per-view.
 
-### `[defaults.picker]`
-- `left_prefix` (string, default unset): left-side marker for the input line of any Picker that is not the root View. `"$route"` resolves to the target View's route label/alias, any other value is rendered literally, and leaving it unset renders nothing. The marker is purely presentational — it never changes key handling — and it is the visual cue that Escape (and, when enabled, Backspace) leaves the View. Use an East Asian Wide glyph (for example `〈`) so its two-column width is measured the same on CJK and non-CJK terminals; a half-width arrow such as `←` is East Asian Ambiguous and would shift.
+### 1. Picker Engine (`[defaults.picker]`)
 
-  ```toml
-  [defaults.picker]
-  left_prefix = "$route"
-  # left_prefix = "〈"
-  ```
+Configures presentation and navigation behaviors for Picker views.
 
-  Backspace only navigates while a left prefix is actually rendered — a Picker with `show_left_prefix = false` (such as a popup View) never returns on Backspace. What Backspace then does is opt-in; see `left_prefix_backspace`.
-- `left_prefix_backspace` (string, default unset): what Backspace does on an empty input line of a non-root Picker that renders a left prefix. `"parent"` returns to the parent View, like Escape; `"root"` returns to the root View in one step; leaving it unset keeps Backspace inert. It has no effect without a rendered prefix, so the per-view `show_left_prefix` option also disables it.
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `left_prefix` | string | Unset | Left-side marker on the query input line for non-root Pickers. `"$route"` displays the current view's route/alias; any other string is rendered literally. Best used with East Asian Wide glyphs (e.g. `〈`). Purely presentational. |
+| `left_prefix_backspace` | string | Unset | Action when pressing Backspace on an empty input line while a left prefix is rendered. `"parent"` returns to the parent view (like Escape); `"root"` returns to the root view in a single step; unset leaves Backspace inert. |
+| `bindings` | table | See below | Keybindings table for picker navigation and actions. |
 
-  ```toml
-  [defaults.picker]
-  left_prefix = "$route"
-  left_prefix_backspace = "root"
-  ```
+#### Picker Default Bindings (`[defaults.picker.bindings]`)
 
-### `[defaults.picker.bindings]`
-Available configurable actions for the `picker` engine:
-- `exit`: Array of key combinations to immediately exit the launcher.
-- `back`: Return to the parent view without changing the input.
-- `clear_input`: Clear the current input. The default key is `ctrl+u`.
-- `select_previous`: Move selection up.
-- `select_next`: Move selection down.
-- `toggle_preview`: Toggle the initially collapsed preview in any Picker. The default key is `ctrl+p`.
-- `preview_scroll_up`, `preview_scroll_down`: Scroll the preview by three rows. No default keys are assigned.
+Configures physical key mappings to standard Picker actions:
 
-Picker Enter behavior is configured by the View's explicit command bindings. The Picker engine has no implicit primary-selection action.
+| Action | Built-in Default | Description |
+| :--- | :--- | :--- |
+| `exit` | `["ctrl+c", "ctrl+d"]` | Immediately aborts and terminates `tflow`. |
+| `back` | `["escape"]` | Returns to the previous/parent view without modifying input. |
+| `clear_input` | `["ctrl+u"]` | Clears the active query buffer. |
+| `select_previous`| `["up"]` | Moves the cursor selection up one item. |
+| `select_next` | `["down"]` | Moves the cursor selection down one item. |
+| `toggle_preview`| `["ctrl+p"]` | Toggles visibility of the item preview pane. |
+| `preview_scroll_up` | Unset | Scrolls the preview document up by three rows. |
+| `preview_scroll_down`| Unset | Scrolls the preview document down by three rows. |
 
-## Workflow Commands and Host Actions
+*Note: Enter behavior is configured explicitly by each View's command keymap. The Picker engine intentionally provides no implicit primary selection action.*
 
-Settings and suites reject `[commands]`. Business commands belong to atomic
-workflows: `[commands.<id>]` supplies workflow-local defaults and
-`[views.<name>.commands.<id>]` defines or overrides a view command. See the
-[workflow specification](workflow-toml.md#workflow-commands).
+---
 
-The command palette is opened by the host with `Ctrl-K` when command folding is active. It is implemented as a built-in Popup Picker View. The host passes the eligible command descriptors to that View through the Popup navigation request; the View returns the selected command reference to the host for execution.
+### 2. Capture Engine (`[defaults.capture]`)
 
-The built-in workflows are loaded before user workflow packages under reserved IDs prefixed with `__`. They provide the ordinary Picker route `__commands:main` for the command palette and the native Form route `__form:main` for parameter editing. These routes are host-owned and are not user-declared session commands. Any workflow ID starting with `__` is reserved for built-in workflows; user workflows cannot use the `__` prefix.
+Configures presentation and keybindings for Capture views.
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `bindings` | table | See below | Keybindings table for Capture views. |
+
+#### Capture Default Bindings (`[defaults.capture.bindings]`)
+
+| Action | Built-in Default | Description |
+| :--- | :--- | :--- |
+| `exit` | `["ctrl+c", "escape"]` | Exits or closes the Capture view. |
+
+---
+
+## Semantic Style Slot Overrides (`[styles.<member_id>.<slot>]`)
+
+Global settings can define top-priority overrides for semantic style slots declared by workflows:
+
+```toml
+[styles.git.staged]
+foreground = "scheme:accent"
+bold = false
+underline = true
+```
+
+### Style Cascade Precedence
+When resolving color and text decorations for any item or element, `tflow` applies styles in the following order (highest priority wins):
+1. **`settings.toml` Overrides** (`[styles.<workflow>.<slot>]`)
+2. **Suite Manifest Overrides** (`<suite>.toml`: `[styles.<workflow>.<slot>]`)
+3. **Active Theme File** (`themes/<name>.toml`: `[workflows.<workflow>.styles.<slot>]`)
+4. **Workflow Defaults** (`workflow.toml`: `[styles.<slot>]`)
+
+---
+
+## Prohibited Fields (Purity Invariant)
+
+In compliance with [ADR 0005](../adr/0005-manifest-driven-suites-and-self-contained-workflows.md), `settings.toml` is strictly reserved for passive host configuration. The presence of any of the following fields causes immediate validation failure:
+
+| Forbidden Key | Reason & Migration |
+| :--- | :--- |
+| `suite` | Session orchestration belongs in a Suite Manifest (`default.toml` or `<suite>.toml`). |
+| `workflow` | Workflows must be defined in standalone files (`workflow.toml`). |
+| `workflows` | Workflow mounts belong in a Suite Manifest under `[workflows]`. |
+| `views` | View definitions belong in atomic workflows under `[views.<name>]`. |
+| `default_view` | Removed; declare `[suite].entrypoint` in your suite manifest instead. |
+| `disabled_workflows`| Removed; suites mount workflows explicitly; omit unneeded workflows from `[workflows]`. |
+| `[commands]` | Commands belong to atomic workflows; settings reject command definitions. |

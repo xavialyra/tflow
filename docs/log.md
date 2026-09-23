@@ -2,6 +2,12 @@
 
 This log records notable changes to the documentation and product during development. It is a concise engineering record rather than a release changelog.
 
+## 2026-09-23
+
+- Decoupled GitHub Actions workflows into dedicated lightweight `ci.yml` (fast lint, check, and test gate on push/PR) and `release.yml` (full release build, asset assembly, and GitHub Release publication on tag push).
+- Split Suite Manifest specification into dedicated reference (`docs/reference/suite-toml.md`), cleaned up `settings.toml` specification to focus on passive host environment, and structured `workflow.toml` reference with comprehensive schema tables and quick-look matrices.
+- Clarified workflows, suites, and settings in Getting Started, added optional settings configuration, corrected the repository URL, and made setup paths respect XDG_CONFIG_HOME. Linked README suite setup to the tutorial.
+
 ## 2026-09-22
 
 - Simplified workflow source discovery in the setup wizard. Sources are now explicit, stale cache reuse is rejected, and installed packages are replaced cleanly.

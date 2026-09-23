@@ -7,8 +7,11 @@ The Reference section contains formal specifications, configuration schemas, com
 - **[CLI Reference](cli.md)**
   Command-line flags, environment variables, validation mode (`--check`), and parameter syntax for direct view invocation.
 
-- **[settings.toml and Suite Specification](settings-toml.md)**
-  Passive host settings, explicit suite mounts, entrypoints, aliases, and semantic style overrides.
+- **[settings.toml Specification](settings-toml.md)**
+  Passive host settings, global engine defaults, image protocols, and host-level semantic style overrides.
+
+- **[Suite Manifest Specification](suite-toml.md)**
+  Orchestration suite manifests, workflow mounting, entrypoints, alias routing, and suite-level semantic style overrides.
 
 - **[workflow.toml Specification](workflow-toml.md)**
   Workflow manifest format, single-file workflows, static View declarations, query schemas, Engine configurations, producer handlers, and the version-1 JSON protocol.

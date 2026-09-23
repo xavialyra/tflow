@@ -13,12 +13,24 @@ description: "Authoritative reference for workflow manifests, static View config
 
 # workflow.toml Specification
 
-Workflows define custom Views, keybindings, actions, and Engines. They are mounted explicitly by a suite or run directly with `-w`, and support two physical layouts:
+Workflows define custom Views, keybindings, actions, and Engines. They are mounted explicitly by a [Suite Manifest](suite-toml.md) or run directly in standalone mode with `tflow -w <PATH>`.
 
-1. **Single-file workflow**: `workflows/<id>.toml`. The workflow ID is the file stem. Relative external script files are not allowed; use inline producer scripts or absolute host binaries.
-2. **Directory workflow**: `workflows/<id>/workflow.toml`. The directory is the workflow root. Relative script files are confined to that root, and `$TFLOW_WORKFLOW_DIR` is provided to child processes.
+---
 
-## Workflow Header
+## Workflow Layouts
+
+`tflow` supports two physical workflow packaging layouts:
+
+| Layout | File Location | Scripts & Assets | Child Env Var | Best For |
+| :--- | :--- | :--- | :--- | :--- |
+| **Single-File** | `workflows/<id>.toml` | Relative external scripts are **prohibited**. Use inline scripts or host system binaries. | None | Simple tools, quick shortcuts, self-contained shell snippets. |
+| **Directory** | `workflows/<id>/workflow.toml` | Relative script files and assets allowed, strictly confined to the workflow directory. | `TFLOW_WORKFLOW_DIR` | Complex multi-file workflows, custom scripts (Python, Bash), local assets. |
+
+---
+
+## Workflow Header (`[workflow]`)
+
+Every workflow manifest must begin with the `[workflow]` section:
 
 ```toml
 [workflow]
@@ -27,60 +39,66 @@ name = "Applications"
 entrypoint = "main"
 ```
 
-- `api` is an optional integer and defaults to `1`.
-- `name` is the required human-readable workflow name.
-- `entrypoint` is required and names a view within this workflow.
-- Workflow imports, dependencies, and global aliases are prohibited.
+| Field | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `api` | integer | Optional (default: `1`) | Workflow API specification version. Must be `1`. |
+| `name` | string | **Required** | Descriptive, human-readable name of the workflow. |
+| `entrypoint` | string | **Required** | The ID of the default View within this workflow to open first. |
 
-## Workflow Commands
+*Invariants: Workflow imports, direct inter-workflow code dependencies, and workflow-declared global aliases are strictly prohibited.*
 
-`[commands.<id>]` declares a command owned by the workflow, not by a View, and the command does not register itself in sibling workflows:
+---
 
-```toml
-[commands.open]
-label = "Open"
-type = "run"
-producer = "script"
+## View Declarations (`[views.<name>]`)
 
-[commands.open.handler]
-file = "scripts/open.sh"
-```
-
-A View exposes a command by binding a key to it:
-
-```toml
-[views.main.keymap]
-enter = "open"
-```
-
-`key` on the command itself is only a fallback: a View whose `keymap_mode` is the default `"view"` and which declares no bindings (no table, or an empty one) publishes every workflow command of its own workflow, binding the ones that declare a `key`. A View that declares `[views.<name>.keymap]` bindings publishes that table instead, and a View with `keymap_mode = "item_merge"` publishes its table plus the focused item's bindings, so a command-level `key` never applies there. `[views.<name>.commands.<id>]` is rejected because business commands belong to the workflow root.
-
-## Style Slots
-
-`[styles.<slot>]` declares a workflow custom style, with an optional `[styles.<slot>.selected]` table. Color fields accept `ansi:NAME`, `#RRGGBB`, or `scheme:NAME`; for example, `foreground = "scheme:accent"`. The active theme merges `[workflows.<workflow-id>.styles.<slot>]` over these defaults field by field before resolving colors. Omitted selected fields inherit, and explicit `false` or `ansi:reset` values override defaults. See the [theme specification](theme-toml.md) for fields and selection background rules.
-
-## Views
-
-A workflow defines one or more Views referenced as `<workflow-id>:<name>`:
+A workflow defines one or more Views referenced as `<workflow-id>:<name>`.
 
 ```toml
 [views.main]
+keymap_mode = "view"
 
 [views.main.query]
 type = "object"
 mode = { type = "string", default = "normal" }
 ```
 
-`alias` is prohibited on workflow views; suite `[aliases]` owns public shorthand routes. Query fields are validated before a target View is mounted. The optional `keymap_mode` field selects how `[views.<name>.keymap]` is interpreted (`"view"`, the default, or `"item_merge"`); see [Commands](#commands).
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `engine` | table | `{ type = "picker" }` | Defines the View's UI engine and its engine-specific configuration. |
+| `query` | table | `{}` | JSON Schema defining the view's expected launch parameters. Validated before mounting. |
+| `keymap` | table | `{}` | Key-to-command mappings active when this View is focused. |
+| `keymap_mode` | string | `"view"` | Keymap resolution strategy: `"view"` or `"item_merge"`. |
 
-## Engine Configuration
+### Keymap Modes (`keymap_mode`)
 
-Every View has one of the four built-in Engines. Route definitions, query schemas, Engine types, Picker pane sizing, and keymaps are host-owned static configuration. The initial producer protocol cannot redefine them. There is no workflow `title` configuration; the footer uses the host-owned View alias or canonical reference.
+- `"view"` (Default): The View's `[views.<name>.keymap]` completely defines its keybindings. If the table is omitted or empty, fallback keys declared on the workflow's commands (`[commands.<id>].key`) are published.
+- `"item_merge"`: Designed for aggregate pickers. The View's keymap serves as a base layer. The focused item's dynamic `bindings` override keys individually. Command-level fallback keys do not apply.
 
-### Picker
+### View Chrome & Presentation Controls
 
-A static Picker list uses an array of item objects:
+For Picker views, the following presentation options can be configured directly under the View:
 
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `show_input` | boolean | `true` | When `false`, hides the query input bar entirely. |
+| `show_divider` | boolean | `true` | When `false`, removes the divider line beneath the input bar. |
+| `show_left_prefix` | boolean | `true` | When `false`, hides the left prefix and disables `left_prefix_backspace`. Useful for popup views. |
+| `input_placeholder`| string | Unset | Literal placeholder rendered in muted styling when the query buffer is empty. Presentation only. |
+| `source_badge` | boolean | `true` | In aggregate Pickers, controls whether the source feed badge is displayed on external items. |
+
+---
+
+## Engine Configuration (`[views.<name>.engine]`)
+
+Every View is powered by one of four built-in engines: `picker`, `capture`, `form`, or `embedded`.
+
+### 1. Picker Engine (`type = "picker"`)
+
+The Picker engine renders an interactive, searchable list with an optional preview pane.
+
+#### Items Configuration (`[views.<name>.engine.config.items]`)
+
+##### Option A: Static Item Array
 ```toml
 [views.main.engine]
 type = "picker"
@@ -88,14 +106,11 @@ type = "picker"
 [views.main.engine.config]
 items = [
   { display = "Show date", value = "date", metadata = {} },
-  { display = "System information", value = "info", metadata = {} },
+  { display = "System info", value = "info", metadata = {} },
 ]
 ```
 
-`display` may be a plain string or a structured display value. `value` is optional and is exposed as a string when present. `metadata` defaults to an empty JSON object.
-
-A dynamic list uses an explicit producer:
-
+##### Option B: Dynamic Script Producer
 ```toml
 [views.main.engine.config.items]
 producer = "script"
@@ -104,8 +119,7 @@ producer = "script"
 file = "scripts/items.sh"
 ```
 
-A declared list uses the same envelope and keeps the complete list in TOML:
-
+##### Option C: Declared Producer
 ```toml
 [views.main.engine.config.items]
 producer = "declared"
@@ -116,39 +130,25 @@ items = [
 ]
 ```
 
-The Picker items script receives a `picker-items` request on stdin and writes one response object to stdout:
+#### Preview Pane Configuration
 
-```json
-{"version":1,"entrypoint":"picker-items","context":{"parameters":{},"input":{"stdin":{"path":null,"length":0,"is_tty":true}},"engine":{"type":"picker","state":{"input":"","item":null,"text":null,"value":null,"metadata":null,"selected_index":0}}}}
-```
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `preview` | table | `{ inherit = true }` | Preview producer definition (`script`, `declared`, or `{ inherit = true }`). |
+| `preview_default_open` | boolean | `false` | When `true`, the preview pane starts open instead of collapsed. |
+| `preview_ratio` | float | `0.5` | Ratio of the terminal allocated to preview (when visible). |
+| `preview_min_width` | integer | `30` | Minimum column width required to display the preview pane. |
 
-```json
-{"version":1,"items":[{"display":"Show date","value":"date","metadata":{}}]}
-```
+---
 
-The response replaces the complete collection for that feed request. The host owns feed composition, selection state, and feed provenance. Aggregate picker pages automatically render the source feed alias as a right-aligned `badge` on the first row of each external feed item. Set `source_badge = false` on the aggregate View to disable this decoration. Feed identity and scheduling data are not sent automatically. Picker item stdout is bounded at 64 MiB to support large candidate sets.
+### 2. Capture Engine (`type = "capture"`)
 
-Every Picker provides a preview pane, initially collapsed and toggled with `Ctrl+P` by default. Without a custom provider it displays the selected item's plain-text display and value. Metadata remains available to custom preview providers. Preview data sources are configured independently from document rendering. `preview = { producer = "script", handler = { file = "scripts/preview.py" } }` receives a `picker-preview` request and returns `{"version":1,"preview":...}`. `preview = { producer = "declared", document = "Fixed text" }` supplies a static document. An aggregate page may use `preview = { inherit = true }` to select the source feed’s provider.
-
-`preview_ratio` and `preview_min_width` control the automatic outer items/preview split. `preview_default_open` controls initial visibility and defaults to false. There is no user-defined outer layout. Omitting `preview` is equivalent to `preview = { inherit = true }`: aggregate pages use the selected feed's provider when present, otherwise the host displays built-in details. Non-aggregate pages can also use omission or explicit inheritance for built-in details. An explicit page provider overrides the feed and built-in details; null responses stay empty and errors stay visible. Parameters, relative script/image paths, and custom styles resolve in the provider owner's workflow. Documents support strings, item displays, wrapped rich paragraphs, images, separators, and nested internal layouts. See [Picker Preview Documents and Producers](picker-preview.md) for exact fields, validation, ownership, and resource limits.
-
-Picker input chrome is configured with `show_input` (default `true`), `show_divider` (default `true`), and `show_left_prefix` (default `true`). `show_left_prefix = false` hides the global `[defaults.picker] left_prefix` marker for one View, such as a popup View, and also disables that View's opt-in `left_prefix_backspace` return. `input_placeholder` (unset by default) is a literal hint rendered in muted `picker.placeholder` styling while the query input is empty, after any left prefix and with the pseudo-cursor kept visible ahead of it. It is presentation only: it never becomes part of the query, the editor buffer, or the published input state, and it is clipped to the available query-row width.
-
-### Capture
-
-Capture requires an `output` field and accepts a literal string:
+Renders read-only text output or command results.
 
 ```toml
 [views.output.engine]
 type = "capture"
 
-[views.output.engine.config]
-output = "fixed text"
-```
-
-A declared output or a script-backed output uses the producer envelope:
-
-```toml
 [views.output.engine.config.output]
 producer = "script"
 
@@ -156,25 +156,34 @@ producer = "script"
 file = "scripts/output.sh"
 ```
 
-The script runs after the Capture View has mounted. It receives a `capture-output` request and writes one response:
+The script receives a `capture-output` JSON request and returns `{"version": 1, "output": "..."}`.
 
-```json
-{"version":1,"entrypoint":"capture-output","context":{"parameters":{"action":"date"},"input":{"stdin":{"path":null,"length":0,"is_tty":true}},"engine":{"type":"capture","state":null}}}
+---
+
+### 3. Form Engine (`type = "form"`)
+
+Renders interactive editable form fields from a `content` producer:
+
+```toml
+[views.input.engine]
+type = "form"
+
+[views.input.engine.config.content]
+producer = "declared"
+
+[views.input.engine.config.content.handler]
+fields = [
+  { id = "name", label = "Name", type = "text", required = true },
+]
 ```
 
-```json
-{"version":1,"output":"System date output\n"}
-```
+See [Form Content and State](form.md) for full field schemas and validation rules.
 
-A provider can change only the displayed output. On provider failure, the Capture View remains mounted and displays the diagnostic.
+---
 
-### Form
+### 4. Embedded Engine (`type = "embedded"`)
 
-Form renders editable fields from a required `content` producer. Declared content uses `producer = "declared"` and `handler.fields`; script content uses a standard script handler and returns `{"version":1,"content":{"fields":[...]}}` for the `form-content` entry point. The View query remains fixed launch input. Edited values, raw drafts, validity, and errors are exposed under `context.engine.state` for ordinary commands. There is no implicit submit operation or dynamic query schema. See [Form Content and State](form.md) for the complete contract and [Form Views](../how-to/form-views.md) for runnable examples.
-
-### Embedded
-
-Embedded owns an interactive child process and renders its PTY output:
+Spawns and renders an interactive child terminal (PTY) inside `tflow`:
 
 ```toml
 [views.terminal.engine]
@@ -185,118 +194,123 @@ command = ["btop"]
 escape-cancels = true
 ```
 
-Embedded process configuration is static View configuration. Dynamic Embedded argv is not part of the initial producer protocol.
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `command` | array of strings | **Required** | The executable and arguments to spawn inside the PTY. |
+| `escape-cancels` | boolean | `false` | When `true`, pressing Escape terminates the embedded process and returns. |
 
-### Child Process Environment
+---
 
-Child processes inherit the caller's environment. The host adds only these workflow-facing variables:
+## Workflow Commands (`[commands.<id>]`)
 
-- `TFLOW_WORKFLOW_DIR`: the absolute root of a directory workflow, provided to workflow scripts, foreground commands, and Embedded processes.
-- `TFLOW_INPUT`: the current rendered input text, provided to Embedded processes only.
-
-Producer scripts receive runtime data through their documented JSON request on stdin. They do not receive query, selection, command, or View state through launcher-specific environment variables.
-
-## Commands
-
-Commands are workflow-scoped and use one of `navigate`, `call`, `return`, or `run`. The View that offers the command binds a key to it:
+Commands represent executable operations owned by the workflow root.
 
 ```toml
-[views.main.keymap]
-enter = "open"
-
 [commands.open]
-label = "Open"
-type = "navigate"
+label = "Open Selected"
+type = "run"
 producer = "declared"
 
 [commands.open.handler]
-target = "sys:output"
-query = { action = "date" }
-replace = false
+mode = "foreground"
+argv = ["xdg-open"]
+exit = true
 ```
 
-A declared handler is parsed as the operation payload for the command's declared `type`. A producer command contains only its binding metadata, operation `type`, `producer`, and matching `handler`.
+### Command Definition Schema
 
-### Operation Payloads
+| Field | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `label` | string | **Required** | Display name shown in command palettes and UI chrome. |
+| `type` | string | **Required** | Operation type: `"navigate"`, `"call"`, `"return"`, or `"run"`. |
+| `producer` | string | **Required** | Producer kind: `"declared"` (static payload) or `"script"` (dynamic output). |
+| `handler` | table | **Required** | Handler payload corresponding to `producer` and `type`. |
+| `key` | string | Optional | Fallback physical keybinding (e.g. `"enter"`). Only used when View keymap is empty and `keymap_mode = "view"`. |
+| `return_processor`| table | Optional | Handler invoked after a `call` operation returns to this caller. |
 
-The following fields are supported in declared handlers:
+---
 
-- `navigate`: `target` (required string), optional `query` JSON/TOML value, optional `presentation` table, optional `replace` boolean, and optional `clear_input` boolean. When `clear_input = true` and the source View has editable input (a Picker), the host consumes that input before applying the transition, so returning to the View later starts from an empty query.
-- `call`: `target` (required string), optional `query`, and optional `presentation` table. A call creates a return boundary.
-- `return`: required `value`. An omitted value is invalid; a script response may use `"value": null` for a successful null result.
-- `run`: `mode = "foreground"`, non-empty `argv`, optional `exit` boolean, and optional `success_message` string. After successful execution, the host records this message at `INFO` level and displays it in the source View's footer (or popup bottom border) if that View remains active. Failed or cancelled execution does not emit the success message. With `exit = true`, the message is logged before exit; the UI does not pause to display it. Errors take display priority. Informational messages expire after 3 seconds; the next input or a change of active View clears them earlier. Each new informational message replaces the previous one and restarts the timeout. Expiration only clears the display; recorded logs are retained.
+## Operation Payloads
 
-A `navigate` or `call` `query` may additionally carry the host-reserved key `__focus` (string), or the equivalent `__engine = { focus = "..." }`. Reserved `__`-prefixed keys are accepted during query binding, removed before the target View's parameters are published, and are not part of its query schema. A Picker treats `focus` as an item identity and selects the first loaded item whose `value` or `text` equals it. This lets a command or return processor re-enter a Picker with `replace = true` while restoring a known selection instead of resetting to the first row.
+Declared handlers provide the operation payload directly in TOML. Script handlers return this payload as JSON in `operation`:
 
-Popup presentation is declared in the operation handler:
+### 1. `navigate`
+Transitions the session to another View:
 
+| Parameter | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `target` | string | **Required** | Destination view selector (`"<view>"` or `"<workflow>:<view>"`). |
+| `query` | value | Optional (`{}`) | Parameters passed to the destination View's query schema. |
+| `presentation` | table | Optional | `{ mode = "popup", width = 70, height = 18 }`. Mounts as a modal popup. |
+| `replace` | boolean | `false` | When `true`, replaces current View in history instead of pushing onto the stack. |
+| `clear_input` | boolean | `false` | When `true`, clears the active query buffer before navigating. |
+
+*Focus Hint*: Setting `__focus = "<item_value>"` inside `query` instructs a target Picker to automatically scroll to and select that item.
+
+### 2. `call`
+Transitions to a child View and establishes a return boundary:
+
+| Parameter | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `target` | string | **Required** | Destination child view. |
+| `query` | value | Optional (`{}`) | Parameters for the child view. |
+| `presentation` | table | Optional | Modal presentation options (`mode`, `width`, `height`). |
+
+### 3. `return`
+Closes the current View and returns a value to the caller boundary:
+
+| Parameter | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `value` | value | **Required** | JSON/TOML value passed back to caller's `return_processor`. Can be explicit `null`. |
+
+### 4. `run`
+Executes an external system command:
+
+| Parameter | Type | Required / Default | Description |
+| :--- | :--- | :--- | :--- |
+| `mode` | string | `"foreground"` | Execution mode. Currently `"foreground"`. |
+| `argv` | array of strings | **Required** | Command and arguments to execute. |
+| `exit` | boolean | `false` | When `true`, terminates `tflow` upon completion. |
+| `success_message` | string | Optional | Message displayed in the footer for 3 seconds upon successful return. |
+
+---
+
+## Producer Handlers (`handler`)
+
+A producer handler specifies how dynamic data is generated:
+
+### File Handler
 ```toml
-[views.main.keymap]
-"ctrl+o" = "actions"
-
-[commands.actions]
-label = "Actions"
-type = "call"
-producer = "declared"
-
-[commands.actions.handler]
-target = "selectors:actions"
-presentation = { mode = "popup", width = 70, height = 18 }
-```
-
-### Script Command Producers
-
-A script command uses a literal script handler. It receives one JSON request on stdin and must write exactly one version-1 response on stdout:
-
-```toml
-[views.main.keymap]
-enter = "open"
-
-[commands.open]
-label = "Open selected item"
-type = "run"
-producer = "script"
-
 [commands.open.handler]
 file = "scripts/open.sh"
 ```
+*Note: In directory workflows, `file` paths are relative to the workflow root. In single-file workflows, external relative paths are forbidden.*
 
-The request contains unified `context` fields: `context.command` is `{id, type}` identifying the invoked command, `context.parameters` is the command owner's bound parameter object, `context.input` is the explicit launch input descriptor, and `context.engine = {type, state}` is the carrying Engine's public state projection. Picker selection is available as `context.engine.state.item`; internal feed ownership and scheduling fields are omitted.
-
-In an aggregate Picker, a command arrives through the selected item: the aggregating script attaches a `bindings` map to each item, and the host dispatches the key against the focused item's binding (`enter = "apps:open"`). `context.parameters` is the aggregate View's parameter snapshot, while `context.engine.state.item` is the normalized selected item, so an item-bound command reads the selection it belongs to from the same place a View-bound command does.
-
-A script response must return an operation or an error feedback object:
-
-```json
-{
-  "version": 1,
-  "operation": {
-    "type": "run",
-    "mode": "foreground",
-    "argv": ["printf", "selected:%s\\n", "value"],
-    "exit": true
-  }
-}
+### Inline Script Handler
+```toml
+[commands.open.handler]
+script = '''#!/usr/bin/env python3
+import json, sys
+req = json.load(sys.stdin)
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "run",
+        "mode": "foreground",
+        "argv": ["notify-send", "Launched", req["context"]["parameters"].get("action", "")],
+        "exit": False,
+    }
+}, sys.stdout)
+'''
 ```
 
-The response operation type must match the command's declared `type`. Command scripts do not write interactive terminal output; generated `run` operations enter the existing foreground execution path. Alternatively, a command can return `{"version": 1, "error": {"message": "...", "level": "warning"}}` to provide non-fatal feedback without transitioning or terminating.
+---
 
-### Return Processors
+## Return Processors (`return_processor`)
 
-A `call` command may declare a processor that runs after the child has returned and the caller has been restored:
+When a `call` operation finishes, the parent view can execute a return processor before resuming:
 
 ```toml
-[views.main.keymap]
-enter = "choose"
-
-[commands.choose]
-label = "Choose"
-type = "call"
-producer = "declared"
-
-[commands.choose.handler]
-target = "selectors:actions"
-
 [commands.choose.return_processor]
 type = "navigate"
 producer = "script"
@@ -305,68 +319,18 @@ producer = "script"
 file = "scripts/process-result.sh"
 ```
 
-The processor script receives a `return` request. Its child return value is available under `context.result`:
+The processor script receives a JSON payload on stdin containing `context.result` (the child's return value) and outputs a version-1 operation.
 
-```json
-{
-  "version": 1,
-  "entrypoint": "return",
-  "context": {
-    "parameters": {},
-    "input": {"stdin":{"path":null,"length":0,"is_tty":true}},
-    "engine": {"type":"picker","state":{"input":"","item":{"text":"Show date","value":"date","metadata":{}},"text":"Show date","value":"date","metadata":{},"selected_index":0}},
-    "result": {"text":"Show date","value":"date","metadata":{}}
-  }
-}
-```
+---
 
-The processor returns the same versioned operation envelope used by commands. Return values are raw JSON, including strings, objects, arrays, numbers, booleans, and explicit JSON `null`. A missing return `value` is invalid. A close/cancel decision has no result and does not run the processor.
+## Runtime Limits & Child Process Environment
 
-## Script Handlers
+### Environment Variables
+- `TFLOW_WORKFLOW_DIR`: Set to the absolute root directory of a directory-based workflow.
+- `TFLOW_INPUT`: Rendered input buffer text (provided to Embedded processes only).
 
-All new producer script handlers use exactly one of these forms:
-
-```toml
-[commands.open.handler]
-file = "scripts/open.sh"
-```
-
-```toml
-[commands.open.handler]
-script = '''#!/usr/bin/env python3
-import json
-import sys
-
-request = json.load(sys.stdin)
-json.dump({
-    "version": 1,
-    "operation": {
-        "type": "run",
-        "mode": "foreground",
-        "argv": ["printf", "parameters:%s\\n", json.dumps(request["context"].get("parameters", {}))],
-        "exit": True,
-    },
-}, sys.stdout, separators=(",", ":"))
-sys.stdout.write("\n")
-'''
-```
-
-`file` and `script` cannot be combined, must be non-empty, and are literal configuration. In directory workflows, file paths are confined to the workflow root. In single-file workflows, use inline scripts or absolute file paths.
-
-## Strict Protocol Rules
-
-Producer stdout must contain exactly one complete JSON object. Surrounding whitespace is allowed, but diagnostics, a second JSON document, malformed JSON, unknown fields, unsupported `version`, a mismatched operation type, a nonzero exit status, or an invalid operation schema is failure. Diagnostics belong on stderr.
-
-Requests use JSON stdin. The stable request fields are `version`, `entrypoint`, and a unified `context` containing `parameters`, `input`, and `engine`. Command requests add `command`; return-processor requests add raw `result`. The host applies navigation target resolution, query binding, command visibility, Engine support, cancellation, timeouts, output bounds, and stale-result checks.
-
-The default script policy is a 10-second timeout, 1 MiB stdout, and 64 KiB stderr. Picker item producers use the 64 MiB stdout bound. Managed child processes are cancelled and reaped through the shared execution layer.
-
-## Static Boundaries
-
-Configuration without a producer is static: its values are deserialized and validated at startup. Runtime data is available through the documented request fields of a producer protocol. JSON is UTF-8 text, so NUL-delimited or non-UTF-8 command protocols require a separate binary-safe interface and are outside this contract.
-
-## Multi-line Inline Scripts
-
-Inline producer handlers are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` (falling back to `$XDG_CACHE_HOME/tflow/scripts/`) with `0600` permissions. The host parses shebang arguments, preserves the caller's `$PWD`, and injects `$TFLOW_WORKFLOW_DIR` for directory workflows.
-
-For root configuration, see [settings.toml Specification](settings-toml.md). For literal values and runtime data boundaries, see [Producer Protocol](producer-protocol.md).
+### Execution Resource Limits
+- Default script timeout: **10 seconds**.
+- Standard stdout limit: **1 MiB** (expanded to **64 MiB** for Picker items producers).
+- Standard stderr limit: **64 KiB**.
+- Multi-line inline scripts are materialized under `$XDG_RUNTIME_DIR/tflow/scripts/` with `0600` permissions.
