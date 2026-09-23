@@ -196,8 +196,7 @@ mod tests {
     fn test_dimension_constraint_deserialization() {
         use crate::workflow::config::DimensionConstraint;
         let cells_toml: toml::Value = toml::from_str("val = 42").unwrap();
-        let cells: DimensionConstraint =
-            cells_toml.get("val").unwrap().clone().try_into().unwrap();
+        let cells: DimensionConstraint = cells_toml.get("val").unwrap().clone().try_into().unwrap();
         assert_eq!(cells, DimensionConstraint::Cells(42));
 
         let pct_toml: toml::Value = toml::from_str("val = \"75%\"").unwrap();
@@ -282,7 +281,11 @@ mod tests {
         assert_eq!(outside.fg, ratatui::style::Color::DarkGray);
         assert!(outside.modifier.contains(ratatui::style::Modifier::BOLD));
         assert!(outside.modifier.contains(ratatui::style::Modifier::DIM));
-        assert!(outside.modifier.contains(ratatui::style::Modifier::REVERSED));
+        assert!(
+            outside
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
     }
 }
 
@@ -367,14 +370,15 @@ impl ContentHost {
             crate::workflow::config::HorizontalAlign::Right => {
                 let offset = presentation.offset_x.unwrap_or(0);
                 let max_offset = area.width.saturating_sub(width);
-                area.x.saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
+                area.x
+                    .saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
             }
         };
 
         let y = match v_align {
-            crate::workflow::config::VerticalAlign::Center => {
-                area.y.saturating_add(area.height.saturating_sub(height) / 2)
-            }
+            crate::workflow::config::VerticalAlign::Center => area
+                .y
+                .saturating_add(area.height.saturating_sub(height) / 2),
             crate::workflow::config::VerticalAlign::Top => {
                 let offset = presentation.offset_y.unwrap_or(0);
                 let max_offset = area.height.saturating_sub(height);
@@ -383,7 +387,8 @@ impl ContentHost {
             crate::workflow::config::VerticalAlign::Bottom => {
                 let offset = presentation.offset_y.unwrap_or(0);
                 let max_offset = area.height.saturating_sub(height);
-                area.y.saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
+                area.y
+                    .saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
             }
         };
         Rect::new(x, y, width, height)
@@ -615,10 +620,10 @@ impl ContentHost {
         for y in terminal.top()..terminal.bottom() {
             for x in terminal.left()..terminal.right() {
                 let pos = Position { x, y };
-                if !focus_rect.contains(pos) {
-                    if let Some(cell) = buffer.cell_mut(pos) {
-                        Self::dim_cell(cell, backdrop_style);
-                    }
+                if !focus_rect.contains(pos)
+                    && let Some(cell) = buffer.cell_mut(pos)
+                {
+                    Self::dim_cell(cell, backdrop_style);
                 }
             }
         }
@@ -627,7 +632,10 @@ impl ContentHost {
     /// Applies the configured backdrop style to an individual cell outside the focus rectangle.
     ///
     /// Patches only configured colors and modifiers, preserving all other cell attributes.
-    pub(crate) fn dim_cell(cell: &mut ratatui::buffer::Cell, backdrop_style: ratatui::style::Style) {
+    pub(crate) fn dim_cell(
+        cell: &mut ratatui::buffer::Cell,
+        backdrop_style: ratatui::style::Style,
+    ) {
         cell.set_style(backdrop_style);
     }
 }

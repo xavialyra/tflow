@@ -495,10 +495,10 @@ impl CommandService for ProtocolCommandService {
             let cancellation_clone = self.cancellation.clone();
             let action = std::sync::Arc::new(move || {
                 let snapshot = snapshot_clone.read().unwrap();
-                if let Some(active_view) = snapshot.active_view.as_deref() {
-                    if crate::workflow::command::is_commands_view(active_view, &target) {
-                        return Ok(ViewDecision::Stay);
-                    }
+                if let Some(active_view) = snapshot.active_view.as_deref()
+                    && crate::workflow::command::is_commands_view(active_view, &target)
+                {
+                    return Ok(ViewDecision::Stay);
                 }
                 let parameters = snapshot.to_picker_parameters();
                 let active_caller = snapshot.active_instance.unwrap_or(ViewInstanceId(0));

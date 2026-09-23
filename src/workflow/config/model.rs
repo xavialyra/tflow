@@ -302,7 +302,8 @@ impl<'de> Deserialize<'de> for DimensionConstraint {
             where
                 E: serde::de::Error,
             {
-                let cells = u16::try_from(value).map_err(|_| E::custom("dimension exceeds u16 limit"))?;
+                let cells =
+                    u16::try_from(value).map_err(|_| E::custom("dimension exceeds u16 limit"))?;
                 Ok(DimensionConstraint::Cells(cells))
             }
 

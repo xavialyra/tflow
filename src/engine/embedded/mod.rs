@@ -215,10 +215,8 @@ pub(super) fn create_renderer(
 pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
 ) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
-    let keymap = EmbeddedKeymap::from_values(
-        context.bindings.defaults,
-        context.bindings.view_keymap,
-    )?;
+    let keymap =
+        EmbeddedKeymap::from_values(context.bindings.defaults, context.bindings.view_keymap)?;
     let mut bindings = Vec::new();
     for (key, action) in keymap.bindings() {
         match action {

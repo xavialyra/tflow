@@ -369,8 +369,7 @@ fn check_rejects_form_binding_conflicts_with_defaults() {
 
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("form key \"escape\" is assigned to both"),
+        String::from_utf8_lossy(&output.stderr).contains("form key \"escape\" is assigned to both"),
         "stderr: {:?}",
         output.stderr
     );

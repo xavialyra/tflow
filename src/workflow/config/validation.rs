@@ -182,15 +182,15 @@ fn validate_operation_target(
     {
         bail!("producer presentation width and height must be positive");
     }
-    if let (Some(min), Some(max)) = (presentation.min_width, presentation.max_width) {
-        if min > max {
-            bail!("presentation min_width ({min}) cannot exceed max_width ({max})");
-        }
+    if let (Some(min), Some(max)) = (presentation.min_width, presentation.max_width)
+        && min > max
+    {
+        bail!("presentation min_width ({min}) cannot exceed max_width ({max})");
     }
-    if let (Some(min), Some(max)) = (presentation.min_height, presentation.max_height) {
-        if min > max {
-            bail!("presentation min_height ({min}) cannot exceed max_height ({max})");
-        }
+    if let (Some(min), Some(max)) = (presentation.min_height, presentation.max_height)
+        && min > max
+    {
+        bail!("presentation min_height ({min}) cannot exceed max_height ({max})");
     }
     Ok(())
 }

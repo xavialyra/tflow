@@ -663,77 +663,101 @@ fn form_bindings_can_be_customized_and_disabled_via_keymap() {
 #[test]
 fn enum_field_validation_and_parsing_rules() {
     // Valid enum field
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": ["dev", "staging", "prod"],
-            "value": "dev"
-        }]
-    })).is_ok());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": ["dev", "staging", "prod"],
+                "value": "dev"
+            }]
+        }))
+        .is_ok()
+    );
 
     // Valid enum with null initial value
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": ["dev", "prod"]
-        }]
-    })).is_ok());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": ["dev", "prod"]
+            }]
+        }))
+        .is_ok()
+    );
 
     // Rejects enum without options
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum"
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum"
+            }]
+        }))
+        .is_err()
+    );
 
     // Rejects enum with empty options
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": []
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": []
+            }]
+        }))
+        .is_err()
+    );
 
     // Rejects duplicate options
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": ["dev", "dev"]
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": ["dev", "dev"]
+            }]
+        }))
+        .is_err()
+    );
 
     // Rejects blank option string
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": ["dev", "  "]
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": ["dev", "  "]
+            }]
+        }))
+        .is_err()
+    );
 
     // Rejects initial value not in options
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "enum",
-            "options": ["dev", "prod"],
-            "value": "staging"
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "enum",
+                "options": ["dev", "prod"],
+                "value": "staging"
+            }]
+        }))
+        .is_err()
+    );
 
     // Rejects options configured on non-enum field
-    assert!(parse_content(json!({
-        "fields": [{
-            "name": "env",
-            "type": "string",
-            "options": ["dev", "prod"]
-        }]
-    })).is_err());
+    assert!(
+        parse_content(json!({
+            "fields": [{
+                "name": "env",
+                "type": "string",
+                "options": ["dev", "prod"]
+            }]
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -805,7 +829,10 @@ fn enum_field_inline_switching_and_keyboard_interaction() {
     // Navigate to optional enum field (initially null)
     key(&mut form, Key::Tab);
     assert_eq!(form.publication.current["focused"], "optional_tier");
-    assert_eq!(form.publication.current["values"]["optional_tier"], Value::Null);
+    assert_eq!(
+        form.publication.current["values"]["optional_tier"],
+        Value::Null
+    );
     assert_eq!(form.publication.current["valid"], true);
 
     // Space on null optional enum selects first option
@@ -814,7 +841,10 @@ fn enum_field_inline_switching_and_keyboard_interaction() {
 
     // Clear it with Ctrl+U -> becomes Null again and form stays valid
     key(&mut form, Key::Ctrl('u'));
-    assert_eq!(form.publication.current["values"]["optional_tier"], Value::Null);
+    assert_eq!(
+        form.publication.current["values"]["optional_tier"],
+        Value::Null
+    );
     assert_eq!(form.publication.current["valid"], true);
 }
 
@@ -838,7 +868,10 @@ fn enum_field_paste_and_invalid_value_reporting() {
     paste(&mut form, "unknown_tier");
     assert_eq!(form.publication.current["drafts"]["tier"], "unknown_tier");
     assert_eq!(form.publication.current["values"]["tier"], Value::Null);
-    assert_eq!(form.publication.current["errors"]["tier"], "Choose from options");
+    assert_eq!(
+        form.publication.current["errors"]["tier"],
+        "Choose from options"
+    );
     assert_eq!(form.publication.current["valid"], false);
 }
 

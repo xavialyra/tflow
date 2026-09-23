@@ -51,9 +51,9 @@ impl ParameterType {
             Self::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
             Self::Number => value.is_number(),
             Self::Boolean => value.is_boolean(),
-            Self::Enum(options) => {
-                value.as_str().is_some_and(|s| options.iter().any(|opt| opt == s))
-            }
+            Self::Enum(options) => value
+                .as_str()
+                .is_some_and(|s| options.iter().any(|opt| opt == s)),
             Self::Array(item_type) => value
                 .as_array()
                 .is_some_and(|values| values.iter().all(|value| item_type.accepts(value, false))),
@@ -238,9 +238,9 @@ fn compile_field(name: &str, value: &Value) -> Result<ParameterField> {
 
     let options: Option<Vec<String>> = match field.get("options") {
         Some(opts) => {
-            let arr = opts
-                .as_array()
-                .with_context(|| format!("query field {:?} options must be an array of strings", name))?;
+            let arr = opts.as_array().with_context(|| {
+                format!("query field {:?} options must be an array of strings", name)
+            })?;
             ensure!(
                 !arr.is_empty(),
                 "query field {:?} options must be nonempty",
@@ -249,9 +249,9 @@ fn compile_field(name: &str, value: &Value) -> Result<ParameterField> {
             let mut set = std::collections::HashSet::new();
             let mut list = Vec::new();
             for item in arr {
-                let s = item.as_str().with_context(|| {
-                    format!("query field {:?} options must be strings", name)
-                })?;
+                let s = item
+                    .as_str()
+                    .with_context(|| format!("query field {:?} options must be strings", name))?;
                 ensure!(
                     !s.trim().is_empty(),
                     "query field {:?} option cannot be empty",

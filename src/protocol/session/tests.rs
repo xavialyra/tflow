@@ -1990,7 +1990,13 @@ fn nested_popups_use_shared_viewport_dimensions_without_clipping() {
         })
         .unwrap();
     assert_eq!(
-        session.router().active().unwrap().view.command_snapshot().runtime,
+        session
+            .router()
+            .active()
+            .unwrap()
+            .view
+            .command_snapshot()
+            .runtime,
         serde_json::json!({"width": 18, "height": 4})
     );
 
@@ -2013,7 +2019,13 @@ fn nested_popups_use_shared_viewport_dimensions_without_clipping() {
 
     // The grandchild's inner area must be 28x6, NOT constrained to child's 18x4
     assert_eq!(
-        session.router().active().unwrap().view.command_snapshot().runtime,
+        session
+            .router()
+            .active()
+            .unwrap()
+            .view
+            .command_snapshot()
+            .runtime,
         serde_json::json!({"width": 28, "height": 6})
     );
 
@@ -2127,7 +2139,11 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     // (5, 1) is OUTSIDE grandchild, so child's border MUST have Modifier::DIM.
     let child_border = buffer.cell((5, 1)).unwrap();
     assert_eq!(child_border.symbol(), "┌");
-    assert!(child_border.modifier.contains(ratatui::style::Modifier::DIM));
+    assert!(
+        child_border
+            .modifier
+            .contains(ratatui::style::Modifier::DIM)
+    );
     assert_eq!(child_border.fg, session.theme.chrome.backdrop.fg.unwrap());
 
     // 3. Grandchild popup is 16x4 centered in 40x10 terminal:
@@ -2136,8 +2152,15 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     // It must NOT have Modifier::DIM and must retain its active border color!
     let grandchild_border = buffer.cell((12, 3)).unwrap();
     assert_eq!(grandchild_border.symbol(), "┌");
-    assert!(!grandchild_border.modifier.contains(ratatui::style::Modifier::DIM));
-    assert_eq!(grandchild_border.fg, session.theme.chrome.border.fg.unwrap());
+    assert!(
+        !grandchild_border
+            .modifier
+            .contains(ratatui::style::Modifier::DIM)
+    );
+    assert_eq!(
+        grandchild_border.fg,
+        session.theme.chrome.border.fg.unwrap()
+    );
 }
 
 #[test]
@@ -2176,5 +2199,9 @@ fn custom_theme_backdrop_style_applies_custom_color_and_modifiers() {
     // Background cell outside popup must have Blue fg and ITALIC modifier
     let base_cell = buffer.cell((0, 0)).unwrap();
     assert_eq!(base_cell.fg, ratatui::style::Color::Blue);
-    assert!(base_cell.modifier.contains(ratatui::style::Modifier::ITALIC));
+    assert!(
+        base_cell
+            .modifier
+            .contains(ratatui::style::Modifier::ITALIC)
+    );
 }

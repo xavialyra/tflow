@@ -37,12 +37,7 @@ pub(super) enum FormAction {
 }
 
 impl FormAction {
-    const ALL: [Self; 4] = [
-        Self::FocusNext,
-        Self::FocusPrev,
-        Self::Cancel,
-        Self::Exit,
-    ];
+    const ALL: [Self; 4] = [Self::FocusNext, Self::FocusPrev, Self::Cancel, Self::Exit];
 }
 
 impl KeymapAction for FormAction {
@@ -197,10 +192,8 @@ impl FormView {
         };
         let ready = script.is_none();
         let publication = ViewPublication::new(content::state(&fields, 0, ready), ready);
-        let keymap = FormKeymap::from_values(
-            config.bindings.defaults,
-            config.bindings.view_keymap,
-        )?;
+        let keymap =
+            FormKeymap::from_values(config.bindings.defaults, config.bindings.view_keymap)?;
         Ok(Self {
             instance,
             target: request.target.clone(),
@@ -341,42 +334,42 @@ impl FormView {
             }
             Key::Char(' ') | Key::Right if draft.field.kind == FieldType::Enum => {
                 draft.prefix_len = 0;
-                if let Some(options) = &draft.field.options {
-                    if !options.is_empty() {
-                        let next = match options.iter().position(|opt| opt == buffer.raw.trim()) {
-                            Some(idx) => &options[(idx + 1) % options.len()],
-                            None => &options[0],
-                        };
-                        buffer.replace_all(next.clone(), next.len());
-                    }
+                if let Some(options) = &draft.field.options
+                    && !options.is_empty()
+                {
+                    let next = match options.iter().position(|opt| opt == buffer.raw.trim()) {
+                        Some(idx) => &options[(idx + 1) % options.len()],
+                        None => &options[0],
+                    };
+                    buffer.replace_all(next.clone(), next.len());
                 }
             }
             Key::Left if draft.field.kind == FieldType::Enum => {
                 draft.prefix_len = 0;
-                if let Some(options) = &draft.field.options {
-                    if !options.is_empty() {
-                        let prev = match options.iter().position(|opt| opt == buffer.raw.trim()) {
-                            Some(idx) => &options[(idx + options.len() - 1) % options.len()],
-                            None => options.last().unwrap(),
-                        };
-                        buffer.replace_all(prev.clone(), prev.len());
-                    }
+                if let Some(options) = &draft.field.options
+                    && !options.is_empty()
+                {
+                    let prev = match options.iter().position(|opt| opt == buffer.raw.trim()) {
+                        Some(idx) => &options[(idx + options.len() - 1) % options.len()],
+                        None => options.last().unwrap(),
+                    };
+                    buffer.replace_all(prev.clone(), prev.len());
                 }
             }
             Key::Home | Key::Ctrl('a') if draft.field.kind == FieldType::Enum => {
                 draft.prefix_len = 0;
-                if let Some(options) = &draft.field.options {
-                    if let Some(first) = options.first() {
-                        buffer.replace_all(first.clone(), first.len());
-                    }
+                if let Some(options) = &draft.field.options
+                    && let Some(first) = options.first()
+                {
+                    buffer.replace_all(first.clone(), first.len());
                 }
             }
             Key::End | Key::Ctrl('e') if draft.field.kind == FieldType::Enum => {
                 draft.prefix_len = 0;
-                if let Some(options) = &draft.field.options {
-                    if let Some(last) = options.last() {
-                        buffer.replace_all(last.clone(), last.len());
-                    }
+                if let Some(options) = &draft.field.options
+                    && let Some(last) = options.last()
+                {
+                    buffer.replace_all(last.clone(), last.len());
                 }
             }
             Key::Char(c) if draft.field.kind == FieldType::Enum && !c.is_control() => {
@@ -408,9 +401,9 @@ impl FormView {
                             .map(|i| (start_idx + i) % options.len())
                             .find(|&idx| {
                                 let opt = &options[idx];
-                                opt.chars().next().is_some_and(|ch| {
-                                    ch.to_lowercase().to_string() == c_lower
-                                })
+                                opt.chars()
+                                    .next()
+                                    .is_some_and(|ch| ch.to_lowercase().to_string() == c_lower)
                             });
                         if let Some(idx) = matched {
                             let chosen = &options[idx];

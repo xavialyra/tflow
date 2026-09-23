@@ -1607,7 +1607,9 @@ fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
     wait_for_text(&process.master, "name");
     send_bytes(&mut process, b"changed\r");
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("changed") && !screen.contains("__query:main") && !screen.contains("__form:main")
+        screen.contains("changed")
+            && !screen.contains("__query:main")
+            && !screen.contains("__form:main")
     });
     send_bytes(&mut process, b"\x03");
     let (status, output) = wait_for_launcher_exit(&mut process);
