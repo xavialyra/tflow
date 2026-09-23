@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -8,24 +8,35 @@ pub(crate) enum ParameterType {
     Integer,
     Number,
     Boolean,
+    Enum(Vec<String>),
     Array(Box<ParameterType>),
     Object,
 }
 
 impl ParameterType {
-    fn parse(source: &str) -> Result<Self> {
+    fn parse(source: &str, options: Option<&[String]>) -> Result<Self> {
         match source {
             "string" => Ok(Self::String),
             "integer" => Ok(Self::Integer),
             "number" => Ok(Self::Number),
             "boolean" => Ok(Self::Boolean),
             "object" => Ok(Self::Object),
+            "enum" => {
+                let options = options.context("query enum type requires options")?;
+                ensure!(!options.is_empty(), "query enum options must be nonempty");
+                Ok(Self::Enum(options.to_vec()))
+            }
             _ if source.starts_with("array<") && source.ends_with('>') => {
                 let item = &source[6..source.len() - 1];
                 if item.is_empty() {
                     bail!("query array type requires an item type");
                 }
-                Ok(Self::Array(Box::new(Self::parse(item)?)))
+                if item == "enum" {
+                    let options = options.context("query enum array requires options")?;
+                    ensure!(!options.is_empty(), "query enum options must be nonempty");
+                    return Ok(Self::Array(Box::new(Self::Enum(options.to_vec()))));
+                }
+                Ok(Self::Array(Box::new(Self::parse(item, None)?)))
             }
             _ => bail!("unsupported query type {:?}", source),
         }
@@ -40,6 +51,9 @@ impl ParameterType {
             Self::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
             Self::Number => value.is_number(),
             Self::Boolean => value.is_boolean(),
+            Self::Enum(options) => {
+                value.as_str().is_some_and(|s| options.iter().any(|opt| opt == s))
+            }
             Self::Array(item_type) => value
                 .as_array()
                 .is_some_and(|values| values.iter().all(|value| item_type.accepts(value, false))),
@@ -53,6 +67,7 @@ impl ParameterType {
             Self::Integer => "integer".to_string(),
             Self::Number => "number".to_string(),
             Self::Boolean => "boolean".to_string(),
+            Self::Enum(options) => format!("one of: {}", options.join(", ")),
             Self::Array(item) => format!("array<{}>", item.description()),
             Self::Object => "object".to_string(),
         }
@@ -73,6 +88,17 @@ impl ParameterType {
                 .parse::<bool>()
                 .map(Value::Bool)
                 .with_context(|| format!("{source:?} is not a boolean")),
+            Self::Enum(options) => {
+                if options.iter().any(|opt| opt == source) {
+                    Ok(Value::String(source.to_string()))
+                } else {
+                    bail!(
+                        "{:?} is not a valid option, expected one of: {}",
+                        source,
+                        options.join(", ")
+                    )
+                }
+            }
             Self::Array(_) | Self::Object => {
                 bail!("{} input requires JSON", self.description())
             }
@@ -201,15 +227,70 @@ fn compile_field(name: &str, value: &Value) -> Result<ParameterField> {
         .as_object()
         .with_context(|| format!("query field {:?} must be an object", name))?;
     for key in field.keys() {
-        if !matches!(key.as_str(), "type" | "default" | "nullable") {
+        if !matches!(key.as_str(), "type" | "default" | "nullable" | "options") {
             bail!("query field {:?} has unknown property {:?}", name, key);
         }
     }
-    let value_type = field
+    let value_type_name = field
         .get("type")
         .and_then(Value::as_str)
         .with_context(|| format!("query field {:?} requires a type", name))?;
-    let value_type = ParameterType::parse(value_type)
+
+    let options: Option<Vec<String>> = match field.get("options") {
+        Some(opts) => {
+            let arr = opts
+                .as_array()
+                .with_context(|| format!("query field {:?} options must be an array of strings", name))?;
+            ensure!(
+                !arr.is_empty(),
+                "query field {:?} options must be nonempty",
+                name
+            );
+            let mut set = std::collections::HashSet::new();
+            let mut list = Vec::new();
+            for item in arr {
+                let s = item.as_str().with_context(|| {
+                    format!("query field {:?} options must be strings", name)
+                })?;
+                ensure!(
+                    !s.trim().is_empty(),
+                    "query field {:?} option cannot be empty",
+                    name
+                );
+                ensure!(
+                    set.insert(s),
+                    "duplicate option {:?} in query field {:?}",
+                    s,
+                    name
+                );
+                list.push(s.to_string());
+            }
+            Some(list)
+        }
+        None => None,
+    };
+
+    let is_enum = value_type_name == "enum"
+        || (value_type_name.starts_with("array<")
+            && value_type_name.ends_with('>')
+            && &value_type_name[6..value_type_name.len() - 1] == "enum");
+
+    if is_enum {
+        ensure!(
+            options.is_some(),
+            "query field {:?} of type {:?} requires nonempty options",
+            name,
+            value_type_name
+        );
+    } else {
+        ensure!(
+            options.is_none(),
+            "query field {:?} has options, but options are only allowed for enum types",
+            name
+        );
+    }
+
+    let value_type = ParameterType::parse(value_type_name, options.as_deref())
         .with_context(|| format!("invalid query field {:?}", name))?;
     let nullable = field
         .get("nullable")

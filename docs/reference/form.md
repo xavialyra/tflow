@@ -26,6 +26,7 @@ producer = "declared"
 [views.edit.engine.config.content.handler]
 fields = [
   { name = "name", label = "Project name", type = "string", required = true },
+  { name = "environment", label = "Environment", type = "enum", options = ["dev", "staging", "prod"], value = "dev" },
   { name = "count", type = "integer", value = 2 },
   { name = "enabled", type = "boolean", value = false },
   { name = "options", type = "json", value = { tags = [] } },
@@ -49,7 +50,7 @@ The request is:
 The response is:
 
 ```json
-{"version":1,"content":{"fields":[{"name":"a","type":"string","value":"dd"},{"name":"b","type":"number","value":null}]}}
+{"version":1,"content":{"fields":[{"name":"a","type":"string","value":"dd"},{"name":"b","type":"enum","options":["dev","prod"],"value":"dev"},{"name":"c","type":"number","value":null}]}}
 ```
 
 The script runs after activation using the shared managed task and execution layers. A successful response initializes the fields once. Covering and restoring the View preserves its drafts; a covered producer completion may initialize local content. Closing cancels pending work. A failed producer leaves the View mounted with a diagnostic; reopen it to retry. Content is not regenerated on each edit.
@@ -64,11 +65,12 @@ Content has exactly one required property, `fields`, an ordered array. Empty arr
 | :--- | :--- | :--- |
 | `name` | string | Required stable key in published values and drafts. |
 | `label` | string or null | Uses `name` when absent or null. |
-| `type` | string | `string`; also accepts `password`, `integer`, `number`, `boolean`, and `json`. |
+| `type` | string | `string`; also accepts `password`, `integer`, `number`, `boolean`, `json`, and `enum`. |
+| `options` | array of strings or null | Required and nonempty for `enum` fields; disallowed for other field types. Must contain unique, nonempty strings. |
 | `value` | JSON value | Null when absent; initializes the editor. Non-null values must match the field type. |
 | `required` | boolean | False; rejects null and whitespace-only string values when true. |
 
-`string` and `password` fields retain text verbatim (`password` fields mask characters with `*` when rendered). An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null. An incomplete required field is valid content configuration and appears as an editable validation error.
+`string` and `password` fields retain text verbatim (`password` fields mask characters with `*` when rendered). An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null; `enum` fields require a nonempty `options` list, and non-null values must match one of the declared options. In rendered fields, non-empty `enum` values display with `< value >` selector indicators. An incomplete required field is valid content configuration and appears as an editable validation error.
 
 Fields use single-line editors in a vertical layout. The focused field remains visible as focus changes. Pasted content is retained verbatim, including newlines; control characters are displayed as spaces. JSON can therefore be pasted with formatting, although the editor displays it on one line.
 
@@ -113,6 +115,10 @@ Registered View, Engine, and Host commands take precedence over these editing ke
 | Ctrl+U | Clear the field. |
 | Ctrl+W | Delete the previous word. |
 | Space in a boolean field | Toggle true/false. |
+| Space / Right in an enum field | Cycle to next option. |
+| Left in an enum field | Cycle to previous option. |
+| Home / End in an enum field | Select first / last option. |
+| Printable char in an enum field | Jump to next option starting with that letter. |
 | Esc | Close without a return value. |
 | Ctrl+C / Ctrl+D | Exit. |
 

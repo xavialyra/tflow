@@ -659,3 +659,217 @@ fn form_bindings_can_be_customized_and_disabled_via_keymap() {
     assert!(!keys.contains(&Key::Ctrl('q')));
     assert!(!keys.contains(&Key::Escape));
 }
+
+#[test]
+fn enum_field_validation_and_parsing_rules() {
+    // Valid enum field
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "staging", "prod"],
+            "value": "dev"
+        }]
+    })).is_ok());
+
+    // Valid enum with null initial value
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "prod"]
+        }]
+    })).is_ok());
+
+    // Rejects enum without options
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum"
+        }]
+    })).is_err());
+
+    // Rejects enum with empty options
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": []
+        }]
+    })).is_err());
+
+    // Rejects duplicate options
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "dev"]
+        }]
+    })).is_err());
+
+    // Rejects blank option string
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "  "]
+        }]
+    })).is_err());
+
+    // Rejects initial value not in options
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "prod"],
+            "value": "staging"
+        }]
+    })).is_err());
+
+    // Rejects options configured on non-enum field
+    assert!(parse_content(json!({
+        "fields": [{
+            "name": "env",
+            "type": "string",
+            "options": ["dev", "prod"]
+        }]
+    })).is_err());
+}
+
+#[test]
+fn enum_field_inline_switching_and_keyboard_interaction() {
+    let mut form = declared(json!([
+        {
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "staging", "prod"],
+            "value": "dev",
+            "required": true
+        },
+        {
+            "name": "optional_tier",
+            "type": "enum",
+            "options": ["free", "pro", "enterprise"]
+        }
+    ]));
+
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+    assert_eq!(form.publication.current["valid"], true);
+    assert_eq!(form.publication.current["dirty"], false);
+
+    // Space cycles forward: dev -> staging -> prod -> dev
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["env"], "staging");
+    assert_eq!(form.publication.current["drafts"]["env"], "staging");
+    assert_eq!(form.publication.current["dirty"], true);
+
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["env"], "prod");
+
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+
+    // Right cycles forward, Left cycles backward
+    key(&mut form, Key::Right);
+    assert_eq!(form.publication.current["values"]["env"], "staging");
+    key(&mut form, Key::Left);
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+    key(&mut form, Key::Left);
+    assert_eq!(form.publication.current["values"]["env"], "prod");
+
+    // Home jumps to first, End jumps to last
+    key(&mut form, Key::Home);
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+    key(&mut form, Key::End);
+    assert_eq!(form.publication.current["values"]["env"], "prod");
+
+    // First-letter jumping: 's' jumps to staging
+    key(&mut form, Key::Char('s'));
+    assert_eq!(form.publication.current["values"]["env"], "staging");
+    // 'd' jumps to dev
+    key(&mut form, Key::Char('d'));
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+
+    // Backspace clears required enum field -> error "Required"
+    key(&mut form, Key::Backspace);
+    assert_eq!(form.publication.current["drafts"]["env"], "");
+    assert_eq!(form.publication.current["values"]["env"], Value::Null);
+    assert_eq!(form.publication.current["errors"]["env"], "Required");
+    assert_eq!(form.publication.current["valid"], false);
+
+    // Space on cleared field selects options[0]
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["env"], "dev");
+    assert_eq!(form.publication.current["valid"], true);
+
+    // Navigate to optional enum field (initially null)
+    key(&mut form, Key::Tab);
+    assert_eq!(form.publication.current["focused"], "optional_tier");
+    assert_eq!(form.publication.current["values"]["optional_tier"], Value::Null);
+    assert_eq!(form.publication.current["valid"], true);
+
+    // Space on null optional enum selects first option
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["optional_tier"], "free");
+
+    // Clear it with Ctrl+U -> becomes Null again and form stays valid
+    key(&mut form, Key::Ctrl('u'));
+    assert_eq!(form.publication.current["values"]["optional_tier"], Value::Null);
+    assert_eq!(form.publication.current["valid"], true);
+}
+
+#[test]
+fn enum_field_paste_and_invalid_value_reporting() {
+    let mut form = declared(json!([
+        {
+            "name": "tier",
+            "type": "enum",
+            "options": ["basic", "standard", "premium"],
+            "value": "basic"
+        }
+    ]));
+
+    // Paste valid option replaces current value
+    paste(&mut form, "premium");
+    assert_eq!(form.publication.current["values"]["tier"], "premium");
+    assert_eq!(form.publication.current["valid"], true);
+
+    // Paste invalid value reports "Choose from options"
+    paste(&mut form, "unknown_tier");
+    assert_eq!(form.publication.current["drafts"]["tier"], "unknown_tier");
+    assert_eq!(form.publication.current["values"]["tier"], Value::Null);
+    assert_eq!(form.publication.current["errors"]["tier"], "Choose from options");
+    assert_eq!(form.publication.current["valid"], false);
+}
+
+#[test]
+fn enum_field_renders_inline_selector_decoration() {
+    let form = declared(json!([
+        {
+            "name": "env",
+            "type": "enum",
+            "options": ["dev", "prod"],
+            "value": "prod"
+        }
+    ]));
+    let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+    terminal
+        .draw(|frame| {
+            form.render(
+                frame,
+                frame.area(),
+                &RenderContext::for_terminal(TerminalSize {
+                    width: 40,
+                    height: 5,
+                }),
+            )
+            .unwrap();
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let screen = (0..5)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("< prod >"));
+}

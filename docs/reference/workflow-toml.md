@@ -59,15 +59,29 @@ keymap_mode = "view"
 
 [views.main.query]
 type = "object"
-mode = { type = "string", default = "normal" }
+mode = { type = "enum", options = ["normal", "compact"], default = "normal" }
 ```
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `engine` | table | `{ type = "picker" }` | Defines the View's UI engine and its engine-specific configuration. |
-| `query` | table | `{}` | JSON Schema defining the view's expected launch parameters. Validated before mounting. |
+| `query` | table | `{}` | Parameter schema defining the view's expected launch parameters. Validated before mounting. |
 | `keymap` | table | `{}` | Key-to-command mappings active when this View is focused. |
 | `keymap_mode` | string | `"view"` | Keymap resolution strategy: `"view"` or `"item_merge"`. |
+
+### Query Parameter Schemas (`[views.<name>.query]`)
+
+The query schema declares the expected parameters for launching the View (via CLI flags or navigation `query` objects):
+
+- `type`: Either `"string"` (for unstructured plain input) or `"object"`.
+- `input`: Optional string naming the field that receives positional CLI input and interactive text input. Must be of type `string`.
+- Field definitions:
+  - `type`: Parameter type. Accepted types are `string`, `integer`, `number`, `boolean`, `enum`, `object`, and `array<T>`.
+  - `options`: Required array of unique, nonempty strings when `type = "enum"`; disallowed for other types.
+  - `default`: Optional default value when omitted.
+  - `nullable`: Optional boolean (`false` by default).
+
+CLI arguments matching fields in an object query (e.g. `--mode=compact`) are parsed and validated against this schema. Invalid options or values are rejected with diagnostic errors.
 
 ### Keymap Modes (`keymap_mode`)
 

@@ -203,7 +203,16 @@ impl FormView {
             let draft = &self.fields[index];
             let cursor = if focused { draft.buffer.cursor } else { 0 };
             let masked = draft.field.kind == super::content::FieldType::Password;
-            let (text, x) = window(&draft.buffer.raw, cursor, editor.width, masked);
+            let (raw, cursor) = if draft.field.kind == super::content::FieldType::Enum {
+                if draft.buffer.raw.is_empty() {
+                    (String::new(), 0)
+                } else {
+                    (format!("< {} >", draft.buffer.raw), 2)
+                }
+            } else {
+                (draft.buffer.raw.clone(), cursor)
+            };
+            let (text, x) = window(&raw, cursor, editor.width, masked);
             frame.render_widget(
                 Paragraph::new(text).style(if focused { theme.focused } else { theme.input }),
                 editor,

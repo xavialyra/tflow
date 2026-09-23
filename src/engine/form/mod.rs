@@ -339,6 +339,93 @@ impl FormView {
                 };
                 buffer.replace_all(text.to_string(), text.len());
             }
+            Key::Char(' ') | Key::Right if draft.field.kind == FieldType::Enum => {
+                draft.prefix_len = 0;
+                if let Some(options) = &draft.field.options {
+                    if !options.is_empty() {
+                        let next = match options.iter().position(|opt| opt == buffer.raw.trim()) {
+                            Some(idx) => &options[(idx + 1) % options.len()],
+                            None => &options[0],
+                        };
+                        buffer.replace_all(next.clone(), next.len());
+                    }
+                }
+            }
+            Key::Left if draft.field.kind == FieldType::Enum => {
+                draft.prefix_len = 0;
+                if let Some(options) = &draft.field.options {
+                    if !options.is_empty() {
+                        let prev = match options.iter().position(|opt| opt == buffer.raw.trim()) {
+                            Some(idx) => &options[(idx + options.len() - 1) % options.len()],
+                            None => options.last().unwrap(),
+                        };
+                        buffer.replace_all(prev.clone(), prev.len());
+                    }
+                }
+            }
+            Key::Home | Key::Ctrl('a') if draft.field.kind == FieldType::Enum => {
+                draft.prefix_len = 0;
+                if let Some(options) = &draft.field.options {
+                    if let Some(first) = options.first() {
+                        buffer.replace_all(first.clone(), first.len());
+                    }
+                }
+            }
+            Key::End | Key::Ctrl('e') if draft.field.kind == FieldType::Enum => {
+                draft.prefix_len = 0;
+                if let Some(options) = &draft.field.options {
+                    if let Some(last) = options.last() {
+                        buffer.replace_all(last.clone(), last.len());
+                    }
+                }
+            }
+            Key::Char(c) if draft.field.kind == FieldType::Enum && !c.is_control() => {
+                if let Some(options) = &draft.field.options {
+                    let c_lower = c.to_lowercase().to_string();
+                    let current_val = buffer.raw.trim();
+                    let opt_match = options.iter().find(|opt| opt.as_str() == current_val);
+
+                    let matched_continuation = if let Some(opt) = opt_match {
+                        if draft.prefix_len < opt.len() {
+                            let next_char = opt[draft.prefix_len..]
+                                .chars()
+                                .next()
+                                .map(|ch| ch.to_lowercase().to_string());
+                            next_char == Some(c_lower.clone())
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if matched_continuation {
+                        draft.prefix_len += c.len_utf8();
+                    } else {
+                        let current_pos = options.iter().position(|opt| opt == current_val);
+                        let start_idx = current_pos.map(|p| p + 1).unwrap_or(0);
+                        let matched = (0..options.len())
+                            .map(|i| (start_idx + i) % options.len())
+                            .find(|&idx| {
+                                let opt = &options[idx];
+                                opt.chars().next().is_some_and(|ch| {
+                                    ch.to_lowercase().to_string() == c_lower
+                                })
+                            });
+                        if let Some(idx) = matched {
+                            let chosen = &options[idx];
+                            buffer.replace_all(chosen.clone(), chosen.len());
+                            draft.prefix_len = c.len_utf8();
+                        }
+                    }
+                }
+            }
+            Key::Backspace | Key::Delete | Key::Ctrl('u') | Key::Ctrl('w')
+                if draft.field.kind == FieldType::Enum =>
+            {
+                draft.prefix_len = 0;
+                buffer.clear();
+            }
             Key::Char(c) if !c.is_control() => buffer.insert(c),
             Key::Left => buffer.move_left(),
             Key::Right => buffer.move_right(),
@@ -500,7 +587,13 @@ impl View for FormView {
                 text: Some(text), ..
             }) if self.active && self.publication.ready => {
                 if let Some(field) = self.fields.get_mut(self.focus) {
-                    field.buffer.insert_text(&text);
+                    if field.field.kind == FieldType::Enum {
+                        field.prefix_len = 0;
+                        let trimmed = text.trim();
+                        field.buffer.replace_all(trimmed.to_string(), trimmed.len());
+                    } else {
+                        field.buffer.insert_text(&text);
+                    }
                     self.publish();
                     ViewDecision::Invalidate
                 } else {

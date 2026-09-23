@@ -50,7 +50,7 @@ elif query_type == "object":
         if not isinstance(definition, dict) or not isinstance(definition.get("type"), str):
             raise SystemExit(f"query field {name!r} is invalid")
         type_name = definition["type"]
-        if type_name in ("string", "password", "integer", "number", "boolean"):
+        if type_name in ("string", "password", "integer", "number", "boolean", "enum"):
             field_type = type_name
         elif type_name == "object" or type_name.startswith("array<"):
             field_type = "json"
@@ -64,6 +64,8 @@ elif query_type == "object":
             "required": "default" not in definition and not definition.get("nullable", False),
             "value": value,
         }
+        if type_name == "enum" and "options" in definition:
+            field["options"] = definition["options"]
         fields.append(field)
 else:
     raise SystemExit(f"query type {query_type!r} is unsupported")

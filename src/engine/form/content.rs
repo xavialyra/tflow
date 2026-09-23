@@ -14,6 +14,7 @@ pub(super) enum FieldType {
     Number,
     Boolean,
     Json,
+    Enum,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,8 @@ pub(super) struct Field {
     #[serde(default)]
     pub(super) required: bool,
     #[serde(default)]
+    pub(super) options: Option<Vec<String>>,
+    #[serde(default)]
     value: Value,
 }
 
@@ -39,6 +42,7 @@ pub(super) struct Field {
 pub(super) struct Draft {
     pub(super) field: Field,
     pub(super) buffer: EditorBuffer,
+    pub(super) prefix_len: usize,
     initial: String,
 }
 
@@ -58,6 +62,36 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
                 "duplicate form field {:?}",
                 field.name
             );
+            if field.kind == FieldType::Enum {
+                let options = field
+                    .options
+                    .as_ref()
+                    .context("form enum field requires options")?;
+                ensure!(
+                    !options.is_empty(),
+                    "form enum field {:?} options must be nonempty",
+                    field.name
+                );
+                let mut opt_set = HashSet::new();
+                for opt in options {
+                    ensure!(
+                        !opt.trim().is_empty(),
+                        "form enum field {:?} option cannot be empty",
+                        field.name
+                    );
+                    ensure!(
+                        opt_set.insert(opt),
+                        "duplicate enum option {:?} in field {:?}",
+                        opt,
+                        field.name
+                    );
+                }
+            } else {
+                ensure!(
+                    field.options.is_none(),
+                    "options is only supported for enum fields"
+                );
+            }
             let value = &field.value;
             ensure!(
                 value.is_null()
@@ -67,13 +101,21 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
                         FieldType::Number => value.is_number(),
                         FieldType::Boolean => value.is_boolean(),
                         FieldType::Json => true,
+                        FieldType::Enum => {
+                            value.as_str().is_some_and(|s| {
+                                field.options.as_ref().unwrap().iter().any(|opt| opt == s)
+                            })
+                        }
                     },
                 "form field {:?} initial value does not match its type",
                 field.name
             );
             let initial = if value.is_null() {
                 String::new()
-            } else if field.kind == FieldType::String || field.kind == FieldType::Password {
+            } else if field.kind == FieldType::String
+                || field.kind == FieldType::Password
+                || field.kind == FieldType::Enum
+            {
                 value.as_str().unwrap().to_string()
             } else {
                 value.to_string()
@@ -81,6 +123,7 @@ pub(super) fn parse_content(value: Value) -> Result<Vec<Draft>> {
             Ok(Draft {
                 buffer: EditorBuffer::from_raw(&initial, initial.len()),
                 field,
+                prefix_len: 0,
                 initial,
             })
         })
@@ -93,6 +136,18 @@ impl Draft {
         let value =
             if self.field.kind == FieldType::String || self.field.kind == FieldType::Password {
                 Value::String(raw.clone())
+            } else if self.field.kind == FieldType::Enum {
+                if raw.trim().is_empty() {
+                    Value::Null
+                } else if let Some(options) = &self.field.options {
+                    if options.iter().any(|opt| opt == raw.trim()) {
+                        Value::String(raw.trim().to_string())
+                    } else {
+                        return Err("Choose from options".to_string());
+                    }
+                } else {
+                    return Err("Choose from options".to_string());
+                }
             } else if raw.trim().is_empty() {
                 Value::Null
             } else {

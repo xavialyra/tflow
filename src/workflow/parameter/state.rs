@@ -1204,4 +1204,75 @@ mod tests {
                 .contains("does not declare an interactive input field")
         );
     }
+
+    #[test]
+    fn query_enum_field_validates_options_and_cli_arguments() {
+        // Valid query enum definition
+        let config = serde_json::json!({
+            "workflows": {"deploy": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "env": {
+                        "type": "enum",
+                        "options": ["dev", "staging", "prod"],
+                        "default": "dev"
+                    }
+                }
+            }}}}
+        });
+        let registry = ParameterRegistry::compile(&config).unwrap();
+        let state = registry
+            .bind_cli("deploy:main", &["--env=prod".into()])
+            .unwrap();
+        assert_eq!(
+            registry.parameter_values(&state).unwrap(),
+            serde_json::json!({"env": "prod"})
+        );
+
+        // Reject invalid CLI option
+        let err = registry
+            .bind_cli("deploy:main", &["--env=unknown".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("is not a valid option"));
+
+        // Reject enum without options
+        let bad_config = serde_json::json!({
+            "workflows": {"deploy": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "env": {"type": "enum", "default": "dev"}
+                }
+            }}}}
+        });
+        assert!(ParameterRegistry::compile(&bad_config).is_err());
+
+        // Reject enum with invalid default
+        let bad_default = serde_json::json!({
+            "workflows": {"deploy": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "env": {
+                        "type": "enum",
+                        "options": ["dev", "prod"],
+                        "default": "staging"
+                    }
+                }
+            }}}}
+        });
+        assert!(ParameterRegistry::compile(&bad_default).is_err());
+
+        // Reject non-enum field with options
+        let bad_options = serde_json::json!({
+            "workflows": {"deploy": {"views": {"main": {
+                "query": {
+                    "type": "object",
+                    "name": {
+                        "type": "string",
+                        "options": ["a", "b"]
+                    }
+                }
+            }}}}
+        });
+        assert!(ParameterRegistry::compile(&bad_options).is_err());
+    }
 }

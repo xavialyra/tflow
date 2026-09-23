@@ -17,7 +17,7 @@ bold = true
 type = "object"
 input = "search"
 search = { type = "string", default = "" }
-content_type = { type = "string", default = "all" }
+content_type = { type = "enum", options = ["all", "text", "image", "binary"], default = "all" }
 
 [views.default.engine]
 type = "picker"

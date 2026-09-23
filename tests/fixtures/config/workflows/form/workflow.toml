@@ -21,9 +21,9 @@ cancel_exit_code = 1
 [views.input.query]
 type = "object"
 name = { type = "string", default = "" }
-environment = { type = "string", default = "dev" }
+environment = { type = "enum", options = ["dev", "prod"], default = "dev" }
 enabled = { type = "boolean", default = true }
-spec = { type = "object", default = { fields = [{ name = "name", required = true }, { name = "environment", label = "Environment (dev/prod)", value = "dev" }, { name = "enabled", label = "Enabled (true/false)", type = "boolean", value = true }] } }
+spec = { type = "object", default = { fields = [{ name = "name", required = true }, { name = "environment", label = "Environment", type = "enum", options = ["dev", "prod"], value = "dev" }, { name = "enabled", label = "Enabled (true/false)", type = "boolean", value = true }] } }
 
 [views.input.engine]
 type = "form"

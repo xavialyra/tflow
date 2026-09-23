@@ -22,7 +22,7 @@ From the repository root:
 cargo run -- --suite tests/fixtures/config/default.toml form:input
 ```
 
-Enter a project name, use Tab to move between fields, and press Enter to submit. Space toggles a boolean field; Ctrl+U clears the current field. Esc returns to the preserved draft.
+Enter a project name, use Tab to move between fields, and press Enter to submit. Space toggles a boolean field or cycles an enum field (Left / Right also moves between options); Ctrl+U clears the current field. Esc returns to the preserved draft.
 
 Run the form example with structured arguments:
 
