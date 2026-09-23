@@ -3236,3 +3236,35 @@ printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn tab_completion_without_candidates_does_not_open_popup() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
+    wait_for_ready(&process.master);
+
+    // Type a nonexistent prefix with zero candidate routes
+    process.master.write_all(b"nonexistent").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_text(&process.master, "nonexistent");
+
+    // Press Tab
+    process.master.write_all(b"\t").unwrap();
+    process.master.flush().unwrap();
+
+    // Give a short period and verify screen remains on main view with input preserved and without popup
+    std::thread::sleep(Duration::from_millis(200));
+    let screen = current_screen(&process.master);
+    assert!(
+        screen.contains("nonexistent"),
+        "input was cleared or lost: {screen}"
+    );
+    assert!(
+        !screen.contains("completion"),
+        "popup opened when no candidates existed: {screen}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}

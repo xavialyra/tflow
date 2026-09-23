@@ -2,10 +2,9 @@
 """Tab command for the core launcher.
 
 A typed alias or reference routes straight to it, and so does a single fuzzy
-candidate; anything else opens the popup so the user can choose. Every branch
-returns the same `navigate` operation type, because a command's declared type is
-static. The popup is pushed with popup presentation, and its own accept command
-replaces it with the chosen route.
+candidate; multiple candidates open the popup so the user can choose, while zero
+candidates do nothing. The popup is pushed with popup presentation, and its own
+accept command replaces it with the chosen route.
 """
 import json
 import os
@@ -35,7 +34,7 @@ if route is not None:
         "target": route["value"],
         "clear_input": True,
     }
-else:
+elif matches:
     operation = {
         "type": "navigate",
         "target": completion_routes.view_ref("completion"),
@@ -43,5 +42,7 @@ else:
         "presentation": {"mode": "popup", "width": 72, "height": 16},
         "clear_input": True,
     }
+else:
+    sys.exit(0)
 json.dump({"version": 1, "operation": operation}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
