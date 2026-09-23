@@ -94,7 +94,7 @@ Every View is powered by one of four built-in engines: `picker`, `capture`, `for
 
 ### 1. Picker Engine (`type = "picker"`)
 
-The Picker engine renders an interactive, searchable list with an optional preview pane.
+The Picker engine renders an interactive, query-driven candidate list with an optional preview pane. The engine itself does not perform client-side filtering: the host captures query input and forwards it to the items producer via the version-1 protocol (`context.engine.state.input`), allowing workflow producer scripts to implement arbitrary search, regex, fuzzy matching, ranking, or database queries.
 
 #### Items Configuration (`[views.<name>.engine.config.items]`)
 
