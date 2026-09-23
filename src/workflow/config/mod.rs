@@ -305,13 +305,8 @@ impl CompiledConfig {
         if let Some(target) = self.aliases.get(selector) {
             return Ok(target.clone());
         }
-        if (selector == "__form:main" || selector == "__query")
-            && self.views.contains_key("__query:main")
-        {
+        if selector == "__form:main" && self.views.contains_key("__query:main") {
             return Ok("__query:main".to_string());
-        }
-        if selector == "__commands" && self.views.contains_key("__commands:main") {
-            return Ok("__commands:main".to_string());
         }
         if !selector.contains(':') {
             let matches: Vec<_> = self
@@ -339,8 +334,12 @@ impl CompiledConfig {
         self.view_aliases.get(view_ref).map(String::as_str)
     }
 
+    /// Suite alias for a user-facing View. Internal `__`-prefixed Views are not
+    /// navigation targets and never advertise one.
     pub(crate) fn public_alias_for_view(&self, view_ref: &str) -> Option<&str> {
-        self.alias_for_view(view_ref)
+        (!view_ref.starts_with("__"))
+            .then(|| self.alias_for_view(view_ref))
+            .flatten()
     }
 
     pub fn view_engine_type(&self, view_ref: &str) -> Result<&str> {
