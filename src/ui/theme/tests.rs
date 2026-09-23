@@ -20,6 +20,35 @@ fn temporary_root() -> PathBuf {
 }
 
 #[test]
+fn backdrop_style_inherits_and_accepts_explicit_overrides() {
+    let raw: RawTheme = toml::from_str("").unwrap();
+    let theme = Theme::from_raw(&raw, "test").unwrap();
+    assert!(theme.chrome.dim_backdrop);
+    assert_eq!(theme.chrome.backdrop.fg, Some(Color::DarkGray));
+    assert_eq!(theme.chrome.backdrop.bg, None);
+    assert!(theme.chrome.backdrop.add_modifier.contains(Modifier::DIM));
+    assert!(theme.chrome.backdrop.sub_modifier.is_empty());
+
+    let raw: RawTheme = toml::from_str(r##"
+[chrome]
+dim_backdrop = false
+[chrome.backdrop]
+foreground = "#8899aa"
+background = "ansi:reset"
+dim = false
+bold = false
+italic = true
+"##).unwrap();
+    let theme = Theme::from_raw(&raw, "test").unwrap();
+    assert!(!theme.chrome.dim_backdrop);
+    assert_eq!(theme.chrome.backdrop.fg, Some(Color::Rgb(0x88, 0x99, 0xaa)));
+    assert_eq!(theme.chrome.backdrop.bg, Some(Color::Reset));
+    assert!(theme.chrome.backdrop.sub_modifier.contains(Modifier::DIM | Modifier::BOLD));
+    assert!(theme.chrome.backdrop.add_modifier.contains(Modifier::ITALIC));
+    assert!(toml::from_str::<RawTheme>("[chrome.backdrop]\nunknown = true").is_err());
+}
+
+#[test]
 fn dynamic_scheme_names_and_merged_references() {
     let raw: RawTheme = toml::from_str(
         r##"

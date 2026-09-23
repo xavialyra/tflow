@@ -42,3 +42,7 @@ This log records notable changes to the documentation and product during develop
 - Added architecture decision records covering workflow extensions, script boundaries, command registration, suite manifests, and item-driven bindings.
 - Built the Diátaxis documentation bundle with tutorials, how-to guides, references, explanations, and runnable fixtures.
 - Renamed the product and consolidated its internal identity constants as `tflow`.
+
+## 2026-09-24 — Configurable backdrop style
+
+- Documented the global `chrome.backdrop` style, inheritance, explicit modifier overrides, and `dim_backdrop` switch in the theme reference and ADR 0007.

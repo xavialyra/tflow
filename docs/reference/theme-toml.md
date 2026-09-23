@@ -80,11 +80,35 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[chrome]` | `footer_status` | Active status text on the footer (e.g. `2 items`). |
 | `[chrome]` | `footer_key` | Keyboard shortcut badges (e.g. `Enter`, `Ctrl+K`). |
 | `[chrome]` | `error` | Global error notification banner. |
-| `[chrome]` | `dim_backdrop` | Boolean (`true` by default). Dims non-focus background cells (base views, covered popups, footer) when a modal popup is active. |
+| `[chrome]` | `backdrop` | Style applied to non-focus background cells (base views, covered popups, footer) when a modal popup is active. Defaults to `foreground = "scheme:muted"`, `dim = true`. |
+| `[chrome]` | `dim_backdrop` | Boolean (`true` by default). Master switch controlling whether the `chrome.backdrop` style is applied to non-focus background cells. |
 | `[capture]` | `text` | Captured subprocess output text. |
 | `[form]` | `label`, `input`, `focused`, `border`, `focused_border`, `error` | Field labels, normal and focused editors, field borders, and validation errors. |
 
 The picker cursor is a styled cell in the render buffer. Cursor blink is not a theme field. Themes control presentation only; they do not configure keys or application behavior.
+
+## Backdrop Style
+
+The global `[chrome.backdrop]` style is patched onto cells outside the active popup's outer rectangle, including visible inactive popup borders. The focused popup remains unchanged. With no active popup, this overlay is not applied.
+
+```toml
+[chrome]
+dim_backdrop = true
+
+[chrome.backdrop]
+foreground = "scheme:muted"
+dim = true
+```
+
+These are the built-in defaults. User fields merge with these defaults. Omitted background and other modifiers preserve each rendered cell's existing values, including bold and reversed selections. Explicit `bold = false` removes bold; `dim = false` disables the inherited faint modifier while retaining the foreground override. For a custom color without ANSI faint:
+
+```toml
+[chrome.backdrop]
+foreground = "#888888"
+dim = false
+```
+
+Choose a foreground suited to the terminal background; ANSI palette colors and faint intensity depend on the terminal. This is a style overlay, not alpha blending. `chrome.dim_backdrop = false` disables the entire overlay. Workflow presentation tables do not configure it.
 
 ## Workflow Custom Slots
 

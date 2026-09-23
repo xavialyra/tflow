@@ -123,12 +123,16 @@ pub enum DimensionConstraint {
 To maintain visual hierarchy when modal views are active, `ContentHost` applies non-destructive dimming to all visible screen cells outside the topmost active focus rectangle:
 
 - **Single Focus Rectangle Boundary**: When an active popup is present, its bounding rectangle (`popup_rect`, including borders and content) forms the exclusive focused area.
-- **Universal Backdrop Dimming**: All cells outside the active focus rectangle—including base view text, inactive covered popup borders and bodies, and the host footer—receive `Modifier::DIM` (ANSI faint) along with scaled TrueColor RGB intensities.
-- **Non-Destructive Styling**: Existing cell modifiers (such as reversed selections, bold tags, and cursor markers) remain intact, ensuring selection context and visual structure are dimmed rather than lost.
+- **Universal Backdrop Dimming**: All cells outside the active focus rectangle—including base view text, inactive covered popup borders and bodies, and the host footer—receive the global `chrome.backdrop` style once per frame. The default sets the foreground to `scheme:muted` and adds ANSI faint; it does not scale RGB values.
+- **Style Overlay**: Only configured colors and modifiers are patched. The default preserves background colors, bold, and reversed selections. Explicit modifier values such as `bold = false` remove that modifier. No workflow-level backdrop configuration is exposed.
 - **Global Theme Configuration**: Backdrop dimming is globally managed via `[chrome]` in `themes/<name>.toml`:
   ```toml
   [chrome]
   dim_backdrop = true    # Default true; set to false to disable dimming
+
+  [chrome.backdrop]
+  foreground = "scheme:muted"
+  dim = true
   ```
 
 ### 5. Architectural Invariant: Presentation is Pure Layout

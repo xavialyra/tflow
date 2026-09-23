@@ -667,7 +667,7 @@ impl ProtocolSession {
             footer_renderer.render_blank(frame, footer_area, &self.theme);
             content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
             if self.theme.chrome.dim_backdrop {
-                content_host.dim_backdrop(frame, area, popup_rect, self.theme.muted_color());
+                content_host.dim_backdrop(frame, area, popup_rect, self.theme.chrome.backdrop);
             }
         } else {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);

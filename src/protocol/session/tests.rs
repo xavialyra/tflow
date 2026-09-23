@@ -2128,7 +2128,7 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     let child_border = buffer.cell((5, 1)).unwrap();
     assert_eq!(child_border.symbol(), "┌");
     assert!(child_border.modifier.contains(ratatui::style::Modifier::DIM));
-    assert_eq!(child_border.fg, session.theme.muted_color());
+    assert_eq!(child_border.fg, session.theme.chrome.backdrop.fg.unwrap());
 
     // 3. Grandchild popup is 16x4 centered in 40x10 terminal:
     // x = (40 - 16)/2 = 12, y = (10 - 4)/2 = 3.
@@ -2138,4 +2138,43 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     assert_eq!(grandchild_border.symbol(), "┌");
     assert!(!grandchild_border.modifier.contains(ratatui::style::Modifier::DIM));
     assert_eq!(grandchild_border.fg, session.theme.chrome.border.fg.unwrap());
+}
+
+#[test]
+fn custom_theme_backdrop_style_applies_custom_color_and_modifiers() {
+    let (mut session, _, _) = session();
+    session.theme.chrome.backdrop = ratatui::style::Style::default()
+        .fg(ratatui::style::Color::Blue)
+        .add_modifier(ratatui::style::Modifier::ITALIC);
+
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    let mut popup_req = request("child");
+    popup_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(20.into()),
+        height: Some(5.into()),
+        ..Default::default()
+    };
+    session.router.push(popup_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Background cell outside popup must have Blue fg and ITALIC modifier
+    let base_cell = buffer.cell((0, 0)).unwrap();
+    assert_eq!(base_cell.fg, ratatui::style::Color::Blue);
+    assert!(base_cell.modifier.contains(ratatui::style::Modifier::ITALIC));
 }

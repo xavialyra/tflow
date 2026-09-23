@@ -57,6 +57,10 @@ foreground = "scheme:background"
 background = "scheme:error"
 bold = true
 
+[chrome.backdrop]
+foreground = "scheme:muted"
+dim = true
+
 # -----------------------------------------------------------------------------
 # Picker List & Preview Component Styles
 # -----------------------------------------------------------------------------

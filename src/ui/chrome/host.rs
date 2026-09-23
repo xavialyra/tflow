@@ -261,12 +261,10 @@ mod tests {
                     ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD;
 
                 let focus_rect = Rect::new(2, 2, 6, 6);
-                host.dim_backdrop(
-                    frame,
-                    Rect::new(0, 0, 10, 10),
-                    focus_rect,
-                    ratatui::style::Color::DarkGray,
-                );
+                let backdrop_style = ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::DarkGray)
+                    .add_modifier(ratatui::style::Modifier::DIM);
+                host.dim_backdrop(frame, Rect::new(0, 0, 10, 10), focus_rect, backdrop_style);
             })
             .unwrap();
 
@@ -278,11 +276,11 @@ mod tests {
         assert!(inside.modifier.contains(ratatui::style::Modifier::BOLD));
         assert!(!inside.modifier.contains(ratatui::style::Modifier::DIM));
 
-        // Cell outside focus_rect has BOLD stripped, DIM inserted, fg set to DarkGray, and retains REVERSED
+        // The overlay changes foreground and DIM while preserving BOLD and REVERSED.
         let outside = buffer.cell((0, 0)).unwrap();
         assert_eq!(outside.symbol(), "B");
         assert_eq!(outside.fg, ratatui::style::Color::DarkGray);
-        assert!(!outside.modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(outside.modifier.contains(ratatui::style::Modifier::BOLD));
         assert!(outside.modifier.contains(ratatui::style::Modifier::DIM));
         assert!(outside.modifier.contains(ratatui::style::Modifier::REVERSED));
     }
@@ -604,13 +602,14 @@ impl ContentHost {
         frame.render_widget(block, popup);
     }
 
-    /// Dims all terminal cells that fall outside the given active focus rectangle.
+    /// Dims all terminal cells that fall outside the given active focus rectangle
+    /// according to the theme's `chrome.backdrop` style.
     pub(crate) fn dim_backdrop(
         &self,
         frame: &mut Frame,
         terminal: Rect,
         focus_rect: Rect,
-        muted_color: ratatui::style::Color,
+        backdrop_style: ratatui::style::Style,
     ) {
         let buffer = frame.buffer_mut();
         for y in terminal.top()..terminal.bottom() {
@@ -618,24 +617,17 @@ impl ContentHost {
                 let pos = Position { x, y };
                 if !focus_rect.contains(pos) {
                     if let Some(cell) = buffer.cell_mut(pos) {
-                        Self::dim_cell(cell, muted_color);
+                        Self::dim_cell(cell, backdrop_style);
                     }
                 }
             }
         }
     }
 
-    /// Applies visual dimming to an individual cell outside the focus rectangle.
+    /// Applies the configured backdrop style to an individual cell outside the focus rectangle.
     ///
-    /// Clears aggressive `BOLD` styling, adds `Modifier::DIM`, and projects all
-    /// visible text and reversed selections to the theme's secondary `muted_color`
-    /// (DarkGray / BrightBlack), reliably lowering foreground contrast across all
-    /// terminals without modifying the terminal's native background color.
-    pub(crate) fn dim_cell(cell: &mut ratatui::buffer::Cell, muted_color: ratatui::style::Color) {
-        cell.modifier.remove(ratatui::style::Modifier::BOLD);
-        cell.modifier.insert(ratatui::style::Modifier::DIM);
-        if cell.symbol() != " " || cell.modifier.contains(ratatui::style::Modifier::REVERSED) {
-            cell.fg = muted_color;
-        }
+    /// Patches only configured colors and modifiers, preserving all other cell attributes.
+    pub(crate) fn dim_cell(cell: &mut ratatui::buffer::Cell, backdrop_style: ratatui::style::Style) {
+        cell.set_style(backdrop_style);
     }
 }
