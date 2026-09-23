@@ -27,7 +27,7 @@ The architecture separates concerns into three distinct layers:
 
 - **Pipeline Friendly:** Drop workflows directly into shell pipelines as interactive filters between standard commands.
 - **Composable Engines:** Tailor every view with one of four built-in interaction engines:
-  - **`picker`**: Interactive selectable candidate lists with query input dispatch, live previews, and item-bound commands. All searching, filtering, and scoring logic are handled by the workflow's producer scripts.
+  - **`picker`**: Query-driven selectable lists with live previews and script-handled filtering.
   - **`capture`**: Read-only rich text and command output displays.
   - **`form`**: Interactive multi-field forms for parameter collection.
   - **`embedded`**: PTY terminal emulation hosting interactive programs (e.g. `btop`, subshells).
