@@ -200,15 +200,210 @@ pub enum ViewPresentationMode {
     Popup,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupAnchor {
+    #[default]
+    Center,
+    #[serde(alias = "top-center")]
+    Top,
+    #[serde(alias = "bottom-center")]
+    Bottom,
+    #[serde(alias = "left-center")]
+    Left,
+    #[serde(alias = "right-center")]
+    Right,
+    #[serde(alias = "left-top")]
+    TopLeft,
+    #[serde(alias = "right-top")]
+    TopRight,
+    #[serde(alias = "left-bottom")]
+    BottomLeft,
+    #[serde(alias = "right-bottom")]
+    BottomRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlign {
+    Top,
+    Center,
+    Bottom,
+}
+
+impl PopupAnchor {
+    pub fn alignments(&self) -> (HorizontalAlign, VerticalAlign) {
+        match self {
+            Self::Center => (HorizontalAlign::Center, VerticalAlign::Center),
+            Self::Top => (HorizontalAlign::Center, VerticalAlign::Top),
+            Self::Bottom => (HorizontalAlign::Center, VerticalAlign::Bottom),
+            Self::Left => (HorizontalAlign::Left, VerticalAlign::Center),
+            Self::Right => (HorizontalAlign::Right, VerticalAlign::Center),
+            Self::TopLeft => (HorizontalAlign::Left, VerticalAlign::Top),
+            Self::TopRight => (HorizontalAlign::Right, VerticalAlign::Top),
+            Self::BottomLeft => (HorizontalAlign::Left, VerticalAlign::Bottom),
+            Self::BottomRight => (HorizontalAlign::Right, VerticalAlign::Bottom),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DimensionConstraint {
+    Cells(u16),
+    Percentage(u8),
+}
+
+impl DimensionConstraint {
+    pub fn resolve(&self, available: u16) -> u16 {
+        match self {
+            Self::Cells(cells) => *cells,
+            Self::Percentage(pct) => {
+                let computed = (u32::from(available) * u32::from(*pct)) / 100;
+                u16::try_from(computed).unwrap_or(u16::MAX)
+            }
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Self::Cells(c) => *c == 0,
+            Self::Percentage(p) => *p == 0,
+        }
+    }
+}
+
+impl From<u16> for DimensionConstraint {
+    fn from(cells: u16) -> Self {
+        Self::Cells(cells)
+    }
+}
+
+impl<'de> Deserialize<'de> for DimensionConstraint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DimensionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for DimensionVisitor {
+            type Value = DimensionConstraint;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a positive integer or a percentage string like \"80%\"")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let cells = u16::try_from(value).map_err(|_| E::custom("dimension exceeds u16 limit"))?;
+                Ok(DimensionConstraint::Cells(cells))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if value < 0 {
+                    return Err(E::custom("dimension must be non-negative"));
+                }
+                self.visit_u64(value as u64)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let trimmed = value.trim();
+                if let Some(pct_str) = trimmed.strip_suffix('%') {
+                    let pct: u8 = pct_str
+                        .trim()
+                        .parse()
+                        .map_err(|_| E::custom(format!("invalid percentage: \"{value}\"")))?;
+                    if pct > 100 {
+                        return Err(E::custom("percentage cannot exceed 100%"));
+                    }
+                    Ok(DimensionConstraint::Percentage(pct))
+                } else {
+                    let cells: u16 = trimmed
+                        .parse()
+                        .map_err(|_| E::custom(format!("invalid dimension string: \"{value}\"")))?;
+                    Ok(DimensionConstraint::Cells(cells))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(DimensionVisitor)
+    }
+}
+
+impl serde::Serialize for DimensionConstraint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Cells(cells) => serializer.serialize_u16(*cells),
+            Self::Percentage(pct) => serializer.serialize_str(&format!("{pct}%")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewPresentation {
     #[serde(default)]
     pub mode: ViewPresentationMode,
     #[serde(default)]
-    pub width: Option<u16>,
+    pub anchor: PopupAnchor,
     #[serde(default)]
-    pub height: Option<u16>,
+    pub offset_x: Option<u16>,
+    #[serde(default)]
+    pub offset_y: Option<u16>,
+    #[serde(default)]
+    pub width: Option<DimensionConstraint>,
+    #[serde(default)]
+    pub height: Option<DimensionConstraint>,
+    #[serde(default)]
+    pub min_width: Option<u16>,
+    #[serde(default)]
+    pub max_width: Option<u16>,
+    #[serde(default)]
+    pub min_height: Option<u16>,
+    #[serde(default)]
+    pub max_height: Option<u16>,
+}
+
+impl ViewPresentation {
+    pub fn popup(
+        width: impl Into<DimensionConstraint>,
+        height: impl Into<DimensionConstraint>,
+    ) -> Self {
+        Self {
+            mode: ViewPresentationMode::Popup,
+            width: Some(width.into()),
+            height: Some(height.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_anchor(mut self, anchor: PopupAnchor) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_offsets(mut self, offset_x: Option<u16>, offset_y: Option<u16>) -> Self {
+        self.offset_x = offset_x;
+        self.offset_y = offset_y;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]

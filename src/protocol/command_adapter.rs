@@ -501,11 +501,10 @@ impl CommandService for ProtocolCommandService {
 
                 let nav = crate::workflow::command::NavigationRequest::new(target.clone(), "")
                     .with_parameters(parameters)
-                    .with_presentation(crate::workflow::config::ViewPresentation {
-                        mode: crate::workflow::config::ViewPresentationMode::Popup,
-                        width: Some(72),
-                        height: Some(16),
-                    });
+                    .with_presentation(
+                        crate::workflow::config::ViewPresentation::popup(72, 16)
+                            .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
+                    );
                 let req = protocol_navigation_request(&config_clone, nav)?;
 
                 let processor_service = std::sync::Arc::clone(&service_clone);

@@ -255,7 +255,7 @@ Transitions the session to another View:
 | :--- | :--- | :--- | :--- |
 | `target` | string | **Required** | Destination view selector (`"<view>"` or `"<workflow>:<view>"`). |
 | `query` | value | Optional (`{}`) | Parameters passed to the destination View's query schema. |
-| `presentation` | table | Optional | `{ mode = "popup", width = 70, height = 18 }`. Mounts as a modal popup. |
+| `presentation` | table | Optional | Modal presentation table (see [Modal Presentation Options](#modal-presentation-options-presentation)). |
 | `replace` | boolean | `false` | When `true`, replaces current View in history instead of pushing onto the stack. |
 | `clear_input` | boolean | `false` | When `true`, clears the active query buffer before navigating. |
 
@@ -268,7 +268,24 @@ Transitions to a child View and establishes a return boundary:
 | :--- | :--- | :--- | :--- |
 | `target` | string | **Required** | Destination child view. |
 | `query` | value | Optional (`{}`) | Parameters for the child view. |
-| `presentation` | table | Optional | Modal presentation options (`mode`, `width`, `height`). |
+| `presentation` | table | Optional | Modal presentation table (see [Modal Presentation Options](#modal-presentation-options-presentation)). |
+
+#### Modal Presentation Options (`presentation`)
+
+When mounting a View as a modal overlay, configure the `presentation` table:
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `mode` | string | `"inline"` | `"popup"` mounts the View as a centered or anchored modal dialog. |
+| `anchor` | string | `"center"` | 9-box viewport anchor: `"center"`, `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"`, `"bottom-right"`. |
+| `offset_x` | integer | `0` | Horizontal offset in terminal columns from the anchor boundary. |
+| `offset_y` | integer | `0` | Vertical offset in terminal rows from the anchor boundary. |
+| `width` | integer / string | `72` | Width in terminal cells (e.g. `72`) or viewport percentage string (e.g. `"80%"`). |
+| `height` | integer / string | `16` | Height in terminal cells (e.g. `18`) or viewport percentage string (e.g. `"50%"`). |
+| `min_width` | integer | None | Minimum width in terminal cells clamp. |
+| `max_width` | integer | None | Maximum width in terminal cells clamp. |
+| `min_height`| integer | None | Minimum height in terminal cells clamp. |
+| `max_height`| integer | None | Maximum height in terminal cells clamp. |
 
 ### 3. `return`
 Closes the current View and returns a value to the caller boundary:

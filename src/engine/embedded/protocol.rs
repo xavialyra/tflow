@@ -806,8 +806,8 @@ mod tests {
     fn first_start_and_resize_use_host_content_dimensions() {
         let mut request = request();
         request.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
-        request.presentation.width = Some(12);
-        request.presentation.height = Some(6);
+        request.presentation.width = Some(12.into());
+        request.presentation.height = Some(6.into());
         let mut view = create_protocol_view_state(
             config(&["/bin/sh", "-c", "sleep 1"]),
             &request,
@@ -839,7 +839,7 @@ mod tests {
             "PTY starts at popup inner dimensions"
         );
 
-        context.presentation.width = Some(20);
+        context.presentation.width = Some(20.into());
         view.event(
             ViewEvent::Resize(crate::view::TerminalSize {
                 width: 18,

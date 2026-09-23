@@ -247,17 +247,42 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                 "{} operation target must be non-empty",
                 source_label
             );
+            let is_popup =
+                presentation.mode == crate::workflow::config::ViewPresentationMode::Popup;
             anyhow::ensure!(
-                presentation.mode == crate::workflow::config::ViewPresentationMode::Popup
-                    || (presentation.width.is_none() && presentation.height.is_none()),
+                is_popup
+                    || (presentation.width.is_none()
+                        && presentation.height.is_none()
+                        && presentation.anchor == crate::workflow::config::PopupAnchor::Center
+                        && presentation.offset_x.is_none()
+                        && presentation.offset_y.is_none()
+                        && presentation.min_width.is_none()
+                        && presentation.max_width.is_none()
+                        && presentation.min_height.is_none()
+                        && presentation.max_height.is_none()),
                 "{} operation width and height require popup mode",
                 source_label
             );
             anyhow::ensure!(
-                presentation.width != Some(0) && presentation.height != Some(0),
+                !presentation.width.as_ref().is_some_and(|w| w.is_zero())
+                    && !presentation.height.as_ref().is_some_and(|h| h.is_zero()),
                 "{} operation width and height must be positive",
                 source_label
             );
+            if let (Some(min), Some(max)) = (presentation.min_width, presentation.max_width) {
+                anyhow::ensure!(
+                    min <= max,
+                    "{} operation min_width ({min}) cannot exceed max_width ({max})",
+                    source_label
+                );
+            }
+            if let (Some(min), Some(max)) = (presentation.min_height, presentation.max_height) {
+                anyhow::ensure!(
+                    min <= max,
+                    "{} operation min_height ({min}) cannot exceed max_height ({max})",
+                    source_label
+                );
+            }
         }
         ProtocolOperation::Run { mode, argv, .. } => {
             anyhow::ensure!(

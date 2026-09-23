@@ -68,6 +68,179 @@ mod tests {
         assert!(top2.contains("child"));
         assert!(bottom2.contains("local"));
     }
+
+    #[test]
+    fn test_popup_anchoring_and_offsets() {
+        let host = ContentHost::default();
+        let area = Rect::new(0, 0, 100, 50);
+
+        // Center anchor (default, offsets default to 0)
+        let center_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::Center,
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &center_pres);
+        assert_eq!(rect, Rect::new(20, 15, 60, 20));
+
+        // Top anchor with transparent default offset (0)
+        let top_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::Top,
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &top_pres);
+        assert_eq!(rect, Rect::new(20, 0, 60, 20));
+
+        // Top anchor with explicit offset_y
+        let top_offset_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::Top,
+            offset_y: Some(5),
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &top_offset_pres);
+        assert_eq!(rect, Rect::new(20, 5, 60, 20));
+
+        // Top-left anchor with custom offset_x and offset_y
+        let top_left_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::TopLeft,
+            offset_x: Some(4),
+            offset_y: Some(2),
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &top_left_pres);
+        assert_eq!(rect, Rect::new(4, 2, 60, 20));
+
+        // Bottom-right anchor with custom offset_x and offset_y
+        // remaining x: 100 - 60 = 40; x = 40 - 3 = 37
+        // remaining y: 50 - 20 = 30; y = 30 - 2 = 28
+        let bottom_right_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::BottomRight,
+            offset_x: Some(3),
+            offset_y: Some(2),
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &bottom_right_pres);
+        assert_eq!(rect, Rect::new(37, 28, 60, 20));
+
+        // Left anchor (centered vertically)
+        let left_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::Left,
+            offset_x: Some(5),
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &left_pres);
+        assert_eq!(rect, Rect::new(5, 15, 60, 20));
+
+        // Right anchor (centered vertically)
+        let right_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::Right,
+            offset_x: Some(0),
+            width: Some(60.into()),
+            height: Some(20.into()),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &right_pres);
+        assert_eq!(rect, Rect::new(40, 15, 60, 20));
+    }
+
+    #[test]
+    fn test_popup_responsive_dimensions_and_clamps() {
+        use crate::workflow::config::DimensionConstraint;
+        let host = ContentHost::default();
+        let area = Rect::new(0, 0, 100, 50);
+
+        // Percentage width (80%) and height (50%)
+        let pct_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            width: Some(DimensionConstraint::Percentage(80)),
+            height: Some(DimensionConstraint::Percentage(50)),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &pct_pres);
+        assert_eq!(rect, Rect::new(10, 12, 80, 25));
+
+        // Percentage with min/max clamps
+        let clamped_pres = ViewPresentation {
+            mode: ViewPresentationMode::Popup,
+            width: Some(DimensionConstraint::Percentage(80)),
+            min_width: Some(90),
+            max_width: Some(95),
+            height: Some(DimensionConstraint::Percentage(50)),
+            min_height: Some(10),
+            max_height: Some(20),
+            ..Default::default()
+        };
+        let rect = host.popup_rect(area, &clamped_pres);
+        assert_eq!(rect, Rect::new(5, 15, 90, 20));
+    }
+
+    #[test]
+    fn test_dimension_constraint_deserialization() {
+        use crate::workflow::config::DimensionConstraint;
+        let cells_toml: toml::Value = toml::from_str("val = 42").unwrap();
+        let cells: DimensionConstraint =
+            cells_toml.get("val").unwrap().clone().try_into().unwrap();
+        assert_eq!(cells, DimensionConstraint::Cells(42));
+
+        let pct_toml: toml::Value = toml::from_str("val = \"75%\"").unwrap();
+        let pct: DimensionConstraint = pct_toml.get("val").unwrap().clone().try_into().unwrap();
+        assert_eq!(pct, DimensionConstraint::Percentage(75));
+
+        // JSON roundtrip
+        let json_str = serde_json::to_string(&pct).unwrap();
+        assert_eq!(json_str, "\"75%\"");
+        let deserialized: DimensionConstraint = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized, pct);
+    }
+
+    #[test]
+    fn test_popup_anchor_deserialization() {
+        use crate::workflow::config::PopupAnchor;
+
+        let toml_cases = [
+            ("anchor = \"center\"", PopupAnchor::Center),
+            ("anchor = \"top\"", PopupAnchor::Top),
+            ("anchor = \"top-center\"", PopupAnchor::Top),
+            ("anchor = \"bottom\"", PopupAnchor::Bottom),
+            ("anchor = \"bottom-center\"", PopupAnchor::Bottom),
+            ("anchor = \"left\"", PopupAnchor::Left),
+            ("anchor = \"left-center\"", PopupAnchor::Left),
+            ("anchor = \"right\"", PopupAnchor::Right),
+            ("anchor = \"right-center\"", PopupAnchor::Right),
+            ("anchor = \"top-left\"", PopupAnchor::TopLeft),
+            ("anchor = \"left-top\"", PopupAnchor::TopLeft),
+            ("anchor = \"top-right\"", PopupAnchor::TopRight),
+            ("anchor = \"right-top\"", PopupAnchor::TopRight),
+            ("anchor = \"bottom-left\"", PopupAnchor::BottomLeft),
+            ("anchor = \"left-bottom\"", PopupAnchor::BottomLeft),
+            ("anchor = \"bottom-right\"", PopupAnchor::BottomRight),
+            ("anchor = \"right-bottom\"", PopupAnchor::BottomRight),
+        ];
+
+        for (toml_str, expected) in toml_cases {
+            let val: toml::Value = toml::from_str(toml_str).unwrap();
+            let anchor: PopupAnchor = val.get("anchor").unwrap().clone().try_into().unwrap();
+            assert_eq!(anchor, expected, "failed for {toml_str}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,15 +282,68 @@ impl ContentHost {
     }
 
     pub(crate) fn popup_rect(&self, area: Rect, presentation: &ViewPresentation) -> Rect {
-        let width = presentation.width.unwrap_or(72).min(area.width);
-        let height = presentation.height.unwrap_or(16).min(area.height);
-        Rect::new(
-            area.x.saturating_add(area.width.saturating_sub(width) / 2),
-            area.y
-                .saturating_add(area.height.saturating_sub(height) / 2),
-            width,
-            height,
-        )
+        let raw_width = presentation
+            .width
+            .as_ref()
+            .map(|w| w.resolve(area.width))
+            .unwrap_or(72);
+        let mut width = raw_width;
+        if let Some(min_w) = presentation.min_width {
+            width = width.max(min_w);
+        }
+        if let Some(max_w) = presentation.max_width {
+            width = width.min(max_w);
+        }
+        let width = width.min(area.width);
+
+        let raw_height = presentation
+            .height
+            .as_ref()
+            .map(|h| h.resolve(area.height))
+            .unwrap_or(16);
+        let mut height = raw_height;
+        if let Some(min_h) = presentation.min_height {
+            height = height.max(min_h);
+        }
+        if let Some(max_h) = presentation.max_height {
+            height = height.min(max_h);
+        }
+        let height = height.min(area.height);
+
+        let (h_align, v_align) = presentation.anchor.alignments();
+
+        let x = match h_align {
+            crate::workflow::config::HorizontalAlign::Center => {
+                area.x.saturating_add(area.width.saturating_sub(width) / 2)
+            }
+            crate::workflow::config::HorizontalAlign::Left => {
+                let offset = presentation.offset_x.unwrap_or(0);
+                let max_offset = area.width.saturating_sub(width);
+                area.x.saturating_add(offset.min(max_offset))
+            }
+            crate::workflow::config::HorizontalAlign::Right => {
+                let offset = presentation.offset_x.unwrap_or(0);
+                let max_offset = area.width.saturating_sub(width);
+                area.x.saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
+            }
+        };
+
+        let y = match v_align {
+            crate::workflow::config::VerticalAlign::Center => {
+                area.y.saturating_add(area.height.saturating_sub(height) / 2)
+            }
+            crate::workflow::config::VerticalAlign::Top => {
+                let offset = presentation.offset_y.unwrap_or(0);
+                let max_offset = area.height.saturating_sub(height);
+                area.y.saturating_add(offset.min(max_offset))
+            }
+            crate::workflow::config::VerticalAlign::Bottom => {
+                let offset = presentation.offset_y.unwrap_or(0);
+                let max_offset = area.height.saturating_sub(height);
+                area.y.saturating_add(max_offset.saturating_sub(offset.min(max_offset)))
+            }
+        };
+        Rect::new(x, y, width, height)
     }
 
     pub(crate) fn popup_inner(&self, popup: Rect) -> Rect {
@@ -149,12 +375,13 @@ impl ContentHost {
             .and_then(|index| stack.get(index))
             .map(|entry| entry.view.preferred_top_inset())
             .unwrap_or(0);
-        let mut area = self.content_area(terminal, top_padding);
-        let first_popup = base_index.map(|index| index.saturating_add(1)).unwrap_or(0);
-        for item in stack.iter().take(active_index + 1).skip(first_popup) {
-            area = self.popup_inner(self.popup_rect(area, &item.context.presentation));
+        let base_area = self.content_area(terminal, top_padding);
+        let active_item = &stack[active_index];
+        if active_item.context.presentation.mode == ViewPresentationMode::Popup {
+            self.popup_inner(self.popup_rect(terminal, &active_item.context.presentation))
+        } else {
+            base_area
         }
-        area
     }
 
     pub(crate) fn render_frame_background(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -166,6 +393,7 @@ impl ContentHost {
     pub(crate) fn render_views<F>(
         &self,
         frame: &mut Frame,
+        terminal_area: Rect,
         content_area: Rect,
         stack: &[ViewInstance],
         render_context: &RenderContext,
@@ -180,15 +408,15 @@ impl ContentHost {
             .ok_or_else(|| anyhow::anyhow!("cannot render views without an active View"))?;
         let base_index = self.visible_base_index(stack, active_index);
 
-        let mut render_area = content_area;
         let mut view = None;
         let first_popup = if let Some(base_index) = base_index {
-            view = Some(render_at(base_index, frame, render_area, render_context)?);
+            view = Some(render_at(base_index, frame, content_area, render_context)?);
             base_index.saturating_add(1)
         } else {
             0
         };
         let mut active_popup_rect = None;
+        let mut active_render_area = content_area;
         for (index, item) in stack
             .iter()
             .enumerate()
@@ -196,12 +424,13 @@ impl ContentHost {
             .skip(first_popup)
         {
             let presentation = &item.context.presentation;
-            let popup = self.popup_rect(render_area, presentation);
+            let popup = self.popup_rect(terminal_area, presentation);
             frame.render_widget(Clear, popup);
-            render_area = self.popup_inner(popup);
-            let rendered = render_at(index, frame, render_area, render_context)?;
+            let inner_area = self.popup_inner(popup);
+            let rendered = render_at(index, frame, inner_area, render_context)?;
             if index == active_index {
                 active_popup_rect = Some(popup);
+                active_render_area = inner_area;
             } else {
                 let mut block = Block::bordered();
                 let label = item.context.location.label();
@@ -217,7 +446,7 @@ impl ContentHost {
             view = Some(rendered);
         }
         let view = view.expect("a non-empty Router stack must render an active View");
-        Ok((view, render_area, active_popup_rect))
+        Ok((view, active_render_area, active_popup_rect))
     }
 
     pub(crate) fn render_active_popup_border(

@@ -585,6 +585,7 @@ impl ProtocolSession {
         let render_context = RenderContext::new(self.terminal, image_picker);
         let (view, active_render_area, active_popup_rect) = content_host.render_views(
             frame,
+            area,
             content_area,
             self.router.stack(),
             &render_context,
@@ -663,8 +664,8 @@ impl ProtocolSession {
         };
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect.filter(|_| retained.is_none()) {
-            content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
             footer_renderer.render_blank(frame, footer_area, &self.theme);
+            content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
         } else {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);
         }

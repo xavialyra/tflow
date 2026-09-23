@@ -111,8 +111,8 @@ impl View for SyntheticView {
                         let mut request = NavigationRequest::new("child", query);
                         request.presentation.mode =
                             crate::workflow::config::ViewPresentationMode::Popup;
-                        request.presentation.width = Some(10);
-                        request.presentation.height = Some(4);
+                        request.presentation.width = Some(10.into());
+                        request.presentation.height = Some(4.into());
                         Ok(ViewDecision::Transition(
                             crate::view::TransitionRequest::Push(request),
                         ))
@@ -131,11 +131,11 @@ impl View for SyntheticView {
                         request.presentation.mode =
                             crate::workflow::config::ViewPresentationMode::Popup;
                         if self.target == "root" {
-                            request.presentation.width = Some(20);
-                            request.presentation.height = Some(8);
+                            request.presentation.width = Some(20.into());
+                            request.presentation.height = Some(8.into());
                         } else {
-                            request.presentation.width = Some(10);
-                            request.presentation.height = Some(4);
+                            request.presentation.width = Some(10.into());
+                            request.presentation.height = Some(4.into());
                         }
                         Ok(ViewDecision::Transition(
                             crate::view::TransitionRequest::Push(request),
@@ -422,8 +422,8 @@ fn idle_tick_expires_info_in_footer_and_popup_without_clearing_errors() {
         let mut root = request("root");
         if popup {
             root.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
-            root.presentation.width = Some(60);
-            root.presentation.height = Some(6);
+            root.presentation.width = Some(60.into());
+            root.presentation.height = Some(6.into());
         }
         session.start_root(root).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
@@ -461,8 +461,8 @@ fn popup_copy_feedback_uses_bottom_border_and_clears_on_navigation() {
     let (mut session, _, _) = session();
     let mut root = request("root");
     root.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
-    root.presentation.width = Some(60);
-    root.presentation.height = Some(6);
+    root.presentation.width = Some(60.into());
+    root.presentation.height = Some(6.into());
     session.start_root(root).unwrap();
     session
         .input(InputEvent::Key {
@@ -735,8 +735,8 @@ fn root_popup_uses_the_same_content_host_geometry_as_nested_popups() {
     let (mut session, _, _) = session();
     let mut root = request("root");
     root.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
-    root.presentation.width = Some(12);
-    root.presentation.height = Some(6);
+    root.presentation.width = Some(12.into());
+    root.presentation.height = Some(6.into());
     session.start_root(root).unwrap();
     session
         .resize(TerminalSize {
@@ -1691,11 +1691,7 @@ fn popup_does_not_settle_a_base_frame() {
 
     // 2. Push a popup on top
     let mut popup_req = request("child");
-    popup_req.presentation = crate::workflow::config::ViewPresentation {
-        mode: crate::workflow::config::ViewPresentationMode::Popup,
-        width: Some(20),
-        height: Some(5),
-    };
+    popup_req.presentation = crate::workflow::config::ViewPresentation::popup(20, 5);
     session.router.push(popup_req).unwrap();
     session.sync_active_commands().unwrap();
 
@@ -1787,11 +1783,7 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
 
     // The popup occupies (10, 2) .. (29, 6) inside a 40x10 terminal.
     let mut popup_req = request("async_popup");
-    popup_req.presentation = crate::workflow::config::ViewPresentation {
-        mode: crate::workflow::config::ViewPresentationMode::Popup,
-        width: Some(20),
-        height: Some(5),
-    };
+    popup_req.presentation = crate::workflow::config::ViewPresentation::popup(20, 5);
     let popup_id = session.router.push(popup_req).unwrap();
     session.sync_active_commands().unwrap();
 
@@ -1941,4 +1933,115 @@ fn navigation_grace_does_not_flash_a_closed_view_when_returning() {
         })
         .collect();
     assert_eq!(content, "async_target");
+}
+
+#[test]
+fn nested_popups_use_shared_viewport_dimensions_without_clipping() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    // 1. Push compact child popup (20x6)
+    let mut child_req = request("child");
+    child_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(20.into()),
+        height: Some(6.into()),
+        ..Default::default()
+    };
+    session.router.push(child_req).unwrap();
+    session.sync_active_commands().unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+    assert_eq!(
+        session.router().active().unwrap().view.command_snapshot().runtime,
+        serde_json::json!({"width": 18, "height": 4})
+    );
+
+    // 2. Push larger grandchild popup (30x8), which is larger than the child popup
+    let mut grandchild_req = request("grandchild");
+    grandchild_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(30.into()),
+        height: Some(8.into()),
+        ..Default::default()
+    };
+    session.router.push(grandchild_req).unwrap();
+    session.sync_active_commands().unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    // The grandchild's inner area must be 28x6, NOT constrained to child's 18x4
+    assert_eq!(
+        session.router().active().unwrap().view.command_snapshot().runtime,
+        serde_json::json!({"width": 28, "height": 6})
+    );
+
+    // 3. Render and check popup borders
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    // In a 40x10 terminal, viewport is (0, 0, 40, 10).
+    // Grandchild popup (30x8) centered: x = (40 - 30)/2 = 5, y = (10 - 8)/2 = 1.
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer.cell((5, 1)).unwrap().symbol(), "┌");
+}
+
+#[test]
+fn bottom_right_popup_anchors_to_terminal_boundary_without_blank_gap() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    let mut popup_req = request("child");
+    popup_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        anchor: crate::workflow::config::PopupAnchor::BottomRight,
+        width: Some(20.into()),
+        height: Some(5.into()),
+        ..Default::default()
+    };
+    session.router.push(popup_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Popup is 20x5 in a 40x10 terminal anchored to BottomRight with 0 offsets.
+    // x = 40 - 20 = 20, y = 10 - 5 = 5.
+    // Top-left: (20, 5)
+    assert_eq!(buffer.cell((20, 5)).unwrap().symbol(), "┌");
+    // Top-right: (39, 5)
+    assert_eq!(buffer.cell((39, 5)).unwrap().symbol(), "┐");
+    // Bottom-left: (20, 9)
+    assert_eq!(buffer.cell((20, 9)).unwrap().symbol(), "└");
+    // Bottom-right: (39, 9)
+    assert_eq!(buffer.cell((39, 9)).unwrap().symbol(), "┘");
 }

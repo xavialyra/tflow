@@ -163,13 +163,34 @@ fn validate_operation_target(
             target
         );
     }
-    if presentation.mode != super::ViewPresentationMode::Popup
-        && (presentation.width.is_some() || presentation.height.is_some())
+    let is_popup = presentation.mode == super::ViewPresentationMode::Popup;
+    if !is_popup
+        && (presentation.width.is_some()
+            || presentation.height.is_some()
+            || presentation.anchor != super::PopupAnchor::Center
+            || presentation.offset_x.is_some()
+            || presentation.offset_y.is_some()
+            || presentation.min_width.is_some()
+            || presentation.max_width.is_some()
+            || presentation.min_height.is_some()
+            || presentation.max_height.is_some())
     {
         bail!("producer presentation width and height require popup mode");
     }
-    if presentation.width == Some(0) || presentation.height == Some(0) {
+    if presentation.width.as_ref().is_some_and(|w| w.is_zero())
+        || presentation.height.as_ref().is_some_and(|h| h.is_zero())
+    {
         bail!("producer presentation width and height must be positive");
+    }
+    if let (Some(min), Some(max)) = (presentation.min_width, presentation.max_width) {
+        if min > max {
+            bail!("presentation min_width ({min}) cannot exceed max_width ({max})");
+        }
+    }
+    if let (Some(min), Some(max)) = (presentation.min_height, presentation.max_height) {
+        if min > max {
+            bail!("presentation min_height ({min}) cannot exceed max_height ({max})");
+        }
     }
     Ok(())
 }

@@ -344,11 +344,10 @@ fn prepare_builtin_commands(
         .collect::<Vec<_>>();
     let request = NavigationRequest::new(target, "")
         .with_parameters(json!({"commands": commands}))
-        .with_presentation(crate::workflow::config::ViewPresentation {
-            mode: crate::workflow::config::ViewPresentationMode::Popup,
-            width: Some(72),
-            height: Some(16),
-        });
+        .with_presentation(
+            crate::workflow::config::ViewPresentation::popup(72, 16)
+                .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
+        );
     Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
         origin: command_invocation.origin(),
@@ -371,11 +370,7 @@ fn prepare_builtin_parameters(
     .context("could not serialize parameter form payload")?;
     let request = NavigationRequest::with_defaults(target)
         .with_parameters(json!({"payload": payload}))
-        .with_presentation(crate::workflow::config::ViewPresentation {
-            mode: crate::workflow::config::ViewPresentationMode::Popup,
-            width: Some(72),
-            height: Some(20),
-        });
+        .with_presentation(crate::workflow::config::ViewPresentation::popup(72, 20));
     Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
         origin: command_invocation.origin(),

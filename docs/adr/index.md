@@ -24,3 +24,5 @@ Each record captures the context, considered options, decision outcome, and cons
 | **[0004](0004-scoped-command-registration.md)** | [Scoped Command Registration](0004-scoped-command-registration.md) | **Accepted** | 2026-09-13 |
 | **[0005](0005-manifest-driven-suites-and-self-contained-workflows.md)** | [Manifest-Driven Workflow Suites and Self-Contained Workflows](0005-manifest-driven-suites-and-self-contained-workflows.md) | **Accepted**; supersedes ADR 0001 alias registration and multi-workflow discovery | 2026-09-19 |
 | **[0006](0006-feed-removal-workflow-scoped-commands-and-item-bindings.md)** | [Feed Removal, Workflow-Scoped Commands, and Item-Driven Bindings](0006-feed-removal-workflow-scoped-commands-and-item-bindings.md) | **Accepted**; supersedes ADR 0002 Picker feed aggregation and command projection | 2026-09-19 |
+| **[0007](0007-declarative-popup-presentation-and-viewport-relative-geometry.md)** | [Declarative Popup Presentation and Viewport-Relative Geometry](0007-declarative-popup-presentation-and-viewport-relative-geometry.md) | **Proposed** | 2026-09-23 |
+

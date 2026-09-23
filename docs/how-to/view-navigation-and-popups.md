@@ -35,10 +35,10 @@ producer = "declared"
 
 [commands.select_action.handler]
 target = "selectors:actions"
-presentation = { mode = "popup", width = 70, height = 18 }
+presentation = { mode = "popup", anchor = "top", offset_y = 2, width = "80%", max_width = 100, height = 18 }
 ```
 
-The target must be a configured View or alias. Popup width and height are terminal-cell dimensions and are clamped to the available terminal area. While the popup is active, only its top View receives input.
+The target must be a configured View or alias. Popup dimensions can be specified as terminal cells (e.g. `70`) or viewport percentages (e.g. `"80%"`), with optional `min_width`, `max_width`, `min_height`, and `max_height` clamps. Setting `anchor` positions the popup using any of the 9 viewport anchors (`center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right`), with `offset_x` and `offset_y` defaulting transparently to 0. When multiple popups are opened sequentially, each popup is anchored independently to the global viewport without boundary degradation. While the popup is active, only its top View receives input.
 
 ### 2. Produce Dynamic Navigation from a Selected Item
 
