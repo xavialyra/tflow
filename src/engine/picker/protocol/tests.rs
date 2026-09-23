@@ -307,6 +307,22 @@ impl EngineRuntime for ExitOnActionRuntime {
     }
 }
 
+struct CloseOnBackRuntime;
+
+impl EngineRuntime for CloseOnBackRuntime {
+    fn action(&mut self, input: EngineActionInput) -> Result<EngineEmission> {
+        if input.invocation.id.as_str() == "picker.back" {
+            Ok(EngineEmission::decision(EngineDecision::Close))
+        } else {
+            Ok(EngineEmission::decision(EngineDecision::Continue))
+        }
+    }
+
+    fn render_model(&self) -> crate::engine::RenderModel {
+        crate::engine::RenderModel::new("picker", ())
+    }
+}
+
 struct StaleAwareTaskRuntime {
     task: Option<crate::task::TaskHandle<()>>,
     input_rejected: Arc<AtomicBool>,
@@ -539,6 +555,39 @@ fn backspace_ignores_the_setting_without_a_rendered_prefix() {
         backspace_decision(Some("sys"), false, Some(PrefixBackspace::Root)),
         ViewDecision::Invalidate
     ));
+}
+
+#[test]
+fn root_picker_clears_input_on_back_before_closing() {
+    let tasks = TaskRuntime::new();
+    let mut view = view_with_stale_aware_runtime(
+        Box::new(CloseOnBackRuntime),
+        invalid_integer_binding(),
+        &tasks,
+    );
+    view.editor = EditorBuffer::from_raw("query", 5);
+
+    let mut root_context = ViewContext::new(ViewInstanceId(1), "core:default");
+    root_context.has_parent = false;
+
+    // 1. First back on root view with non-empty input: should clear input and not close
+    let decision = view.on_command(CMD_BACK, &root_context).unwrap();
+    assert!(!matches!(decision, ViewDecision::Close));
+    assert!(view.editor.raw.is_empty());
+
+    // 2. Second back on root view with empty input: should close
+    let decision = view.on_command(CMD_BACK, &root_context).unwrap();
+    assert!(matches!(decision, ViewDecision::Close));
+
+    // 3. Child view with non-empty input: should immediately close without clearing
+    let mut child_context = ViewContext::new(ViewInstanceId(1), "core:default");
+    child_context.has_parent = true;
+    view.editor = EditorBuffer::from_raw("child query", 11);
+    let decision = view.on_command(CMD_BACK, &child_context).unwrap();
+    assert!(matches!(decision, ViewDecision::Close));
+    assert_eq!(view.editor.raw, "child query");
+
+    tasks.shutdown_and_wait();
 }
 
 #[test]

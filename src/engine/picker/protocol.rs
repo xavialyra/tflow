@@ -643,7 +643,14 @@ impl View for PickerProtocolView {
         self.rebuild_context(context);
         let result = match id {
             CMD_EXIT => Ok(ViewDecision::Exit),
-            CMD_BACK => self.action(context, "picker.back"),
+            CMD_BACK => {
+                if !context.has_parent && !self.editor.raw.is_empty() {
+                    self.editor.clear();
+                    self.edit_changed(context)
+                } else {
+                    self.action(context, "picker.back")
+                }
+            }
             CMD_SELECT_PREVIOUS => self.action(context, "picker.select_previous"),
             CMD_SELECT_NEXT => self.action(context, "picker.select_next"),
             CMD_TOGGLE_PREVIEW => self.action(context, "picker.toggle_preview"),
