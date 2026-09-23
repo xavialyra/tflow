@@ -136,11 +136,12 @@ fn first_signal_exits_when_outer_terminal_stops_reading() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
+        [workflows.custom.views.main.keymap]
+        escape = false
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "while :; do printf x; done"]
-        escape-cancels = false
         "#,
     )
     .unwrap();
@@ -529,11 +530,12 @@ fn signal_exit_terminates_embedded_process() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
+        [workflows.custom.views.main.keymap]
+        escape = false
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; sleep 30"]
-        escape-cancels = false
         "#,
     )
     .unwrap();
@@ -565,11 +567,12 @@ fn embedded_pty_disconnect_cancels_a_running_child() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
+        [workflows.custom.views.main.keymap]
+        escape = false
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
         command = ["sh", "-c", "printf '%s' $$ > \"$PID_FILE\"; exec 0<&- 1>&- 2>&-; sleep 30"]
-        escape-cancels = false
         "#,
     )
     .unwrap();
@@ -1731,7 +1734,7 @@ fn ctrl_g_builds_a_single_query_field_for_a_string_view() {
     });
     send_bytes(&mut process, b"\x15changed\r");
     wait_for_fresh_text(&process.master, "changed");
-    send_bytes(&mut process, b"\x1b");
+    send_bytes(&mut process, b"\x03");
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "launcher output: {output:?}");
     fs::remove_dir_all(root).unwrap();

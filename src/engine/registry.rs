@@ -50,6 +50,8 @@ impl EngineRegistry {
     pub(crate) fn validate_defaults(&self, defaults: &Defaults) -> Result<()> {
         super::picker::validate_defaults(defaults).context("picker defaults")?;
         super::capture::validate_defaults(defaults).context("capture defaults")?;
+        super::embedded::validate_defaults(defaults).context("embedded defaults")?;
+        super::form::validate_defaults(defaults).context("form defaults")?;
         Ok(())
     }
 

@@ -7,8 +7,10 @@ mod tests;
 
 use self::content::{Draft, FieldType, parse_content};
 use crate::engine::{
-    EngineDefinition, EngineValidationContext, FactoryFieldPlan, ProjectedEngineConfig,
+    EngineDefinition, EngineValidationContext, FactoryFieldPlan, ProjectedBindingConfig,
+    ProjectedEngineConfig,
 };
+use crate::input::keymap::{ActionBindings, KeymapAction};
 use crate::input::{InputEvent, Key, ViewMountId};
 use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{
@@ -20,17 +22,65 @@ use crate::view::{
     ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::config::{
-    ProducerKind, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
+    Defaults, ProducerKind, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum FormAction {
+    FocusNext,
+    FocusPrev,
+    Cancel,
+    Exit,
+}
+
+impl FormAction {
+    const ALL: [Self; 4] = [
+        Self::FocusNext,
+        Self::FocusPrev,
+        Self::Cancel,
+        Self::Exit,
+    ];
+}
+
+impl KeymapAction for FormAction {
+    const LABEL: &'static str = "form";
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::FocusNext => "focus_next",
+            Self::FocusPrev => "focus_prev",
+            Self::Cancel => "cancel",
+            Self::Exit => "exit",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.name() == name)
+    }
+
+    fn default_bindings() -> &'static [(Key, Self)] {
+        &[
+            (Key::Tab, Self::FocusNext),
+            (Key::Down, Self::FocusNext),
+            (Key::BackTab, Self::FocusPrev),
+            (Key::Up, Self::FocusPrev),
+            (Key::Escape, Self::Cancel),
+            (Key::Ctrl('c'), Self::Exit),
+            (Key::Ctrl('d'), Self::Exit),
+        ]
+    }
+}
+
+pub(super) type FormKeymap = ActionBindings<FormAction>;
+
 pub(super) fn definition() -> EngineDefinition {
     EngineDefinition::new().with_factory_fields(FactoryFieldPlan {
         runtime: &["content"],
         binding: &[],
-        binding_defaults: None,
+        binding_defaults: Some(&["defaults", "form", "bindings"]),
     })
 }
 
@@ -60,6 +110,16 @@ fn prepare(value: Value, root: Option<&std::path::Path>) -> Result<PreparedConte
     }
 }
 
+pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
+    let bindings = defaults
+        .form
+        .bindings
+        .as_ref()
+        .map(toml_to_json)
+        .transpose()?;
+    FormKeymap::validate_values(bindings.as_ref(), None).context("form bindings")
+}
+
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let view = context.view;
     ensure!(
@@ -77,6 +137,7 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
 
 pub(crate) struct FormProtocolConfig {
     pub(crate) engine: ProjectedEngineConfig,
+    pub(crate) bindings: ProjectedBindingConfig,
     pub(crate) runtime_snapshot: Value,
     pub(crate) raw_input: String,
     pub(crate) theme: ResolvedTheme,
@@ -94,6 +155,7 @@ pub(crate) fn create_protocol_view(
 struct FormView {
     instance: ViewInstanceId,
     target: String,
+    keymap: FormKeymap,
     parameters: Value,
     raw_input: String,
     runtime_snapshot: Value,
@@ -135,9 +197,14 @@ impl FormView {
         };
         let ready = script.is_none();
         let publication = ViewPublication::new(content::state(&fields, 0, ready), ready);
+        let keymap = FormKeymap::from_values(
+            config.bindings.defaults,
+            config.bindings.view_keymap,
+        )?;
         Ok(Self {
             instance,
             target: request.target.clone(),
+            keymap,
             parameters: request.query.values.clone(),
             raw_input: config.raw_input,
             runtime_snapshot: config.runtime_snapshot,
@@ -318,50 +385,22 @@ pub(super) const CMD_EXIT: &str = "form.exit";
 
 impl View for FormView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
-        vec![
-            crate::command::CommandEntry::for_event(
-                CMD_FOCUS_NEXT,
-                Some("Next Field".to_string()),
-                Some(Key::Tab),
+        let mut entries = Vec::new();
+        for (key, action) in self.keymap.bindings() {
+            let (id, label) = match action {
+                FormAction::FocusNext => (CMD_FOCUS_NEXT, "Next Field"),
+                FormAction::FocusPrev => (CMD_FOCUS_PREV, "Previous Field"),
+                FormAction::Cancel => (CMD_CANCEL, "Cancel"),
+                FormAction::Exit => (CMD_EXIT, "Exit"),
+            };
+            entries.push(crate::command::CommandEntry::for_event(
+                id,
+                Some(label.to_string()),
+                Some(key),
                 crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_FOCUS_NEXT,
-                Some("Next Field".to_string()),
-                Some(Key::Down),
-                crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_FOCUS_PREV,
-                Some("Previous Field".to_string()),
-                Some(Key::BackTab),
-                crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_FOCUS_PREV,
-                Some("Previous Field".to_string()),
-                Some(Key::Up),
-                crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_CANCEL,
-                Some("Cancel".to_string()),
-                Some(Key::Escape),
-                crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_EXIT,
-                Some("Exit".to_string()),
-                Some(Key::Ctrl('c')),
-                crate::command::CommandScope::Engine,
-            ),
-            crate::command::CommandEntry::for_event(
-                CMD_EXIT,
-                Some("Exit".to_string()),
-                Some(Key::Ctrl('d')),
-                crate::command::CommandScope::Engine,
-            ),
-        ]
+            ));
+        }
+        entries
     }
 
     fn on_command(&mut self, id: &str, _context: &ViewContext) -> Result<ViewDecision> {

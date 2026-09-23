@@ -52,7 +52,17 @@ preview_scroll_up = ["ctrl+u"]
 preview_scroll_down = ["ctrl+d"]
 
 [defaults.capture.bindings]
-exit = ["ctrl+c", "escape"]
+copy = ["enter"]
+back = ["escape"]
+
+[defaults.embedded.bindings]
+cancel = ["escape"]
+
+[defaults.form.bindings]
+focus_next = ["tab", "down"]
+focus_prev = ["backtab", "up"]
+cancel = ["escape"]
+exit = ["ctrl+c", "ctrl+d"]
 
 [styles.git.staged]
 foreground = "scheme:accent"
@@ -119,7 +129,45 @@ Configures presentation and keybindings for Capture views.
 
 | Action | Built-in Default | Description |
 | :--- | :--- | :--- |
-| `exit` | `["ctrl+c", "escape"]` | Exits or closes the Capture view. |
+| `copy` | `["enter"]` | Copies captured output text to the system clipboard. |
+| `back` | `["escape"]` | Returns to the previous view or closes the Capture view. |
+
+---
+
+### 3. Embedded Engine (`[defaults.embedded]`)
+
+Configures presentation and keybindings for Embedded PTY views.
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `bindings` | table | See below | Keybindings table for Embedded views. |
+
+#### Embedded Default Bindings (`[defaults.embedded.bindings]`)
+
+| Action | Built-in Default | Description |
+| :--- | :--- | :--- |
+| `cancel` | `["escape"]` | Cancels the embedded process and unwinds the view stack. |
+
+*Note: To allow Escape to pass directly into the child process (e.g. for Vim), disable this binding in the view's keymap using a tombstone: `[views.<name>.keymap] "escape" = false`.*
+
+---
+
+### 4. Form Engine (`[defaults.form]`)
+
+Configures presentation and keybindings for Form views.
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `bindings` | table | See below | Keybindings table for Form views. |
+
+#### Form Default Bindings (`[defaults.form.bindings]`)
+
+| Action | Built-in Default | Description |
+| :--- | :--- | :--- |
+| `focus_next` | `["tab", "down"]` | Moves focus to the next form field. |
+| `focus_prev` | `["backtab", "up"]` | Moves focus to the previous form field. |
+| `cancel` | `["escape"]` | Closes the form without submitting. |
+| `exit` | `["ctrl+c", "ctrl+d"]` | Exits `tflow`. |
 
 ---
 

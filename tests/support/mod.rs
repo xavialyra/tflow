@@ -1388,6 +1388,10 @@ pub fn fixture_config() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/default.toml")
 }
 
+pub fn fixture_settings() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config/settings.toml")
+}
+
 pub fn quick_picker_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quick-picker.toml")
 }

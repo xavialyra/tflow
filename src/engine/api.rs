@@ -68,6 +68,7 @@ pub(crate) struct RuntimeFactoryContext {
 pub(crate) struct RendererFactoryContext;
 
 pub(crate) struct InputBindingFactoryContext {
+    #[allow(dead_code)]
     pub(crate) identity: ViewIdentity,
     pub(crate) bindings: ProjectedBindingConfig,
 }

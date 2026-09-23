@@ -198,6 +198,7 @@ impl ViewFactory for ProtocolViewFactory {
             crate::workflow::config::ENGINE_FORM => crate::engine::form::create_protocol_view(
                 crate::engine::form::FormProtocolConfig {
                     engine,
+                    bindings,
                     runtime_snapshot,
                     raw_input: parameters.raw_input().to_string(),
                     theme: self.theme.clone(),

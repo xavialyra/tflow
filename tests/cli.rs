@@ -304,6 +304,80 @@ fn check_rejects_capture_binding_conflicts_with_defaults() {
 }
 
 #[test]
+fn check_rejects_embedded_binding_conflicts_with_defaults() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [defaults.embedded.bindings]
+        cancel = ["escape", "escape"]
+
+        [workflows.core.views.default.engine]
+        type = "embedded"
+        [workflows.core.views.default.engine.config]
+        command = ["echo", "hi"]
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--suite"])
+        .arg(&config)
+        .arg("--settings")
+        .arg(root.join("settings.toml"))
+        .output()
+        .expect("could not run tflow --check");
+
+    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("embedded key \"escape\" is assigned to both"),
+        "stderr: {:?}",
+        output.stderr
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn check_rejects_form_binding_conflicts_with_defaults() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [defaults.form.bindings]
+        focus_next = ["escape"]
+
+        [workflows.core.views.default.engine]
+        type = "form"
+        [workflows.core.views.default.engine.config]
+        content = { producer = "declared", handler = { fields = [{ name = "foo" }] } }
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "--suite"])
+        .arg(&config)
+        .arg("--settings")
+        .arg(root.join("settings.toml"))
+        .output()
+        .expect("could not run tflow --check");
+
+    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("form key \"escape\" is assigned to both"),
+        "stderr: {:?}",
+        output.stderr
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cli_theme_selection_does_not_require_an_existing_current_directory() {
     for theme in ["terminal", "contrast"] {
         let current_dir = temporary_root();
@@ -313,6 +387,8 @@ fn cli_theme_selection_does_not_require_an_existing_current_directory() {
             .arg(binary_path())
             .args(["--check", "--suite"])
             .arg(fixture_config())
+            .args(["--settings"])
+            .arg(support::fixture_settings())
             .args(["--theme", theme])
             .output()
             .expect("could not run tflow from a missing current directory");

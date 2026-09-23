@@ -17,7 +17,8 @@ use super::{
 };
 use crate::execution::PreparedProcess;
 use crate::identity::{ENV_INPUT, ENV_WORKFLOW_DIR};
-use crate::input::keymap::KeymapAction;
+use crate::input::keymap::{ActionBindings, KeymapAction};
+use crate::workflow::config::Defaults;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
 use serde::Deserialize;
@@ -34,7 +35,7 @@ enum ResultFormatConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum EmbeddedAction {
+pub(super) enum EmbeddedAction {
     Cancel,
 }
 
@@ -82,26 +83,14 @@ fn default_result_limit() -> usize {
     DEFAULT_RESULT_LIMIT
 }
 
-fn parse_escape_cancels_value(view_ref: &str, value: Option<Value>) -> Result<bool> {
-    value
-        .map(|value| {
-            value.as_bool().with_context(|| {
-                format!(
-                    "view {:?} embedded escape-cancels must be a boolean",
-                    view_ref
-                )
-            })
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(true))
-}
+pub(super) type EmbeddedKeymap = ActionBindings<EmbeddedAction>;
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: &["command", "result"],
-            binding: &["escape-cancels"],
-            binding_defaults: None,
+            binding: &[],
+            binding_defaults: Some(&["defaults", "embedded", "bindings"]),
         })
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
 }
@@ -117,20 +106,24 @@ fn reject_picker_sources(name: &str, view: &crate::workflow::config::View) -> Re
     Ok(())
 }
 
+pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
+    let bindings = defaults
+        .embedded
+        .bindings
+        .as_ref()
+        .map(crate::workflow::config::toml_to_json)
+        .transpose()?;
+    EmbeddedKeymap::validate_values(bindings.as_ref(), None).context("embedded bindings")
+}
+
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
     reject_picker_sources(name, view)?;
-    validate_fields(name, view, &["command", "result", "escape-cancels"])?;
+    validate_fields(name, view, &["command", "result"])?;
     require_field(name, view, "command")?;
     if let Some(result) = view.engine_field("result") {
         parse_result_config(name, Some(result))?;
-    }
-    if let Some(escape_cancels) = view.engine_field("escape-cancels") {
-        parse_escape_cancels_value(
-            name,
-            Some(crate::workflow::config::toml_to_json(escape_cancels)?),
-        )?;
     }
     let command = view
         .engine_field("command")
@@ -222,22 +215,26 @@ pub(super) fn create_renderer(
 pub(crate) fn create_input_bindings(
     context: InputBindingFactoryContext,
 ) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
-    let escape_cancels = parse_escape_cancels_value(
-        &context.identity.view_ref,
-        context.bindings.engine_field("escape-cancels").cloned(),
+    let keymap = EmbeddedKeymap::from_values(
+        context.bindings.defaults,
+        context.bindings.view_keymap,
     )?;
-    Ok(if escape_cancels {
-        vec![crate::workflow::command::InputActionBinding {
-            key: crate::input::Key::Escape,
-            action: crate::workflow::command::ResolvedInputAction::Engine(ActionId::new(
-                "embedded.cancel",
-            )),
-            label: Some(EmbeddedAction::Cancel.label().to_string()),
-            enabled: true,
-        }]
-    } else {
-        Vec::new()
-    })
+    let mut bindings = Vec::new();
+    for (key, action) in keymap.bindings() {
+        match action {
+            EmbeddedAction::Cancel => {
+                bindings.push(crate::workflow::command::InputActionBinding {
+                    key,
+                    action: crate::workflow::command::ResolvedInputAction::Engine(ActionId::new(
+                        "embedded.cancel",
+                    )),
+                    label: Some(EmbeddedAction::Cancel.label().to_string()),
+                    enabled: true,
+                });
+            }
+        }
+    }
+    Ok(bindings)
 }
 
 struct EmbeddedView {
@@ -476,7 +473,7 @@ fn parse_result_config_value(
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedSession, EngineRuntime, parse_escape_cancels_value};
+    use super::{EmbeddedAction, EmbeddedKeymap, EmbeddedSession, EngineRuntime};
     use crate::execution::PreparedProcess;
     use crate::lifecycle::CancellationToken;
 
@@ -509,21 +506,26 @@ mod tests {
     }
 
     #[test]
-    fn escape_cancellation_defaults_on_and_requires_a_boolean() {
-        assert!(parse_escape_cancels_value("core:default", None).unwrap());
-        assert!(
-            !parse_escape_cancels_value("core:default", Some(serde_json::Value::Bool(false)))
-                .unwrap()
+    fn cancel_defaults_to_escape_and_can_be_customized_or_disabled() {
+        let default_keymap = EmbeddedKeymap::from_values(None, None).unwrap();
+        assert_eq!(
+            default_keymap.action(crate::input::Key::Escape),
+            Some(EmbeddedAction::Cancel)
         );
-        let error = parse_escape_cancels_value(
-            "core:default",
-            Some(serde_json::Value::String("false".to_string())),
+
+        let customized = EmbeddedKeymap::from_values(
+            Some(serde_json::json!({"cancel": ["ctrl+q"]})),
+            Some(serde_json::json!({"ctrl+q": false, "alt+x": "cancel"})),
         )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("escape-cancels must be a boolean")
+        .unwrap();
+        assert_eq!(
+            customized.action(crate::input::Key::Alt('x')),
+            Some(EmbeddedAction::Cancel)
         );
+        assert_eq!(customized.action(crate::input::Key::Ctrl('q')), None);
+
+        let tombstone =
+            EmbeddedKeymap::from_values(None, Some(serde_json::json!({"escape": false}))).unwrap();
+        assert_eq!(tombstone.action(crate::input::Key::Escape), None);
     }
 }

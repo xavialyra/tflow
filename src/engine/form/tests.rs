@@ -9,6 +9,7 @@ fn config(content: Value, tasks: TaskRuntime) -> FormProtocolConfig {
             fields: [("content".into(), content)].into_iter().collect(),
             ..Default::default()
         },
+        bindings: ProjectedBindingConfig::default(),
         runtime_snapshot: Value::Null,
         raw_input: "immutable query".into(),
         theme: ResolvedTheme::terminal(),
@@ -628,4 +629,33 @@ fn form_discrete_navigation_and_exit_commands() {
 
     // Test Ctrl-D produces Exit
     assert_eq!(key(&mut form, Key::Ctrl('d')), ViewDecision::Exit);
+}
+
+#[test]
+fn form_bindings_can_be_customized_and_disabled_via_keymap() {
+    let mut config = config(
+        json!({"producer":"declared", "handler":{"fields":[{"name": "a"}]}}),
+        TaskRuntime::new(),
+    );
+    config.bindings = ProjectedBindingConfig {
+        defaults: Some(json!({
+            "focus_next": ["ctrl+n"],
+            "cancel": ["ctrl+q"]
+        })),
+        view_keymap: Some(json!({
+            "ctrl+q": false,
+            "alt+x": "cancel"
+        })),
+        engine_fields: Default::default(),
+    };
+    let mut form = FormView::new(config, &request(), ViewInstanceId(1)).unwrap();
+    form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
+        .unwrap();
+
+    let cmds = form.engine_commands(&context());
+    let keys: Vec<_> = cmds.iter().filter_map(|c| c.key).collect();
+    assert!(keys.contains(&Key::Ctrl('n')));
+    assert!(keys.contains(&Key::Alt('x')));
+    assert!(!keys.contains(&Key::Ctrl('q')));
+    assert!(!keys.contains(&Key::Escape));
 }

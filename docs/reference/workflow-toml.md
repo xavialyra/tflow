@@ -191,13 +191,13 @@ type = "embedded"
 
 [views.terminal.engine.config]
 command = ["btop"]
-escape-cancels = true
 ```
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `command` | array of strings | **Required** | The executable and arguments to spawn inside the PTY. |
-| `escape-cancels` | boolean | `false` | When `true`, pressing Escape terminates the embedded process and returns. |
+
+*Note: By default, `Escape` triggers the engine's `cancel` action to close the view. To let Escape pass through into the child process, disable the binding in the View's keymap: `[views.<name>.keymap] "escape" = false`.*
 
 ---
 

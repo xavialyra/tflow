@@ -46,6 +46,10 @@ pub(crate) struct Defaults {
     pub(crate) picker: PickerDefaults,
     #[serde(default)]
     pub(crate) capture: CaptureDefaults,
+    #[serde(default)]
+    pub(crate) embedded: EmbeddedDefaults,
+    #[serde(default)]
+    pub(crate) form: FormDefaults,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -68,6 +72,20 @@ pub(crate) struct PickerDefaults {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CaptureDefaults {
+    #[serde(default)]
+    pub(crate) bindings: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmbeddedDefaults {
+    #[serde(default)]
+    pub(crate) bindings: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FormDefaults {
     #[serde(default)]
     pub(crate) bindings: Option<toml::Value>,
 }

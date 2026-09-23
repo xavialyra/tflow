@@ -50,6 +50,14 @@ pub(crate) fn project_binding_config(
             .capture_default_bindings()
             .map(toml_to_json)
             .transpose()?,
+        Some(path) if path == ["defaults", "embedded", "bindings"] => config
+            .embedded_default_bindings()
+            .map(toml_to_json)
+            .transpose()?,
+        Some(path) if path == ["defaults", "form", "bindings"] => config
+            .form_default_bindings()
+            .map(toml_to_json)
+            .transpose()?,
         Some(path) => anyhow::bail!("unsupported engine binding defaults path {:?}", path),
         None => None,
     };

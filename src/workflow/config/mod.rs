@@ -374,6 +374,14 @@ impl CompiledConfig {
     pub(crate) fn capture_default_bindings(&self) -> Option<&toml::Value> {
         self.defaults.capture.bindings.as_ref()
     }
+
+    pub(crate) fn embedded_default_bindings(&self) -> Option<&toml::Value> {
+        self.defaults.embedded.bindings.as_ref()
+    }
+
+    pub(crate) fn form_default_bindings(&self) -> Option<&toml::Value> {
+        self.defaults.form.bindings.as_ref()
+    }
 }
 
 #[cfg(test)]
