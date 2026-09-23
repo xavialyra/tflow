@@ -118,7 +118,20 @@ pub enum DimensionConstraint {
 - Clamping enforces `min_dimension <= resolved <= max_dimension`, capped strictly by the bounds of `content_area`.
 - Omitted width and height default to standardized fallback dimensions (e.g., 72 cells wide, 16 cells high).
 
-### 4. Architectural Invariant: Presentation is Pure Layout
+### 4. Global Focus Isolation and Non-Focus Backdrop Dimming
+
+To maintain visual hierarchy when modal views are active, `ContentHost` applies non-destructive dimming to all visible screen cells outside the topmost active focus rectangle:
+
+- **Single Focus Rectangle Boundary**: When an active popup is present, its bounding rectangle (`popup_rect`, including borders and content) forms the exclusive focused area.
+- **Universal Backdrop Dimming**: All cells outside the active focus rectangle—including base view text, inactive covered popup borders and bodies, and the host footer—receive `Modifier::DIM` (ANSI faint) along with scaled TrueColor RGB intensities.
+- **Non-Destructive Styling**: Existing cell modifiers (such as reversed selections, bold tags, and cursor markers) remain intact, ensuring selection context and visual structure are dimmed rather than lost.
+- **Global Theme Configuration**: Backdrop dimming is globally managed via `[chrome]` in `themes/<name>.toml`:
+  ```toml
+  [chrome]
+  dim_backdrop = true    # Default true; set to false to disable dimming
+  ```
+
+### 5. Architectural Invariant: Presentation is Pure Layout
 
 `ViewPresentation` is strictly a layout concern handled by `ContentHost`:
 

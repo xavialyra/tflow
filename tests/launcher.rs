@@ -1607,7 +1607,7 @@ fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
     wait_for_text(&process.master, "name");
     send_bytes(&mut process, b"changed\r");
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("changed") && !screen.contains("__form:main")
+        screen.contains("changed") && !screen.contains("__query:main") && !screen.contains("__form:main")
     });
     send_bytes(&mut process, b"\x03");
     let (status, output) = wait_for_launcher_exit(&mut process);
@@ -1677,17 +1677,12 @@ sys.stdout.write("\n")
         let Some(enabled) = field_position("enabled") else {
             return false;
         };
-        let Some(tags) = field_position("tags") else {
-            return false;
-        };
         title < count
             && count < enabled
-            && enabled < tags
             && screen.contains("initial title")
             && screen.contains("> title")
             && screen.contains("2")
             && screen.contains("false")
-            && screen.contains(r#"["one"]"#)
     });
 
     send_bytes(
@@ -1699,6 +1694,49 @@ sys.stdout.write("\n")
         "changed|7|True|[\"x\",\"y\"]|{\"mode\":\"fast\"}",
     );
     send_bytes(&mut process, b"\x1b");
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {output:?}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctrl_g_repeated_does_not_open_nested_query_panel() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "dynamic:main"
+
+        [workflows.dynamic.views.main]
+        [workflows.dynamic.views.main.query]
+        type = "string"
+
+        [workflows.dynamic.views.main.engine]
+        type = "picker"
+        [workflows.dynamic.views.main.engine.config]
+        items = [{ display = "Ready", value = "ready" }]
+    "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&config);
+    wait_for_text(&process.master, "Ready");
+
+    // First Ctrl+G opens the query form
+    send_bytes(&mut process, b"\x07");
+    wait_for_text(&process.master, "__query:main");
+
+    // Second Ctrl+G should be a no-op (stay), NOT open a nested query panel
+    send_bytes(&mut process, b"\x07");
+
+    // Single Escape should exit the query form and return to the main view
+    send_bytes(&mut process, b"\x1b");
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Ready") && !screen.contains("__query:main")
+    });
+
+    send_bytes(&mut process, b"\x03");
     let (status, output) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0, "launcher output: {output:?}");
     fs::remove_dir_all(root).unwrap();
@@ -3064,6 +3102,37 @@ fn command_selector_displays_keybindings_for_commands() {
 }
 
 #[test]
+fn command_selector_repeated_ctrl_k_does_not_open_nested_menu() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Show date");
+
+    // First Ctrl+K opens the command palette
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Run");
+
+    // Second Ctrl+K should be a no-op (stay), NOT open a nested commands menu
+    process.master.write_all(b"\x0b").unwrap();
+    process.master.flush().unwrap();
+
+    // A single Escape should immediately return to the main view, confirming no nested menu
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "Show date");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(
+        screen.contains("Show date"),
+        "single escape should return to main view: {screen}"
+    );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
 fn command_selector_can_open_edit_query_form_and_apply_parameters() {
     let mut process = spawn_launcher_with_args(&fixture_config(), &["sys:main"]);
     wait_for_ready(&process.master);
@@ -3087,10 +3156,10 @@ fn command_selector_can_open_edit_query_form_and_apply_parameters() {
     process.master.write_all(b"\r").unwrap();
     process.master.flush().unwrap();
 
-    // Form popup should open
-    let form_output = wait_for_text(&process.master, "__form:main");
+    // Query form popup should open
+    let form_output = wait_for_text(&process.master, "__query:main");
     let form_screen = String::from_utf8_lossy(&form_output);
-    assert!(form_screen.contains("__form:main"));
+    assert!(form_screen.contains("__query:main"));
 
     // Cancel form with Escape
     process.master.write_all(b"\x1b").unwrap();

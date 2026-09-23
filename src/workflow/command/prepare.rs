@@ -333,20 +333,45 @@ fn prepared_direct_process(root: Option<&Path>, argv: Vec<String>) -> Result<Pre
     })
 }
 
+pub(crate) const COMMANDS_POPUP_WIDTH: u16 = 50;
+pub(crate) const COMMANDS_POPUP_HEIGHT: u16 = 10;
+pub(crate) const QUERY_POPUP_WIDTH: u16 = 54;
+pub(crate) const QUERY_POPUP_HEIGHT: u16 = 12;
+
+pub(crate) fn is_commands_view(view: &str, target: &str) -> bool {
+    view == target
+        || view == "__commands:main"
+        || crate::workflow::config::package_id(view) == "__commands"
+}
+
+pub(crate) fn is_query_view(view: &str, target: &str) -> bool {
+    view == target
+        || view == "__query:main"
+        || view == "__form:main"
+        || crate::workflow::config::package_id(view) == "__query"
+        || crate::workflow::config::package_id(view) == "__form"
+}
+
 fn prepare_builtin_commands(
     config: &CompiledConfig,
     command_invocation: CommandInvocation,
     context: CommandContext,
 ) -> Result<PreparedAction> {
     let target = config.resolve_view("__commands:main")?;
+    if is_commands_view(&context.page.view_ref, &target) {
+        return Ok(PreparedAction::Noop);
+    }
     let commands = collect_available_commands(config, &context.page.view_ref, true)?
         .into_values()
         .collect::<Vec<_>>();
     let request = NavigationRequest::new(target, "")
         .with_parameters(json!({"commands": commands}))
         .with_presentation(
-            crate::workflow::config::ViewPresentation::popup(72, 16)
-                .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
+            crate::workflow::config::ViewPresentation::popup(
+                COMMANDS_POPUP_WIDTH,
+                COMMANDS_POPUP_HEIGHT,
+            )
+            .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
         );
     Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
@@ -361,7 +386,12 @@ fn prepare_builtin_parameters(
     command_invocation: CommandInvocation,
     context: CommandContext,
 ) -> Result<PreparedAction> {
-    let target = config.resolve_view("__form:main")?;
+    let target = config
+        .resolve_view("__query:main")
+        .or_else(|_| config.resolve_view("__form:main"))?;
+    if is_query_view(&context.page.view_ref, &target) {
+        return Ok(PreparedAction::Noop);
+    }
     let payload = serde_json::to_string(&json!({
         "target": context.page.view_ref,
         "query": config.query_definition(&context.page.view_ref)?,
@@ -370,7 +400,10 @@ fn prepare_builtin_parameters(
     .context("could not serialize parameter form payload")?;
     let request = NavigationRequest::with_defaults(target)
         .with_parameters(json!({"payload": payload}))
-        .with_presentation(crate::workflow::config::ViewPresentation::popup(72, 20));
+        .with_presentation(crate::workflow::config::ViewPresentation::popup(
+            QUERY_POPUP_WIDTH,
+            QUERY_POPUP_HEIGHT,
+        ));
     Ok(PreparedAction::Call(Box::new(CallRequest {
         request,
         origin: command_invocation.origin(),
@@ -455,5 +488,86 @@ mod tests {
         let (view, id) = key.split_once('/').expect("command key has an owner");
         assert_eq!(value["ref"]["view"], view);
         assert_eq!(value["ref"]["id"], id);
+    }
+
+    #[test]
+    fn is_commands_view_identifies_builtin_command_view() {
+        assert!(is_commands_view("__commands:main", "__commands:main"));
+        assert!(is_commands_view("__commands:detail", "__commands:main"));
+        assert!(!is_commands_view("core:default", "__commands:main"));
+        assert!(!is_commands_view("sys:main", "__commands:main"));
+    }
+
+    #[test]
+    fn prepare_builtin_commands_returns_noop_when_already_in_commands_view() {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        let invocation = CommandInvocation::session_command(
+            "__commands:main",
+            "commands",
+            crate::workflow::config::CommandBinding::builtin_commands()
+                .as_command("commands")
+                .unwrap(),
+        );
+        let param_snap = crate::workflow::parameter::ParameterSnapshot::from_parts(
+            serde_json::Value::Null,
+            String::new(),
+            crate::input::InputSourceIdentity::default(),
+            0,
+        );
+        let context = CommandContext {
+            page: super::super::CommandOwnerContext {
+                view_ref: "__commands:main".to_string(),
+                parameters: param_snap.clone(),
+            },
+            owner: super::super::CommandOwnerContext {
+                view_ref: "__commands:main".to_string(),
+                parameters: param_snap,
+            },
+            current: Value::Null,
+            engine_type: "picker".to_string(),
+        };
+        let prepared = prepare_builtin_commands(&config, invocation, context).unwrap();
+        assert!(matches!(prepared, PreparedAction::Noop));
+    }
+
+    #[test]
+    fn is_query_view_identifies_builtin_query_view() {
+        assert!(is_query_view("__query:main", "__query:main"));
+        assert!(is_query_view("__query:detail", "__query:main"));
+        assert!(is_query_view("__form:main", "__query:main"));
+        assert!(!is_query_view("core:default", "__query:main"));
+        assert!(!is_query_view("sys:main", "__query:main"));
+    }
+
+    #[test]
+    fn prepare_builtin_parameters_returns_noop_when_already_in_query_view() {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        let invocation = CommandInvocation::session_command(
+            "__query:main",
+            "parameters",
+            crate::workflow::config::CommandBinding::builtin_parameters()
+                .as_command("parameters")
+                .unwrap(),
+        );
+        let param_snap = crate::workflow::parameter::ParameterSnapshot::from_parts(
+            serde_json::Value::Null,
+            String::new(),
+            crate::input::InputSourceIdentity::default(),
+            0,
+        );
+        let context = CommandContext {
+            page: super::super::CommandOwnerContext {
+                view_ref: "__query:main".to_string(),
+                parameters: param_snap.clone(),
+            },
+            owner: super::super::CommandOwnerContext {
+                view_ref: "__query:main".to_string(),
+                parameters: param_snap,
+            },
+            current: Value::Null,
+            engine_type: "form".to_string(),
+        };
+        let prepared = prepare_builtin_parameters(&config, invocation, context).unwrap();
+        assert!(matches!(prepared, PreparedAction::Noop));
     }
 }

@@ -1,6 +1,6 @@
 use super::color::{ResolvedScheme, resolve_scheme};
 use anyhow::Result;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -83,6 +83,7 @@ pub(crate) struct ChromeTheme {
     pub(crate) footer_status: Style,
     pub(crate) footer_key: Style,
     pub(crate) error: Style,
+    pub(crate) dim_backdrop: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +142,10 @@ pub(super) fn default_raw_theme() -> &'static RawTheme {
 }
 
 impl ResolvedTheme {
+    pub(crate) fn muted_color(&self) -> Color {
+        self.scheme.get("muted").copied().unwrap_or(Color::DarkGray)
+    }
+
     pub(crate) fn terminal() -> Self {
         Self::from_raw(default_raw_theme(), "builtin terminal")
             .expect("builtin terminal theme must be valid")
@@ -305,6 +310,12 @@ impl ResolvedTheme {
         )?
         .normal;
 
+        let dim_backdrop = raw
+            .chrome
+            .dim_backdrop
+            .or(default_raw.chrome.dim_backdrop)
+            .unwrap_or(true);
+
         let preview_text = resolve_component(
             raw.picker.preview.text.as_ref(),
             default_raw.picker.preview.text.as_ref().unwrap(),
@@ -355,6 +366,7 @@ impl ResolvedTheme {
                 footer_status: chrome_footer_status,
                 footer_key: chrome_footer_key,
                 error: chrome_error,
+                dim_backdrop,
             },
             picker: PickerTheme {
                 text: picker_text,
@@ -740,6 +752,8 @@ pub(super) struct RawChromeTheme {
     pub(super) footer_key: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) error: Option<RawStyleBinding>,
+    #[serde(default)]
+    pub(super) dim_backdrop: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

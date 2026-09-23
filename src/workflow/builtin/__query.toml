@@ -1,6 +1,6 @@
 [workflow]
 api = 1
-name = "Built-in Form"
+name = "Built-in Query"
 entrypoint = "main"
 
 [views.main]

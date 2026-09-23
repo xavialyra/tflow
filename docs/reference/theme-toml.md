@@ -80,6 +80,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[chrome]` | `footer_status` | Active status text on the footer (e.g. `2 items`). |
 | `[chrome]` | `footer_key` | Keyboard shortcut badges (e.g. `Enter`, `Ctrl+K`). |
 | `[chrome]` | `error` | Global error notification banner. |
+| `[chrome]` | `dim_backdrop` | Boolean (`true` by default). Dims non-focus background cells (base views, covered popups, footer) when a modal popup is active. |
 | `[capture]` | `text` | Captured subprocess output text. |
 | `[form]` | `label`, `input`, `focused`, `border`, `focused_border`, `error` | Field labels, normal and focused editors, field borders, and validation errors. |
 

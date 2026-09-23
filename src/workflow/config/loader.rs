@@ -582,6 +582,9 @@ impl CompiledConfig {
                 target.clone()
             } else if let Some(shorthand) = member_aliases.get(target) {
                 shorthand.clone()
+            } else if let Some(wf) = workflows.get(target) {
+                let entrypoint = wf.entrypoint.as_deref().unwrap_or("main");
+                format!("{target}:{entrypoint}")
             } else {
                 target.clone()
             };

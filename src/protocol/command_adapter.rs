@@ -495,6 +495,11 @@ impl CommandService for ProtocolCommandService {
             let cancellation_clone = self.cancellation.clone();
             let action = std::sync::Arc::new(move || {
                 let snapshot = snapshot_clone.read().unwrap();
+                if let Some(active_view) = snapshot.active_view.as_deref() {
+                    if crate::workflow::command::is_commands_view(active_view, &target) {
+                        return Ok(ViewDecision::Stay);
+                    }
+                }
                 let parameters = snapshot.to_picker_parameters();
                 let active_caller = snapshot.active_instance.unwrap_or(ViewInstanceId(0));
                 drop(snapshot);
@@ -502,8 +507,11 @@ impl CommandService for ProtocolCommandService {
                 let nav = crate::workflow::command::NavigationRequest::new(target.clone(), "")
                     .with_parameters(parameters)
                     .with_presentation(
-                        crate::workflow::config::ViewPresentation::popup(72, 16)
-                            .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
+                        crate::workflow::config::ViewPresentation::popup(
+                            crate::workflow::command::COMMANDS_POPUP_WIDTH,
+                            crate::workflow::command::COMMANDS_POPUP_HEIGHT,
+                        )
+                        .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
                     );
                 let req = protocol_navigation_request(&config_clone, nav)?;
 
@@ -607,6 +615,11 @@ impl CommandService for ProtocolCommandService {
                     .active_view
                     .clone()
                     .unwrap_or_else(|| invocation_clone.root_view().to_string());
+                if id_clone == "parameters"
+                    && crate::workflow::command::is_query_view(&active_view, "__query:main")
+                {
+                    return Ok(ViewDecision::Stay);
+                }
                 let active_parameters = active_snapshot.active_parameters.clone();
                 let active_raw_input = active_snapshot.active_raw_input.clone();
                 let execution = crate::workflow::command::CommandExecution {
@@ -813,7 +826,8 @@ pub(crate) fn map_prepared_action(
             }
         }
         PreparedAction::Call(call) => {
-            let is_parameter_form = call.request.view_ref == "__form:main";
+            let is_parameter_form =
+                call.request.view_ref == "__query:main" || call.request.view_ref == "__form:main";
             let request = protocol_navigation_request(config, call.request)?;
             let result_processor = is_parameter_form.then(|| {
                 let config = std::sync::Arc::clone(config);

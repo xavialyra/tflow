@@ -19,6 +19,9 @@ error = "ansi:red"
 # -----------------------------------------------------------------------------
 # Chrome / Outer Framing Component Styles
 # -----------------------------------------------------------------------------
+[chrome]
+dim_backdrop = true
+
 [chrome.text]
 foreground = "scheme:foreground"
 background = "scheme:background"

@@ -197,7 +197,9 @@ impl CompiledConfig {
             && !globals
                 .values()
                 .any(|binding| binding_uses_key(binding, "ctrl+g"));
-        if parameters_binding_is_available && self.view("__form:main").is_some() {
+        if parameters_binding_is_available
+            && (self.view("__query:main").is_some() || self.view("__form:main").is_some())
+        {
             globals.insert(
                 "parameters".to_string(),
                 CommandBinding::builtin_parameters(),
@@ -303,6 +305,14 @@ impl CompiledConfig {
         if let Some(target) = self.aliases.get(selector) {
             return Ok(target.clone());
         }
+        if (selector == "__form:main" || selector == "__query")
+            && self.views.contains_key("__query:main")
+        {
+            return Ok("__query:main".to_string());
+        }
+        if selector == "__commands" && self.views.contains_key("__commands:main") {
+            return Ok("__commands:main".to_string());
+        }
         if !selector.contains(':') {
             let matches: Vec<_> = self
                 .views
@@ -329,12 +339,8 @@ impl CompiledConfig {
         self.view_aliases.get(view_ref).map(String::as_str)
     }
 
-    /// Suite alias for a user-facing View. Internal `__`-prefixed Views are not
-    /// navigation targets and never advertise one.
     pub(crate) fn public_alias_for_view(&self, view_ref: &str) -> Option<&str> {
-        (!view_ref.starts_with("__"))
-            .then(|| self.alias_for_view(view_ref))
-            .flatten()
+        self.alias_for_view(view_ref)
     }
 
     pub fn view_engine_type(&self, view_ref: &str) -> Result<&str> {
@@ -588,11 +594,11 @@ mod tests {
             producer = "declared"
             handler = { value = "custom" }
 
-            [workflows.__form.views.main.engine]
+            [workflows.__query.views.main.engine]
             type = "form"
-            [workflows.__form.views.main.engine.config.content]
+            [workflows.__query.views.main.engine.config.content]
             producer = "declared"
-            [workflows.__form.views.main.engine.config.content.handler]
+            [workflows.__query.views.main.engine.config.content.handler]
             fields = []
             "#,
         );

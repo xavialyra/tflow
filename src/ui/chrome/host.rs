@@ -15,7 +15,7 @@ use crate::view::{RenderContext, RenderResult, ViewInstance};
 use crate::workflow::config::{ViewPresentation, ViewPresentationMode};
 use anyhow::Result;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -240,6 +240,51 @@ mod tests {
             let anchor: PopupAnchor = val.get("anchor").unwrap().clone().try_into().unwrap();
             assert_eq!(anchor, expected, "failed for {toml_str}");
         }
+    }
+
+    #[test]
+    fn dim_backdrop_dims_cells_outside_focus_rect_and_preserves_focus_rect() {
+        let host = ContentHost::default();
+        let mut terminal = Terminal::new(TestBackend::new(10, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                let buffer = frame.buffer_mut();
+                let inside_pos = Position { x: 5, y: 5 };
+                let outside_pos = Position { x: 0, y: 0 };
+                buffer.cell_mut(inside_pos).unwrap().set_char('A');
+                buffer.cell_mut(inside_pos).unwrap().fg = ratatui::style::Color::Rgb(200, 100, 50);
+                buffer.cell_mut(inside_pos).unwrap().modifier = ratatui::style::Modifier::BOLD;
+
+                buffer.cell_mut(outside_pos).unwrap().set_char('B');
+                buffer.cell_mut(outside_pos).unwrap().fg = ratatui::style::Color::Rgb(200, 100, 50);
+                buffer.cell_mut(outside_pos).unwrap().modifier =
+                    ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD;
+
+                let focus_rect = Rect::new(2, 2, 6, 6);
+                host.dim_backdrop(
+                    frame,
+                    Rect::new(0, 0, 10, 10),
+                    focus_rect,
+                    ratatui::style::Color::DarkGray,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Cell inside focus_rect remains untouched
+        let inside = buffer.cell((5, 5)).unwrap();
+        assert_eq!(inside.symbol(), "A");
+        assert_eq!(inside.fg, ratatui::style::Color::Rgb(200, 100, 50));
+        assert!(inside.modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(!inside.modifier.contains(ratatui::style::Modifier::DIM));
+
+        // Cell outside focus_rect has BOLD stripped, DIM inserted, fg set to DarkGray, and retains REVERSED
+        let outside = buffer.cell((0, 0)).unwrap();
+        assert_eq!(outside.symbol(), "B");
+        assert_eq!(outside.fg, ratatui::style::Color::DarkGray);
+        assert!(!outside.modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(outside.modifier.contains(ratatui::style::Modifier::DIM));
+        assert!(outside.modifier.contains(ratatui::style::Modifier::REVERSED));
     }
 }
 
@@ -557,5 +602,40 @@ impl ContentHost {
         }
 
         frame.render_widget(block, popup);
+    }
+
+    /// Dims all terminal cells that fall outside the given active focus rectangle.
+    pub(crate) fn dim_backdrop(
+        &self,
+        frame: &mut Frame,
+        terminal: Rect,
+        focus_rect: Rect,
+        muted_color: ratatui::style::Color,
+    ) {
+        let buffer = frame.buffer_mut();
+        for y in terminal.top()..terminal.bottom() {
+            for x in terminal.left()..terminal.right() {
+                let pos = Position { x, y };
+                if !focus_rect.contains(pos) {
+                    if let Some(cell) = buffer.cell_mut(pos) {
+                        Self::dim_cell(cell, muted_color);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applies visual dimming to an individual cell outside the focus rectangle.
+    ///
+    /// Clears aggressive `BOLD` styling, adds `Modifier::DIM`, and projects all
+    /// visible text and reversed selections to the theme's secondary `muted_color`
+    /// (DarkGray / BrightBlack), reliably lowering foreground contrast across all
+    /// terminals without modifying the terminal's native background color.
+    pub(crate) fn dim_cell(cell: &mut ratatui::buffer::Cell, muted_color: ratatui::style::Color) {
+        cell.modifier.remove(ratatui::style::Modifier::BOLD);
+        cell.modifier.insert(ratatui::style::Modifier::DIM);
+        if cell.symbol() != " " || cell.modifier.contains(ratatui::style::Modifier::REVERSED) {
+            cell.fg = muted_color;
+        }
     }
 }

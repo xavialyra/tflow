@@ -674,12 +674,31 @@ fn command_call_records_caller_and_runs_non_null_return_continuation() {
     let cmd_entry = host_cmds.into_iter().find(|e| e.id == "commands").unwrap();
     let call_decision = cmd_entry.execute_action().unwrap();
     let ViewDecision::Transition(crate::view::TransitionRequest::Call {
-        request: _req,
+        request: req,
         continuation: crate::view::Continuation::Call(boundary),
     }) = call_decision
     else {
         panic!("commands must call");
     };
+    assert_eq!(
+        req.presentation.width,
+        Some(crate::workflow::command::COMMANDS_POPUP_WIDTH.into())
+    );
+    assert_eq!(
+        req.presentation.height,
+        Some(crate::workflow::command::COMMANDS_POPUP_HEIGHT.into())
+    );
+
+    // When already in commands view, executing commands returns Stay directly
+    *shared_snapshot.write().unwrap() = ChromeSnapshot::from_registry(&registry.read().unwrap())
+        .with_active_instance(Some(caller.instance))
+        .with_active_view(
+            Some("__commands:main".to_string()),
+            serde_json::Value::Null,
+            "",
+        );
+    let stay_decision = cmd_entry.execute_action().unwrap();
+    assert!(matches!(stay_decision, ViewDecision::Stay));
 
     let selected_command = serde_json::json!({"ref": {"id": "accept"}});
     let continued = boundary
@@ -725,7 +744,15 @@ fn command_call_records_caller_and_runs_non_null_return_continuation() {
     else {
         panic!("parameters command must transition to form call");
     };
-    assert_eq!(request.target, "__form:main");
+    assert_eq!(request.target, "__query:main");
+    assert_eq!(
+        request.presentation.width,
+        Some(crate::workflow::command::QUERY_POPUP_WIDTH.into())
+    );
+    assert_eq!(
+        request.presentation.height,
+        Some(crate::workflow::command::QUERY_POPUP_HEIGHT.into())
+    );
 
     std::fs::remove_file(stdin_path).unwrap();
 }
@@ -2044,4 +2071,71 @@ fn bottom_right_popup_anchors_to_terminal_boundary_without_blank_gap() {
     assert_eq!(buffer.cell((20, 9)).unwrap().symbol(), "└");
     // Bottom-right: (39, 9)
     assert_eq!(buffer.cell((39, 9)).unwrap().symbol(), "┘");
+}
+
+#[test]
+fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    // Push first popup (child: 30x8 centered)
+    let mut child_req = request("child");
+    child_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        anchor: crate::workflow::config::PopupAnchor::Center,
+        width: Some(30.into()),
+        height: Some(8.into()),
+        ..Default::default()
+    };
+    session.router.push(child_req).unwrap();
+
+    // Push second popup (grandchild: 16x4 centered, nested over child)
+    let mut grandchild_req = request("grandchild");
+    grandchild_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        anchor: crate::workflow::config::PopupAnchor::Center,
+        width: Some(16.into()),
+        height: Some(4.into()),
+        ..Default::default()
+    };
+    session.router.push(grandchild_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+
+    // 1. Outside both popups (e.g. at (0, 0) which is base view / frame background)
+    // must have Modifier::DIM
+    let base_cell = buffer.cell((0, 0)).unwrap();
+    assert!(base_cell.modifier.contains(ratatui::style::Modifier::DIM));
+
+    // 2. Child popup is 30x8 centered in 40x10 terminal:
+    // x = (40 - 30)/2 = 5, y = (10 - 8)/2 = 1.
+    // Top-left of child popup is at (5, 1). Since grandchild is 16x4 centered (x=12, y=3),
+    // (5, 1) is OUTSIDE grandchild, so child's border MUST have Modifier::DIM.
+    let child_border = buffer.cell((5, 1)).unwrap();
+    assert_eq!(child_border.symbol(), "┌");
+    assert!(child_border.modifier.contains(ratatui::style::Modifier::DIM));
+    assert_eq!(child_border.fg, session.theme.muted_color());
+
+    // 3. Grandchild popup is 16x4 centered in 40x10 terminal:
+    // x = (40 - 16)/2 = 12, y = (10 - 4)/2 = 3.
+    // Top-left of grandchild popup is at (12, 3), which is the ACTIVE focus rect.
+    // It must NOT have Modifier::DIM and must retain its active border color!
+    let grandchild_border = buffer.cell((12, 3)).unwrap();
+    assert_eq!(grandchild_border.symbol(), "┌");
+    assert!(!grandchild_border.modifier.contains(ratatui::style::Modifier::DIM));
+    assert_eq!(grandchild_border.fg, session.theme.chrome.border.fg.unwrap());
 }

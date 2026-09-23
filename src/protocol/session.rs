@@ -666,6 +666,9 @@ impl ProtocolSession {
         if let Some(popup_rect) = active_popup_rect.filter(|_| retained.is_none()) {
             footer_renderer.render_blank(frame, footer_area, &self.theme);
             content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
+            if self.theme.chrome.dim_backdrop {
+                content_host.dim_backdrop(frame, area, popup_rect, self.theme.muted_color());
+            }
         } else {
             footer_renderer.render(frame, footer_area, &footer, &self.theme);
         }
