@@ -2,6 +2,17 @@
 
 This log records notable changes to the documentation and product during development. It is a concise engineering record rather than a release changelog.
 
+## 2026-09-24 (v0.1.0-alpha.3)
+
+- Implemented ADR 0007: Declarative popup 9-box optical anchors (`top-center`, `center`, etc.), responsive viewport-relative sizing (`width`/`height` percentage and bounds), and global terminal viewport coordinates.
+- Added non-focus backdrop dimming with muted color projection and configurable `chrome.backdrop` theme styling with explicit modifier overrides and `dim_backdrop` toggle.
+- Added `FieldType::Enum` support to the Form Engine with inline selector navigation (`< value >`), arrow/space cycling, and prefix typeahead filtering.
+- Extended View query schemas and CLI parameter parsing with `ParameterType::Enum` options validation.
+- Added customizable and disableable keybindings for Embedded and Form engines.
+- Improved root Picker UX by clearing input on back navigation before closing the view.
+- Ensured completion popups do not open when no candidate items match.
+- Reverted built-in workflow alias support to maintain clean manifest-driven suite boundaries.
+
 ## 2026-09-23
 
 - Decoupled GitHub Actions workflows into dedicated lightweight `ci.yml` (fast lint, check, and test gate on push/PR) and `release.yml` (full release build, asset assembly, and GitHub Release publication on tag push).
@@ -42,7 +53,3 @@ This log records notable changes to the documentation and product during develop
 - Added architecture decision records covering workflow extensions, script boundaries, command registration, suite manifests, and item-driven bindings.
 - Built the Diátaxis documentation bundle with tutorials, how-to guides, references, explanations, and runnable fixtures.
 - Renamed the product and consolidated its internal identity constants as `tflow`.
-
-## 2026-09-24 — Configurable backdrop style
-
-- Documented the global `chrome.backdrop` style, inheritance, explicit modifier overrides, and `dim_backdrop` switch in the theme reference and ADR 0007.

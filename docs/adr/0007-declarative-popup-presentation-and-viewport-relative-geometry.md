@@ -13,9 +13,9 @@ description: "Establish viewport-relative geometry, declarative responsive sizin
 
 # ADR 0007: Declarative Popup Presentation and Viewport-Relative Geometry
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-23
-- **Implementation status**: Pending
+- **Implementation status**: Implemented
 - **Scope**: `ViewPresentation` contract, `ContentHost` popup placement and dimensions, TOML configuration schema, Producer navigation operations, and nested popup stacking rules.
 - **Related decisions**: [ADR 0001](0001-decentralized-workflow-extensions.md), [ADR 0003](0003-unified-action-registration-and-host-folding.md), [ADR 0004](0004-scoped-command-registration.md), [Input and Navigation Model](../explanation/input-and-navigation-model.md).
 
