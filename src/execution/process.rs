@@ -8,7 +8,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -232,6 +232,7 @@ pub(crate) struct PreparedProcess {
     pub(crate) argv: Vec<String>,
     pub(crate) environment: Vec<(String, String)>,
     pub(crate) current_dir: Option<PathBuf>,
+    pub(crate) timeout: Option<Duration>,
 }
 
 impl PreparedProcess {
@@ -271,6 +272,7 @@ pub(crate) fn run_foreground_process(
         ));
     }
 
+    let deadline = prepared.timeout.map(|t| Instant::now() + t);
     let mut command = prepared.command()?;
     let terminal_handoff = terminal
         .map(|terminal| terminal.configure_foreground_command(&mut command))
@@ -298,6 +300,16 @@ pub(crate) fn run_foreground_process(
             break Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "launcher shutdown requested",
+            ));
+        }
+        if let Some(deadline) = deadline
+            && Instant::now() >= deadline
+        {
+            process.force_kill();
+            let timeout = prepared.timeout.unwrap_or_default();
+            break Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("foreground command timed out after {timeout:?}"),
             ));
         }
         match process.try_wait_with_stops() {
@@ -341,6 +353,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
@@ -368,6 +381,7 @@ mod tests {
             ],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let started = std::time::Instant::now();
 
@@ -389,6 +403,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), script],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let status = run_foreground_process(&prepared, &CancellationToken::new(), None).unwrap();
         assert!(status.success());
@@ -423,6 +438,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), script],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
@@ -468,5 +484,45 @@ mod tests {
         let pid = guard.pid();
         guard.force_kill();
         assert!(unsafe { libc::kill(pid, 0) } != 0);
+    }
+
+    #[test]
+    fn foreground_command_timeout_terminates_and_reaps_process_group() {
+        let pid_file =
+            std::env::temp_dir().join(format!("tflow-timeout-descendant-{}", std::process::id()));
+        fs::remove_file(&pid_file).ok();
+        let script = format!(
+            "sh -c 'echo $$ > {}; while :; do sleep 1; done' & while :; do sleep 1; done",
+            pid_file.display()
+        );
+        let prepared = PreparedProcess {
+            argv: vec!["sh".to_string(), "-c".to_string(), script],
+            environment: Vec::new(),
+            current_dir: None,
+            timeout: Some(Duration::from_millis(100)),
+        };
+        let started = std::time::Instant::now();
+        let error = run_foreground_process(&prepared, &CancellationToken::new(), None)
+            .expect_err("foreground command should time out");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        if pid_file.is_file() {
+            let descendant = fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse::<libc::pid_t>()
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while unsafe { libc::kill(descendant, 0) } == 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "descendant {descendant} survived timeout"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            fs::remove_file(pid_file).ok();
+        }
     }
 }

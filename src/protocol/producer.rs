@@ -32,6 +32,7 @@ pub(crate) enum ProtocolOperation {
         argv: Vec<String>,
         exit: bool,
         success_message: Option<String>,
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -127,6 +128,8 @@ enum RawOperation {
         exit: bool,
         #[serde(default)]
         success_message: Option<String>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -183,11 +186,13 @@ pub(crate) fn parse_response(
                     argv,
                     exit,
                     success_message,
+                    timeout_ms,
                 } => ProtocolOperation::Run {
                     mode,
                     argv,
                     exit,
                     success_message,
+                    timeout_ms,
                 },
             };
             if let Some(expected_operation) = expected_operation
@@ -284,7 +289,12 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                 );
             }
         }
-        ProtocolOperation::Run { mode, argv, .. } => {
+        ProtocolOperation::Run {
+            mode,
+            argv,
+            timeout_ms,
+            ..
+        } => {
             anyhow::ensure!(
                 mode == "foreground",
                 "{} run operation mode must be foreground",
@@ -295,6 +305,13 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                 "{} run operation argv must not be empty",
                 source_label
             );
+            if let Some(timeout) = timeout_ms {
+                anyhow::ensure!(
+                    *timeout > 0,
+                    "{} run operation timeout_ms must be positive",
+                    source_label
+                );
+            }
             for (index, argument) in argv.iter().enumerate() {
                 anyhow::ensure!(
                     !argument.contains('\0'),
@@ -903,5 +920,21 @@ mod tests {
                 .to_string()
                 .contains("must not define the operation type")
         );
+    }
+
+    #[test]
+    fn run_operation_accepts_valid_timeout_and_rejects_zero() {
+        let valid = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["echo","ok"],"timeout_ms":5000}}"#;
+        let outcome = parse_response(valid, None, "test").unwrap();
+        match outcome {
+            ProtocolOutcome::Operation(ProtocolOperation::Run { timeout_ms, .. }) => {
+                assert_eq!(timeout_ms, Some(5000));
+            }
+            _ => panic!("expected Run operation"),
+        }
+
+        let zero = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["echo","ok"],"timeout_ms":0}}"#;
+        let err = parse_response(zero, None, "test").unwrap_err();
+        assert!(err.to_string().contains("timeout_ms must be positive"));
     }
 }

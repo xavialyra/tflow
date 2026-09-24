@@ -295,10 +295,14 @@ fn prepare_protocol_operation(
             argv,
             exit,
             success_message,
+            timeout_ms,
             ..
         } => {
             let root = command_root(config, &command_invocation);
-            let prepared = prepared_direct_process(root, argv)?;
+            let mut prepared = prepared_direct_process(root, argv)?;
+            if let Some(ms) = timeout_ms {
+                prepared.timeout = Some(std::time::Duration::from_millis(ms));
+            }
             Ok(PreparedAction::Execute {
                 prepared,
                 exit,
@@ -330,6 +334,7 @@ fn prepared_direct_process(root: Option<&Path>, argv: Vec<String>) -> Result<Pre
         argv,
         environment,
         current_dir: None,
+        timeout: None,
     })
 }
 

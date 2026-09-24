@@ -303,6 +303,7 @@ Executes an external system command:
 | `argv` | array of strings | **Required** | Command and arguments to execute. |
 | `exit` | boolean | `false` | When `true`, terminates `tflow` upon completion. |
 | `success_message` | string | Optional | Message displayed in the footer for 3 seconds upon successful return. |
+| `timeout_ms` | integer | Optional | Timeout in milliseconds; triggers process group termination and terminal reclamation when exceeded. |
 
 ---
 

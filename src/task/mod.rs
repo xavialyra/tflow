@@ -1252,4 +1252,6 @@ impl<T> Drop for TaskHandle<T> {
 }
 
 #[cfg(test)]
+mod stage5_evidence;
+#[cfg(test)]
 mod tests;

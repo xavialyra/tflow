@@ -979,6 +979,7 @@ mod tests {
             argv: vec!["command".to_string(), "argument".to_string()],
             environment: vec![("KEY".to_string(), "value".to_string())],
             current_dir: Some(PathBuf::from("/tmp/prepared-process")),
+            timeout: None,
         };
 
         let decision = map_prepared_action(

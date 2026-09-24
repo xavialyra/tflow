@@ -345,6 +345,56 @@ fn foreground_command_failure_resumes_the_launcher_terminal() {
 }
 
 #[test]
+fn foreground_command_timeout_restores_terminal_and_resumes_the_launcher() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [{display = "Item", value = "value"}]
+
+        [workflows.core.views.default.commands.run]
+        key = "enter"
+        label = "Run"
+        type = "run"
+        producer = "declared"
+        handler = { mode = "foreground", argv = ["sh", "-c", "sleep 30" ], timeout_ms = 200 }
+        "#,
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    process.master.write_all(b"\r").unwrap();
+    process.master.flush().unwrap();
+    let output = wait_for_text(&process.master, "external effect failed");
+    assert!(
+        String::from_utf8_lossy(&output).contains("external effect failed"),
+        "launcher output: {:?}",
+        output
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "command took too long, timeout did not terminate the command"
+    );
+    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "launcher output: {:?}", output);
+    assert_terminal_restored(&process, &output);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
     let root = temporary_root();
     let config = root.join("config.toml");

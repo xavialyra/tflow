@@ -988,3 +988,8 @@ mod preview_lane_tests {
         assert!(matches!(rejected.try_recv(), Ok(TaskCompletion::Cancelled)));
     }
 }
+
+#[test]
+fn stage_5_scheduler_evidence() {
+    super::stage5_evidence::run();
+}

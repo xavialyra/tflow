@@ -738,6 +738,7 @@ mod tests {
             ],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let mut runtime = EmbeddedRuntime::start(
             &prepared,
@@ -790,6 +791,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
             environment: Vec::new(),
             current_dir: None,
+            timeout: None,
         };
         let mut runtime = EmbeddedRuntime::start(&prepared, None, (20, 10), &[]).unwrap();
         assert_eq!(runtime.last_size_for_test(), (20, 10));
