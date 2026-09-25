@@ -77,7 +77,7 @@ underline = true
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `theme` | string | Unset (terminal default) | Theme name loaded from `themes/<name>.toml` beside the settings file. Overridden by CLI `--theme`. |
-| `image_protocol` | string | `"halfblocks"` | Protocol used for rendering images in previews. Options: `"halfblocks"`, `"kitty"`, `"sixel"`, `"iterm2"`. |
+| `image_protocol` | string | `"auto"` | Protocol used for rendering images in previews. Options: `"auto"`, `"halfblocks"`, `"kitty"`, `"sixel"`, `"iterm2"`. In `"auto"` mode, terminal capability replies select Kitty before Sixel; known iTerm2-compatible terminals use iTerm2 when not inside tmux. Unknown or non-responding terminals use halfblocks. Explicit values bypass detection. |
 | `log_file` | string (path) | Unset | Destination path for host debug and execution logs. |
 | `defaults` | table | `{}` | Global defaults applied across all views for specific engines. |
 | `styles` | table | `{}` | Global semantic style overrides for mounted workflow slots. |

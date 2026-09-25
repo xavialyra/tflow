@@ -444,6 +444,19 @@ mod tests {
     }
 
     #[test]
+    fn image_protocol_defaults_to_auto_and_accepts_explicit_fallback() {
+        assert_eq!(config("").image_protocol, ImageProtocol::Auto);
+        assert_eq!(
+            config("image_protocol = 'auto'").image_protocol,
+            ImageProtocol::Auto
+        );
+        assert_eq!(
+            config("image_protocol = 'halfblocks'").image_protocol,
+            ImageProtocol::Halfblocks
+        );
+    }
+
+    #[test]
     fn image_protocol_and_log_file_are_compiled() {
         let compiled = config(
             r#"

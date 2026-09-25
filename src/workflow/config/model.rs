@@ -22,6 +22,7 @@ pub struct WorkflowMetadata {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ImageProtocol {
     #[default]
+    Auto,
     Halfblocks,
     Kitty,
     Sixel,

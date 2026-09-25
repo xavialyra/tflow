@@ -4,6 +4,7 @@ This log records notable changes to the documentation and product during develop
 
 ## 2026-09-25
 
+- Made preview image protocol selection automatic by default, probing the interactive terminal with a bounded timeout and falling back to halfblocks while retaining explicit protocol overrides.
 - Replaced the Picker's rendered pseudo-cursor with the terminal cursor and limited `[cursor]` theme customization to the host's optional RGB color; embedded views reset the host color override.
 
 ## 2026-09-24 (v0.1.0-alpha.3)

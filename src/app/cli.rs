@@ -264,6 +264,7 @@ pub(crate) fn run() -> Result<i32> {
     };
     let config = loaded.config;
     let image_protocol = match config.image_protocol {
+        ConfigImageProtocol::Auto => TerminalImageProtocol::Auto,
         ConfigImageProtocol::Halfblocks => TerminalImageProtocol::Halfblocks,
         ConfigImageProtocol::Kitty => TerminalImageProtocol::Kitty,
         ConfigImageProtocol::Sixel => TerminalImageProtocol::Sixel,

@@ -11,6 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Frame, Terminal as RatatuiTerminal};
 use ratatui_image::FontSize;
 use ratatui_image::picker::ProtocolType;
+use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions, Response};
 use ratatui_image::protocol::{
     StatefulProtocol, StatefulProtocolType, halfblocks::Halfblocks, iterm2::Iterm2,
     kitty::StatefulKitty, sixel::Sixel,
@@ -27,6 +28,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ImageProtocol {
     #[default]
+    Auto,
     Halfblocks,
     Kitty,
     Sixel,
@@ -35,6 +37,7 @@ pub(crate) enum ImageProtocol {
 
 const RESTORE_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H";
 const OUTPUT_POLL_INTERVAL_MS: i32 = 50;
+const IMAGE_QUERY_TIMEOUT: Duration = Duration::from_millis(350);
 const RESTORE_OUTPUT_DEADLINE: Duration = Duration::from_millis(100);
 static KITTY_IMAGE_ID: OnceLock<AtomicU32> = OnceLock::new();
 
@@ -195,6 +198,7 @@ pub struct Terminal {
     renderer: RatatuiTerminal<CrosstermBackend<TerminalWriter>>,
     renderer_discard: Arc<AtomicBool>,
     image_picker: ImagePicker,
+    pending_input: Vec<u8>,
     cancellation: CancellationToken,
     active: bool,
     screen_active: bool,
@@ -254,6 +258,7 @@ impl Terminal {
             renderer,
             renderer_discard,
             image_picker: picker_from_protocol(output_fd, image_protocol),
+            pending_input: Vec::new(),
             cancellation,
             active: true,
             screen_active: false,
@@ -261,6 +266,12 @@ impl Terminal {
             embedded_cursor: None,
         };
         terminal.resume_screen()?;
+        if image_protocol == ImageProtocol::Auto {
+            let (picker, pending_input) =
+                auto_image_picker(input_fd, terminal.output_fd, &terminal.cancellation);
+            terminal.image_picker = picker;
+            terminal.pending_input = pending_input;
+        }
         rollback.disarm();
         Ok(terminal)
     }
@@ -445,6 +456,9 @@ impl Terminal {
     }
 
     pub(crate) fn read_input(&mut self, timeout_ms: i32) -> Result<InputRead> {
+        if !self.pending_input.is_empty() {
+            return Ok(InputRead::Data(std::mem::take(&mut self.pending_input)));
+        }
         let mut descriptor = libc::pollfd {
             fd: self.input_fd,
             events: libc::POLLIN,
@@ -757,12 +771,194 @@ fn picker_from_protocol(output_fd: libc::c_int, image_protocol: ImageProtocol) -
     ImagePicker {
         font_size: font_size_from_fd(output_fd).unwrap_or(FontSize::new(10, 20)),
         protocol: match image_protocol {
-            ImageProtocol::Halfblocks => ProtocolType::Halfblocks,
+            ImageProtocol::Auto | ImageProtocol::Halfblocks => ProtocolType::Halfblocks,
             ImageProtocol::Kitty => ProtocolType::Kitty,
             ImageProtocol::Sixel => ProtocolType::Sixel,
             ImageProtocol::Iterm2 => ProtocolType::Iterm2,
         },
         is_tmux: tmux_environment(),
+    }
+}
+
+fn auto_image_picker(
+    input_fd: RawFd,
+    output_fd: RawFd,
+    cancellation: &CancellationToken,
+) -> (ImagePicker, Vec<u8>) {
+    let mut picker = picker_from_protocol(output_fd, ImageProtocol::Halfblocks);
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    let is_wezterm = std::env::var_os("WEZTERM_EXECUTABLE").is_some_and(|value| !value.is_empty());
+    let is_konsole = std::env::var_os("KONSOLE_VERSION").is_some_and(|value| !value.is_empty());
+    let mut options = QueryStdioOptions::default();
+    if is_wezterm || is_konsole {
+        options.blacklist_protocols = vec![ProtocolType::Kitty, ProtocolType::Sixel];
+    }
+
+    let (responses, pending_input) =
+        query_image_capabilities(input_fd, output_fd, picker.is_tmux, options, cancellation);
+    for response in &responses {
+        if let Response::CellSize(Some((width, height))) = response {
+            picker.font_size = FontSize::new(*width, *height);
+        }
+    }
+    picker.protocol = select_image_protocol(
+        &responses,
+        &term_program,
+        picker.is_tmux,
+        is_wezterm,
+        is_konsole,
+    );
+    (picker, pending_input)
+}
+
+fn query_image_capabilities(
+    input_fd: RawFd,
+    output_fd: RawFd,
+    is_tmux: bool,
+    options: QueryStdioOptions,
+    cancellation: &CancellationToken,
+) -> (Vec<Response>, Vec<u8>) {
+    let deadline = Instant::now() + IMAGE_QUERY_TIMEOUT;
+    let query = Parser::query(is_tmux, options);
+    if write_fd(
+        output_fd,
+        query.as_bytes(),
+        Some(cancellation),
+        Some(deadline),
+    )
+    .is_err()
+    {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut parser = Parser::new();
+    let mut responses = Vec::new();
+    let mut pending_input = Vec::new();
+    let mut unread = Vec::new();
+    while !cancellation.is_cancelled() && Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut descriptor = libc::pollfd {
+            fd: input_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = remaining.as_millis().min(OUTPUT_POLL_INTERVAL_MS as u128) as i32;
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if ready == 0 {
+            continue;
+        }
+        if descriptor.revents & libc::POLLIN == 0 {
+            break;
+        }
+        let mut bytes = [0_u8; 256];
+        let count = unsafe { libc::read(input_fd, bytes.as_mut_ptr().cast(), bytes.len()) };
+        if count < 0 {
+            if matches!(
+                io::Error::last_os_error().kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+            ) {
+                continue;
+            }
+            break;
+        }
+        if count == 0 {
+            break;
+        }
+        unread.extend_from_slice(&bytes[..count as usize]);
+        while !unread.is_empty() {
+            match image_reply_len(&unread) {
+                Some(Some(length)) => {
+                    let reply: Vec<_> = unread.drain(..length).collect();
+                    for byte in reply {
+                        for response in parser.push(char::from(byte)) {
+                            if response == Response::Status {
+                                pending_input.extend(unread);
+                                return (responses, pending_input);
+                            }
+                            responses.push(response);
+                        }
+                    }
+                }
+                Some(None) => pending_input.push(unread.remove(0)),
+                None => break,
+            }
+        }
+    }
+    pending_input.extend(unread);
+    (responses, pending_input)
+}
+
+// Only consume complete responses to our own queries; every other byte belongs to the input loop.
+fn image_reply_len(bytes: &[u8]) -> Option<Option<usize>> {
+    if bytes[0] != b'\x1b' {
+        return Some(None);
+    }
+    if bytes.len() == 1 {
+        return None;
+    }
+    let valid = match bytes[1] {
+        b'_' => bytes.starts_with(b"\x1b_Gi=31;"),
+        b'[' => {
+            bytes.starts_with(b"\x1b[?")
+                || bytes.starts_with(b"\x1b[6;")
+                || bytes.starts_with(b"\x1b[0n")
+        }
+        _ => false,
+    };
+    if !valid {
+        if bytes.len() < 8
+            && (b"\x1b_Gi=31;".starts_with(bytes)
+                || b"\x1b[?".starts_with(bytes)
+                || b"\x1b[6;".starts_with(bytes)
+                || b"\x1b[0n".starts_with(bytes))
+        {
+            return None;
+        }
+        return Some(None);
+    }
+    if bytes[1] == b'_' {
+        return bytes
+            .windows(2)
+            .position(|pair| pair == b"\x1b\\")
+            .map(|end| Some(end + 2))
+            .or_else(|| (bytes.len() >= 128).then_some(None));
+    }
+    bytes
+        .iter()
+        .enumerate()
+        .skip(2)
+        .find(|(_, byte)| (0x40..=0x7e).contains(*byte))
+        .map(|(end, byte)| {
+            if matches!(*byte, b'c' | b't' | b'n') {
+                Some(end + 1)
+            } else {
+                None
+            }
+        })
+        .or_else(|| (bytes.len() >= 128).then_some(None))
+}
+
+fn select_image_protocol(
+    responses: &[Response],
+    term_program: &str,
+    is_tmux: bool,
+    is_wezterm: bool,
+    is_konsole: bool,
+) -> ProtocolType {
+    if !is_wezterm && !is_konsole && responses.contains(&Response::Kitty) {
+        ProtocolType::Kitty
+    } else if !is_wezterm && !is_konsole && responses.contains(&Response::Sixel) {
+        ProtocolType::Sixel
+    } else if !is_tmux && (is_wezterm || matches!(term_program, "iTerm.app" | "WezTerm")) {
+        ProtocolType::Iterm2
+    } else {
+        ProtocolType::Halfblocks
     }
 }
 
@@ -845,6 +1041,156 @@ mod tests {
             osc52_sequence("\u{4f60}", false).unwrap(),
             b"\x1b]52;c;5L2g\x07"
         );
+    }
+
+    #[test]
+    fn auto_protocol_prefers_confirmed_graphics_and_falls_back_safely() {
+        assert_eq!(
+            select_image_protocol(&[Response::Sixel, Response::Kitty], "", false, false, false),
+            ProtocolType::Kitty
+        );
+        assert_eq!(
+            select_image_protocol(&[Response::Sixel], "", true, false, false),
+            ProtocolType::Sixel
+        );
+        assert_eq!(
+            select_image_protocol(&[], "iTerm.app", false, false, false),
+            ProtocolType::Iterm2
+        );
+        assert_eq!(
+            select_image_protocol(&[], "iTerm.app", true, false, false),
+            ProtocolType::Halfblocks
+        );
+        assert_eq!(
+            select_image_protocol(&[], "", false, false, false),
+            ProtocolType::Halfblocks
+        );
+        assert_eq!(
+            select_image_protocol(&[Response::Kitty, Response::Sixel], "", false, false, true),
+            ProtocolType::Halfblocks
+        );
+        assert_eq!(
+            select_image_protocol(&[Response::Kitty], "WezTerm", false, true, false),
+            ProtocolType::Iterm2
+        );
+    }
+
+    #[test]
+    fn image_probe_reads_terminal_responses_from_given_fd() {
+        let mut input = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(input.as_mut_ptr()) }, 0);
+        let output = File::options().write(true).open("/dev/null").unwrap();
+        let replies = b"\x1b_Gi=31;OK\x1b\\\x1b[?64;4c\x1b[6;7;14t\x1b[0n";
+        assert_eq!(
+            unsafe { libc::write(input[1], replies.as_ptr().cast(), replies.len()) },
+            replies.len() as isize
+        );
+        let (responses, pending_input) = query_image_capabilities(
+            input[0],
+            output.as_raw_fd(),
+            false,
+            QueryStdioOptions::default(),
+            &CancellationToken::new(),
+        );
+        assert!(pending_input.is_empty());
+        assert_eq!(
+            responses,
+            vec![
+                Response::Kitty,
+                Response::Sixel,
+                Response::CellSize(Some((14, 7)))
+            ]
+        );
+        unsafe {
+            libc::close(input[0]);
+            libc::close(input[1]);
+        }
+    }
+
+    #[test]
+    fn image_probe_preserves_keys_mixed_with_terminal_replies() {
+        let mut input = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(input.as_mut_ptr()) }, 0);
+        let output = File::options().write(true).open("/dev/null").unwrap();
+        let mixed = b"text\x1b[H\r\x1b_Gi=31;OK\x1b\\\x1b[0nmore";
+        assert_eq!(
+            unsafe { libc::write(input[1], mixed.as_ptr().cast(), mixed.len()) },
+            mixed.len() as isize
+        );
+        let (responses, pending_input) = query_image_capabilities(
+            input[0],
+            output.as_raw_fd(),
+            false,
+            QueryStdioOptions::default(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(responses, vec![Response::Kitty]);
+        assert_eq!(pending_input, b"text\x1b[H\rmore");
+        unsafe {
+            libc::close(input[0]);
+            libc::close(input[1]);
+        }
+    }
+
+    #[test]
+    fn image_probe_recognizes_split_reply_prefixes_and_preserves_incomplete_keys() {
+        assert_eq!(image_reply_len(b"\x1b"), None);
+        assert_eq!(image_reply_len(b"\x1b_Gi=31;O"), None);
+        assert_eq!(image_reply_len(b"\x1b_Gi=31;OK\x1b\\"), Some(Some(12)));
+        assert_eq!(image_reply_len(b"\x1b[6;7;"), None);
+        assert_eq!(image_reply_len(b"\x1b[H"), Some(None));
+
+        let mut input = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(input.as_mut_ptr()) }, 0);
+        let output = File::options().write(true).open("/dev/null").unwrap();
+        let partial = b"\x1b[";
+        assert_eq!(
+            unsafe { libc::write(input[1], partial.as_ptr().cast(), partial.len()) },
+            partial.len() as isize
+        );
+        let (responses, pending_input) = query_image_capabilities(
+            input[0],
+            output.as_raw_fd(),
+            false,
+            QueryStdioOptions::default(),
+            &CancellationToken::new(),
+        );
+        assert!(responses.is_empty());
+        assert_eq!(pending_input, partial);
+        unsafe {
+            libc::close(input[0]);
+            libc::close(input[1]);
+        }
+    }
+
+    #[test]
+    fn image_probe_times_out_without_a_terminal_reply() {
+        let mut input = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(input.as_mut_ptr()) }, 0);
+        let output = File::options().write(true).open("/dev/null").unwrap();
+        let started = Instant::now();
+        let (responses, pending_input) = query_image_capabilities(
+            input[0],
+            output.as_raw_fd(),
+            false,
+            QueryStdioOptions::default(),
+            &CancellationToken::new(),
+        );
+        assert!(responses.is_empty());
+        assert!(pending_input.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        unsafe {
+            libc::close(input[0]);
+            libc::close(input[1]);
+        }
+    }
+
+    #[test]
+    fn explicit_image_protocols_do_not_require_detection() {
+        let picker = picker_from_protocol(-1, ImageProtocol::Halfblocks);
+        assert_eq!(picker.protocol, ProtocolType::Halfblocks);
+        let picker = picker_from_protocol(-1, ImageProtocol::Kitty);
+        assert_eq!(picker.protocol, ProtocolType::Kitty);
     }
 
     #[test]
