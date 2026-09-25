@@ -890,12 +890,13 @@ impl View for PickerProtocolView {
             frame,
             layout[2],
         );
-        let cursor =
-            (self.active && self.options.show_input && query_height > 0).then(|| RelativeCursor {
+        let cursor = (self.active && self.options.show_input && query_height > 0).then_some(
+            RelativeCursor {
                 x: query.cursor,
                 y: 0,
                 visible: true,
-            });
+            },
+        );
 
         Ok(RenderResult {
             cursor,
@@ -1004,7 +1005,7 @@ fn visible_editor_query(
         {
             let clipped = crate::ui::chrome::clip(placeholder, available);
             let text = format!("{prefix}{clipped}");
-            let placeholder = (!clipped.is_empty()).then(|| prefix.len()..text.len());
+            let placeholder = (!clipped.is_empty()).then_some(prefix.len()..text.len());
             return VisibleEditorQuery {
                 highlight: highlight(prefix.len()),
                 placeholder,
