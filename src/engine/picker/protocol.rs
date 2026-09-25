@@ -22,8 +22,8 @@ use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
     EffectRequest, FallbackInputReceiver, LifecycleEvent, NavigationRequest, ParsedQuery,
-    RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent,
-    ViewPublication, ViewTaskRegistry,
+    RelativeCursor, RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext,
+    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
 use anyhow::Result;
@@ -869,7 +869,6 @@ impl View for PickerProtocolView {
                 ));
             }
             frame.render_widget(Paragraph::new(Line::from(spans)), layout[0]);
-            render_pseudo_cursor(frame, layout[0], query.cursor, self.theme.picker.cursor);
         }
         if divider_height > 0 {
             frame.render_widget(
@@ -891,8 +890,15 @@ impl View for PickerProtocolView {
             frame,
             layout[2],
         );
+        let cursor =
+            (self.active && self.options.show_input && query_height > 0).then(|| RelativeCursor {
+                x: query.cursor,
+                y: 0,
+                visible: true,
+            });
+
         Ok(RenderResult {
-            cursor: None,
+            cursor,
             metadata: crate::view::ViewMetadata {
                 status: self.renderer.chrome(&model).status,
                 error: self.diagnostic.clone(),
@@ -952,62 +958,6 @@ fn explicitly_disabled_keys(
     disabled
 }
 
-const PSEUDO_CURSOR_SYMBOL: &str = "█";
-
-fn render_pseudo_cursor(frame: &mut Frame, area: Rect, column: u16, style: ratatui::style::Style) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let target_x = area
-        .x
-        .saturating_add(column.min(area.width.saturating_sub(1)));
-    let target_y = area.y;
-    let buffer = frame.buffer_mut();
-    let Some(target) = buffer.cell((target_x, target_y)) else {
-        return;
-    };
-    let wide_cursor_start = (area.x..target_x).rev().find(|&x| {
-        buffer.cell((x, target_y)).is_some_and(|cell| {
-            let width = UnicodeWidthStr::width(cell.symbol());
-            width > 1 && x.saturating_add(width as u16) > target_x
-        })
-    });
-    let cursor_x = wide_cursor_start.unwrap_or_else(|| {
-        if target.symbol().is_empty() {
-            let mut x = target_x;
-            while x > area.x
-                && buffer
-                    .cell((x, target_y))
-                    .is_some_and(|cell| cell.symbol().is_empty())
-            {
-                x = x.saturating_sub(1);
-            }
-            x
-        } else {
-            target_x
-        }
-    });
-    let Some(cell) = buffer.cell((cursor_x, target_y)) else {
-        return;
-    };
-    let symbol = cell.symbol().to_string();
-    let symbol_width = UnicodeWidthStr::width(symbol.as_str());
-    let blank = symbol.trim().is_empty();
-
-    if let Some(cell) = buffer.cell_mut((cursor_x, target_y)) {
-        cell.set_style(style);
-        if blank {
-            cell.set_symbol(PSEUDO_CURSOR_SYMBOL);
-        }
-    }
-    for offset in 1..symbol_width {
-        if let Some(cell) = buffer.cell_mut((cursor_x.saturating_add(offset as u16), target_y)) {
-            cell.set_style(style);
-        }
-    }
-}
-
 struct VisibleEditorQuery {
     text: String,
     cursor: u16,
@@ -1052,20 +1002,11 @@ fn visible_editor_query(
         if raw.is_empty()
             && let Some(placeholder) = placeholder.filter(|placeholder| !placeholder.is_empty())
         {
-            // Reserve the input's first cell for the pseudo-cursor: the block
-            // stays visible while the hint renders after it, instead of the
-            // hint sitting on the cursor cell and hiding it.
-            let budget = available.saturating_sub(1);
-            let clipped = if budget == 0 {
-                String::new()
-            } else {
-                crate::ui::chrome::clip(placeholder, budget)
-            };
-            let cursor_cell = prefix.len();
-            let text = format!("{prefix} {clipped}");
-            let placeholder = (!clipped.is_empty()).then(|| cursor_cell + 1..text.len());
+            let clipped = crate::ui::chrome::clip(placeholder, available);
+            let text = format!("{prefix}{clipped}");
+            let placeholder = (!clipped.is_empty()).then(|| prefix.len()..text.len());
             return VisibleEditorQuery {
-                highlight: highlight(cursor_cell),
+                highlight: highlight(prefix.len()),
                 placeholder,
                 text,
                 cursor: prefix_width as u16,

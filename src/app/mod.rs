@@ -370,6 +370,12 @@ impl App {
     }
 
     fn draw(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let embedded = self
+            .session
+            .router()
+            .active()
+            .is_some_and(|entry| entry.view.is_embedded_terminal());
+        terminal.set_cursor_owner(embedded)?;
         let mut result = Ok(());
         let image_picker = terminal.image_picker();
         terminal.draw(|frame| {

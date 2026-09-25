@@ -380,6 +380,7 @@ pub(crate) fn run() -> Result<i32> {
         }
         Err(error) => return Err(error).context("could not initialize the launcher terminal"),
     };
+    let _ = terminal.apply_cursor_theme(&theme.cursor);
     let app_result = if explicit_view {
         App::with_view(
             std::sync::Arc::clone(&config),

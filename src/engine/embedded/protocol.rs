@@ -329,6 +329,10 @@ impl RawInputReceiver for EmbeddedProtocolView {
 pub(super) const CMD_CANCEL: &str = "embedded.cancel";
 
 impl View for EmbeddedProtocolView {
+    fn is_embedded_terminal(&self) -> bool {
+        true
+    }
+
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
         for binding in &self.bindings {

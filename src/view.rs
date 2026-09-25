@@ -485,6 +485,10 @@ pub(crate) trait FallbackInputReceiver {
 }
 
 pub(crate) trait View {
+    fn is_embedded_terminal(&self) -> bool {
+        false
+    }
+
     fn preferred_top_inset(&self) -> u16 {
         0
     }

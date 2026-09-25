@@ -12,7 +12,7 @@ description: "Flat scheme colors, component style fields, built-in defaults, and
 
 A user theme is `themes/<name>.toml` relative to the selected configuration file. Root `theme = "<name>"` selects that file; the CLI `--theme` option takes precedence. Omitting the root setting uses the built-in `terminal` theme. `--theme terminal` explicitly selects the built-in theme.
 
-The only top-level tables are `scheme`, `picker`, `chrome`, `capture`, `form`, and `workflows`. Unknown fields, including a `palette` table or theme inheritance configuration, are errors. There is no inheritance chain between user themes.
+The only top-level tables are `scheme`, `cursor`, `picker`, `chrome`, `capture`, `form`, and `workflows`. Unknown fields, including a `palette` table or theme inheritance configuration, are errors. There is no inheritance chain between user themes.
 
 ## Color Values
 
@@ -41,7 +41,7 @@ ANSI names are case-insensitive and include the 16 terminal colors: `black`, `re
 | `info` | `ansi:cyan` |
 | `error` | `ansi:red` |
 
-Normal surfaces use `background` and `foreground`; secondary text uses `muted`. Dividers, borders, and scrollbars use `border`. Markers, cursors, and footer titles use `accent`. Input prefixes and shortcut keys use `accent` foregrounds on `surface` backgrounds. Selected rows use `selection` backgrounds and `foreground` primary text; selected secondary text and badges retain `muted` foregrounds. Selection background defaults to terminal reset, preserving the normal background and primary text color. Bold text and the accent marker distinguish the active row without adding a background highlight. Semantic status styles use `success`, `warning`, `info`, and `error`. Banner errors use `error` backgrounds with `background` foregrounds.
+Normal surfaces use `background` and `foreground`; secondary text uses `muted`. Dividers, borders, and scrollbars use `border`. Markers and footer titles use `accent`. Input prefixes and shortcut keys use `accent` foregrounds on `surface` backgrounds. Selected rows use `selection` backgrounds and `foreground` primary text; selected secondary text and badges retain `muted` foregrounds. Selection background defaults to terminal reset, preserving the normal background and primary text color. Bold text and the accent marker distinguish the active row without adding a background highlight. Semantic status styles use `success`, `warning`, `info`, and `error`. Banner errors use `error` backgrounds with `background` foregrounds.
 
 The [built-in theme](../../src/ui/theme/builtin/terminal.toml) defines all component bindings and modifier defaults.
 
@@ -65,7 +65,6 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[picker]` | `muted` | Secondary description text in candidate items. |
 | `[picker]` | `placeholder` | Hint text in an empty query input (see `input_placeholder`). |
 | `[picker]` | `input_prefix` | Highlight for the non-root left prefix marker in query input. |
-| `[picker]` | `cursor` | Styled pseudo-cursor in the query input. |
 | `[picker]` | `selected` | Active selected row background and text. |
 | `[picker]` | `selected_muted` | Secondary description text on the active selected row. |
 | `[picker]` | `badge` | Normal metadata badge style; `[picker.badge.selected]` configures its selected state. |
@@ -85,7 +84,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[capture]` | `text` | Captured subprocess output text. |
 | `[form]` | `label`, `input`, `focused`, `border`, `focused_border`, `error` | Field labels, normal and focused editors, field borders, and validation errors. |
 
-The picker cursor is a styled cell in the render buffer. Cursor blink is not a theme field. Themes control presentation only; they do not configure keys or application behavior.
+`[cursor]` accepts only `color`: a `#RRGGBB`, `ansi:NAME`, or `scheme:NAME` reference. Only a resolved RGB color changes the hardware cursor via OSC 12; an omitted or ANSI color leaves the terminal's native color. The setting applies to launcher views (including Picker and Form), not embedded programs. On entering an embedded view the host resets its cursor override; when returning it reapplies the host color. Shape and blink are not theme fields. Embedded child cursor shape sequences are not currently forwarded from its PTY.
 
 ## Backdrop Style
 

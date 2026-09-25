@@ -2,7 +2,6 @@ use super::*;
 use crate::engine::ProjectedBindingConfig;
 use crate::view::ViewContext;
 use anyhow::bail;
-use ratatui::style::{Color, Style};
 use ratatui::{Terminal, backend::TestBackend};
 use std::sync::{
     Arc,
@@ -62,10 +61,9 @@ fn left_prefix_is_rendered_only_when_present() {
 #[test]
 fn input_placeholder_fills_an_empty_query_only() {
     let hinted = visible_editor_query(None, Some("Search"), "", 0, 20);
-    // The leading cell is the cursor; the hint starts after it.
-    assert_eq!(hinted.text, " Search");
+    assert_eq!(hinted.text, "Search");
     assert_eq!(hinted.highlight, None);
-    assert_eq!(hinted.placeholder, Some(1.." Search".len()));
+    assert_eq!(hinted.placeholder, Some(0.."Search".len()));
     assert_eq!(hinted.cursor, 0);
 
     let typed = visible_editor_query(None, Some("Search"), "ab", 2, 20);
@@ -76,29 +74,28 @@ fn input_placeholder_fills_an_empty_query_only() {
 #[test]
 fn input_placeholder_follows_a_left_prefix() {
     let query = visible_editor_query(Some("sys"), Some("Search"), "", 0, 20);
-    assert_eq!(query.text, "sys  Search");
+    assert_eq!(query.text, "sys Search");
     assert_eq!(query.highlight, Some(0.."sys".len()));
-    assert_eq!(query.placeholder, Some("sys  ".len().."sys  Search".len()));
+    assert_eq!(query.placeholder, Some("sys ".len().."sys Search".len()));
     assert_eq!(query.cursor, 4);
 }
 
 #[test]
 fn input_placeholder_is_clipped_at_narrow_widths() {
-    // One column is reserved for the cursor before the hint is clipped.
     let clipped = visible_editor_query(None, Some("Search the catalog"), "", 0, 8);
-    assert_eq!(clipped.text, " Sear...");
-    assert_eq!(clipped.placeholder, Some(1..clipped.text.len()));
+    assert_eq!(clipped.text, "Searc...");
+    assert_eq!(clipped.placeholder, Some(0..clipped.text.len()));
 
     // A prefix that leaves no room must render the prefix alone, never a hint.
     let no_room = visible_editor_query(Some("sys"), Some("Search"), "", 0, 3);
     assert_eq!(no_room.text, "sys");
     assert_eq!(no_room.placeholder, None);
 
-    // A single free column shows only the cursor, with no hint text.
-    let cursor_only = visible_editor_query(Some("sys"), Some("Search"), "", 0, 5);
-    assert_eq!(cursor_only.text, "sys  ");
-    assert_eq!(cursor_only.placeholder, None);
-    assert_eq!(cursor_only.cursor, 4);
+    // When only enough room for the prefix remains, no hint text is shown.
+    let prefix_only = visible_editor_query(Some("sys"), Some("Search"), "", 0, 4);
+    assert_eq!(prefix_only.text, "sys ");
+    assert_eq!(prefix_only.placeholder, None);
+    assert_eq!(prefix_only.cursor, 3);
 
     // An empty hint behaves as if it were absent.
     let empty = visible_editor_query(None, Some(""), "", 0, 20);
@@ -145,6 +142,8 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
         create_protocol_view(config, &request("core:default"), ViewInstanceId(1)).unwrap();
 
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+        .unwrap();
     let size = crate::view::TerminalSize {
         width: 40,
         height: 4,
@@ -164,17 +163,11 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
     let row: String = (0..size.width)
         .map(|x| buffer.cell((x, 0)).unwrap().symbol())
         .collect();
-    assert_eq!(row.trim_end(), "\u{2588}Search");
-    // The cursor keeps its own cell; the hint starts right after it and keeps
-    // the dedicated placeholder style.
-    let cursor = ResolvedTheme::terminal().picker.cursor;
-    let cursor_cell = buffer.cell((0, 0)).unwrap();
-    assert_eq!(cursor_cell.symbol(), PSEUDO_CURSOR_SYMBOL);
-    assert_eq!(cursor_cell.style().fg, cursor.fg);
+    assert_eq!(row.trim_end(), "Search");
     let placeholder = ResolvedTheme::terminal().picker.placeholder;
-    assert_eq!(buffer.cell((1, 0)).unwrap().symbol(), "S");
-    assert_eq!(buffer.cell((1, 0)).unwrap().style().fg, placeholder.fg);
-    assert_eq!(buffer.cell((1, 0)).unwrap().style().bg, placeholder.bg);
+    assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "S");
+    assert_eq!(buffer.cell((0, 0)).unwrap().style().fg, placeholder.fg);
+    assert_eq!(buffer.cell((0, 0)).unwrap().style().bg, placeholder.bg);
 
     // Typing proves the hint was presentation only: the fresh query starts at
     // the cursor with no leftover placeholder text behind it.
@@ -858,47 +851,72 @@ fn static_display_options_reach_picker_rendering_and_input() {
 }
 
 #[test]
-fn pseudo_cursor_styles_existing_and_trailing_cells() {
-    let style = Style::default().fg(Color::Magenta).bg(Color::Green);
-    let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
-    terminal
-        .draw(|frame| {
-            frame.render_widget(Paragraph::new("ab界"), frame.area());
-            render_pseudo_cursor(frame, frame.area(), 2, style);
-        })
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer.cell((2, 0)).unwrap().symbol(), "界");
-    assert_eq!(
-        buffer.cell((2, 0)).unwrap().style().fg,
-        Some(Color::Magenta)
-    );
-    assert_eq!(buffer.cell((2, 0)).unwrap().style().bg, Some(Color::Green));
+fn covered_picker_hides_cursor_and_restores_on_activation() {
+    let tasks = TaskRuntime::new();
+    let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+    let services = crate::engine::picker::PickerRuntimeServices::new(
+        fixture,
+        MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1))),
+        "core:default",
+    )
+    .view_services();
+    let config = config_with_tasks(services, tasks.clone());
+    let mut view = create_protocol_view(
+        config,
+        &request("core:default").with_input("test", 4).unwrap(),
+        ViewInstanceId(1),
+    )
+    .unwrap();
+    let context = ViewContext::new(ViewInstanceId(1), "core:default");
+    let size = crate::view::TerminalSize {
+        width: 40,
+        height: 4,
+    };
+    let render_context = RenderContext::for_terminal(size);
+    let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
 
-    let mut terminal = Terminal::new(TestBackend::new(4, 1)).unwrap();
+    // 1. Activated: picker is active and focused
+    view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+        .unwrap();
+    let mut rendered = None;
     terminal
         .draw(|frame| {
-            frame.render_widget(Paragraph::new("ab界"), frame.area());
-            render_pseudo_cursor(frame, frame.area(), 3, style);
+            rendered = Some(view.render(frame, frame.area(), &render_context).unwrap());
         })
         .unwrap();
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer.cell((2, 0)).unwrap().symbol(), "界");
-    assert_eq!(buffer.cell((2, 0)).unwrap().style().bg, Some(Color::Green));
-    assert_ne!(buffer.cell((3, 0)).unwrap().symbol(), PSEUDO_CURSOR_SYMBOL);
+    let active_render = rendered.take().unwrap();
+    assert!(active_render.cursor.is_some());
+    let cursor = active_render.cursor.unwrap();
+    assert!(cursor.visible);
+    assert_eq!(cursor.x, 4); // "test" is 4 chars
+    assert_eq!(cursor.y, 0);
 
-    let mut terminal = Terminal::new(TestBackend::new(8, 1)).unwrap();
+    // 2. Covered: a popup opens, covering the picker
+    view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
+        .unwrap();
     terminal
         .draw(|frame| {
-            frame.render_widget(Paragraph::new("abc"), frame.area());
-            render_pseudo_cursor(frame, frame.area(), 3, style);
+            rendered = Some(view.render(frame, frame.area(), &render_context).unwrap());
         })
         .unwrap();
-    let buffer = terminal.backend().buffer();
-    let cursor_cell = buffer.cell((3, 0)).unwrap();
-    assert_eq!(cursor_cell.symbol(), PSEUDO_CURSOR_SYMBOL);
-    assert_eq!(cursor_cell.style().fg, Some(Color::Magenta));
-    assert_eq!(cursor_cell.style().bg, Some(Color::Green));
+    let covered_render = rendered.take().unwrap();
+    assert!(covered_render.cursor.is_none());
+
+    // 3. Activated: popup closed, picker restored to active
+    view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+        .unwrap();
+    terminal
+        .draw(|frame| {
+            rendered = Some(view.render(frame, frame.area(), &render_context).unwrap());
+        })
+        .unwrap();
+    let restored_render = rendered.take().unwrap();
+    assert!(restored_render.cursor.is_some());
+    let cursor = restored_render.cursor.unwrap();
+    assert!(cursor.visible);
+    assert_eq!(cursor.x, 4);
+
+    tasks.shutdown_and_wait();
 }
 
 #[test]

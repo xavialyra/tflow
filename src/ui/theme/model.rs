@@ -1,4 +1,4 @@
-use super::color::{ResolvedScheme, resolve_scheme};
+use super::color::{ResolvedScheme, resolve_color_reference, resolve_scheme};
 use anyhow::Result;
 use ratatui::style::Style;
 use serde::Deserialize;
@@ -62,9 +62,22 @@ pub(crate) struct ResolvedCustomStyle {
     pub(crate) selected: Option<Style>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CursorTheme {
+    pub(crate) color: Option<ratatui::style::Color>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawCursorTheme {
+    #[serde(default)]
+    pub(super) color: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTheme {
     pub(crate) text: Style,
+    pub(crate) cursor: CursorTheme,
     pub(crate) chrome: ChromeTheme,
     pub(crate) picker: PickerTheme,
     pub(crate) capture: CaptureTheme,
@@ -93,7 +106,6 @@ pub(crate) struct PickerTheme {
     pub(crate) muted: Style,
     pub(crate) placeholder: Style,
     pub(crate) input_prefix: Style,
-    pub(crate) cursor: Style,
     pub(crate) selected: Style,
     pub(crate) selected_muted: Style,
     pub(crate) badge: Style,
@@ -222,12 +234,20 @@ impl ResolvedTheme {
         )?
         .normal;
 
-        let picker_cursor = resolve_component(
-            raw.picker.cursor.as_ref(),
-            default_raw.picker.cursor.as_ref().unwrap(),
-            "picker.cursor",
-        )?
-        .normal;
+        let cursor = {
+            let raw_cursor = raw.cursor.as_ref();
+            let default_cursor = default_raw.cursor.as_ref();
+            let color_str = raw_cursor
+                .and_then(|c| c.color.as_deref())
+                .or_else(|| default_cursor.and_then(|c| c.color.as_deref()));
+            let color = match color_str {
+                Some(s) if !s.trim().is_empty() => {
+                    Some(resolve_color_reference(s, &scheme, source, "cursor.color")?)
+                }
+                _ => None,
+            };
+            CursorTheme { color }
+        };
 
         let resolved_badge = resolve_component(
             raw.picker.badge.as_ref(),
@@ -362,6 +382,7 @@ impl ResolvedTheme {
 
         Ok(Self {
             text: chrome_text,
+            cursor,
             chrome: ChromeTheme {
                 divider: chrome_divider,
                 border: chrome_border,
@@ -378,7 +399,6 @@ impl ResolvedTheme {
                 muted: picker_muted,
                 placeholder: picker_placeholder,
                 input_prefix: picker_input_prefix,
-                cursor: picker_cursor,
                 selected: picker_selected,
                 selected_muted: picker_selected_muted,
                 badge: picker_badge,
@@ -700,6 +720,8 @@ pub(super) struct RawTheme {
     #[serde(default)]
     pub(super) scheme: BTreeMap<String, String>,
     #[serde(default)]
+    pub(super) cursor: Option<RawCursorTheme>,
+    #[serde(default)]
     pub(super) picker: RawPickerTheme,
     #[serde(default)]
     pub(super) chrome: RawChromeTheme,
@@ -722,8 +744,6 @@ pub(super) struct RawPickerTheme {
     pub(super) placeholder: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) input_prefix: Option<RawStyleBinding>,
-    #[serde(default)]
-    pub(super) cursor: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) selected: Option<RawStyleBinding>,
     #[serde(default)]

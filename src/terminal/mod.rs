@@ -198,6 +198,8 @@ pub struct Terminal {
     cancellation: CancellationToken,
     active: bool,
     screen_active: bool,
+    cursor_theme: Option<crate::ui::theme::CursorTheme>,
+    embedded_cursor: Option<bool>,
 }
 
 impl Terminal {
@@ -255,6 +257,8 @@ impl Terminal {
             cancellation,
             active: true,
             screen_active: false,
+            cursor_theme: None,
+            embedded_cursor: None,
         };
         terminal.resume_screen()?;
         rollback.disarm();
@@ -329,8 +333,37 @@ impl Terminal {
         if screen_result.is_ok() {
             self.screen_active = true;
         }
+        self.embedded_cursor = None;
         self.invalidate_renderer();
         settings_result.and(screen_result)
+    }
+
+    pub(crate) fn apply_cursor_theme(
+        &mut self,
+        cursor: &crate::ui::theme::CursorTheme,
+    ) -> Result<()> {
+        self.cursor_theme = Some(*cursor);
+        self.embedded_cursor = None;
+        self.set_cursor_owner(false)
+    }
+
+    pub(crate) fn set_cursor_owner(&mut self, embedded: bool) -> Result<()> {
+        if self.embedded_cursor == Some(embedded) {
+            return Ok(());
+        }
+        let sequence =
+            cursor_owner_sequence(embedded, self.cursor_theme, self.image_picker.is_tmux);
+        self.write_output(&sequence)?;
+        self.embedded_cursor = Some(embedded);
+        Ok(())
+    }
+
+    pub(crate) fn reset_cursor_style(&mut self) -> Result<()> {
+        let sequence = cursor_reset_sequence(self.image_picker.is_tmux);
+        if !sequence.is_empty() {
+            self.write_output(&sequence)?;
+        }
+        Ok(())
     }
 
     pub fn resume_screen(&mut self) -> Result<()> {
@@ -340,10 +373,14 @@ impl Terminal {
         self.write_output(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
             .context("could not resume launcher screen")?;
         self.screen_active = true;
+        self.embedded_cursor = None;
+        self.set_cursor_owner(false)?;
         Ok(())
     }
 
     fn restore_terminal_state(&mut self) -> (Result<()>, Result<()>) {
+        let _ = self.reset_cursor_style();
+        self.embedded_cursor = None;
         let screen_result = write_fd(
             self.output_fd,
             RESTORE_SCREEN,
@@ -463,6 +500,7 @@ impl Terminal {
     }
 
     fn prepare_renderer_for_drop(&mut self) {
+        let _ = self.reset_cursor_style();
         self.renderer_discard.store(true, Ordering::Release);
         let _ = self.renderer.show_cursor();
     }
@@ -490,6 +528,52 @@ fn osc52_sequence(value: &str, is_tmux: bool) -> Result<Vec<u8>> {
         sequence.extend_from_slice(b"\x1b\\");
     }
     Ok(sequence)
+}
+
+fn color_to_hex_str(color: ratatui::style::Color) -> Option<String> {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+        _ => None,
+    }
+}
+
+fn cursor_style_sequence(cursor: &crate::ui::theme::CursorTheme, is_tmux: bool) -> Vec<u8> {
+    let mut inner = Vec::new();
+    if let Some(color) = cursor.color.and_then(color_to_hex_str) {
+        inner.extend_from_slice(format!("\x1b]12;{color}\x07").as_bytes());
+    }
+    wrap_cursor_sequence(inner, is_tmux)
+}
+
+fn wrap_cursor_sequence(inner: Vec<u8>, is_tmux: bool) -> Vec<u8> {
+    if is_tmux && !inner.is_empty() {
+        let mut wrapped = Vec::with_capacity(inner.len() + 10);
+        wrapped.extend_from_slice(b"\x1bPtmux;\x1b");
+        wrapped.extend_from_slice(&inner);
+        wrapped.extend_from_slice(b"\x1b\\");
+        wrapped
+    } else {
+        inner
+    }
+}
+
+fn cursor_owner_sequence(
+    embedded: bool,
+    theme: Option<crate::ui::theme::CursorTheme>,
+    is_tmux: bool,
+) -> Vec<u8> {
+    let mut sequence = cursor_reset_sequence(is_tmux);
+    if !embedded && let Some(theme) = theme {
+        sequence.extend(cursor_style_sequence(&theme, is_tmux));
+    }
+    sequence
+}
+
+fn cursor_reset_sequence(is_tmux: bool) -> Vec<u8> {
+    let mut inner = Vec::new();
+    inner.extend_from_slice(b"\x1b]112\x07");
+    inner.extend_from_slice(b"\x1b[0 q");
+    wrap_cursor_sequence(inner, is_tmux)
 }
 
 fn duplicate_fd(fd: libc::c_int) -> Result<File> {
@@ -769,6 +853,45 @@ mod tests {
         assert!(tmux_environment_for(false, "tmux-256color", ""));
         assert!(tmux_environment_for(false, "screen-256color", "tmux"));
         assert!(!tmux_environment_for(false, "screen-256color", "kitty"));
+    }
+
+    #[test]
+    fn cursor_escape_sequences_format_colors_and_support_tmux() {
+        use crate::ui::theme::CursorTheme;
+        use ratatui::style::Color;
+
+        let theme = CursorTheme {
+            color: Some(Color::Rgb(255, 0, 128)),
+        };
+        assert_eq!(cursor_style_sequence(&theme, false), b"\x1b]12;#ff0080\x07");
+        assert_eq!(
+            cursor_style_sequence(&theme, true),
+            b"\x1bPtmux;\x1b\x1b]12;#ff0080\x07\x1b\\"
+        );
+        assert!(cursor_style_sequence(&CursorTheme::default(), false).is_empty());
+        assert!(
+            cursor_style_sequence(
+                &CursorTheme {
+                    color: Some(Color::Yellow)
+                },
+                false
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            cursor_owner_sequence(true, Some(theme), false),
+            cursor_reset_sequence(false)
+        );
+        assert_eq!(
+            cursor_owner_sequence(false, Some(theme), false),
+            b"\x1b]112\x07\x1b[0 q\x1b]12;#ff0080\x07"
+        );
+
+        let reset = cursor_reset_sequence(false);
+        assert_eq!(reset, b"\x1b]112\x07\x1b[0 q");
+
+        let reset_tmux = cursor_reset_sequence(true);
+        assert_eq!(reset_tmux, b"\x1bPtmux;\x1b\x1b]112\x07\x1b[0 q\x1b\\");
     }
 
     #[test]

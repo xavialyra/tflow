@@ -438,6 +438,18 @@ fn omitted_bindings_use_defaults_and_partial_bindings_are_supported() {
 fn theme_tables_reject_unknown_fields() {
     assert!(toml::from_str::<RawTheme>("[chrome]\nunknown = {}\n").is_err());
     assert!(toml::from_str::<RawTheme>("[picker]\nunknown = {}\n").is_err());
+    assert!(toml::from_str::<RawTheme>("[cursor]\nshape = 'bar'\n").is_err());
+    assert!(toml::from_str::<RawTheme>("[cursor]\nblink = true\n").is_err());
+}
+
+#[test]
+fn cursor_color_is_optional_and_resolves_explicit_rgb() {
+    let defaults = ResolvedTheme::terminal();
+    assert_eq!(defaults.cursor.color, None);
+
+    let raw: RawTheme = toml::from_str("[cursor]\ncolor = '#a3be8c'\n").unwrap();
+    let theme = ResolvedTheme::from_raw(&raw, "custom").unwrap();
+    assert_eq!(theme.cursor.color, Some(Color::Rgb(163, 190, 140)));
 }
 
 #[test]
@@ -664,10 +676,8 @@ fn picker_input_prefix_and_chrome_footer_title_resolve() {
             foreground = "scheme:status_col"
             dim = true
 
-            [picker.cursor]
-            foreground = "scheme:accent"
-            background = "scheme:border_col"
-            underline = true
+            [cursor]
+            color = "scheme:accent"
 
             [chrome.border]
             foreground = "scheme:border_col"
@@ -700,15 +710,7 @@ fn picker_input_prefix_and_chrome_footer_title_resolve() {
             .add_modifier
             .contains(Modifier::DIM)
     );
-    assert_eq!(theme.picker.cursor.fg, Some(Color::Yellow));
-    assert_eq!(theme.picker.cursor.bg, Some(Color::Green));
-    assert!(
-        theme
-            .picker
-            .cursor
-            .add_modifier
-            .contains(Modifier::UNDERLINED)
-    );
+    assert_eq!(theme.cursor.color, Some(Color::Yellow));
 
     assert_eq!(theme.chrome.border.fg, Some(Color::Green));
     assert_eq!(theme.chrome.footer_title.fg, Some(Color::Magenta));

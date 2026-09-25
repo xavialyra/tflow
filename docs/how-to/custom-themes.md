@@ -37,9 +37,8 @@ branch = "#A3BE8C"
 [picker.marker]
 bold = false
 
-[picker.cursor]
-foreground = "scheme:accent"
-underline = true
+[cursor]
+color = "#A3BE8C"
 
 [picker.badge]
 foreground = "scheme:background"
@@ -60,7 +59,7 @@ italic = true
 
 Each scheme entry contains an `ansi:NAME` or `#RRGGBB` color. Add any names you need, such as `branch`, and refer to them as `scheme:branch` in styles. Styles also accept literal colors directly.
 
-You can start with just `[scheme]` and one entry. The launcher merges your file with the complete built-in theme by scheme key and style field, then resolves references. For example, changing `accent` recolors the inherited marker, cursor, and shortcut foregrounds. `surface` controls the input-prefix and shortcut backgrounds; `selection` controls selected-row and selected-badge backgrounds, which default to the terminal background. Omitted fields inherit; `bold = false` turns off inherited bold, and `background = "ansi:reset"` explicitly restores the terminal background.
+You can start with just `[scheme]` and one entry. The launcher merges your file with the complete built-in theme by scheme key and style field, then resolves references. For example, changing `accent` recolors the inherited marker and shortcut foregrounds. `surface` controls the input-prefix and shortcut backgrounds; `selection` controls selected-row and selected-badge backgrounds, which default to the terminal background. Omitted fields inherit; `bold = false` turns off inherited bold, and `background = "ansi:reset"` explicitly restores the terminal background. `[cursor].color` optionally overrides the hardware cursor color in launcher views; omit it to keep the terminal color. Embedded programs use the terminal's default cursor color instead of this override.
 
 ### 2. Activate and Check the Theme
 

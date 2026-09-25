@@ -2,6 +2,10 @@
 
 This log records notable changes to the documentation and product during development. It is a concise engineering record rather than a release changelog.
 
+## 2026-09-25
+
+- Replaced the Picker's rendered pseudo-cursor with the terminal cursor and limited `[cursor]` theme customization to the host's optional RGB color; embedded views reset the host color override.
+
 ## 2026-09-24 (v0.1.0-alpha.3)
 
 - Enhanced Form Engine boolean fields to share unified inline selector indicators (`< true >` / `< false >`) and discrete option cycling with enum fields, including arrow/space navigation, letter jumping (`t`/`f`), input safety against invalid characters, and paste normalization.

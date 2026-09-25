@@ -110,11 +110,6 @@ foreground = "scheme:accent"
 background = "scheme:surface"
 bold = true
 
-[picker.cursor]
-foreground = "scheme:accent"
-background = "scheme:background"
-bold = true
-
 [picker.preview.text]
 foreground = "scheme:foreground"
 background = "scheme:background"

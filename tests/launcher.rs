@@ -2061,7 +2061,7 @@ fn left_prefix_backspace_parent_returns_one_level() {
     let screen = backspace_chain_screen(
         "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"parent\"\n",
         "Mid entry",
-        "mid e\u{2588}",
+        "mid e",
     );
     assert!(screen.contains("Mid entry"), "{screen}");
     assert!(screen.contains("Open leaf"), "{screen}");
@@ -2072,7 +2072,7 @@ fn left_prefix_backspace_root_returns_to_the_root_view() {
     let screen = backspace_chain_screen(
         "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"root\"\n",
         "Root entry",
-        "e\u{2588}",
+        "e",
     );
     assert!(screen.contains("Root entry"), "{screen}");
     assert!(screen.contains("Open mid"), "{screen}");
@@ -2083,7 +2083,7 @@ fn left_prefix_backspace_unset_leaves_backspace_inert() {
     let screen = backspace_chain_screen(
         "[defaults.picker]\nleft_prefix = \"$route\"\n",
         "Leaf entry",
-        "leaf e\u{2588}",
+        "leaf e",
     );
     assert!(screen.contains("Leaf entry"), "{screen}");
 }
@@ -2101,7 +2101,7 @@ fn fixture_input_placeholder_shows_until_the_user_types() {
     assert!(
         visible
             .lines()
-            .any(|line| line.trim() == "\u{2588}Type a route or search"),
+            .any(|line| line.trim() == "Type a route or search"),
         "entry placeholder was not rendered: {visible}"
     );
 
@@ -2114,7 +2114,7 @@ fn fixture_input_placeholder_shows_until_the_user_types() {
     let typed = String::from_utf8_lossy(&typed);
     let visible = typed.rsplit("--- visible screen ---").next().unwrap();
     assert!(
-        visible.lines().any(|line| line.trim() == "s\u{2588}"),
+        visible.lines().any(|line| line.trim() == "s"),
         "typing did not replace the placeholder: {visible}"
     );
 
@@ -2127,9 +2127,9 @@ fn fixture_input_placeholder_shows_until_the_user_types() {
     let child = String::from_utf8_lossy(&child);
     let visible = child.rsplit("--- visible screen ---").next().unwrap();
     assert!(
-        visible.lines().any(|line| line
-            .trim_start()
-            .starts_with("app \u{2588}Search applications")),
+        visible
+            .lines()
+            .any(|line| line.trim_start().starts_with("app Search applications")),
         "pushed placeholder was not rendered after the prefix: {visible}"
     );
 

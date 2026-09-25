@@ -47,7 +47,7 @@ items = [
 ]
 ```
 
-Style the hint with `[picker.placeholder]` in the theme. The pseudo-cursor stays visible in the input's first cell and the hint starts right after it; with a left prefix the hint is rendered after the prefix, and typing replaces the hint without ever entering the query value.
+Style the hint with `[picker.placeholder]` in the theme. The terminal cursor appears at the input position; with a left prefix the hint is rendered after the prefix, and typing replaces the hint without ever entering the query value.
 
 ### 2. Load Items from a Producer
 
