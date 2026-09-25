@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 def main():
     try:
@@ -167,6 +168,29 @@ def main():
                         pass
         return []
 
+    def inspect_view_contracts():
+        """Load all source contracts in one host process per refresh."""
+        if not tflow_bin or not os.path.exists(suite_file):
+            return {}
+        try:
+            res = subprocess.run(
+                [tflow_bin, "-s", suite_file, "--inspect", "--all"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                return {}
+            payload = json.loads(res.stdout)
+            views = payload.get("views", []) if isinstance(payload, dict) else []
+            return {
+                contract.get("view"): contract
+                for contract in views
+                if isinstance(contract, dict) and isinstance(contract.get("view"), str)
+            }
+        except Exception:
+            return {}
+
     def item_matches_query(item):
         if not query:
             return True
@@ -183,15 +207,28 @@ def main():
             return True
         return False
 
-    all_items = []
-
+    source_entries = []
     for source in sources:
         view_ref = source if isinstance(source, str) else source.get("view")
-        if not view_ref:
-            continue
+        if view_ref:
+            source_entries.append((view_ref, source))
 
-        raw_items = fetch_items_for_view(view_ref)
-        contract = view_contract(view_ref)
+    # The source producers are independent. Run them concurrently so one slow
+    # workflow does not add its full process startup time to every refresh.
+    with ThreadPoolExecutor(max_workers=max(1, len(source_entries))) as executor:
+        item_futures = {
+            view_ref: executor.submit(fetch_items_for_view, view_ref)
+            for view_ref, _source in source_entries
+        }
+        contracts = inspect_view_contracts()
+        source_items = [
+            (view_ref, source, item_futures[view_ref].result())
+            for view_ref, source in source_entries
+        ]
+
+    all_items = []
+    for view_ref, source, raw_items in source_items:
+        contract = contracts.get(view_ref) or view_contract(view_ref)
         keymap = keymap_of(contract)
 
         for item in raw_items:
