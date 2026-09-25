@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Restore a selected clipboard history entry to the system clipboard.
+
+Supports Wayland (wl-copy) and X11 (xclip, xsel).
+"""
 import json
 import shutil
 import sys
@@ -11,19 +15,37 @@ def main():
     entry_id = item.get("value") if isinstance(item, dict) else None
     if not isinstance(entry_id, str) or not entry_id:
         raise ValueError("select a clipboard history item first")
-    if (
-        shutil.which("cliphist") is None
-        or shutil.which("wl-copy") is None
-        or shutil.which("setsid") is None
-    ):
-        raise RuntimeError(
-            "restoring clipboard history requires cliphist, wl-copy, and setsid"
-        )
+    if shutil.which("cliphist") is None:
+        raise RuntimeError("restoring clipboard history requires cliphist")
 
     metadata = item.get("metadata", {})
     mime = metadata.get("mime", "") if isinstance(metadata, dict) else ""
     if mime not in ("image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"):
         mime = ""
+
+    shell_script = (
+        'umask 077; tmp=$(mktemp) || exit; '
+        'trap \'rm -f "$tmp"\' EXIT; '
+        'cliphist decode "$1" > "$tmp" || exit; '
+        'if command -v wl-copy >/dev/null 2>&1; then '
+        '  if [ -n "$2" ]; then '
+        '    setsid --fork --wait wl-copy --type "$2" < "$tmp"; '
+        '  else '
+        '    setsid --fork --wait wl-copy < "$tmp"; '
+        '  fi; '
+        'elif command -v xclip >/dev/null 2>&1; then '
+        '  if [ -n "$2" ]; then '
+        '    setsid --fork --wait xclip -selection clipboard -t "$2" < "$tmp"; '
+        '  else '
+        '    setsid --fork --wait xclip -selection clipboard < "$tmp"; '
+        '  fi; '
+        'elif command -v xsel >/dev/null 2>&1; then '
+        '  setsid --fork --wait xsel --clipboard --input < "$tmp"; '
+        'else '
+        '  encoded=$(base64 < "$tmp" | tr -d "\\r\\n"); '
+        '  printf "\\033]52;c;%s\\007" "$encoded" > /dev/tty 2>/dev/null || true; '
+        'fi'
+    )
 
     json.dump(
         {
@@ -34,18 +56,13 @@ def main():
                 "argv": [
                     "sh",
                     "-c",
-                    'umask 077; tmp=$(mktemp) || exit; '
-                    'trap \'rm -f "$tmp"\' EXIT; '
-                    'cliphist decode "$1" > "$tmp" || exit; '
-                    'if [ -n "$2" ]; then '
-                    'setsid --fork --wait wl-copy --type "$2" < "$tmp"; '
-                    'else setsid --fork --wait wl-copy < "$tmp"; fi',
+                    shell_script,
                     "clipboard-history",
                     entry_id,
                     mime,
                 ],
                 "exit": True,
-                "success_message": "Copied to clipboard",
+                "success_message": "Restored to clipboard",
             },
         },
         sys.stdout,

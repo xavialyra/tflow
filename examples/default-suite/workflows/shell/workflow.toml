@@ -9,4 +9,4 @@ entrypoint = "main"
 type = "embedded"
 
 [views.main.engine.config]
-command = ["sh"]
+command = ["sh", "-c", "exec \"${SHELL:-sh}\""]

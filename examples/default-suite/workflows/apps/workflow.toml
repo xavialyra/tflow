@@ -28,6 +28,7 @@ file = "scripts/preview.py"
 enter = "open"
 "ctrl+o" = "open_detached"
 "ctrl+w" = "weight"
+"ctrl+y" = "copy_path"
 
 [views.weight]
 [views.weight.query]
@@ -67,6 +68,13 @@ type = "call"
 producer = "script"
 [commands.weight.handler]
 file = "scripts/weight-popup.py"
+
+[commands.copy_path]
+label = "Copy path"
+type = "run"
+producer = "script"
+[commands.copy_path.handler]
+file = "scripts/copy-path.py"
 
 [commands.save]
 label = "Save"

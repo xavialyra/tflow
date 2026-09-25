@@ -168,6 +168,44 @@ def store_item(connection, entry_id, label):
 
 
 def search_history(tokens, content_type="all"):
+    if shutil.which("cliphist") is None:
+        return [
+            {
+                "display": {
+                    "rows": [
+                        {
+                            "constraints": [{"Length": 7}, {"Fill": 1}],
+                            "cells": [
+                                {"text": "INFO  ", "slot": "muted"},
+                                {"text": "cliphist is not installed", "slot": "primary"},
+                            ],
+                        },
+                        {
+                            "constraints": [{"Length": 7}, {"Fill": 1}],
+                            "cells": [
+                                {"text": "", "slot": "muted"},
+                                {
+                                    "text": "Install cliphist and wl-clipboard / xclip to enable history",
+                                    "slot": "secondary",
+                                },
+                            ],
+                        },
+                    ]
+                },
+                "value": "",
+                "metadata": {
+                    "title": "INFO · Missing dependency",
+                    "summary": "Install cliphist to enable clipboard history.",
+                    "content": (
+                        "The clipboard history workflow relies on cliphist.\n\n"
+                        "To use this feature:\n"
+                        "  1. Install cliphist and wl-clipboard (Wayland) or xclip (X11)\n"
+                        "  2. Start the watcher: wl-paste --watch cliphist store"
+                    ),
+                },
+            }
+        ]
+
     kinds = {"all": None, "text": "TEXT", "image": "IMAGE", "binary": "FILE"}
     if not isinstance(content_type, str) or content_type not in kinds:
         raise ValueError("content_type must be one of: all, text, image, binary")

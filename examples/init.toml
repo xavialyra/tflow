@@ -62,7 +62,7 @@ DEFAULT_CANDIDATES = [
     {
         "id": "sys",
         "name": "System & Session Controls",
-        "desc": "Fast system actions for logging out, restarting, or shutting down.",
+        "desc": "Fast system actions for locking screen, sleeping, restarting, or shutting down.",
         "feed": "sys:main",
         "aliases": {"sys": "sys:main"},
         "deps": {"optional": ["systemctl", "loginctl"]}

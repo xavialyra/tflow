@@ -9,10 +9,19 @@ entrypoint = "main"
 type = "picker"
 
 [views.main.engine.config]
+preview_ratio = 0.4
+preview_min_width = 24
+preview_default_open = false
+
 [views.main.engine.config.items]
 producer = "script"
 [views.main.engine.config.items.handler]
-file = "scripts/items.sh"
+file = "scripts/items.py"
+
+[views.main.engine.config.preview]
+producer = "script"
+[views.main.engine.config.preview.handler]
+file = "scripts/preview.py"
 
 [views.main.keymap]
 enter = "run"
@@ -22,7 +31,35 @@ label = "Run"
 type = "navigate"
 producer = "script"
 [commands.run.handler]
-file = "scripts/command.sh"
+file = "scripts/command.py"
+
+[views.confirm]
+[views.confirm.query]
+type = "object"
+input = "action"
+action = { type = "string", default = "" }
+
+[views.confirm.engine]
+type = "picker"
+
+[views.confirm.engine.config]
+show_input = false
+show_left_prefix = false
+
+[views.confirm.engine.config.items]
+producer = "script"
+[views.confirm.engine.config.items.handler]
+file = "scripts/confirm_items.py"
+
+[views.confirm.keymap]
+enter = "confirm_exec"
+
+[commands.confirm_exec]
+label = "Confirm"
+type = "navigate"
+producer = "script"
+[commands.confirm_exec.handler]
+file = "scripts/confirm_exec.py"
 
 [views.output.engine]
 type = "capture"
@@ -30,4 +67,4 @@ type = "capture"
 [views.output.engine.config.output]
 producer = "script"
 [views.output.engine.config.output.handler]
-file = "scripts/run.sh"
+file = "scripts/run.py"
