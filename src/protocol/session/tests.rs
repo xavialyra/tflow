@@ -1815,11 +1815,16 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
     session.sync_active_commands().unwrap();
 
     // While loading, the popup is deferred: no border, and the app footer keeps
-    // the settled status instead of blanking for the popup.
+    // the settled status and location instead of leaking the popup's title or blanking prematurely.
     terminal
         .draw(|frame| {
             let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
             assert_eq!(rendered.footer.status.as_deref(), Some("root"));
+            assert_eq!(
+                rendered.footer.location.label(),
+                "root",
+                "footer location must retain the settled view while popup is loading"
+            );
         })
         .unwrap();
     assert!(session.navigation.is_retaining());
@@ -1827,6 +1832,18 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
         terminal.backend().buffer().cell((10, 2)).unwrap().symbol(),
         "┌",
         "a deferred popup must not draw its border"
+    );
+    // Global footer row (y = 9) retains root's label and does not leak async_popup
+    let footer_row_loading: String = (0..40)
+        .map(|x| terminal.backend().buffer().cell((x, 9)).unwrap().symbol())
+        .collect();
+    assert!(
+        footer_row_loading.contains("root"),
+        "global footer must retain root content during loading"
+    );
+    assert!(
+        !footer_row_loading.contains("async_popup"),
+        "global footer must not leak popup title while loading"
     );
 
     // Once it publishes, the popup appears with its own border.
@@ -1840,7 +1857,8 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
         .unwrap();
     terminal
         .draw(|frame| {
-            session.render_at(frame, frame.area(), None, now).unwrap();
+            let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
+            assert_eq!(rendered.footer.location.label(), "async_popup");
         })
         .unwrap();
     assert!(!session.navigation.is_retaining());
@@ -1848,6 +1866,50 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
         terminal.backend().buffer().cell((10, 2)).unwrap().symbol(),
         "┌"
     );
+    // Once published, global footer row (y = 9) is blanked for the active popup
+    for x in 0..40 {
+        assert_eq!(
+            terminal.backend().buffer().cell((x, 9)).unwrap().symbol(),
+            " ",
+            "global footer row must be blank once popup publishes"
+        );
+    }
+}
+
+#[test]
+fn navigation_grace_popup_preserves_live_notifications_on_retained_footer() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let now = Instant::now();
+
+    terminal
+        .draw(|frame| {
+            session.render_at(frame, frame.area(), None, now).unwrap();
+        })
+        .unwrap();
+
+    let mut popup_req = request("async_popup");
+    popup_req.presentation = crate::workflow::config::ViewPresentation::popup(20, 5);
+    session.router.push(popup_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // Report a live notification while popup is still loading
+    session.report_error("transient error");
+
+    terminal
+        .draw(|frame| {
+            let rendered = session.render_at(frame, frame.area(), None, now).unwrap();
+            assert_eq!(rendered.footer.location.label(), "root");
+            assert!(
+                rendered
+                    .footer
+                    .error
+                    .as_deref()
+                    .is_some_and(|msg| msg.contains("transient error"))
+            );
+        })
+        .unwrap();
 }
 
 #[test]

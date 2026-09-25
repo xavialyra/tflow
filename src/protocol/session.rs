@@ -639,27 +639,42 @@ impl ProtocolSession {
         };
         // Chrome grace uses the same retention decision as the pixels: while the
         // active instance loads, keep the settled status and commands so the
-        // footer does not blank before the target publishes. Location and live
-        // notifications always track the current frame.
+        // footer does not blank before the target publishes. When a popup is
+        // loading, its entire chrome is deferred along with its surface, so the
+        // footer fully preserves the settled base View without prematurely
+        // leaking the popup's title or bindings onto the global footer row.
         let footer = match &retained {
-            Some(retained) => FooterModel {
-                location: current_footer.location.clone(),
-                status: current_footer
-                    .status
-                    .clone()
-                    .or_else(|| retained.settled.footer.status.clone()),
-                error: current_footer.error.clone(),
-                info: current_footer.info.clone(),
-                commands: if current_footer.commands.is_empty() {
-                    retained.settled.footer.commands.clone()
+            Some(retained) => {
+                if active_popup_rect.is_some() {
+                    let mut footer = retained.settled.footer.clone();
+                    if let Some(error) = &self.active_error {
+                        footer.error = Some(error.clone());
+                    }
+                    if let Some(info) = &self.active_info {
+                        footer.info = Some(info.label.clone());
+                    }
+                    footer
                 } else {
-                    current_footer.commands.clone()
-                },
-                overflow_command: current_footer
-                    .overflow_command
-                    .clone()
-                    .or_else(|| retained.settled.footer.overflow_command.clone()),
-            },
+                    FooterModel {
+                        location: current_footer.location.clone(),
+                        status: current_footer
+                            .status
+                            .clone()
+                            .or_else(|| retained.settled.footer.status.clone()),
+                        error: current_footer.error.clone(),
+                        info: current_footer.info.clone(),
+                        commands: if current_footer.commands.is_empty() {
+                            retained.settled.footer.commands.clone()
+                        } else {
+                            current_footer.commands.clone()
+                        },
+                        overflow_command: current_footer
+                            .overflow_command
+                            .clone()
+                            .or_else(|| retained.settled.footer.overflow_command.clone()),
+                    }
+                }
+            }
             None => current_footer,
         };
         let footer_area = content_host.footer_area(area);
