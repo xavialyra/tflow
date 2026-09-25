@@ -157,11 +157,6 @@ def build_card_display(expression: str, result_text: str, metadata: dict) -> dic
     """Construct an aligned card box for the picker list."""
     res_line = f"= {result_text}"
 
-    # If it's an integer with a hex representation, show a subtle hint
-    hex_repr = metadata.get("hex")
-    if hex_repr and len(result_text) < 12 and hex_repr != result_text:
-        res_line = f"= {result_text}  ({hex_repr})"
-
     pad_width = max(len(expression), len(res_line), 26)
     pad_width = min(pad_width, 60)  # Bound to sensible max width
 
