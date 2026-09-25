@@ -906,3 +906,141 @@ fn enum_field_renders_inline_selector_decoration() {
         .join("\n");
     assert!(screen.contains("< prod >"));
 }
+
+#[test]
+fn boolean_field_renders_inline_selector_decoration() {
+    let form = declared(json!([
+        {
+            "name": "pinned",
+            "label": "Pinned",
+            "type": "boolean",
+            "value": true
+        },
+        {
+            "name": "archived",
+            "label": "Archived",
+            "type": "boolean",
+            "value": false
+        }
+    ]));
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    terminal
+        .draw(|frame| {
+            form.render(
+                frame,
+                frame.area(),
+                &RenderContext::for_terminal(TerminalSize {
+                    width: 40,
+                    height: 8,
+                }),
+            )
+            .unwrap();
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let screen = (0..8)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("< true >"));
+    assert!(screen.contains("< false >"));
+}
+
+#[test]
+fn boolean_field_keyboard_interaction_and_safety() {
+    let mut form = declared(json!([
+        {
+            "name": "flag",
+            "label": "Flag",
+            "type": "boolean",
+            "value": false,
+            "required": true
+        }
+    ]));
+
+    assert_eq!(form.publication.current["values"]["flag"], false);
+    assert_eq!(form.publication.current["valid"], true);
+
+    // Space toggles false -> true
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["flag"], true);
+    assert_eq!(form.publication.current["dirty"], true);
+
+    // Space toggles true -> false
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["flag"], false);
+
+    // Enter also toggles
+    key(&mut form, Key::Enter);
+    assert_eq!(form.publication.current["values"]["flag"], true);
+
+    // Right / Left cycles like enum
+    key(&mut form, Key::Right);
+    assert_eq!(form.publication.current["values"]["flag"], false);
+    key(&mut form, Key::Left);
+    assert_eq!(form.publication.current["values"]["flag"], true);
+
+    // Home jumps to first (true), End jumps to last (false)
+    key(&mut form, Key::End);
+    assert_eq!(form.publication.current["values"]["flag"], false);
+    key(&mut form, Key::Home);
+    assert_eq!(form.publication.current["values"]["flag"], true);
+
+    // 't' jumps to true, 'f' jumps to false
+    key(&mut form, Key::Char('f'));
+    assert_eq!(form.publication.current["values"]["flag"], false);
+    key(&mut form, Key::Char('t'));
+    assert_eq!(form.publication.current["values"]["flag"], true);
+
+    // Arbitrary keys (e.g. 'a', 'z', '!') are ignored and do not corrupt boolean state
+    key(&mut form, Key::Char('a'));
+    key(&mut form, Key::Char('z'));
+    key(&mut form, Key::Char('!'));
+    assert_eq!(form.publication.current["values"]["flag"], true);
+    assert_eq!(form.publication.current["valid"], true);
+
+    // Backspace clears required boolean field -> reports "Required"
+    key(&mut form, Key::Backspace);
+    assert_eq!(form.publication.current["values"]["flag"], Value::Null);
+    assert_eq!(form.publication.current["errors"]["flag"], "Required");
+    assert_eq!(form.publication.current["valid"], false);
+
+    // Space re-engages it as true
+    key(&mut form, Key::Char(' '));
+    assert_eq!(form.publication.current["values"]["flag"], true);
+    assert_eq!(form.publication.current["valid"], true);
+}
+
+#[test]
+fn boolean_field_paste_normalization() {
+    let mut form = declared(json!([
+        {
+            "name": "flag",
+            "type": "boolean",
+            "value": false
+        }
+    ]));
+
+    paste(&mut form, "yes");
+    assert_eq!(form.publication.current["values"]["flag"], true);
+    assert_eq!(form.publication.current["valid"], true);
+
+    paste(&mut form, "no");
+    assert_eq!(form.publication.current["values"]["flag"], false);
+    assert_eq!(form.publication.current["valid"], true);
+
+    paste(&mut form, "1");
+    assert_eq!(form.publication.current["values"]["flag"], true);
+
+    paste(&mut form, "0");
+    assert_eq!(form.publication.current["values"]["flag"], false);
+
+    // Invalid paste reports "Enter true or false"
+    paste(&mut form, "not_a_bool");
+    assert_eq!(form.publication.current["values"]["flag"], Value::Null);
+    assert_eq!(
+        form.publication.current["errors"]["flag"],
+        "Enter true or false"
+    );
+    assert_eq!(form.publication.current["valid"], false);
+}

@@ -324,13 +324,33 @@ impl FormView {
         let draft = &mut self.fields[self.focus];
         let buffer = &mut draft.buffer;
         match key {
-            Key::Char(' ') if draft.field.kind == FieldType::Boolean => {
+            Key::Char(' ') | Key::Enter | Key::Right if draft.field.kind == FieldType::Boolean => {
                 let text = if buffer.raw.trim() == "true" {
                     "false"
                 } else {
                     "true"
                 };
                 buffer.replace_all(text.to_string(), text.len());
+            }
+            Key::Left if draft.field.kind == FieldType::Boolean => {
+                let text = if buffer.raw.trim() == "false" {
+                    "true"
+                } else {
+                    "false"
+                };
+                buffer.replace_all(text.to_string(), text.len());
+            }
+            Key::Home | Key::Ctrl('a') if draft.field.kind == FieldType::Boolean => {
+                buffer.replace_all("true".to_string(), 4);
+            }
+            Key::End | Key::Ctrl('e') if draft.field.kind == FieldType::Boolean => {
+                buffer.replace_all("false".to_string(), 5);
+            }
+            Key::Char('t') | Key::Char('T') if draft.field.kind == FieldType::Boolean => {
+                buffer.replace_all("true".to_string(), 4);
+            }
+            Key::Char('f') | Key::Char('F') if draft.field.kind == FieldType::Boolean => {
+                buffer.replace_all("false".to_string(), 5);
             }
             Key::Char(' ') | Key::Right if draft.field.kind == FieldType::Enum => {
                 draft.prefix_len = 0;
@@ -414,10 +434,16 @@ impl FormView {
                 }
             }
             Key::Backspace | Key::Delete | Key::Ctrl('u') | Key::Ctrl('w')
-                if draft.field.kind == FieldType::Enum =>
+                if draft.field.kind == FieldType::Enum
+                    || draft.field.kind == FieldType::Boolean =>
             {
                 draft.prefix_len = 0;
                 buffer.clear();
+            }
+            Key::Char(_) | Key::Home | Key::End | Key::Ctrl('a') | Key::Ctrl('e')
+                if draft.field.kind == FieldType::Boolean =>
+            {
+                return ViewDecision::Stay;
             }
             Key::Char(c) if !c.is_control() => buffer.insert(c),
             Key::Left => buffer.move_left(),
@@ -584,6 +610,16 @@ impl View for FormView {
                         field.prefix_len = 0;
                         let trimmed = text.trim();
                         field.buffer.replace_all(trimmed.to_string(), trimmed.len());
+                    } else if field.field.kind == FieldType::Boolean {
+                        let trimmed = text.trim();
+                        let normalized = match trimmed.to_lowercase().as_str() {
+                            "true" | "1" | "yes" | "y" | "t" => "true",
+                            "false" | "0" | "no" | "n" | "f" => "false",
+                            _ => trimmed,
+                        };
+                        field
+                            .buffer
+                            .replace_all(normalized.to_string(), normalized.len());
                     } else {
                         field.buffer.insert_text(&text);
                     }

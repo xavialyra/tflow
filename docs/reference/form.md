@@ -70,7 +70,7 @@ Content has exactly one required property, `fields`, an ordered array. Empty arr
 | `value` | JSON value | Null when absent; initializes the editor. Non-null values must match the field type. |
 | `required` | boolean | False; rejects null and whitespace-only string values when true. |
 
-`string` and `password` fields retain text verbatim (`password` fields mask characters with `*` when rendered). An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null; `enum` fields require a nonempty `options` list, and non-null values must match one of the declared options. In rendered fields, non-empty `enum` values display with `< value >` selector indicators. An incomplete required field is valid content configuration and appears as an editable validation error.
+`string` and `password` fields retain text verbatim (`password` fields mask characters with `*` when rendered). An absent or null initial string becomes an empty string. Other initial values are serialized as JSON; absent or null values initialize an empty editor. Empty non-string editors produce null. Nonempty integer, number, and boolean editors must contain JSON of the corresponding type; `json` accepts any JSON value, including arrays, objects, and null; `enum` fields require a nonempty `options` list, and non-null values must match one of the declared options. In rendered fields, non-empty `enum` and `boolean` values display with `< value >` selector indicators (e.g. `< true >` and `< false >`). An incomplete required field is valid content configuration and appears as an editable validation error.
 
 Fields use single-line editors in a vertical layout. The focused field remains visible as focus changes. Pasted content is retained verbatim, including newlines; control characters are displayed as spaces. JSON can therefore be pasted with formatting, although the editor displays it on one line.
 
@@ -114,11 +114,11 @@ Registered View, Engine, and Host commands take precedence over these editing ke
 | Backspace / Delete | Delete before / after the cursor. |
 | Ctrl+U | Clear the field. |
 | Ctrl+W | Delete the previous word. |
-| Space in a boolean field | Toggle true/false. |
-| Space / Right in an enum field | Cycle to next option. |
-| Left in an enum field | Cycle to previous option. |
-| Home / End in an enum field | Select first / last option. |
-| Printable char in an enum field | Jump to next option starting with that letter. |
+| Space / Right in an enum or boolean field | Cycle to next option. |
+| Left in an enum or boolean field | Cycle to previous option. |
+| Home / End in an enum or boolean field | Select first / last option. |
+| Printable char in an enum or boolean field | Jump to next option starting with that letter (`t` / `f` in boolean fields). |
+| Backspace / Delete / Ctrl+U in an enum or boolean field | Clear the field (evaluates to null). |
 | Esc | Close without a return value. |
 | Ctrl+C / Ctrl+D | Exit. |
 

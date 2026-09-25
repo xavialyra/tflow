@@ -4,6 +4,7 @@ This log records notable changes to the documentation and product during develop
 
 ## 2026-09-24 (v0.1.0-alpha.3)
 
+- Enhanced Form Engine boolean fields to share unified inline selector indicators (`< true >` / `< false >`) and discrete option cycling with enum fields, including arrow/space navigation, letter jumping (`t`/`f`), input safety against invalid characters, and paste normalization.
 - Implemented configurable foreground command execution timeouts (`timeout_ms` in `run` operations and Producer protocol) with graceful process-group kill, terminal reclamation, and host state resumption, closing Architecture Convergence Stage 1.
 - Implemented the Stage 5 scheduler benchmark and evidence harness (`src/task/stage5_evidence.rs`), providing reproducible end-to-end task scheduling verification, 250 ms p95 SLO assertions, and on-demand markdown/json metric artifact generation (`STAGE5_FULL=1`).
 - Implemented ADR 0007: Declarative popup 9-box optical anchors (`top-center`, `center`, etc.), responsive viewport-relative sizing (`width`/`height` percentage and bounds), and global terminal viewport coordinates.

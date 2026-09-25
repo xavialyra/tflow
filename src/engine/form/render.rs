@@ -203,7 +203,9 @@ impl FormView {
             let draft = &self.fields[index];
             let cursor = if focused { draft.buffer.cursor } else { 0 };
             let masked = draft.field.kind == super::content::FieldType::Password;
-            let (raw, cursor) = if draft.field.kind == super::content::FieldType::Enum {
+            let (raw, cursor) = if draft.field.kind == super::content::FieldType::Enum
+                || draft.field.kind == super::content::FieldType::Boolean
+            {
                 if draft.buffer.raw.is_empty() {
                     (String::new(), 0)
                 } else {
