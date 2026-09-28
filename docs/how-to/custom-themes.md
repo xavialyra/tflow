@@ -76,7 +76,7 @@ tflow --check --theme nord
 tflow --theme nord
 ```
 
-Use `tflow --theme terminal` to select the built-in theme. Omitting `theme` from the configuration also uses it. Each user theme extends this single baseline; themes cannot load other themes.
+Use `tflow --theme default` to select the built-in theme (`terminal` is a legacy alias). Omitting `theme` from the configuration also uses it. Each user theme extends this single baseline; themes cannot load other themes.
 
 ### 3. Customize Workflow Slots
 
@@ -93,4 +93,4 @@ underline = true
 
 Use the slot name in structured item or preview displays. The `[workflows.git.styles.branch]` example above overrides that workflow's default foreground while retaining its bold setting. Its selected style also keeps the workflow's underline and adds italic. The selected background defaults to the picker's selection background unless explicitly set.
 
-See the [theme reference](../reference/theme-toml.md) for the built-in scheme, all component slots, accepted colors, and selected-style rules. The [built-in theme](../../src/ui/theme/builtin/terminal.toml) is a complete template.
+See the [theme reference](../reference/theme-toml.md) for the built-in scheme, all component slots, accepted colors, and selected-style rules. The [built-in theme](../../assets/builtin/themes/default.toml) is a complete template.

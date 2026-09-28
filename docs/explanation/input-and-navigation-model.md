@@ -19,7 +19,7 @@ The architecture clearly demarcates responsibilities across four distinct layers
 
 1. **`RouteCatalog`**: Read-only adapter that resolves a navigation target selector to the View it names (with its suite alias) and validates query schemas.
 2. **`Router`**: Manages the runtime View Stack, current View location, and navigation transitions (`navigate`, `call`, `return`).
-3. **`Session`**: The stateful driver that coordinates terminal polling, hosts the `Router`, handles global session commands, and invokes render cycles.
+3. **`Session`**: The stateful driver that coordinates terminal polling, hosts the `Router`, handles global host commands, and invokes render cycles.
 4. **`View` & `Engine`**: Concrete execution units (`picker`, `capture`, `embedded`) that receive dispatched input events, manage internal view state, and emit command requests.
 
 ## 2. Input Layering and Binding Precedence
@@ -36,7 +36,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 [2. Active View Commands] ───► (User-configured commands on the mounted view)
          │ (unhandled)
          ▼
-[3. Engine Keymap] ──────────► (Engine-specific bindings, e.g. up/down, toggle preview)
+[3. Engine Bindings] ──────────► (Engine-specific bindings, e.g. up/down, toggle preview)
          │ (unhandled)
          ▼
 [4. Engine Input Consumer] ──► (Text editing in picker, byte passthrough in embedded)
@@ -47,7 +47,7 @@ To ensure reliable, deterministic interaction across complex nested views and em
 
 ## 3. Route Resolution and Query Contracts
 
-- **Left Prefix Display**: The host renders the current View's suite alias as an optional left prefix on the input line, and when `[defaults.picker] left_prefix_backspace` opts in, Backspace returns to the parent or root View while that prefix is rendered. The prefix is presentational and never changes key handling.
+- **Left Prefix Display**: The host renders the current View's suite alias as an optional left prefix on the input line, and when `[picker] left_prefix_backspace` opts in, Backspace returns to the parent or root View while that prefix is rendered. The prefix is presentational and never changes key handling.
 - **Route Query Scope**: Arguments passed via CLI or navigation actions are validated against the target view's declared `[views.<name>.query]` schema before the view is mounted.
 
 ## 4. View Lifecycle Sequences

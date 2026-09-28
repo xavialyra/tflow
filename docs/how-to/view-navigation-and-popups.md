@@ -25,7 +25,7 @@ You want to open a secondary View as a popup, return a value, and optionally dec
 For a fixed target, use a declared call handler:
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 "ctrl+o" = "select_action"
 
 [commands.select_action]
@@ -38,14 +38,14 @@ target = "selectors:actions"
 presentation = { mode = "popup", anchor = "top", offset_y = 2, width = "80%", max_width = 100, height = 18 }
 ```
 
-The target must be a configured View or alias. Popup dimensions can be specified as terminal cells (e.g. `70`) or viewport percentages (e.g. `"80%"`), with optional `min_width`, `max_width`, `min_height`, and `max_height` clamps. Setting `anchor` positions the popup using any of the 9 viewport anchors (`center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right`), with `offset_x` and `offset_y` defaulting transparently to 0. When multiple popups are opened sequentially, each popup is anchored independently to the global viewport without boundary degradation. While the popup is active, only its top View receives input.
+The target must be a configured View or alias. Popup dimensions can be specified as terminal cells (e.g. `70`) or viewport percentages (e.g. `"80%"`), with optional `min_width`, `max_width`, `min_height`, and `max_height` clamps. Setting `anchor` positions the popup using any of the 9 viewport anchors (`center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right`), with `offset_x` and `offset_y` defaulting transparently to 0. Setting `show_title = false` suppresses the view title on the popup's top border for minimal, clean modal dialogs. When multiple popups are opened sequentially, each popup is anchored independently to the global viewport without boundary degradation. While the popup is active, only its top View receives input.
 
 ### 2. Produce Dynamic Navigation from a Selected Item
 
 When the target or query depends on the current selection, use a script producer. The script reads the selected item from `context.engine.state.item` and returns a typed operation. `context.parameters` is the mounted View's bound parameter object; in an aggregate Picker a key dispatched through the focused item's `bindings` still carries the aggregate View's parameters, while `context.engine.state.item` remains the selected item:
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]
@@ -88,7 +88,7 @@ The host resolves the target, validates its query schema, and commits the call. 
 Define a typed return command in the child View:
 
 ```toml
-[views.actions.keymap]
+[views.actions.bindings]
 enter = "confirm"
 
 [commands.confirm]
@@ -141,7 +141,7 @@ The caller remains mounted if processor execution or response validation fails. 
 Use a declared navigate operation with `replace = true` when the current View should not remain underneath the target:
 
 ```toml
-[views.step1.keymap]
+[views.step1.bindings]
 enter = "next"
 
 [commands.next]
@@ -160,7 +160,7 @@ With `replace = false` or an omitted field, the operation pushes a new stack ent
 A `replace` re-mounts the target, so a Picker starts on its first row again. Carry the previous item identity as the host-reserved `__focus` query key (or `__engine = { focus = "..." }`); the Picker selects the first loaded item whose `value` or `text` matches. Reserved `__`-prefixed keys are stripped before the target View's parameters are published.
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 "ctrl+r" = "refresh"
 
 [commands.refresh]

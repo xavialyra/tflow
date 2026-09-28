@@ -76,7 +76,7 @@ Producer scripts write the protocol response to stdout and diagnostics to stderr
 
 The output producer starts after the Capture View has mounted. While it runs, the View remains mounted and can show its loading state. A valid response replaces the displayed content. If the producer fails, the Capture View remains mounted and displays a diagnostic instead of changing the Router stack.
 
-A Capture producer cannot change the target route, query schema, Engine type, keymap, or View configuration.
+A Capture producer cannot change the target route, query schema, Engine type, bindings, or View configuration.
 
 ## Troubleshooting
 

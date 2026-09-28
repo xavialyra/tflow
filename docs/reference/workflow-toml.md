@@ -45,7 +45,7 @@ entrypoint = "main"
 | `name` | string | **Required** | Descriptive, human-readable name of the workflow. |
 | `entrypoint` | string | **Required** | The ID of the default View within this workflow to open first. |
 
-*Invariants: Workflow imports, direct inter-workflow code dependencies, and workflow-declared global aliases are strictly prohibited.*
+*Invariants: Workflow imports, direct inter-workflow code dependencies, and workflow-declared global aliases are strictly prohibited. A workflow's owner id (the suite member ID, or the file stem for a standalone `-w` workflow) is the first segment of every command FQID it declares; see [Workflow Commands](#workflow-commands-commandsid) for how that FQID index stays unique.*
 
 ---
 
@@ -55,7 +55,7 @@ A workflow defines one or more Views referenced as `<workflow-id>:<name>`.
 
 ```toml
 [views.main]
-keymap_mode = "view"
+binding_mode = "view"
 
 [views.main.query]
 type = "object"
@@ -66,8 +66,9 @@ mode = { type = "enum", options = ["normal", "compact"], default = "normal" }
 | :--- | :--- | :--- | :--- |
 | `engine` | table | `{ type = "picker" }` | Defines the View's UI engine and its engine-specific configuration. |
 | `query` | table | `{}` | Parameter schema defining the view's expected launch parameters. Validated before mounting. |
-| `keymap` | table | `{}` | Key-to-command mappings active when this View is focused. |
-| `keymap_mode` | string | `"view"` | Keymap resolution strategy: `"view"` or `"item_merge"`. |
+| `bindings` | table | `{}` | Key-centric bindings: the physical key maps to a workflow command or an explicit `@engine:<engine>.<action>` engine action. |
+| `unbind` | table | `{ keys = [], commands = [], layers = [] }` | Per-View unbinding: physical keys, command addresses, and priority layers. |
+| `binding_mode` | string | `"view"` | Bindings resolution strategy: `"view"` or `"item_merge"`. |
 
 ### Query Parameter Schemas (`[views.<name>.query]`)
 
@@ -83,10 +84,49 @@ The query schema declares the expected parameters for launching the View (via CL
 
 CLI arguments matching fields in an object query (e.g. `--mode=compact`) are parsed and validated against this schema. Invalid options or values are rejected with diagnostic errors.
 
-### Keymap Modes (`keymap_mode`)
+### Binding Modes (`binding_mode`)
 
-- `"view"` (Default): The View's `[views.<name>.keymap]` completely defines its keybindings. If the table is omitted or empty, fallback keys declared on the workflow's commands (`[commands.<id>].key`) are published.
-- `"item_merge"`: Designed for aggregate pickers. The View's keymap serves as a base layer. The focused item's dynamic `bindings` override keys individually. Command-level fallback keys do not apply.
+- `"view"` (Default): The View's `[views.<name>.bindings]` completely defines its own layer on top of the Engine and Host layers. An omitted or empty table simply contributes no View-layer bindings.
+- `"item_merge"`: Designed for aggregate pickers. The View's bindings serve as a base layer. The focused item's dynamic `bindings` overlay (`item.bindings`) overrides keys individually per focused item. Because item bindings originate from runtime producer JSON rather than static configuration, they are evaluated leniently so that malformed item entries do not crash the Picker:
+  - Values must be command address strings (e.g. `"enter": "apps.open"`, `"escape": "@engine:picker.exit"`). Non-string values (such as `false` or numbers) and unresolvable targets are ignored without breaking the view.
+  - Keys that cannot be parsed as valid physical keys degrade gracefully: the command remains registered as a keyless View-layer entry (invokable by ID and in the command palette), but no key triggers it.
+  - Removing an inherited key remains the View's own prerogative via `[views.<name>.unbind]`. Items can rebind existing keys or bind new ones, but cannot suppress base or engine keys.
+
+### View Bindings and Unbinding (`[views.<name>.bindings]`)
+
+A View binding table is key-centric: each TOML key is a physical key and each value identifies a command. Four spellings resolve to the same workflow command — a bare local name (`"enter" = "open"`), a fully-qualified id (`"enter" = "mytools.open"`), or either with the owner made explicit (`"enter" = "@workflow:open"` / `"enter" = "@workflow:mytools.open"`). A bare value resolves **only** to a command of the current workflow and never to an engine action. To target a built-in engine action, use the `@engine:<engine>.<action>` form. The same command may be reached by several keys:
+
+```toml
+[views.main.bindings]
+"enter" = "open"
+"ctrl+o" = "open_detached"
+"ctrl+p" = "@engine:picker.toggle_preview"
+```
+
+Every value names a command or an engine action, so a View binding always runs something. To take a key *away* from a lower layer, release it with `unbind` below — a View binding is never a bare boolean.
+
+Three statements about a key are easy to confuse, so they stay separate mechanisms:
+
+| Written as | Where | Meaning |
+| :--- | :--- | :--- |
+| `"enter" = "open"` | `[views.<name>.bindings]` | This View runs the named command on that key. |
+| `unbind` with `keys` / `commands` / `layers` | `[views.<name>.unbind]` | The key↔command association is released. The key is no longer claimed by any layer, while the command keeps its identity: it stays discoverable and invokable by id. |
+| `"ctrl+k" = false` | Engine default tables (`[picker.bindings]`, `[capture.bindings]`, `[embedded.bindings]`, `[form.bindings]`) and `[host.bindings]` | That layer declares no binding for the key. There is no entry to shadow or release, so the key falls through to raw input; if that was the command's only binding, it is no longer published by that layer and can no longer be invoked by id either. |
+
+`unbind` is a per-View table whose three fields map to three independent axes. It no longer overloads one string list with a sigil: a physical key is not a command, and a priority layer is not an address.
+
+```toml
+[views.main.unbind]
+keys = ["ctrl+u"]
+commands = ["@engine:picker.clear_input", "core.page"]
+layers = ["host"]
+```
+
+- `keys`: the command bound to that physical key loses it. That key then reaches raw input handling (text entry, or the child process of an `embedded` View) instead of being claimed by anything — `unbind` releases a key, it never swallows it.
+- `commands`: the addressed command (`core.page`, `@engine:picker.clear_input`, or a bare current-workflow name — the same grammar as binding values) loses all of its keys. The command stays discoverable and invokable by identity from command selectors, and a lower layer's binding for that key can take over.
+- `layers`: the priority layer (`view`, `engine`, or `host`) is ignored in this View.
+
+`layers = ["host"]` is the recommended isolation for modal views (such as `__commands:main` and `__parameters:main`): it drops the host layer without hardcoding external workflow FQIDs or guessing user key remappings, so host shortcuts (`ctrl+k`, `ctrl+g`) cannot re-enter a modal layer. To release a single key, list it in `keys` — for example `keys = ["escape"]` lets an `embedded` child process receive Escape instead of cancelling the View.
 
 ### View Chrome & Presentation Controls
 
@@ -97,6 +137,7 @@ For Picker views, the following presentation options can be configured directly 
 | `show_input` | boolean | `true` | When `false`, hides the query input bar entirely. |
 | `show_divider` | boolean | `true` | When `false`, removes the divider line beneath the input bar. |
 | `show_left_prefix` | boolean | `true` | When `false`, hides the left prefix and disables `left_prefix_backspace`. Useful for popup views. |
+| `chrome_commands_show` | array of strings | Inherited (`["enter", "ctrl+k"]`) | Physical keys whose bound command labels are advertised in the footer, in order. Keys with no bound command — including keys removed by `unbind` — are skipped. Set to `[]` to hide all footer hints, or a subset (e.g. `["enter"]`) to further constrain modal hints. |
 | `input_placeholder`| string | Unset | Literal placeholder rendered in muted styling when the query buffer is empty. Presentation only. |
 | `source_badge` | boolean | `true` | In aggregate Pickers, controls whether the source feed badge is displayed on external items. |
 
@@ -211,13 +252,15 @@ command = ["btop"]
 | :--- | :--- | :--- | :--- |
 | `command` | array of strings | **Required** | The executable and arguments to spawn inside the PTY. |
 
-*Note: By default, `Escape` triggers the engine's `cancel` action to close the view. To let Escape pass through into the child process, disable the binding in the View's keymap: `[views.<name>.keymap] "escape" = false`.*
+*Note: By default, `Escape` triggers the engine's `cancel` action to close the view. To let Escape pass through into the child process, release the inherited binding in the View: `[views.<name>.unbind] keys = ["escape"]`.*
 
 ---
 
 ## Workflow Commands (`[commands.<id>]`)
 
-Commands represent executable operations owned by the workflow root.
+Commands represent executable operations owned by the workflow root. A workflow-level command is addressed by its fully qualified ID: `<workflow-id>.<command-id>` (dot-delimited). Command IDs may not contain dots, whitespace, or `@`.
+
+The command index is the set of FQIDs, and every FQID must name exactly one command. Built-in engine actions own `<engine>.<action>` (`picker.exit`, `form.focus_next`, `capture.copy`, `embedded.cancel`), so a workflow command may not take one of those ids even when the workflow itself is named after the engine — a workflow called `form` may declare `open`, but not `exit` or `focus_next`. Reusing an engine action's id is rejected at load time instead of being resolved by priority.
 
 ```toml
 [commands.open]
@@ -226,7 +269,6 @@ type = "run"
 producer = "declared"
 
 [commands.open.handler]
-mode = "foreground"
 argv = ["xdg-open"]
 exit = true
 ```
@@ -239,7 +281,6 @@ exit = true
 | `type` | string | **Required** | Operation type: `"navigate"`, `"call"`, `"return"`, or `"run"`. |
 | `producer` | string | **Required** | Producer kind: `"declared"` (static payload) or `"script"` (dynamic output). |
 | `handler` | table | **Required** | Handler payload corresponding to `producer` and `type`. |
-| `key` | string | Optional | Fallback physical keybinding (e.g. `"enter"`). Only used when View keymap is empty and `keymap_mode = "view"`. |
 | `return_processor`| table | Optional | Handler invoked after a `call` operation returns to this caller. |
 
 ---
@@ -286,6 +327,7 @@ When mounting a View as a modal overlay, configure the `presentation` table:
 | `max_width` | integer | None | Maximum width in terminal cells clamp. |
 | `min_height`| integer | None | Minimum height in terminal cells clamp. |
 | `max_height`| integer | None | Maximum height in terminal cells clamp. |
+| `show_title` | boolean | `true` | When `false`, suppresses rendering the view title/label on the popup top border. |
 
 ### 3. `return`
 Closes the current View and returns a value to the caller boundary:
@@ -299,11 +341,10 @@ Executes an external system command:
 
 | Parameter | Type | Required / Default | Description |
 | :--- | :--- | :--- | :--- |
-| `mode` | string | `"foreground"` | Execution mode. Currently `"foreground"`. |
 | `argv` | array of strings | **Required** | Command and arguments to execute. |
 | `exit` | boolean | `false` | When `true`, terminates `tflow` upon completion. |
 | `success_message` | string | Optional | Message displayed in the footer for 3 seconds upon successful return. |
-| `timeout_ms` | integer | Optional | Timeout in milliseconds; triggers process group termination and terminal reclamation when exceeded. |
+| `timeout_ms` | integer | Optional | Timeout in milliseconds; triggers process group termination when exceeded. |
 
 ---
 
@@ -328,7 +369,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["notify-send", "Launched", req["context"]["parameters"].get("action", "")],
         "exit": False,
     }

@@ -162,7 +162,7 @@ A command script receives one request on stdin:
 The context rules are fixed:
 
 - `context.command.id` and `context.command.type` identify the host-selected command and its declared operation type.
-- `context.parameters` contains the command owner's bound parameters. For an independently mounted Picker command, this is the mounted View's parameter snapshot. For a command projected from the selected feed owner into an aggregate Picker, this is that feed's independent parameter snapshot.
+- `context.parameters` contains the carrying View's bound parameters. For an independently mounted Picker command, this is the mounted View's parameter snapshot. For a command selected from an aggregate Picker item's binding, this remains the aggregate View's live parameter snapshot; the selected item is exposed through `context.engine.state.item`.
 - `context.input` contains the explicitly published launch input descriptor.
 - `context.engine` identifies the carrying Engine and exposes its public state projection. For Picker, selection is the normalized `state.item`; no selected item is represented as `null`.
 - Feed identity, workflow roots, task generations, cancellation handles, mounted View identity, and other scheduling/provenance data are not sent automatically. Scripts use the public item projection rather than an owner or feed identifier.
@@ -413,7 +413,7 @@ All requests use `version: 1`, an `entrypoint`, and a unified `context` containi
 - Protocol producers run as managed work. Foreground business programs and Embedded PTY programs keep their distinct terminal policies.
 - Script code is trusted code running with the user's permissions. The host cannot roll back side effects performed inside a protocol script.
 
-Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View. Picker feeds retain independent parameters, workflow roots, generations, cancellation, and stale-result identity internally. A Picker explicitly projects the commands of the currently selected feed owner into its aggregate footer, while dispatch still uses that feed's owner context and current-result provenance.
+Capture command input at actual dispatch, after readiness checks; capture provider input for each request. Inputs remain immutable for that execution. Match results against `(ViewInstanceId, TaskId, generation)` and entry-point-specific request validity before consuming them. Replacement, closing, or invalidation makes older results ineligible. Being mounted alone does not authorize a late operation to affect the active View. Picker feeds retain independent parameters, workflow roots, generations, cancellation, and stale-result identity internally. A Picker may expose commands through the selected item's bindings, but dispatch still uses the carrying View's context; feed provenance remains available through the selected item and provider-specific runtime paths.
 
 ### 10. Preserve host ownership
 
@@ -459,7 +459,7 @@ The implementation checklist for the initial producer scope is:
 2. **Implemented**: declared results and script responses use one operation model; unknown fields, producer/payload mismatches, unsupported modes, and invalid fixed targets are rejected.
 3. **Implemented**: protocol work uses the existing bounded execution, cancellation, task ownership, and foreground/Embedded I/O boundaries. Picker requests retain mounted-instance and generation checks.
 4. **Implemented**: declared and generated navigation use the existing target binding and Router path. Capture provider failures occur after the target has mounted.
-5. **Implemented**: command requests select feed-owner parameters and the host assigns item provenance before exposing Picker output.
+5. **Superseded by ADR 0008**: command requests use the carrying View's parameters; selected-item provenance is exposed through the public Picker state rather than by replacing the caller's command context.
 6. **Implemented**: return, cancellation/close, explicit null, absent processor, processor failure, and stale-result paths are covered by runtime logic and focused tests. Return transitions commit before new processors run.
 7. **Implemented**: fixtures and protocol tests cover replayable requests, complete-response validation, literal configuration data, and entry-point-labelled errors.
 8. **Implemented**: representative static navigation, selected-item navigation, feeds, Capture output, call/return, foreground run, and inline producer scripts are covered in the test fixtures.

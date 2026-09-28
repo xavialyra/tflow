@@ -41,7 +41,7 @@ items = [
   { display = "Shopping List", value = "shopping.txt", metadata = {} },
 ]
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]
@@ -66,7 +66,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": [editor, path],
         "exit": True,
     },
@@ -135,7 +134,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": [editor, path],
         "exit": True,
     },
@@ -167,7 +165,7 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/list_notes.py"
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]

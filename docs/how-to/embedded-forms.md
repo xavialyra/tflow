@@ -33,7 +33,7 @@ type = "form"
 producer = "script"
 handler = { file = "scripts/content.py" }
 
-[views.input.keymap]
+[views.input.bindings]
 enter = "submit"
 
 [commands.submit]
@@ -67,7 +67,7 @@ Initial values can also come from a route, and omitted trailing values use the q
 A caller can use a `call` command and a return processor:
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]
@@ -90,6 +90,6 @@ The processor receives the submitted object in `request["context"]["result"]`. A
 ## Troubleshooting
 
 - Keep diagnostics off stdout when returning JSON; stdout must contain one JSON value.
-- Bind a form command in the form View's keymap so it registers with View scope, which is what the footer and the command selector show.
+- Bind a form command in the form View's bindings so it registers with View layer, which is what the footer and the command selector show.
 - A required field or a field with an invalid type prevents submission until corrected.
 - Dynamic content scripts must return a version 1 `content` response and should derive fields from the request context.

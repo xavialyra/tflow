@@ -17,7 +17,7 @@ description: "Reference for literal TOML, version-1 producer requests and respon
 
 Configuration values are deserialized once, validated against their declared schema, and retained as View and workflow configuration. Strings remain data wherever the surrounding schema accepts strings, including command labels, query values, metadata, declared Picker items, declared Capture output, producer handler tables, and inline producer script bodies.
 
-A producer handler supplies data for its declared entry point. It cannot alter the command, View, query schema, keymap, or Engine configuration around it.
+A producer handler supplies data for its declared entry point. It cannot alter the command, View, query schema, bindings, or Engine configuration around it.
 
 ## Producer Context
 
@@ -43,10 +43,18 @@ The public context fields are:
 
 When an aggregate Picker dispatches a key through the focused item's `bindings`, `context.parameters` is the aggregate View's parameter snapshot and `context.engine.state.item` stays the normalized selected item. Feed IDs, owner View names, mounted instance identity, task generations, cancellation handles, and scheduling data remain host-owned.
 
+### Item Bindings Schema and Fault Tolerance
+
+In `binding_mode = "item_merge"`, an item may include a `"bindings"` map (`{"<key>": "<target>"}`) to rebind keys dynamically while focused:
+
+- **Values**: Must be string addresses pointing to workflow commands (`"apps.open"`, `"open"`) or engine actions (`"@engine:picker.exit"`). Non-string values (such as `false` or integers) and unresolvable targets are ignored.
+- **Keys**: Must be parseable physical key names (e.g. `"enter"`, `"ctrl+o"`, `"space"`). Unparseable key strings or empty strings do not raise fatal errors; the command is registered as a keyless View-layer entry instead.
+- **Precedence**: Focused item bindings override View base bindings for the same physical key. Base bindings override Engine defaults. Host bindings remain global unless unbound by the View. An item cannot unbind base or engine keys — key suppression is strictly declared at the View level (`[views.<name>.unbind]`).
+
 ## Command Producer Example
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]
@@ -62,7 +70,7 @@ The script reads selection data from `context.engine.state.item` and returns one
 
 ## Successful Command Feedback
 
-A `run` operation may include `"success_message": "Copied to clipboard"`. The host emits the message as `INFO` only after the foreground process completes successfully. This applies to declared handlers and script responses. External clipboard commands must wait for their copy process and propagate failure through a nonzero exit status. The host does not infer success messages from command names or inspect shell commands.
+A `run` operation may include `"success_message": "Copied to clipboard"`. The host emits the message as `INFO` only after the command process completes successfully. This applies to declared handlers and script responses. External clipboard commands must wait for their copy process and propagate failure through a nonzero exit status. The host does not infer success messages from command names or inspect shell commands.
 
 Built-in clipboard effects use the same host success-feedback path with `Copied to clipboard`. External copy workflows retain their own backend, including binary clipboard formats. Commands that exit immediately record the message without holding the UI open.
 
@@ -95,7 +103,7 @@ Or a shorthand string message:
 
 ## Configuration Ownership
 
-Route definitions, query schemas, Engine types, preview pane sizing, preview provider configuration, and keymaps remain host-owned configuration. A `picker-preview` producer may return an internal document layout; it cannot change the automatic outer items/preview split. Custom preview sources are scripts, declared documents, or inherited feed providers; an absent provider falls back to host-rendered item details. Every Picker preview starts collapsed unless `preview_default_open` is enabled, and preview producers run only when the pane is shown. Preview parameters and relative paths belong to the provider’s workflow: the selected feed for inheritance, or the page for an explicit source. See [Picker Preview Documents and Producers](picker-preview.md) for the complete schema and lifecycle. A producer can supply only the data defined by its entry point and response schema.
+Route definitions, query schemas, Engine types, preview pane sizing, preview provider configuration, and bindings remain host-owned configuration. A `picker-preview` producer may return an internal document layout; it cannot change the automatic outer items/preview split. Custom preview sources are scripts, declared documents, or inherited feed providers; an absent provider falls back to host-rendered item details. Every Picker preview starts collapsed unless `preview_default_open` is enabled, and preview producers run only when the pane is shown. Preview parameters and relative paths belong to the provider’s workflow: the selected feed for inheritance, or the page for an explicit source. See [Picker Preview Documents and Producers](picker-preview.md) for the complete schema and lifecycle. A producer can supply only the data defined by its entry point and response schema.
 
 ## Protocol Rules and Limits
 

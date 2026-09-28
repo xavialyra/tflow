@@ -36,7 +36,7 @@ Global options must precede the target view selector.
 | `-c, --settings <PATH>` | `TFLOW_SETTINGS` | Passive host settings; `--config` is an alias for this flag. |
 | `-s, --suite <PATH>` | `TFLOW_SUITE` | Explicit suite manifest; mutually exclusive with `-w`. |
 | `-w, --workflow <PATH>` | — | Path to a single-file workflow (`.toml`) or a directory workflow package. Uses its local entrypoint and inherits host settings. `-` reads a workflow from stdin. |
-| `--theme <THEME>` | — | Explicit theme selector (`terminal` or custom name). Overrides configured theme. |
+| `--theme <THEME>` | — | Explicit theme selector (`default`, its legacy alias `terminal`, or a custom name). Overrides configured theme. |
 | `--check` | — | Validates the configuration files and workflow manifests without launching the interactive TUI. Returns non-zero on error. |
 | `--inspect [<VIEW>]` | — | Prints view contract details (alias, engine, queries, commands) and exits. Omit the View reference to dump every configured View. |
 | `--items <VIEW>` | — | Runs the View's item producer and writes the strict JSON array to stdout without launching the TUI. |
@@ -101,7 +101,7 @@ Make the file executable (`chmod +x quick-picker.toml`) and execute it directly:
 
 Child processes inherit the caller's environment. The launcher adds only these workflow-specific variables:
 
-- `TFLOW_WORKFLOW_DIR` for scripts, foreground `run` commands, and Embedded processes belonging to a directory workflow. It contains that workflow's root directory.
+- `TFLOW_WORKFLOW_DIR` for scripts, `run` commands, and Embedded processes belonging to a directory workflow. It contains that workflow's root directory.
 - `TFLOW_INPUT` for Embedded processes only. It contains the current View input projection.
 
 Producer scripts receive query, selection, command, and return data as their documented JSON request on stdin. That data is not copied into launcher-specific environment variables. Ordinary caller variables such as `PATH`, `HOME`, `TERM`, and locale settings remain inherited, and the launcher does not proactively clear pre-existing variables with other names.
@@ -140,12 +140,14 @@ tflow --inspect <workflow-id>:<view-name>
 tflow --inspect <alias>
 ```
 
-This prints formatted details including:
-- Workflow ID and view name
-- Route alias
-- Engine type (e.g. `picker`, `capture`, `embedded`)
-- Declared query parameters and types
-- Configured commands and keybindings
+This prints the View's declaration contract as JSON:
+
+- `view`, `alias`, `engine`, `query`, and `binding_mode`.
+- `commands`: one entry per command of the View's workflow, shaped `{id, label, key, layer}`. `id` is the command's FQID (`apps.open`) — the same id the runtime projection publishes — and `key` is the View's declared key for it, or `null`.
+- `bindings`: the declared `[views.<name>.bindings]` table with each address resolved (workflow commands appear as their FQID, and engine actions keep their `@engine:<engine>.<action>` prefix, matching configuration syntax so the table round-trips into item bindings). Every value names a command or engine action; a boolean is rejected at load time.
+- `unbind`: the declared `[views.<name>.unbind]` rules (`keys`, `commands`, `layers`), with `commands` resolved to FQIDs.
+
+Entry ids match the runtime projection exactly, and the declaration carries no `revision` (that is runtime-only). A client that already holds a runtime revision can therefore echo any id seen here back to `invoke-command` as `{"id": "<fqid>", "revision": <n>}`.
 
 To inspect every configured View, omit the View reference (or pass `--all`):
 

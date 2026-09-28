@@ -136,19 +136,19 @@ Dedicated to aggregate launchers (e.g., `hub`) or heterogeneous menus:
   ```
   The base layer is independent of item data, so a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. This is the supported way to give an aggregate View a permanent key; do not rely on every item carrying the binding.
 - Precedence within one View: focused Item binding > View base binding > Engine keymap. A base binding for a key that is also an Engine default removes that Engine binding for this View, exactly as in `keymap_mode = "view"`.
-- Item bindings are plain strings, so an Item can rebind a base key but cannot tombstone one. Reserve `false` tombstones for the View's own table.
+- Item bindings are plain strings, so an Item can rebind a base key but cannot remove one. Removing an inherited binding is the View's own decision (`[views.<name>.unbind]`).
 
 ---
 
 ### 4. Zero-Lock Dispatch-Time Resolution for Item Bindings
 
-> **Revised**: the implementation does not resolve item bindings at dispatch time. A `keymap_mode = "item_merge"` View republishes its View scope (the base keymap plus the focused item's bindings, item winning per key) through `CommandRegistry::replace_scope` whenever the active publication changes, and the registry reports no change when the entries are identical. The design below is the original target, not the current code.
+> **Revised**: the implementation does not resolve item bindings at dispatch time. A `keymap_mode = "item_merge"` View republishes its View layer (the base keymap plus the focused item's bindings, item winning per key) through `CommandRegistry::replace_layer` whenever the active publication changes, and the registry reports no change when the entries are identical. The design below is the original target, not the current code.
 
 To permanently eliminate lock contention on `CommandRegistry` during high-frequency cursor navigation (e.g. holding `j` or rapid typing):
 
-- **No Registry Thrashing**: The selection change event does **not** call `CommandRegistry::replace_scope`. The global command registry remains 100% read-only throughout item navigation.
+- **No Registry Thrashing**: The selection change event does **not** call `CommandRegistry::replace_layer`. The global command registry remains 100% read-only throughout item navigation.
 - **Dispatch-Time Late-Binding**:
-  1. In `keymap_mode = "item_merge"` views, the active View registers standard delegated slot receivers in `CommandScope::View` during view mount (e.g., routing `Enter` to the item-action dispatcher).
+  1. In `keymap_mode = "item_merge"` views, the active View registers standard delegated slot receivers in `BindingLayer::View` during view mount (e.g., routing `Enter` to the item-action dispatcher).
   2. When a physical key is pressed, the dispatcher asks the `Picker` engine for the currently focused item's binding for that key (e.g. `"enter" -> "apps:open"`).
   3. The dispatcher resolves the command directly against the static session command pool and executes its handler, completely bypassing registry writes.
 - **Passive Footer Inspection**: The Chrome Footer reads the focused item's bound command metadata directly from the static session command pool during passive draw passes without acquiring write locks or publishing `CommandsChanged` events.

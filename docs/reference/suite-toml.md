@@ -12,7 +12,7 @@ description: "Authoritative reference for tflow suite manifests, workflow mounti
 
 # Suite Manifest Specification
 
-An orchestration suite manifest (`default.toml` or `<name>.toml`) defines a cohesive collection of atomic workflows. It acts as the orchestration container (the "circuit board") that mounts self-contained workflows, defines the session entrypoint, centralizes routing aliases, and optionally applies suite-scoped style slot overrides.
+An orchestration suite manifest (`default.toml` or `<name>.toml`) defines a cohesive collection of atomic workflows. It acts as the orchestration container (the "circuit board") that mounts self-contained workflows, defines the session entrypoint, centralizes routing aliases, and optionally applies suite-level style slot overrides.
 
 By default, launching `tflow` loads `$XDG_CONFIG_HOME/tflow/default.toml`. An alternate suite is launched explicitly using `tflow -s <PATH>` (or `--suite <PATH>`).
 
@@ -23,7 +23,7 @@ In accordance with [ADR 0005](../adr/0005-manifest-driven-suites-and-self-contai
 - **Strict Two-Tier Flatness (No Nesting)**: A suite manifest can only mount atomic workflows. Suites cannot mount other suites, and workflows cannot declare dependencies on other workflows. The system depth is strictly clamped to 1.
 - **Type Safety**: The CLI flag `-s` / `--suite` accepts only suite manifests. Passing an atomic workflow (`[workflow]`) to `-s` fails validation immediately.
 - **Pure Self-Containment**: Workflows remain completely agnostic to external suite aliases. All public shorthand routes and alias dispatch are owned exclusively by the suite manifest.
-- **Settings Separation**: Suites reject host-level settings (`theme`, `image_protocol`, `log_file`, and `[defaults]`). Host preferences belong exclusively to `settings.toml`.
+- **Settings Separation**: Suites reject host-level settings (`theme`, `image_protocol`, `log_file`, and the engine default tables `[picker]`, `[capture]`, `[embedded]`, `[form]`). Host preferences belong exclusively to `settings.toml`. The `[host.bindings]` layer is shared and may be declared in either file.
 
 ---
 
@@ -44,6 +44,13 @@ dmenu = "./workflows/dmenu"
 [aliases]
 calc = "calculator:main"
 co = "git:branches"
+
+[host.bindings]
+"ctrl+k" = "__commands.palette"
+"ctrl+g" = "__parameters.edit"
+
+# Optional global footer key hints; settings.toml takes precedence when both set it.
+chrome_commands_show = ["enter", "ctrl+k"]
 
 [styles.git.staged]
 foreground = "scheme:accent"
@@ -106,7 +113,9 @@ The `[workflows]` table explicitly mounts member workflows into the suite sessio
 
 Member IDs:
 - Must consist of alphanumeric characters and underscores.
-- Cannot begin with double underscores `__` (reserved for host built-in workflows such as `__commands` and `__form`).
+- May begin with double underscores; the `__` prefix is reserved by convention for bundled built-in workflows (`__commands`, `__parameters`) and can be shadowed by a user workflow of the same name.
+- May not contain `:`, `.`, `@`, or whitespace.
+- May be an engine's name; the member ID is the owner half of every command FQID it declares, and only engine *action* ids (`<engine>.<action>`) are reserved, so a member called `form` may still declare `form.open` but not `form.exit`.
 
 Each entry specifies the relative or absolute path to the atomic workflow:
 
@@ -121,13 +130,13 @@ Each entry specifies the relative or absolute path to the atomic workflow:
 #### Automatic Routing
 Mounting a workflow under `<member_id>` automatically establishes shorthand routing:
 - Running `tflow <member_id>` or navigating to `<member_id>` opens that workflow's declared `entrypoint` view.
-- Commands belonging to the member are registered in the session command pool under fully qualified identifiers: `<member_id>:<command_id>`.
+- Commands belonging to the member are registered as host-layer commands under fully qualified identifiers: `<member_id>.<command_id>` (dot-delimited).
 
 ---
 
 ### 3. Alias Routing Table (`[aliases]`)
 
-The `[aliases]` table defines suite-scoped public shorthand routes for views:
+The `[aliases]` table defines suite-level public shorthand routes for views:
 
 ```toml
 [aliases]
@@ -146,7 +155,21 @@ sys = "sys:main"
 
 ---
 
-### 4. Semantic Style Slot Overrides (`[styles.<member_id>.<slot>]`)
+### 4. Host Bindings (`[host.bindings]`)
+
+Host-layer global shortcuts target commands by fully qualified ID (`<member_id>.<command_id>`):
+
+```toml
+[host.bindings]
+"ctrl+k" = "__commands.palette"
+"ctrl+g" = "__parameters.edit"
+```
+
+The same table is accepted in `settings.toml`. The two are merged in increasing precedence, so `settings.toml` wins for a key both declare — a `false` there overrides this manifest's binding too. A `false` value means the host layer declares no binding for that key, and any value other than a command ID or `false` is rejected at load time.
+
+---
+
+### 5. Semantic Style Slot Overrides (`[styles.<member_id>.<slot>]`)
 
 A suite may surgically override semantic style slots declared by member workflows without altering global theme palettes:
 
@@ -178,7 +201,7 @@ To maintain architectural separation, the host validates suite manifest purity a
 | `[views]` | Suites cannot define views. Views must belong to atomic workflows mounted under `[workflows]`. |
 | `[commands]` | Suites cannot define commands. Business commands belong to atomic workflows. |
 | `theme`, `image_protocol`, `log_file` | Host environment settings belong in `settings.toml`. |
-| `[defaults]` | Global engine defaults belong in `settings.toml`. |
+| `[picker]`, `[capture]`, `[embedded]`, `[form]` | Engine defaults belong in `settings.toml`; the legacy `[defaults]` prefix no longer exists. |
 | Nested `[suite]` | Suites cannot mount other suites. The hierarchy is strictly two tiers. |
 
 ---

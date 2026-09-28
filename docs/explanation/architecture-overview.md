@@ -36,7 +36,7 @@ src/
     runtime.rs                Shared workflow runtime store
 
   engine/                     View Engine protocol and concrete implementations
-  input/                      Terminal input model and layered keymaps
+  input/                      Terminal input model and layered bindings
   ui/                         Chrome and Theme presentation modules
     chrome/                   ContentHost and shared Footer presentation
   terminal/                   TTY and terminal-control adapter

@@ -37,7 +37,7 @@ items = [
 
 `display` may be a plain string or a structured display value. `value` is optional and is exposed as a string when present. `metadata` defaults to an empty JSON object.
 
-Add `input_placeholder` to show a muted hint while the query is empty. It is purely presentational and can be combined with `show_input`, `show_divider`, `show_left_prefix`, and a `[defaults.picker] left_prefix` marker:
+Add `input_placeholder` to show a muted hint while the query is empty. It is purely presentational and can be combined with `show_input`, `show_divider`, `show_left_prefix`, and a `[picker] left_prefix` marker:
 
 ```toml
 [views.main.engine.config]
@@ -102,7 +102,7 @@ An aggregate Picker combines items from multiple member Views dynamically via a 
 
 ```toml
 [views.default]
-keymap_mode = "item_merge"
+binding_mode = "item_merge"
 
 [views.default.query]
 type = "object"
@@ -118,7 +118,7 @@ producer = "script"
 [views.default.engine.config.items.handler]
 file = "scripts/items.py"
 
-[views.default.keymap]
+[views.default.bindings]
 enter = "open"
 ```
 
@@ -130,9 +130,9 @@ target = "core:default"
 query = { sources = ["apps:main", "calculator:main", "sys:main"] }
 ```
 
-The aggregator script fetches items headlessly from each source via `tflow -s $TFLOW_SUITE --items <view> "$query"` and attaches their inspected keymaps to `item.bindings`. With `keymap_mode = "item_merge"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
+The aggregator script fetches items headlessly from each source via `tflow -s $TFLOW_SUITE --items <view> "$query"` and attaches their inspected bindings to `item.bindings`. With `binding_mode = "item_merge"`, the host dispatches keys dynamically according to the selected item's attached bindings, on top of any bindings the View itself declared.
 
-Precedence inside one View is **focused item → View base keymap → Engine keymap**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.keymap]` instead of relying on every item to carry them; the development fixture's `core` View declares its own base keys there. Item bindings are plain strings, so an item can rebind a base key but cannot disable one — a `false` tombstone belongs in the View's own table. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in the default `keymap_mode = "view"`.
+Precedence inside one View is **focused item → View base bindings → Engine bindings**. Because the View's own bindings do not come from item data, a command the View owns stays reachable while the list is empty, still loading, or filtered down to nothing. Declare permanent keys in `[views.<name>.bindings]` instead of relying on every item to carry them; the development fixture's `core` View declares its own base keys there. Item bindings name commands, so an item can rebind a base key but cannot take one away — releasing an inherited key is the View's own decision, expressed with `[views.<name>.unbind]`. Base bindings for Engine default keys shadow that Engine binding for the View, exactly as in the default `binding_mode = "view"`.
 
 ### 4. Use a Declared List for Small Static Collections
 
@@ -203,13 +203,13 @@ Press `Ctrl+P` and select **Mixed preview** to see display rows, rich wrapped te
 
 ### 6. Toggle and Scroll the Preview Pane
 
-`Ctrl+P` toggles the preview by default. Use the View keymap to customize the toggle binding or add scrolling keys:
+`Ctrl+P` toggles the preview by default. Use the View bindings to customize the toggle binding or add scrolling keys:
 
 ```toml
-[views.branches.keymap]
-"ctrl+p" = "toggle_preview"
-"alt+k" = "preview_scroll_up"
-"alt+j" = "preview_scroll_down"
+[views.branches.bindings]
+"ctrl+p" = "@engine:picker.toggle_preview"
+"alt+k" = "@engine:picker.preview_scroll_up"
+"alt+j" = "@engine:picker.preview_scroll_down"
 ```
 
 Scroll actions move three rows and clamp the stored offset immediately, including after resize. The query and divider rows reduce the available preview body; an empty body or unmet pane minimum cancels preview work. Preview scripts share one pending slot: the same mount can replace its pending request, while overflow from another mount fails in that incoming preview pane.

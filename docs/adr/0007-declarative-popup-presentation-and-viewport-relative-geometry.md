@@ -54,7 +54,7 @@ All modal popup instances compute their layout geometry relative to the overall 
 - When multiple popups exist on the navigation stack, each popup renders within the shared terminal viewport bounds according to its own presentation configuration.
 - Secondary popups layer directly over preceding popups without inheriting or being constrained by predecessor bounding boxes.
 - Anchors (e.g. `BottomRight`, `TopLeft`) align cleanly against the true physical boundaries of the terminal without artificial gaps caused by base view padding or global footer reservations.
-- The active topmost popup renders its border, title, and bottom-border hints or status. Inactive covered popups render passive borders without command hints.
+- The active topmost popup renders its border, title (unless suppressed by `show_title = false`), and bottom-border hints or status. Inactive covered popups render passive borders without command hints.
 
 ### 2. Declarative 9-Box Grid Anchoring and Transparent Offsets
 

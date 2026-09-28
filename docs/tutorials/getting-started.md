@@ -80,7 +80,7 @@ items = [
   { display = "Current Date", value = "date", metadata = {} },
 ]
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "execute"
 
 [commands.execute]
@@ -103,7 +103,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["printf", "selected:%s\\n" % value],
         "exit": True,
     },
@@ -114,7 +113,7 @@ sys.stdout.write("\n")
 
 The handler reads the selected item from `context.engine.state` and emits one `run` operation. It does not interpolate a value into TOML or print diagnostics to stdout.
 
-Commands live at the workflow root because they are workflow-scoped: `[views.main.keymap]` is what exposes `commands.execute`, and the same command can be bound by any other view in this workflow. See [Workflow Commands](../reference/workflow-toml.md#workflow-commands).
+Commands live at the workflow root because they are workflow-scoped: `[views.main.bindings]` is what exposes `commands.execute`, and the same command can be bound by any other view in this workflow. See [Workflow Commands](../reference/workflow-toml.md#workflow-commands).
 
 ## 4. Create the Default Suite
 
@@ -137,9 +136,11 @@ The `[workflows]` table registers `hello` as the name of this workflow in the su
 You can customize key bindings in `$tflow_config_dir/settings.toml`. For example, the following configuration changes the keys for moving between items. If that file already exists, update the matching entries instead of replacing it:
 
 ```toml
-[defaults.picker.bindings]
-select_previous = ["up", "ctrl+k"]
-select_next = ["down", "ctrl+j"]
+[picker.bindings]
+"up" = "select_previous"
+"ctrl+k" = "select_previous"
+"down" = "select_next"
+"ctrl+j" = "select_next"
 ```
 
 These defaults apply to Pickers in both suite and standalone workflow sessions. You can skip this file to keep the built-in defaults. See the [settings reference](../reference/settings-toml.md) for themes and other preferences, and the [suite reference](../reference/suite-toml.md) for orchestrating multiple workflows and aliases.

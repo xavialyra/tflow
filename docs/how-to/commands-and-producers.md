@@ -21,10 +21,10 @@ You need a command to inspect the current View state, selected Picker item, or f
 
 ### 1. Declare the Command
 
-Commands are workflow-scoped, so the command lives at the workflow root and the View that offers it binds a key to it:
+Commands are workflow-owned, so the command lives at the workflow root and the View that offers it binds a key to it:
 
 ```toml
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 
 [commands.open]
@@ -36,7 +36,7 @@ producer = "script"
 file = "scripts/open.py"
 ```
 
-Declared handlers use the same operation schema without starting a script. Use `producer = "script"` when the operation must be computed at runtime. Because the command belongs to the workflow, the same command can be bound by several Views; a command-level `key` is only a fallback for a static View that declares no bindings of its own.
+Declared handlers use the same operation schema without starting a script. Use `producer = "script"` when the operation must be computed at runtime. Because the command belongs to the workflow, the same command can be bound by several Views. There is no per-command `key`: a View that declares no bindings of its own still offers every command of its workflow as a keyless candidate (searchable, with no physical shortcut).
 
 ### 2. Read the Shared Context
 
@@ -44,10 +44,11 @@ Every producer request uses the same public context fields:
 
 | Field | Meaning |
 | :--- | :--- |
-| `context.parameters` | Bound parameters for the command's owner or the current provider feed. |
+| `context.parameters` | Bound parameters for the View that invoked the command; an aggregate Picker keeps its own live parameters even for an item-bound command. |
 | `context.input` | Explicit launch input descriptor. It is not a substitute for Picker query state. |
 | `context.engine.type` | Carrying Engine type: `picker`, `capture`, or another registered Engine. |
 | `context.engine.state` | Public state projection for that Engine. Picker selection is `state.item`; the current query is `state.input`. |
+| `context.commands` | Runtime command projection: `{revision, commands: [{id, label, key, layer}]}`. Every entry can be run by id, engine actions included. |
 | `result` | Raw JSON result, present only for a return processor. |
 
 The host does not add View names, feed IDs, mounted instance identity, task generations, cancellation handles, or scheduling data to the request.
@@ -71,7 +72,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["printf", "selected:%s\n" % value],
         "exit": True,
     },
@@ -87,7 +87,7 @@ An aggregate Picker does not project commands out of the Views it aggregates. Ea
 
 ```toml
 # In the apps workflow, whose View is mounted as a source.
-[views.main.keymap]
+[views.main.bindings]
 "ctrl+o" = "open"
 
 [commands.open]
@@ -99,13 +99,13 @@ producer = "script"
 file = "scripts/open.py"
 ```
 
-The aggregating script reads that contract headlessly and attaches it to every item it publishes. `tflow --inspect apps:main` reports the resolved keymap, and `tflow --items apps:main` reports the raw items:
+The aggregating script reads that contract headlessly and attaches it to every item it publishes. `tflow --inspect apps:main` reports the resolved bindings, and `tflow --items apps:main` reports the raw items:
 
 ```python
-item["bindings"] = {"ctrl+o": "apps:open"}
+item["bindings"] = {"ctrl+o": "apps.open"}
 ```
 
-The aggregate View must set `keymap_mode = "item_merge"` to dispatch the focused item's bindings, and it can declare its own bindings in `[views.<name>.keymap]` as a base layer for keys that must stay reachable while the list is empty or still loading. Item bindings override base bindings for the same physical key.
+The aggregate View must set `binding_mode = "item_merge"` to dispatch the focused item's bindings, and it can declare its own bindings in `[views.<name>.bindings]` as a base layer for keys that must stay reachable while the list is empty or still loading. Item bindings override base bindings for the same physical key.
 
 The command script reads the selected item through the public Engine state:
 
@@ -125,7 +125,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["printf", "parameters=%s selected=%s\n" % (json.dumps(parameters), value)],
         "exit": True,
     },
@@ -133,7 +132,7 @@ json.dump({
 sys.stdout.write("\n")
 ```
 
-For an item-bound command, `context.parameters` is the aggregate Picker's bound parameter object, because the aggregate View owns the dispatch. `context.engine.state.item` is the aggregate Picker's public selected item, so the script still sees the selection the binding belongs to. Binding values are fully qualified command references (`apps:open`), so one aggregate View can dispatch commands from any workflow in the suite.
+For an item-bound command, `context.parameters` is the aggregate Picker's bound parameter object, because the aggregate View owns the dispatch. `context.engine.state.item` is the aggregate Picker's public selected item, so the script still sees the selection the binding belongs to. Binding values are fully qualified command references (`apps.open`), so one aggregate View can dispatch commands from any workflow in the suite.
 
 ### 5. Return One Typed Response
 
@@ -144,7 +143,6 @@ Command responses must contain one complete version-1 operation matching the com
   "version": 1,
   "operation": {
     "type": "run",
-    "mode": "foreground",
     "argv": ["printf", "done\n"],
     "exit": true
   }

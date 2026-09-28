@@ -10,7 +10,7 @@ description: "Flat scheme colors, component style fields, built-in defaults, and
 
 # Theme TOML Specification
 
-A user theme is `themes/<name>.toml` relative to the selected configuration file. Root `theme = "<name>"` selects that file; the CLI `--theme` option takes precedence. Omitting the root setting uses the built-in `terminal` theme. `--theme terminal` explicitly selects the built-in theme.
+A user theme is `themes/<name>.toml` relative to the selected configuration file. Root `theme = "<name>"` selects that file; the CLI `--theme` option takes precedence. Omitting the root setting uses the built-in `default` theme. `--theme default` selects it; `terminal` is retained as a legacy alias.
 
 The only top-level tables are `scheme`, `cursor`, `picker`, `chrome`, `capture`, `form`, and `workflows`. Unknown fields, including a `palette` table or theme inheritance configuration, are errors. There is no inheritance chain between user themes.
 
@@ -43,7 +43,7 @@ ANSI names are case-insensitive and include the 16 terminal colors: `black`, `re
 
 Normal surfaces use `background` and `foreground`; secondary text uses `muted`. Dividers, borders, and scrollbars use `border`. Markers and footer titles use `accent`. Input prefixes and shortcut keys use `accent` foregrounds on `surface` backgrounds. Selected rows use `selection` backgrounds and `foreground` primary text; selected secondary text and badges retain `muted` foregrounds. Selection background defaults to terminal reset, preserving the normal background and primary text color. Bold text and the accent marker distinguish the active row without adding a background highlight. Semantic status styles use `success`, `warning`, `info`, and `error`. Banner errors use `error` backgrounds with `background` foregrounds.
 
-The [built-in theme](../../src/ui/theme/builtin/terminal.toml) defines all component bindings and modifier defaults.
+The [built-in theme](../../assets/builtin/themes/default.toml) defines all component bindings and modifier defaults.
 
 ## Style Fields and Merging
 

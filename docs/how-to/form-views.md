@@ -82,7 +82,7 @@ This accepts `a:string:dd,b:number:null`. The compact example has no comma escap
 Add a standard return command:
 
 ```toml
-[views.edit.keymap]
+[views.edit.bindings]
 enter = "submit"
 
 [commands.submit]

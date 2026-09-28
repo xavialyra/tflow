@@ -126,9 +126,9 @@ Palette entries
 
 They may differ only in geometry and final drawing location. Popup presentation must not recalculate folding, select a different command source, or bypass the host's folding decision.
 
-### 6. Keep scope as command ownership, not action kind
+### 6. Keep layer as command ownership, not action kind
 
-If configured commands need ownership metadata, `session` and `view` remain scopes of `ViewCommand`. Scope does not distinguish View commands from Engine commands. Engine actions are owned by the active Engine and do not need a session/view command scope.
+If configured commands need ownership metadata, `session` and `view` remain layers of `ViewCommand`. Scope does not distinguish View commands from Engine commands. Engine actions are owned by the active Engine and do not need a session/view command layer.
 
 ## Consequences
 
