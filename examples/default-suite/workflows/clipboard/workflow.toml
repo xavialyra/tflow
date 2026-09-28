@@ -40,8 +40,6 @@ producer = "script"
 file = "scripts/preview.py"
 
 [views.default.bindings]
-"escape" = "@engine:picker.back"
-"ctrl+p" = "@engine:picker.toggle_preview"
 tab = "next_type"
 "shift+tab" = "previous_type"
 enter = "copy"
