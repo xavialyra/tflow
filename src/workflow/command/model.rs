@@ -1,5 +1,3 @@
-use crate::engine::ActionId;
-use crate::input::Key;
 use crate::workflow::config::{Command, ViewPresentation};
 use crate::workflow::parameter::ParameterSnapshot;
 use serde::{Deserialize, Serialize};
@@ -69,64 +67,32 @@ pub(crate) enum NavigationMode {
     Replace,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EditorAction {
-    DeleteBackward,
-    ClearInput,
-    DeleteWord,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolvedInputAction {
-    Edit(EditorAction),
-    Engine(ActionId),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InputActionBinding {
-    pub(crate) key: Key,
-    pub(crate) action: ResolvedInputAction,
-    pub(crate) label: Option<String>,
-    pub(crate) enabled: bool,
-}
-
+/// A command reference by stable identity and the snapshot revision it was
+/// resolved against. This is the wire shape for `invoke-command` and for a
+/// command's returned `ref`; the owning View is a dispatch-origin detail and is
+/// never part of the reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CommandRef {
-    pub(crate) view: String,
     pub(crate) id: String,
+    pub(crate) revision: u64,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum CommandOrigin {
-    View(CommandRef),
-    Session {
-        view: String,
-        command: String,
-        definition: Box<Command>,
-    },
+    View { view: String, reference: CommandRef },
 }
 
 impl CommandOrigin {
     pub(crate) fn source_view(&self) -> &str {
         match self {
-            Self::View(reference) => &reference.view,
-            Self::Session { view, .. } => view,
+            Self::View { view, .. } => view,
         }
     }
 
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::View(reference) => &reference.id,
-            Self::Session { command, .. } => command,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
-        match self {
-            Self::View(reference) => Some(reference),
-            Self::Session { .. } => None,
+            Self::View { reference, .. } => &reference.id,
         }
     }
 }
@@ -142,32 +108,18 @@ impl CommandInvocation {
         Self { origin, command }
     }
 
-    pub(crate) fn view(reference: CommandRef, command: Command) -> Self {
-        Self::from_origin(CommandOrigin::View(reference), command)
-    }
-
-    pub(crate) fn session_command(
-        view: impl Into<String>,
-        command_id: impl Into<String>,
-        command: Command,
-    ) -> Self {
-        Self {
-            origin: CommandOrigin::Session {
+    pub(crate) fn view(view: impl Into<String>, reference: CommandRef, command: Command) -> Self {
+        Self::from_origin(
+            CommandOrigin::View {
                 view: view.into(),
-                command: command_id.into(),
-                definition: Box::new(command.clone()),
+                reference,
             },
             command,
-        }
+        )
     }
 
     pub(crate) fn origin(&self) -> CommandOrigin {
         self.origin.clone()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn view_reference(&self) -> Option<&CommandRef> {
-        self.origin.view_reference()
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -191,6 +143,7 @@ pub(crate) struct CommandContext {
     pub(crate) owner: CommandOwnerContext,
     pub(crate) current: Value,
     pub(crate) engine_type: String,
+    pub(crate) commands: Value,
 }
 
 #[derive(Clone)]

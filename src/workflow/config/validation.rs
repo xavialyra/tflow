@@ -1,4 +1,4 @@
-use super::{CommandAction, CommandBindingVisibility, CompiledConfig, Defaults, View, ViewRef};
+use super::{CommandAction, CompiledConfig, Defaults, ResolvedAddress, Unbind, View, ViewRef};
 use anyhow::{Context, Result, bail};
 use std::{collections::BTreeMap, path::Path};
 
@@ -22,12 +22,6 @@ fn validate_command_action(
             view_ref,
             command_id
         );
-    }
-    if matches!(
-        action,
-        CommandAction::OpenCommands | CommandAction::OpenParameters
-    ) {
-        return Ok(());
     }
     validate_producer_action(view_ref, command_id, action, views, script_root)
 }
@@ -76,9 +70,6 @@ fn producer_handler(action: &CommandAction) -> &toml::Value {
         | CommandAction::Navigate { handler, .. }
         | CommandAction::Call { handler, .. }
         | CommandAction::Return { handler, .. } => handler,
-        CommandAction::OpenCommands | CommandAction::OpenParameters => {
-            unreachable!("built-in actions have no producer handler")
-        }
     }
 }
 
@@ -139,29 +130,55 @@ fn validate_operation_target(
         } => ("call", target, presentation),
         _ => return Ok(()),
     };
-    let configured = views.contains_key(target)
-        || views
-            .values()
-            .any(|view| view.alias.as_deref() == Some(target));
-    // A sibling route is a runtime integration point, not a package dependency.
-    // Standalone loading must still validate local targets, but cannot require
-    // another suite member to be installed.
-    let external_route = target.split_once(':').is_some_and(|(member, view)| {
-        !member.is_empty()
-            && !view.is_empty()
-            && !view.contains(':')
-            && view_ref
-                .split_once(':')
-                .is_some_and(|(owner, _)| owner != member)
-    });
-    if !configured && !external_route {
-        bail!(
-            "view {:?} command {:?} references missing {} target {:?}",
-            view_ref,
-            command_id,
-            kind,
-            target
-        );
+
+    let caller_pkg = super::package_id(view_ref);
+    let explicit_local = target
+        .strip_prefix("self:")
+        .or_else(|| target.strip_prefix(':'));
+
+    if let Some(local_view) = explicit_local {
+        let scoped_key = format!("{caller_pkg}:{local_view}");
+        if !views.contains_key(&scoped_key) && !views.contains_key(local_view) {
+            bail!(
+                "view {:?} command {:?} references missing local {} target {:?}",
+                view_ref,
+                command_id,
+                kind,
+                target
+            );
+        }
+    } else {
+        let local_scoped_key =
+            (!target.contains(':') && !caller_pkg.is_empty() && caller_pkg != "<root>")
+                .then(|| format!("{caller_pkg}:{target}"));
+
+        let configured = views.contains_key(target)
+            || local_scoped_key
+                .as_ref()
+                .is_some_and(|k| views.contains_key(k))
+            || views
+                .values()
+                .any(|view| view.alias.as_deref() == Some(target));
+        // A sibling route is a runtime integration point, not a package dependency.
+        // Standalone loading must still validate local targets, but cannot require
+        // another suite member to be installed.
+        let external_route = target.split_once(':').is_some_and(|(member, view)| {
+            !member.is_empty()
+                && !view.is_empty()
+                && !view.contains(':')
+                && view_ref
+                    .split_once(':')
+                    .is_some_and(|(owner, _)| owner != member)
+        });
+        if !configured && !external_route {
+            bail!(
+                "view {:?} command {:?} references missing {} target {:?}",
+                view_ref,
+                command_id,
+                kind,
+                target
+            );
+        }
     }
     let is_popup = presentation.mode == super::ViewPresentationMode::Popup;
     if !is_popup
@@ -173,7 +190,8 @@ fn validate_operation_target(
             || presentation.min_width.is_some()
             || presentation.max_width.is_some()
             || presentation.min_height.is_some()
-            || presentation.max_height.is_some())
+            || presentation.max_height.is_some()
+            || !presentation.show_title)
     {
         bail!("producer presentation width and height require popup mode");
     }
@@ -216,65 +234,23 @@ impl CompiledConfig {
             }
         }
 
+        // Host bindings are references into `all_commands`; the definition-map
+        // loop below validates every action, so here we only check identity and
+        // physical-key uniqueness.
         let mut command_keys = BTreeMap::new();
-        let mut overflow_commands = 0;
-        for (id, binding) in &self.commands.bindings {
-            if id == "commands"
-                && (binding.action.is_some()
-                    || binding.label.is_some()
-                    || binding.visibility.is_some())
-            {
-                bail!("session command \"commands\" is built in; configure only its key");
-            }
-            let action = binding
-                .command_action(id)
-                .with_context(|| format!("session command binding {id:?} must define an action"))?;
-            if id == "commands" {
-                anyhow::ensure!(
-                    matches!(action, CommandAction::OpenCommands),
-                    "session command binding \"commands\" is built in"
-                );
-                anyhow::ensure!(
-                    self.view("__commands:main").is_some(),
-                    "session command binding \"commands\" requires view \"__commands:main\""
-                );
-            }
-            let key = binding
-                .key(id)
-                .with_context(|| format!("session command binding {id:?} has no key"))?;
-            let _label = binding
-                .label(id)
-                .with_context(|| format!("session command binding {id:?} has no label"))?;
-            let key = super::normalize_key(key)?;
+        for (key, id) in &self.host_bindings {
+            let key = crate::input::Key::canonical_binding_name(key)?;
             if let Some(previous) = command_keys.insert(key.clone(), id) {
                 bail!(
-                    "session command bindings {:?} and {:?} both use key {:?}",
+                    "host command bindings {:?} and {:?} both use key {:?}",
                     previous,
                     id,
                     key
                 );
             }
-            let visibility = binding
-                .visibility(id)
-                .with_context(|| format!("session command binding {id:?} has no visibility"))?;
-            if visibility == CommandBindingVisibility::Overflow {
-                overflow_commands += 1;
+            if !self.all_commands.contains_key(id) {
+                bail!("host command binding {:?} targets unknown command", id);
             }
-            validate_command_action(
-                if self.entrypoint.is_empty() {
-                    "<root>"
-                } else {
-                    &self.entrypoint
-                },
-                &format!("session:command:{id}"),
-                &action,
-                &self.views,
-                None,
-                0,
-            )?;
-        }
-        if overflow_commands > 1 {
-            bail!("session commands can define at most one overflow binding");
         }
 
         for (alias, target) in &self.aliases {
@@ -290,14 +266,37 @@ impl CompiledConfig {
         }
 
         for (cmd_id, command) in &self.all_commands {
-            let Some((wf_id, _)) = cmd_id.split_once(':') else {
+            // The index is `<owner>.<name>`: an engine action owns
+            // `<engine>.<action>` and a workflow command owns
+            // `<workflow>.<command>`. A workflow command landing on an engine
+            // action's id would make one identity name two different commands, so
+            // the collision is rejected instead of resolved by priority.
+            if let Some((action_fqid, label)) = crate::engine::engine_action_from_id(cmd_id) {
+                bail!(
+                    "command {cmd_id:?} collides with the {action_fqid:?} engine action ({label:?}), \
+                     which already owns that id; every command FQID must name exactly one command"
+                );
+            }
+            let Some((wf_id, _)) = cmd_id.split_once('.') else {
                 continue;
             };
             if command.label.trim().is_empty() {
                 bail!("command {:?} has an empty label", cmd_id);
             }
+            let caller_view = self
+                .workflows
+                .get(wf_id)
+                .and_then(|workflow| workflow.entrypoint.as_deref())
+                .map(|entrypoint| format!("{wf_id}:{entrypoint}"))
+                .or_else(|| {
+                    self.views
+                        .keys()
+                        .find(|view| super::package_id(view) == wf_id)
+                        .cloned()
+                })
+                .unwrap_or_else(|| format!("{wf_id}:main"));
             validate_command_action(
-                cmd_id,
+                &caller_view,
                 cmd_id,
                 &command.action,
                 &self.views,
@@ -316,37 +315,85 @@ impl CompiledConfig {
                 );
             }
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
+            self.chrome_commands_show(view_ref)?;
             let wf_id = super::package_id(view_ref);
-            if let Some(keymap) = &view.keymap {
-                // Both modes may declare bindings. `keymap_mode = "item_merge"`
+            self.validate_unbind(&view.unbind, view_ref, view)?;
+            if let Some(bindings) = &view.bindings {
+                // Both modes may declare bindings. `binding_mode = "item_merge"`
                 // only adds the focused item's bindings on top of them (item
-                // wins per key).
-                for (key, val) in keymap {
-                    if val.as_bool() == Some(false) {
-                        continue;
-                    }
-                    let Some(cmd_target) = val.as_str() else {
+                // wins per key). A binding names a command: a key is claimed by
+                // running something, never by a bare boolean. `false` exists
+                // only in the engine default tables and `[host.bindings]`, where
+                // it declares that layer to have no binding for the key.
+                for (key, val) in bindings {
+                    let Some(address) = val.as_str() else {
                         bail!(
-                            "view {:?} keymap binding {:?} must be an action, command, or false",
+                            "view {:?} binding {:?} must name a command (or an engine action written @engine:<engine>.<action>); to release a key in this view, list it in [views.<name>.unbind] keys",
                             view_ref,
                             key
                         );
                     };
-                    let is_command = self.find_command(wf_id, cmd_target).is_some();
-                    let is_action = crate::engine::is_picker_action(cmd_target)
-                        || crate::engine::is_capture_action(cmd_target);
-                    if !is_command && !is_action {
-                        bail!(
-                            "view {:?} keymap binds {:?} to unknown command or action {:?}",
-                            view_ref,
-                            key,
-                            cmd_target
-                        );
-                    }
+                    self.validate_address(
+                        view_ref,
+                        view,
+                        wf_id,
+                        &format!("bindings {key:?}"),
+                        address,
+                    )?;
                 }
             }
         }
         engines.validate_relations(self)?;
+        Ok(())
+    }
+
+    /// Validates a View's `unbind` table. Each field maps to one axis: `keys`
+    /// are physical keys, `commands` are command addresses (the unique index),
+    /// and `layers` are priority layers.
+    fn validate_unbind(&self, unbind: &Unbind, view_ref: &str, view: &View) -> Result<()> {
+        for key in &unbind.keys {
+            crate::input::Key::parse_binding(key).with_context(|| {
+                format!("view {view_ref:?} unbind.keys has invalid physical key {key:?}")
+            })?;
+        }
+        for layer in &unbind.layers {
+            if crate::command::BindingLayer::from_layer(layer).is_none() {
+                bail!(
+                    "view {view_ref:?} unbind.layers has unknown layer {layer:?} (expected view, engine, or host)"
+                );
+            }
+        }
+        let workflow_id = super::package_id(view_ref);
+        for address in &unbind.commands {
+            self.validate_address(view_ref, view, workflow_id, "unbind.commands", address)?;
+        }
+        Ok(())
+    }
+
+    /// A View binding value and an `unbind.commands` entry accept exactly the
+    /// same addresses, so they share one check: a command of the View's own
+    /// workflow, or an action of the View's own engine written
+    /// `@engine:<engine>.<action>`. `location` names the offending field for the
+    /// error message.
+    fn validate_address(
+        &self,
+        view_ref: &str,
+        view: &View,
+        workflow_id: &str,
+        location: &str,
+        address: &str,
+    ) -> Result<()> {
+        let engine = view.selected_engine_type();
+        let accepted = match self.resolve_address(workflow_id, address) {
+            Some(ResolvedAddress::Command { .. }) => true,
+            Some(ResolvedAddress::Engine { fqid, .. }) => fqid.starts_with(&format!("{engine}.")),
+            None => false,
+        };
+        if !accepted {
+            bail!(
+                "view {view_ref:?} {location} maps to unknown command {address:?} (this View's engine actions are addressed as @engine:{engine}.<action>)"
+            );
+        }
         Ok(())
     }
 }

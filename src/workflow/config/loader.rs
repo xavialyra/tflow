@@ -1,6 +1,6 @@
 use super::{
-    CompiledConfig, RawConfig, RawSettings, RawSuiteManifest, View, Workflow, WorkflowHeader,
-    WorkflowMount, normalize::normalize_view_keymaps, validate_settings_purity,
+    CompiledConfig, HostConfig, RawConfig, RawSettings, RawSuiteManifest, View, Workflow,
+    WorkflowHeader, WorkflowMount, normalize::normalize_view_bindings, validate_settings_purity,
 };
 use crate::identity::{ENV_SETTINGS, ENV_SUITE, PRODUCT};
 use anyhow::{Context, Result, bail};
@@ -109,7 +109,7 @@ pub(super) fn resolve_settings(
     }
 }
 
-pub(super) fn parse_atomic_workflow_package(
+pub(crate) fn parse_atomic_workflow_package(
     source: &str,
     source_name: &str,
     workflow_id: &str,
@@ -151,7 +151,7 @@ pub(super) fn parse_atomic_workflow_package(
     let mut views_value = table
         .remove("views")
         .with_context(|| format!("workflow {:?} is missing [views.*]", workflow_id))?;
-    normalize_view_keymaps(&mut views_value, workflow_id)?;
+    normalize_view_bindings(&mut views_value, workflow_id)?;
 
     if let Some(views_table) = views_value.as_table() {
         for (view_name, view_table) in views_table {
@@ -275,14 +275,6 @@ pub(super) fn parse_suite_manifest(source: &str, source_name: &str) -> Result<Ra
     Ok(manifest)
 }
 
-fn load_builtins(workflows: &mut BTreeMap<String, Workflow>) -> Result<()> {
-    for &(id, source) in super::builtin::BUILTIN_WORKFLOWS {
-        let (_, wf) = parse_atomic_workflow_package(source, &format!("built-in {id}"), id)?;
-        workflows.insert(id.to_string(), wf);
-    }
-    Ok(())
-}
-
 impl CompiledConfig {
     pub(crate) fn load_workflow_unvalidated(
         workflow_path: &Path,
@@ -360,12 +352,12 @@ impl CompiledConfig {
         settings_path: Option<&Path>,
     ) -> Result<LoadedConfig> {
         validate_workflow_id(workflow_id)?;
-        ensure_user_workflow_id_available(workflow_id)?;
 
         let (header, workflow) = parse_atomic_workflow_package(source, workflow_id, workflow_id)?;
         let mut workflows = BTreeMap::new();
-        load_builtins(&mut workflows)?;
         workflows.insert(workflow_id.to_string(), workflow);
+
+        inject_builtin_workflows(&mut workflows);
 
         let mut workflow_roots = BTreeMap::new();
         if let Some(root) = workflow_root {
@@ -378,26 +370,27 @@ impl CompiledConfig {
         aliases.insert(header.entrypoint.clone(), entrypoint_ref.clone());
 
         let (settings, settings_dir) = resolve_settings(settings_path)?;
-        let log_file = settings.log_file.as_deref().map(|path| {
-            if let Some(ref base) = settings_dir {
-                resolve_config_path(base, path)
-            } else {
-                path.to_path_buf()
-            }
-        });
+        let log_file = resolve_log_file(&settings, settings_dir.as_deref());
+
+        let defaults = settings.resolve_defaults();
+        let resolved_host_bindings = resolve_host_bindings(
+            merge_host_binding_targets([settings.host.as_ref()])?,
+            &workflows,
+            HostBindingPolicy::Lenient,
+        )?;
 
         let raw = RawConfig {
-            default_view: Some(entrypoint_ref.clone()),
             entrypoint: Some(entrypoint_ref.clone()),
+            chrome_commands_show: settings.chrome_commands_show.clone(),
             image_protocol: settings.image_protocol,
             log_file: log_file.clone(),
-            commands: Default::default(),
+            host_bindings: resolved_host_bindings,
             aliases,
             view_aliases: [(entrypoint_ref.clone(), workflow_id.to_string())]
                 .into_iter()
                 .collect(),
             workflows,
-            defaults: settings.defaults,
+            defaults,
         };
 
         Ok(LoadedConfig {
@@ -454,14 +447,12 @@ impl CompiledConfig {
         let manifest = parse_suite_manifest(&source, &suite_file.display().to_string())?;
 
         let mut workflows = BTreeMap::new();
-        load_builtins(&mut workflows)?;
 
         let mut workflow_roots = BTreeMap::new();
         let mut aliases = BTreeMap::new();
 
         for (member_id, mount) in &manifest.workflows {
             validate_workflow_id(member_id)?;
-            ensure_user_workflow_id_available(member_id)?;
 
             let (manifest_path, root_dir) = match mount {
                 WorkflowMount::Table(spec) => match (&spec.file, &spec.dir) {
@@ -625,23 +616,26 @@ impl CompiledConfig {
         }
 
         let (settings, settings_dir) = resolve_settings(settings_path)?;
-        let log_file = settings.log_file.as_deref().map(|path| {
-            settings_dir.as_ref().map_or_else(
-                || path.to_path_buf(),
-                |base| resolve_config_path(base, path),
-            )
-        });
+        let log_file = resolve_log_file(&settings, settings_dir.as_deref());
         let image_protocol = settings.image_protocol;
-        let defaults = settings.defaults;
+        inject_builtin_workflows(&mut workflows);
 
-        let commands = Default::default();
+        let defaults = settings.resolve_defaults();
+        let resolved_host_bindings = resolve_host_bindings(
+            merge_host_binding_targets([manifest.host.as_ref(), settings.host.as_ref()])?,
+            &workflows,
+            HostBindingPolicy::Strict,
+        )?;
 
         let raw = RawConfig {
-            default_view: Some(resolved_entrypoint.clone()),
             entrypoint: Some(resolved_entrypoint),
+            chrome_commands_show: settings
+                .chrome_commands_show
+                .clone()
+                .or_else(|| manifest.chrome_commands_show.clone()),
             image_protocol,
             log_file: log_file.clone(),
-            commands,
+            host_bindings: resolved_host_bindings,
             aliases,
             view_aliases,
             workflows,
@@ -662,19 +656,139 @@ impl CompiledConfig {
     }
 }
 
-fn ensure_user_workflow_id_available(workflow_id: &str) -> Result<()> {
-    if workflow_id.starts_with("__") {
-        bail!(
-            "workflow ID {:?} is reserved for built-in workflows; user workflow IDs cannot start with '__'",
-            workflow_id
-        );
+/// Reads one `[host.bindings]` entry.
+///
+/// A string names the command this layer binds to the key; `false` declares that
+/// this layer has no binding for it. Those stay two different mechanisms: `false`
+/// settles at compile time, so the key is never claimed by the host layer and
+/// the entry does not exist, whereas a View's `unbind` releases a binding whose
+/// entry still exists and stays reachable by identity. Every other value is a
+/// configuration error rather than a silent removal.
+fn parse_host_binding_target(key: &str, val: &toml::Value) -> Result<Option<String>> {
+    match val {
+        toml::Value::String(address) => {
+            let address = address.trim();
+            if address.is_empty() {
+                bail!("[host.bindings] {key:?} must be a command id or false");
+            }
+            Ok(Some(address.to_string()))
+        }
+        toml::Value::Boolean(false) => Ok(None),
+        other => bail!(
+            "[host.bindings] {key:?} must be a command id or false, got {}",
+            other.type_str()
+        ),
     }
-    Ok(())
+}
+
+/// Default host-layer bindings, present unless a `[host.bindings]` entry
+/// explicitly disables them.
+const DEFAULT_HOST_BINDING_TARGETS: [(&str, &str); 2] = [
+    ("ctrl+k", "__commands.palette"),
+    ("ctrl+g", "__parameters.edit"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostBindingPolicy {
+    /// Drop unresolvable bindings (standalone workflow: no workspace context).
+    Lenient,
+    /// Reject unresolvable bindings (suite manifest: explicit workspace).
+    Strict,
+}
+
+/// Injects the builtin `__commands` / `__parameters` workflows unless a user
+/// workflow shadows them by convention.
+fn inject_builtin_workflows(workflows: &mut BTreeMap<String, Workflow>) {
+    if !workflows.contains_key("__commands")
+        && let Ok(workflow) = crate::workflow::builtin::builtin_commands_workflow()
+    {
+        workflows.insert("__commands".to_string(), workflow);
+    }
+    if !workflows.contains_key("__parameters")
+        && let Ok(workflow) = crate::workflow::builtin::builtin_parameters_workflow()
+    {
+        workflows.insert("__parameters".to_string(), workflow);
+    }
+}
+
+fn resolve_log_file(settings: &RawSettings, settings_dir: Option<&Path>) -> Option<PathBuf> {
+    settings.log_file.as_deref().map(|path| {
+        settings_dir.map_or_else(
+            || path.to_path_buf(),
+            |base| resolve_config_path(base, path),
+        )
+    })
+}
+
+/// Merges default, suite, and settings `[host.bindings]` targets in increasing
+/// precedence, so a later file's entry replaces an earlier one for the same key.
+/// `false` entries stay as `None`: the host layer declares no binding for that
+/// key at all.
+fn merge_host_binding_targets<'a>(
+    overrides: impl IntoIterator<Item = Option<&'a HostConfig>>,
+) -> Result<BTreeMap<String, Option<String>>> {
+    let mut targets = DEFAULT_HOST_BINDING_TARGETS
+        .iter()
+        .map(|(key, target)| (key.to_string(), Some(target.to_string())))
+        .collect::<BTreeMap<_, _>>();
+    for host in overrides.into_iter().flatten() {
+        if let Some(bindings) = &host.bindings {
+            for (key, value) in bindings {
+                targets.insert(key.clone(), parse_host_binding_target(key, value)?);
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// Resolves raw `[host.bindings]` entries into references into the command
+/// definition map: canonical physical key -> command FQID.
+fn resolve_host_bindings(
+    targets: BTreeMap<String, Option<String>>,
+    workflows: &BTreeMap<String, Workflow>,
+    policy: HostBindingPolicy,
+) -> Result<BTreeMap<String, String>> {
+    let mut resolved = BTreeMap::new();
+    for (raw_key, target) in targets {
+        let Some(target_cmd) = target else {
+            continue;
+        };
+        let resolvable = target_cmd
+            .split_once('.')
+            .is_some_and(|(workflow, command)| {
+                workflows
+                    .get(workflow)
+                    .is_some_and(|wf| wf.commands.contains_key(command))
+            });
+        if !resolvable {
+            if policy == HostBindingPolicy::Lenient {
+                continue;
+            }
+            bail!(
+                "host binding {:?} must target a known workflow.command",
+                target_cmd
+            );
+        }
+        let canonical_key = match crate::input::Key::canonical_binding_name(&raw_key) {
+            Ok(key) => key,
+            Err(error) => {
+                if policy == HostBindingPolicy::Lenient {
+                    continue;
+                }
+                return Err(error)
+                    .with_context(|| format!("invalid host binding key {:?}", raw_key));
+            }
+        };
+        resolved.insert(canonical_key, target_cmd);
+    }
+    Ok(resolved)
 }
 
 pub(super) fn validate_workflow_id(workflow_id: &str) -> Result<()> {
     if workflow_id.is_empty()
         || workflow_id.contains(':')
+        || workflow_id.contains('.')
+        || workflow_id.contains('@')
         || workflow_id.chars().any(char::is_whitespace)
     {
         bail!("workflow ID {:?} is not valid", workflow_id);
@@ -692,5 +806,138 @@ pub(super) fn resolve_config_path(config_path: &Path, path: &Path) -> PathBuf {
             config_path.parent().unwrap_or_else(|| Path::new("."))
         };
         dir.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_workflows() -> BTreeMap<String, Workflow> {
+        let core: Workflow = toml::from_str(
+            r#"
+            [commands.open]
+            label = "Open"
+            type = "return"
+            producer = "declared"
+            handler = { value = "open" }
+            "#,
+        )
+        .unwrap();
+        let commands: Workflow = toml::from_str(
+            r#"
+            [commands.palette]
+            label = "Commands"
+            type = "return"
+            producer = "declared"
+            handler = { value = "palette" }
+            "#,
+        )
+        .unwrap();
+        BTreeMap::from([
+            ("core".to_string(), core),
+            ("__commands".to_string(), commands),
+        ])
+    }
+
+    #[test]
+    fn host_binding_merge_applies_settings_over_suite_over_defaults() {
+        let suite: HostConfig = toml::from_str(
+            r#"
+            [bindings]
+            "ctrl+k" = "core.open"
+            "#,
+        )
+        .unwrap();
+        let settings: HostConfig = toml::from_str(
+            r#"
+            [bindings]
+            "ctrl+k" = false
+            "ctrl+j" = "core.open"
+            "#,
+        )
+        .unwrap();
+
+        let targets = merge_host_binding_targets([Some(&suite), Some(&settings)]).unwrap();
+        // The settings removal beats both the suite override and the default.
+        assert_eq!(targets["ctrl+k"], None);
+        assert_eq!(targets["ctrl+j"], Some("core.open".to_string()));
+        // An untouched default survives.
+        assert_eq!(targets["ctrl+g"], Some("__parameters.edit".to_string()));
+    }
+
+    /// `false` is the one way to declare "the host layer has no binding here";
+    /// every other non-command value is rejected instead of silently removing
+    /// the binding.
+    #[test]
+    fn host_binding_values_are_command_ids_or_false() {
+        for value in ["\"\"", "\" \"", "true", "42", "[\"a\"]"] {
+            let host: HostConfig = toml::from_str(&format!(
+                r#"
+                [bindings]
+                "ctrl+k" = {value}
+                "#
+            ))
+            .unwrap();
+            let error = merge_host_binding_targets([Some(&host)])
+                .expect_err("only a command id or false may appear in [host.bindings]");
+            assert!(
+                error.to_string().contains("[host.bindings]")
+                    && error.to_string().contains("must be a command id or false"),
+                "unexpected error for {value}: {error}"
+            );
+        }
+
+        // The old `"noop"` alias is gone: it now reads as a command id and fails
+        // to resolve, instead of quietly removing the binding.
+        let host: HostConfig = toml::from_str(
+            r#"
+            [bindings]
+            "ctrl+k" = "noop"
+            "#,
+        )
+        .unwrap();
+        let targets = merge_host_binding_targets([Some(&host)]).unwrap();
+        assert_eq!(targets["ctrl+k"], Some("noop".to_string()));
+        let error = resolve_host_bindings(targets, &sample_workflows(), HostBindingPolicy::Strict)
+            .expect_err("`noop` is not a command");
+        assert!(
+            error.to_string().contains("known workflow.command"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn default_host_bindings_drop_when_their_builtin_is_absent() {
+        let resolved = resolve_host_bindings(
+            merge_host_binding_targets([]).unwrap(),
+            &sample_workflows(),
+            HostBindingPolicy::Lenient,
+        )
+        .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved["ctrl+k"], "__commands.palette");
+        // `__parameters` is absent from the sample, so its default is dropped.
+        assert!(!resolved.contains_key("ctrl+g"));
+    }
+
+    #[test]
+    fn unresolved_host_bindings_are_lenient_standalone_and_strict_in_a_suite() {
+        let mut targets = BTreeMap::new();
+        targets.insert("ctrl+x".to_string(), Some("core.missing".to_string()));
+
+        assert!(
+            resolve_host_bindings(
+                targets.clone(),
+                &sample_workflows(),
+                HostBindingPolicy::Lenient,
+            )
+            .unwrap()
+            .is_empty()
+        );
+
+        let error = resolve_host_bindings(targets, &sample_workflows(), HostBindingPolicy::Strict)
+            .expect_err("a suite must reject an unknown host binding target");
+        assert!(error.to_string().contains("known workflow.command"));
     }
 }

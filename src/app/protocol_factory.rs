@@ -71,10 +71,9 @@ impl ProtocolViewFactory {
 
     fn runtime_snapshot(&self, target: &str, parameters: &ParameterSnapshot) -> Result<Value> {
         let raw = parameters.raw_input();
-        let commands =
-            crate::workflow::command::collect_available_commands(&self.config, target, true)?
-                .into_values()
-                .collect::<Vec<_>>();
+        // The command projection is runtime state: the Picker overwrites this
+        // with the live registry envelope, so the mount seed is just empty.
+        let commands = serde_json::json!({"revision": 0, "commands": []});
         Ok(serde_json::json!({
             "view": {"current": {
                 "ref": target,
@@ -119,7 +118,7 @@ impl ProtocolViewFactory {
                 &definition,
                 self.invocation.input_value().clone(),
             )?,
-            crate::engine::project_binding_config(&self.config, target, &definition)?,
+            crate::engine::project_binding_config(&self.config, &definition)?,
             runtime,
             parameters,
         ))
@@ -129,12 +128,14 @@ impl ProtocolViewFactory {
         &self,
         target: &str,
         instance: ViewInstanceId,
+        registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
     ) -> Result<crate::engine::PickerViewServices> {
         let mut services = picker_mount_data(
             &self.config,
             self.invocation.input_value(),
             target,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(instance.0)),
+            registry,
         )?;
         services.set_preview_cache(self.preview_cache.clone());
         Ok(services)
@@ -173,7 +174,11 @@ impl ViewFactory for ProtocolViewFactory {
                     ),
                     engine,
                     bindings,
-                    services: self.picker_services(target, instance)?,
+                    services: self.picker_services(
+                        target,
+                        instance,
+                        services.host.command_registry(),
+                    )?,
                     parameter_binding,
                     theme: self.theme.clone(),
                     left_prefix,

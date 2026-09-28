@@ -84,12 +84,8 @@ mod tests {
         assert_eq!(aliased.label(), "sys");
         let canonical = catalog.resolve("core:default").unwrap();
         assert_eq!(canonical.label(), "core");
-        // Alias-less and internal Views keep their reference as the label.
+        // Alias-less Views keep their reference as the label.
         assert_eq!(catalog.resolve("sys:output").unwrap().label(), "sys:output");
-        assert_eq!(
-            catalog.resolve("__commands:main").unwrap().label(),
-            "__commands:main"
-        );
         assert!(catalog.resolve("unknown").is_none());
     }
 }

@@ -3,6 +3,7 @@ use crate::input::Key;
 use crate::workflow::parameter::ParameterSnapshot;
 use crate::workflow::parameter::{ParameterBinding, ParameterRegistry, ParameterState};
 use anyhow::{Context, Result, bail};
+pub(crate) use loader::parse_atomic_workflow_package;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -10,8 +11,6 @@ use std::{
     sync::Arc,
 };
 
-#[path = "../builtin/mod.rs"]
-mod builtin;
 mod compile;
 mod loader;
 mod model;
@@ -28,18 +27,46 @@ pub const ENGINE_FORM: &str = "form";
 pub const ENGINE_CAPTURE: &str = "capture";
 pub const ENGINE_EMBEDDED: &str = "embedded";
 
+/// The target of one binding address, after [`CompiledConfig::resolve_address`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResolvedAddress {
+    /// A declared workflow command, identified by its fully-qualified id.
+    Command { fqid: String, label: String },
+    /// A built-in engine action, identified as `<engine>.<action>`.
+    Engine { fqid: String, label: &'static str },
+}
+
+impl ResolvedAddress {
+    /// The `<workflow>.<command>` or `<engine>.<action>` spelling of the target.
+    pub(crate) fn fqid(&self) -> &str {
+        match self {
+            Self::Command { fqid, .. } | Self::Engine { fqid, .. } => fqid,
+        }
+    }
+
+    /// The address spelling valid in configuration and item bindings:
+    /// `<workflow>.<command>` for workflow commands, `@engine:<engine>.<action>`
+    /// for built-in engine actions.
+    pub(crate) fn binding_address(&self) -> String {
+        match self {
+            Self::Command { fqid, .. } => fqid.clone(),
+            Self::Engine { fqid, .. } => format!("@engine:{fqid}"),
+        }
+    }
+}
+
 /// Immutable workflow configuration compiled once during startup.
 ///
 /// Launch-specific data deliberately lives in `workflow::InvocationContext`.
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledConfig {
     pub entrypoint: ViewRef,
-    pub default_view: Option<ViewRef>,
     pub(crate) entrypoint_query: Option<Value>,
     pub(crate) suite_file: Option<PathBuf>,
     pub(crate) image_protocol: ImageProtocol,
     pub(crate) log_file: Option<PathBuf>,
-    pub(crate) commands: CommandConfig,
+    pub(crate) chrome_commands_show: Vec<String>,
+    pub(crate) host_bindings: BTreeMap<String, String>,
     pub(crate) aliases: BTreeMap<String, ViewRef>,
     pub(crate) view_aliases: BTreeMap<ViewRef, String>,
     pub(crate) all_commands: BTreeMap<String, Command>,
@@ -108,15 +135,6 @@ impl CompiledConfig {
         &self.workflows
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn bind_invocation_parameters(
-        &self,
-        view_ref: &str,
-        arguments: &[String],
-    ) -> Result<ParameterState> {
-        self.bind_invocation_parameters_with_seed(view_ref, None, arguments)
-    }
-
     pub(crate) fn bind_invocation_parameters_with_seed(
         &self,
         view_ref: &str,
@@ -177,41 +195,31 @@ impl CompiledConfig {
         ))
     }
 
-    pub(crate) fn session_commands(&self) -> BTreeMap<String, Command> {
-        let mut globals = self.commands.bindings.clone();
-        let binding_uses_key = |binding: &CommandBinding, key: &str| {
-            binding
-                .key
-                .as_deref()
-                .and_then(|value| normalize_key(value).ok())
-                .is_some_and(|value| value == key)
-        };
-        let commands_binding_is_available = !globals.contains_key("commands")
-            && !globals
-                .values()
-                .any(|binding| binding_uses_key(binding, "ctrl+k"));
-        if commands_binding_is_available && self.view("__commands:main").is_some() {
-            globals.insert("commands".to_string(), CommandBinding::builtin_commands());
-        }
-        let parameters_binding_is_available = !globals.contains_key("parameters")
-            && !globals
-                .values()
-                .any(|binding| binding_uses_key(binding, "ctrl+g"));
-        if parameters_binding_is_available
-            && (self.view("__query:main").is_some() || self.view("__form:main").is_some())
-        {
-            globals.insert(
-                "parameters".to_string(),
-                CommandBinding::builtin_parameters(),
+    pub(crate) fn chrome_commands_show(&self, view_ref: &str) -> Result<Vec<String>> {
+        let raw = self
+            .view(view_ref)
+            .and_then(|view| view.chrome_commands_show.as_ref());
+        let bindings = raw
+            .cloned()
+            .unwrap_or_else(|| self.chrome_commands_show.clone());
+        let mut seen = std::collections::HashSet::new();
+        let mut normalized = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let key = Key::canonical_binding_name(&binding)
+                .with_context(|| format!("invalid chrome command binding {:?}", binding))?;
+            anyhow::ensure!(
+                seen.insert(key.clone()),
+                "duplicate chrome command binding {:?}",
+                key
             );
+            normalized.push(key);
         }
-        globals
-            .into_iter()
-            .filter_map(|(id, binding)| {
-                let cmd = binding.as_command(&id)?;
-                Some((id, cmd))
-            })
-            .collect()
+        Ok(normalized)
+    }
+
+    /// Host-layer bindings as `canonical physical key -> command FQID`.
+    pub(crate) fn host_bindings(&self) -> &BTreeMap<String, String> {
+        &self.host_bindings
     }
 
     pub(crate) fn update_sanitized_initial_parameter_values(
@@ -250,13 +258,11 @@ impl CompiledConfig {
     }
 
     pub(crate) fn find_command(&self, current_workflow: &str, cmd_id: &str) -> Option<&Command> {
-        if cmd_id.contains(':') {
+        if cmd_id.contains('.') {
             self.all_commands.get(cmd_id)
         } else {
-            let fqid = format!("{current_workflow}:{cmd_id}");
             self.all_commands
-                .get(&fqid)
-                .or_else(|| self.all_commands.get(cmd_id))
+                .get(&format!("{current_workflow}.{cmd_id}"))
         }
     }
 
@@ -265,24 +271,39 @@ impl CompiledConfig {
         current_workflow: &str,
         cmd_id: &str,
     ) -> Option<String> {
-        if cmd_id.contains(':') {
+        if cmd_id.contains('.') {
             self.all_commands
                 .contains_key(cmd_id)
                 .then(|| cmd_id.to_string())
         } else {
-            let fqid = format!("{current_workflow}:{cmd_id}");
-            if self.all_commands.contains_key(&fqid) {
-                Some(fqid)
-            } else if self.all_commands.contains_key(cmd_id) {
-                Some(cmd_id.to_string())
-            } else {
-                None
-            }
+            let fqid = format!("{current_workflow}.{cmd_id}");
+            self.all_commands.contains_key(&fqid).then_some(fqid)
         }
     }
 
+    /// Resolves one binding address to its target.
+    ///
+    /// Both a View's `[views.<name>.bindings]` values and its
+    /// `[views.<name>.unbind] commands` use this one grammar: a bare name or an
+    /// FQID (optionally prefixed with `@workflow:`) names a command of
+    /// `current_workflow`, while only `@engine:<engine>.<action>` names a
+    /// built-in engine action. There is no fallback between the two.
+    pub(crate) fn resolve_address(
+        &self,
+        current_workflow: &str,
+        address: &str,
+    ) -> Option<ResolvedAddress> {
+        if let Some((fqid, label)) = crate::engine::engine_action_from_address(address) {
+            return Some(ResolvedAddress::Engine { fqid, label });
+        }
+        let address = address.strip_prefix("@workflow:").unwrap_or(address);
+        let fqid = self.resolve_command_fqid(current_workflow, address)?;
+        let label = self.all_commands.get(&fqid)?.label.clone();
+        Some(ResolvedAddress::Command { fqid, label })
+    }
+
     pub(crate) fn workflow_commands(&self, workflow_id: &str) -> BTreeMap<String, Command> {
-        let prefix = format!("{workflow_id}:");
+        let prefix = format!("{workflow_id}.");
         let mut map = BTreeMap::new();
         for (k, v) in &self.all_commands {
             if k.starts_with(&prefix) {
@@ -305,9 +326,6 @@ impl CompiledConfig {
         if let Some(target) = self.aliases.get(selector) {
             return Ok(target.clone());
         }
-        if selector == "__form:main" && self.views.contains_key("__query:main") {
-            return Ok("__query:main".to_string());
-        }
         if !selector.contains(':') {
             let matches: Vec<_> = self
                 .views
@@ -328,6 +346,46 @@ impl CompiledConfig {
             selector,
             available.join(", ")
         );
+    }
+
+    /// Resolve a view selector in the context of a caller view.
+    ///
+    /// When `selector` is an explicit local reference (`self:<view>` or `:<view>`)
+    /// or a bare local view name (no colon), it prioritizes views declared within
+    /// the caller's workflow package. If not found in the local workflow, bare
+    /// names fall back to global resolution (aliases or unique view matches).
+    pub fn resolve_view_scoped(&self, selector: &str, caller_view: &str) -> Result<String> {
+        let caller_pkg = package_id(caller_view);
+
+        let local_candidate = selector
+            .strip_prefix("self:")
+            .or_else(|| selector.strip_prefix(':'));
+        if let Some(local_view) = local_candidate {
+            if !caller_pkg.is_empty() {
+                let candidate = format!("{caller_pkg}:{local_view}");
+                if self.views.contains_key(&candidate) {
+                    return Ok(candidate);
+                }
+            }
+            if self.views.contains_key(local_view) {
+                return Ok(local_view.to_string());
+            }
+            bail!(
+                "workflow-local view {:?} not found in workflow {:?}",
+                local_view,
+                caller_pkg
+            );
+        }
+
+        // Bare local view name without colon: prioritize caller's workflow
+        if !selector.contains(':') && !caller_pkg.is_empty() {
+            let candidate = format!("{caller_pkg}:{selector}");
+            if self.views.contains_key(&candidate) {
+                return Ok(candidate);
+            }
+        }
+
+        self.resolve_view(selector)
     }
 
     pub(crate) fn alias_for_view(&self, view_ref: &str) -> Option<&str> {
@@ -408,12 +466,6 @@ pub(crate) fn package_id(view_ref: &str) -> &str {
         .unwrap_or(view_ref)
 }
 
-pub fn normalize_key(key: &str) -> Result<String> {
-    Key::parse_binding(key)?
-        .binding_name()
-        .with_context(|| format!("unsupported command key {:?}", key))
-}
-
 pub(crate) fn toml_to_json(value: &toml::Value) -> Result<Value> {
     serde_json::to_value(value).context("could not convert TOML to JSON")
 }
@@ -432,6 +484,78 @@ mod tests {
         assert!(config.resolve_view("sys:missing").is_err());
     }
 
+    #[test]
+    fn resolve_view_scoped_resolves_local_views_prioritizing_caller_workflow() {
+        let config = load_test_fixture().unwrap();
+
+        // 1. Bare local view name under sys and apps workflows
+        assert_eq!(
+            config.resolve_view_scoped("output", "sys:main").unwrap(),
+            "sys:output"
+        );
+        assert_eq!(
+            config.resolve_view_scoped("weight", "apps:main").unwrap(),
+            "apps:weight"
+        );
+
+        // 2. Both sys and apps have a "main" view: resolving "main" under sys resolves to sys:main,
+        // while resolving "main" under apps resolves to apps:main.
+        assert_eq!(
+            config.resolve_view_scoped("main", "sys:output").unwrap(),
+            "sys:main"
+        );
+        assert_eq!(
+            config.resolve_view_scoped("main", "apps:weight").unwrap(),
+            "apps:main"
+        );
+
+        // 3. Explicit self: or : syntax
+        assert_eq!(
+            config
+                .resolve_view_scoped("self:output", "sys:main")
+                .unwrap(),
+            "sys:output"
+        );
+        assert_eq!(
+            config.resolve_view_scoped(":output", "sys:main").unwrap(),
+            "sys:output"
+        );
+        assert_eq!(
+            config
+                .resolve_view_scoped("self:weight", "apps:main")
+                .unwrap(),
+            "apps:weight"
+        );
+        assert_eq!(
+            config.resolve_view_scoped(":weight", "apps:main").unwrap(),
+            "apps:weight"
+        );
+
+        // 4. Missing local view fails
+        assert!(
+            config
+                .resolve_view_scoped("self:nonexistent", "sys:main")
+                .is_err()
+        );
+        assert!(
+            config
+                .resolve_view_scoped(":nonexistent", "sys:main")
+                .is_err()
+        );
+
+        // 5. Fallback to external alias or canonical reference when not found in caller workflow
+        assert_eq!(
+            config.resolve_view_scoped("app", "sys:main").unwrap(),
+            "apps:main"
+        );
+        assert_eq!(
+            config
+                .resolve_view_scoped("apps:weight", "sys:main")
+                .unwrap(),
+            "apps:weight"
+        );
+    }
+
     fn config(source: &str) -> CompiledConfig {
         let mut value: toml::Value = toml::from_str(source).unwrap();
         if let toml::Value::Table(fields) = &mut value {
@@ -441,6 +565,191 @@ mod tests {
         }
         let raw: RawConfig = value.clone().try_into().unwrap();
         CompiledConfig::from_raw(raw, BTreeMap::new()).unwrap()
+    }
+
+    #[test]
+    fn view_bindings_accept_all_command_address_forms() {
+        // `xxx.command`, `command`, and `@workflow:xxx.command` all resolve to
+        // the same workflow command; anything else is rejected.
+        for bind in [
+            "\"escape\" = \"core.other\"",
+            "\"escape\" = \"other\"",
+            "\"escape\" = \"@workflow:core.other\"",
+        ] {
+            let compiled = config(&format!(
+                r#"
+                [workflows.core.views.default]
+                [workflows.core.views.default.engine]
+                type = "picker"
+                [workflows.core.views.default.engine.config]
+                items = []
+                [workflows.core.views.default.bindings]
+                {bind}
+                [workflows.core.commands.other]
+                label = "Other"
+                type = "run"
+                producer = "declared"
+                [workflows.core.commands.other.handler]
+                argv = ["true"]
+            "#
+            ));
+            compiled
+                .validate_with_engines(&EngineRegistry::new())
+                .unwrap_or_else(|error| panic!("{bind} should resolve: {error}"));
+        }
+
+        let bad = config(
+            r#"
+            [workflows.core.views.default]
+            [workflows.core.views.default.engine]
+            type = "picker"
+            [workflows.core.views.default.engine.config]
+            items = []
+            [workflows.core.views.default.bindings]
+            "escape" = "@workflow:missing"
+        "#,
+        );
+        let error = bad
+            .validate_with_engines(&EngineRegistry::new())
+            .expect_err("@workflow:missing is not a command");
+        assert!(error.to_string().contains("unknown command"), "{error}");
+    }
+
+    #[test]
+    fn view_unbind_table_validates_each_axis() {
+        let ok = config(
+            r#"
+            [workflows.core.views.default]
+            [workflows.core.views.default.engine]
+            type = "picker"
+            [workflows.core.views.default.engine.config]
+            items = []
+            [workflows.core.views.default.unbind]
+            keys = ["ctrl+u"]
+            commands = ["@engine:picker.clear_input", "core.other"]
+            layers = ["host"]
+            [workflows.core.commands.other]
+            label = "Other"
+            type = "run"
+            producer = "declared"
+            [workflows.core.commands.other.handler]
+            argv = ["true"]
+        "#,
+        );
+        ok.validate_with_engines(&EngineRegistry::new()).unwrap();
+
+        for (label, unbind) in [
+            ("unknown command", "commands = [\"core.missing\"]"),
+            ("unknown layer", "layers = [\"nowhere\"]"),
+            ("invalid key", "keys = [\"not a key\"]"),
+            // Engine actions are engine-specific: this View runs the Picker, so
+            // a Capture action is not addressable here.
+            (
+                "foreign engine action",
+                "commands = [\"@engine:capture.copy\"]",
+            ),
+        ] {
+            let bad = config(&format!(
+                r#"
+                [workflows.core.views.default]
+                [workflows.core.views.default.engine]
+                type = "picker"
+                [workflows.core.views.default.engine.config]
+                items = []
+                [workflows.core.views.default.unbind]
+                {unbind}
+            "#
+            ));
+            assert!(
+                bad.validate_with_engines(&EngineRegistry::new()).is_err(),
+                "{label} must be rejected"
+            );
+        }
+    }
+
+    /// A View binding must name a command. Claiming a key with no command was a
+    /// boolean tombstone; the surviving way to take a key away from a lower
+    /// layer is `[views.<name>.unbind] keys`.
+    #[test]
+    fn a_view_binding_cannot_be_a_boolean() {
+        for value in ["false", "true"] {
+            let bad = config(&format!(
+                r#"
+                [workflows.core.views.default]
+                [workflows.core.views.default.bindings]
+                "escape" = {value}
+                [workflows.core.views.default.engine]
+                type = "picker"
+                [workflows.core.views.default.engine.config]
+                items = []
+            "#
+            ));
+            let error = bad
+                .validate_with_engines(&EngineRegistry::new())
+                .expect_err("a boolean binding names no command");
+            assert!(
+                error.to_string().contains("unbind") && error.to_string().contains("\"escape\""),
+                "the error should point at unbind.keys: {error}"
+            );
+        }
+    }
+
+    /// Every command FQID is `<owner>.<name>`: an engine action owns
+    /// `<engine>.<action>`, a workflow command owns `<workflow>.<command>`. The
+    /// index is unique exactly when no workflow command lands on an engine
+    /// action's id, so that one FQID always names exactly one command.
+    #[test]
+    fn a_workflow_command_cannot_take_an_engine_actions_id() {
+        for (engine, action) in [
+            (ENGINE_PICKER, "exit"),
+            (ENGINE_FORM, "exit"),
+            (ENGINE_FORM, "focus_next"),
+            (ENGINE_CAPTURE, "copy"),
+            (ENGINE_EMBEDDED, "cancel"),
+        ] {
+            let bad = config(&format!(
+                r#"
+                [workflows.{engine}.views.main]
+                [workflows.{engine}.views.main.engine]
+                type = "picker"
+                [workflows.{engine}.views.main.engine.config]
+                items = []
+                [workflows.{engine}.commands.{action}]
+                label = "Collides"
+                type = "run"
+                producer = "declared"
+                [workflows.{engine}.commands.{action}.handler]
+                argv = ["true"]
+            "#
+            ));
+            let error = bad
+                .validate_with_engines(&EngineRegistry::new())
+                .expect_err("an engine action already owns that id");
+            assert!(
+                error.to_string().contains("collides with the"),
+                "{engine}.{action}: {error}"
+            );
+        }
+
+        // Sharing the engine's *name* is fine: only the action ids are taken, so
+        // a workflow called `form` may still declare `open` (the test fixture
+        // does exactly this).
+        let ok = config(
+            r#"
+            [workflows.form.views.main]
+            [workflows.form.views.main.engine]
+            type = "picker"
+            [workflows.form.views.main.engine.config]
+            items = []
+            [workflows.form.commands.open]
+            label = "Open"
+            type = "run"
+            producer = "declared"
+            [workflows.form.commands.open.handler]
+            argv = ["true"]
+        "#,
+        );
+        ok.validate_with_engines(&EngineRegistry::new()).unwrap();
     }
 
     #[test]
@@ -523,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn item_merge_views_may_declare_a_base_keymap() {
+    fn item_merge_views_may_declare_a_base_bindings() {
         let compiled = config(
             r#"
             [workflows.core.commands.complete]
@@ -533,12 +842,12 @@ mod tests {
             handler = { target = "core:default" }
 
             [workflows.core.views.default]
-            keymap_mode = "item_merge"
+            binding_mode = "item_merge"
 
             [workflows.core.views.default.engine]
             type = "picker"
 
-            [workflows.core.views.default.keymap]
+            [workflows.core.views.default.bindings]
             tab = "complete"
             "#,
         );
@@ -546,31 +855,33 @@ mod tests {
             .validate_with_engines(&EngineRegistry::new())
             .unwrap();
         let view = compiled.view("core:default").expect("view");
-        assert_eq!(view.keymap_mode, KeymapMode::ItemMerge);
-        assert!(view.keymap.as_ref().expect("keymap").contains_key("tab"));
+        assert_eq!(view.binding_mode, BindingMode::ItemMerge);
+        assert!(
+            view.bindings
+                .as_ref()
+                .expect("bindings")
+                .contains_key("tab")
+        );
     }
 
     #[test]
-    fn item_merge_base_keymap_still_validates_its_targets() {
+    fn item_merge_base_bindings_still_validates_its_targets() {
         let compiled = config(
             r#"
             [workflows.core.views.default]
-            keymap_mode = "item_merge"
+            binding_mode = "item_merge"
 
             [workflows.core.views.default.engine]
             type = "picker"
 
-            [workflows.core.views.default.keymap]
+            [workflows.core.views.default.bindings]
             tab = "missing"
             "#,
         );
         let error = compiled
             .validate_with_engines(&EngineRegistry::new())
             .expect_err("an unknown command must be rejected in either mode");
-        assert!(
-            error.to_string().contains("unknown command or action"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("unknown command"), "{error}");
     }
 
     #[test]
@@ -582,41 +893,31 @@ mod tests {
     }
 
     #[test]
-    fn built_in_commands_require_the_commands_selector_view() {
+    fn explicit_host_bindings_are_references_into_the_definition_map() {
         let compiled = config(
             r#"
-            [commands.bindings.commands]
-            key = "ctrl+k"
-            "#,
-        );
-        let error = compiled
-            .validate_with_engines(&EngineRegistry::new())
-            .expect_err("built-in commands need their selector view");
-        assert!(error.to_string().contains("__commands:main"));
-    }
+            [host_bindings]
+            "ctrl+g" = "core.custom"
 
-    #[test]
-    fn built_in_parameters_yield_to_a_user_ctrl_g_binding() {
-        let compiled = config(
-            r#"
-            [commands.bindings.custom]
-            key = "ctrl+g"
+            [workflows.core.commands.custom]
             label = "Custom"
             type = "return"
             producer = "declared"
             handler = { value = "custom" }
 
-            [workflows.__query.views.main.engine]
-            type = "form"
-            [workflows.__query.views.main.engine.config.content]
-            producer = "declared"
-            [workflows.__query.views.main.engine.config.content.handler]
-            fields = []
+            [workflows.core.views.main.engine]
+            type = "picker"
             "#,
         );
-        let commands = compiled.session_commands();
-        assert!(!commands.contains_key("parameters"));
-        assert_eq!(commands["custom"].key.as_deref(), Some("ctrl+g"));
+        compiled
+            .validate_with_engines(&EngineRegistry::new())
+            .unwrap();
+        assert_eq!(
+            compiled.host_bindings(),
+            &BTreeMap::from([("ctrl+g".to_string(), "core.custom".to_string())])
+        );
+        // The definition itself stays in the single command map.
+        assert!(compiled.all_commands.contains_key("core.custom"));
     }
 
     #[test]
@@ -667,7 +968,37 @@ mod tests {
 
     #[test]
     fn key_normalization_accepts_named_bindings_and_rejects_empty_values() {
-        assert_eq!(normalize_key("ctrl+k").unwrap(), "ctrl+k");
-        assert!(normalize_key("").is_err());
+        assert_eq!(Key::canonical_binding_name("ctrl+k").unwrap(), "ctrl+k");
+        assert!(Key::canonical_binding_name("").is_err());
+    }
+
+    #[test]
+    fn builtin_modal_views_show_only_enter_and_unbind_host_layer() {
+        for (label, workflow) in [
+            (
+                "__commands",
+                crate::workflow::builtin::builtin_commands_workflow()
+                    .expect("__commands must parse"),
+            ),
+            (
+                "__parameters",
+                crate::workflow::builtin::builtin_parameters_workflow()
+                    .expect("__parameters must parse"),
+            ),
+        ] {
+            let view = workflow.views.get("main").expect("main view");
+            assert_eq!(
+                view.chrome_commands_show.as_deref(),
+                Some(["enter".to_string()].as_slice()),
+                "{label} must not advertise unbound host shortcuts in the footer"
+            );
+            assert_eq!(
+                view.unbind.layers,
+                vec!["host".to_string()],
+                "{label} must isolate the host layer to prevent re-entrancy"
+            );
+            assert!(view.unbind.keys.is_empty());
+            assert!(view.unbind.commands.is_empty());
+        }
     }
 }

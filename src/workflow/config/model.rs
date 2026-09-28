@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -91,21 +91,20 @@ pub(crate) struct FormDefaults {
     pub(crate) bindings: Option<toml::Value>,
 }
 
-/// How a View's own `[views.<name>.keymap]` table is interpreted.
+/// How a View's own `[views.<name>.bindings]` table is interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum KeymapMode {
-    /// The table (or, when absent or empty, the commands' own `key`) is the
-    /// whole View scope. The default.
+pub enum BindingMode {
+    /// The table is the whole View layer. The default.
     #[default]
     View,
     /// The table is a base layer; the focused item's `bindings` override it
-    /// per physical key, and the command-level `key` fallback does not apply.
+    /// per physical key.
     ItemMerge,
 }
 
-/// The View's own `[views.<name>.keymap]` bindings, keyed by physical key.
-pub type ViewKeymap = BTreeMap<String, toml::Value>;
+/// The View's own `[views.<name>.bindings]` bindings, keyed by physical key.
+pub type ViewBindings = BTreeMap<String, toml::Value>;
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -357,7 +356,11 @@ impl serde::Serialize for DimensionConstraint {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewPresentation {
     #[serde(default)]
@@ -380,9 +383,30 @@ pub struct ViewPresentation {
     pub min_height: Option<u16>,
     #[serde(default)]
     pub max_height: Option<u16>,
+    #[serde(default = "default_true")]
+    pub show_title: bool,
+}
+
+impl Default for ViewPresentation {
+    fn default() -> Self {
+        Self {
+            mode: ViewPresentationMode::default(),
+            anchor: PopupAnchor::default(),
+            offset_x: None,
+            offset_y: None,
+            width: None,
+            height: None,
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
+            show_title: true,
+        }
+    }
 }
 
 impl ViewPresentation {
+    #[cfg(test)]
     pub fn popup(
         width: impl Into<DimensionConstraint>,
         height: impl Into<DimensionConstraint>,
@@ -394,18 +418,25 @@ impl ViewPresentation {
             ..Default::default()
         }
     }
+}
 
-    pub fn with_anchor(mut self, anchor: PopupAnchor) -> Self {
-        self.anchor = anchor;
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_offsets(mut self, offset_x: Option<u16>, offset_y: Option<u16>) -> Self {
-        self.offset_x = offset_x;
-        self.offset_y = offset_y;
-        self
-    }
+/// Per-View unbinding. Command ownership (the unique command index) and
+/// priority (`layer`) are separate axes, so each gets its own field instead of
+/// overloading one string list with a sigil:
+///
+/// - `keys`: physical keys whose bound command loses that key.
+/// - `commands`: command addresses (`core.page`, `@engine:picker.clear_input`, or
+///   a bare current-workflow name) that lose all of their keys.
+/// - `layers`: priority layers (`view` / `engine` / `host`) ignored in this View.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unbind {
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub layers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -419,9 +450,13 @@ pub struct View {
     #[serde(default, rename = "query")]
     pub(crate) query: Option<toml::Table>,
     #[serde(default)]
-    pub keymap_mode: KeymapMode,
+    pub binding_mode: BindingMode,
     #[serde(default)]
-    pub keymap: Option<ViewKeymap>,
+    pub bindings: Option<ViewBindings>,
+    #[serde(default)]
+    pub unbind: Unbind,
+    #[serde(default)]
+    pub chrome_commands_show: Option<Vec<String>>,
 }
 
 impl View {
@@ -464,10 +499,6 @@ pub(crate) struct ReturnProcessor {
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
-    #[serde(skip)]
-    OpenCommands,
-    #[serde(skip)]
-    OpenParameters,
     Run {
         #[serde(default)]
         producer: ProducerKind,
@@ -495,7 +526,6 @@ pub enum CommandAction {
 impl CommandAction {
     pub(crate) fn producer(&self) -> Option<ProducerKind> {
         match self {
-            CommandAction::OpenCommands | CommandAction::OpenParameters => None,
             CommandAction::Run { producer, .. }
             | CommandAction::Navigate { producer, .. }
             | CommandAction::Call { producer, .. }
@@ -505,8 +535,6 @@ impl CommandAction {
 
     pub(crate) fn operation_type(&self) -> &'static str {
         match self {
-            CommandAction::OpenCommands => "open-commands",
-            CommandAction::OpenParameters => "open-parameters",
             CommandAction::Run { .. } => "run",
             CommandAction::Navigate { .. } => "navigate",
             CommandAction::Call { .. } => "call",
@@ -515,132 +543,8 @@ impl CommandAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum CommandBindingVisibility {
-    #[default]
-    Always,
-    Overflow,
-    Hidden,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CommandConfig {
-    #[serde(default)]
-    pub(crate) bindings: BTreeMap<String, CommandBinding>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CommandBinding {
-    pub(crate) key: Option<String>,
-    pub(crate) label: Option<String>,
-    pub(crate) visibility: Option<CommandBindingVisibility>,
-    pub(crate) action: Option<CommandAction>,
-}
-
-impl<'de> Deserialize<'de> for CommandBinding {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = toml::Value::deserialize(deserializer)?;
-        let mut table = value
-            .as_table()
-            .cloned()
-            .ok_or_else(|| serde::de::Error::custom("command binding must be a table"))?;
-        let key = table
-            .remove("key")
-            .map(|value| value.try_into::<String>().map_err(serde::de::Error::custom))
-            .transpose()?;
-        let label = table
-            .remove("label")
-            .map(|value| value.try_into::<String>().map_err(serde::de::Error::custom))
-            .transpose()?;
-        let visibility = table
-            .remove("visibility")
-            .map(|value| {
-                value
-                    .try_into::<CommandBindingVisibility>()
-                    .map_err(serde::de::Error::custom)
-            })
-            .transpose()?;
-        let action = if table.is_empty() {
-            None
-        } else {
-            Some(
-                toml::Value::Table(table)
-                    .try_into::<CommandAction>()
-                    .map_err(serde::de::Error::custom)?,
-            )
-        };
-        Ok(Self {
-            key,
-            label,
-            visibility,
-            action,
-        })
-    }
-}
-
-impl CommandBinding {
-    pub(crate) fn builtin_commands() -> Self {
-        Self {
-            key: None,
-            label: None,
-            visibility: None,
-            action: None,
-        }
-    }
-
-    pub(crate) fn builtin_parameters() -> Self {
-        Self {
-            key: Some("ctrl+g".to_string()),
-            label: Some("Parameters".to_string()),
-            visibility: Some(CommandBindingVisibility::Hidden),
-            action: Some(CommandAction::OpenParameters),
-        }
-    }
-
-    pub(crate) fn key(&self, id: &str) -> Option<&str> {
-        self.key
-            .as_deref()
-            .or_else(|| (id == "commands").then_some("ctrl+k"))
-    }
-
-    pub(crate) fn label(&self, id: &str) -> Option<&str> {
-        self.label
-            .as_deref()
-            .or_else(|| (id == "commands").then_some("Commands"))
-    }
-
-    pub(crate) fn visibility(&self, id: &str) -> Option<CommandBindingVisibility> {
-        Some(self.visibility.unwrap_or(if id == "commands" {
-            CommandBindingVisibility::Overflow
-        } else {
-            CommandBindingVisibility::Always
-        }))
-    }
-
-    pub(crate) fn command_action(&self, id: &str) -> Option<CommandAction> {
-        self.action
-            .clone()
-            .or_else(|| (id == "commands").then_some(CommandAction::OpenCommands))
-    }
-
-    pub(crate) fn as_command(&self, id: &str) -> Option<Command> {
-        Some(Command {
-            key: self.key(id).map(str::to_string),
-            label: self.label(id)?.to_string(),
-            action: self.command_action(id)?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Command {
-    #[serde(default)]
-    pub key: Option<String>,
     #[serde(default)]
     pub label: String,
     #[serde(flatten)]
@@ -651,15 +555,19 @@ pub struct Command {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawConfig {
     #[serde(default)]
-    pub(super) default_view: Option<String>,
+    pub(super) chrome_commands_show: Option<Vec<String>>,
     #[serde(default)]
     pub(super) entrypoint: Option<String>,
     #[serde(default)]
     pub(super) image_protocol: ImageProtocol,
     #[serde(default)]
     pub(super) log_file: Option<PathBuf>,
+    /// Host-layer bindings as references into `CompiledConfig::all_commands`:
+    /// canonical physical key -> command FQID. The loader resolves and
+    /// canonicalizes the raw `[host.bindings]` table into this map so the
+    /// command definition is stored exactly once.
     #[serde(default)]
-    pub(super) commands: CommandConfig,
+    pub(super) host_bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) aliases: BTreeMap<String, String>,
     #[serde(default)]
@@ -672,7 +580,16 @@ pub(super) struct RawConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct HostConfig {
+    #[serde(default)]
+    pub(crate) bindings: Option<BTreeMap<String, toml::Value>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RawSettings {
+    #[serde(default)]
+    pub(crate) chrome_commands_show: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) image_protocol: ImageProtocol,
     #[serde(default)]
@@ -680,20 +597,44 @@ pub(crate) struct RawSettings {
     #[serde(default)]
     pub(crate) log_file: Option<PathBuf>,
     #[serde(default)]
-    pub(crate) defaults: Defaults,
+    pub(crate) host: Option<HostConfig>,
+    #[serde(default)]
+    pub(crate) picker: Option<PickerDefaults>,
+    #[serde(default)]
+    pub(crate) capture: Option<CaptureDefaults>,
+    #[serde(default)]
+    pub(crate) embedded: Option<EmbeddedDefaults>,
+    #[serde(default)]
+    pub(crate) form: Option<FormDefaults>,
     #[serde(default)]
     pub(crate) styles: BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
 }
 
+impl RawSettings {
+    /// Engine defaults are declared directly at the settings root (no
+    /// redundant `defaults.` prefix) to mirror the runtime layer hierarchy.
+    pub(crate) fn resolve_defaults(&self) -> Defaults {
+        let mut defaults = Defaults::default();
+        if let Some(picker) = &self.picker {
+            defaults.picker.left_prefix = picker.left_prefix.clone();
+            defaults.picker.left_prefix_backspace = picker.left_prefix_backspace;
+            defaults.picker.bindings = picker.bindings.clone();
+        }
+        if let Some(capture) = &self.capture {
+            defaults.capture.bindings = capture.bindings.clone();
+        }
+        if let Some(embedded) = &self.embedded {
+            defaults.embedded.bindings = embedded.bindings.clone();
+        }
+        if let Some(form) = &self.form {
+            defaults.form.bindings = form.bindings.clone();
+        }
+        defaults
+    }
+}
+
 pub(crate) fn validate_settings_purity(table: &toml::Table, path: &Path) -> Result<()> {
-    for forbidden in [
-        "default_view",
-        "disabled_workflows",
-        "workflows",
-        "views",
-        "suite",
-        "workflow",
-    ] {
+    for forbidden in ["default_view", "workflows", "views", "suite", "workflow"] {
         if table.contains_key(forbidden) {
             bail!(
                 "settings file {} violates purity invariant: contains forbidden field {:?}; settings.toml is strictly reserved for passive host environment configuration (ADR 0005)",
@@ -766,12 +707,16 @@ pub(super) struct RawSuiteManifest {
     #[serde(default)]
     pub(super) aliases: BTreeMap<String, String>,
     #[serde(default)]
+    pub(super) host: Option<HostConfig>,
+    #[serde(default)]
+    pub(super) chrome_commands_show: Option<Vec<String>>,
+    #[serde(default)]
     pub(super) styles: BTreeMap<String, BTreeMap<String, crate::ui::theme::RawStyleBinding>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Workflow {
+pub(crate) struct Workflow {
     #[serde(default)]
     pub(super) name: Option<String>,
     #[serde(default)]
@@ -786,7 +731,7 @@ pub(super) struct Workflow {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct WorkflowHeader {
+pub(crate) struct WorkflowHeader {
     #[serde(default = "default_workflow_api")]
     pub(super) api: u32,
     pub(super) name: String,
@@ -795,10 +740,7 @@ pub(super) struct WorkflowHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CommandAction, CommandBinding, CommandBindingVisibility, CommandConfig, ProducerKind,
-        ResolvedScriptSource, ResolvedScriptTarget, View, Workflow,
-    };
+    use super::{CommandAction, ProducerKind, ResolvedScriptTarget, View, Workflow};
 
     #[test]
     fn producer_script_handler_requires_one_literal_target() {
@@ -895,82 +837,45 @@ args = []
     }
 
     #[test]
-    fn global_command_bindings_preserve_metadata_and_action_fields() {
-        let config: CommandConfig = toml::from_str(
+    fn raw_host_bindings_map_canonical_keys_to_command_fqids() {
+        let raw: super::RawConfig = toml::from_str(
             r#"
-            [bindings.help]
-            key = "ctrl+h"
-            label = "Help"
-            visibility = "always"
-            type = "return"
-            producer = "declared"
-            [bindings.help.handler]
-            value = "help"
+            [host_bindings]
+            "ctrl+k" = "core.open"
+            "ctrl+g" = "__parameters.edit"
             "#,
         )
         .unwrap();
-        let binding = &config.bindings["help"];
-        assert_eq!(binding.key.as_deref(), Some("ctrl+h"));
-        assert_eq!(binding.label.as_deref(), Some("Help"));
-        assert_eq!(binding.visibility, Some(CommandBindingVisibility::Always));
-        assert!(matches!(
-            binding.action,
-            Some(CommandAction::Return {
-                producer: ProducerKind::Declared,
-                ..
-            })
-        ));
+        assert_eq!(raw.host_bindings["ctrl+k"], "core.open");
+        assert_eq!(raw.host_bindings["ctrl+g"], "__parameters.edit");
     }
 
     #[test]
-    fn global_command_bindings_reject_unknown_fields() {
-        let unknown_with_type: std::result::Result<CommandConfig, _> = toml::from_str(
+    fn presentation_show_title_defaults_true_and_deserializes() {
+        let pres: super::ViewPresentation = toml::from_str(
             r#"
-            [bindings.help]
-            key = "ctrl+h"
-            label = "Help"
-            type = "return"
-            producer = "declared"
-            extra = true
-            [bindings.help.handler]
-            value = "help"
-            "#,
-        );
-        assert!(unknown_with_type.is_err());
-
-        let unknown_without_type: std::result::Result<CommandConfig, _> = toml::from_str(
-            r#"
-            [bindings.help]
-            key = "ctrl+h"
-            label = "Help"
-            extra = true
-            "#,
-        );
-        assert!(unknown_without_type.is_err());
-    }
-
-    #[test]
-    fn ordinary_global_bindings_without_actions_are_deferred_to_validation() {
-        let config: CommandConfig = toml::from_str(
-            r#"
-            [bindings.help]
-            key = "ctrl+h"
-            label = "Help"
+            mode = "popup"
             "#,
         )
         .unwrap();
-        assert!(config.bindings["help"].action.is_none());
-    }
+        assert!(pres.show_title);
 
-    #[test]
-    fn built_in_commands_are_an_internal_action() {
-        let action = CommandBinding::builtin_commands()
-            .command_action("commands")
-            .unwrap();
-        assert!(matches!(action, CommandAction::OpenCommands));
-        assert_eq!(action.operation_type(), "open-commands");
-        let _ = ResolvedScriptSource {
-            target: ResolvedScriptTarget::Inline(String::new()),
-        };
+        let pres_false: super::ViewPresentation = toml::from_str(
+            r#"
+            mode = "popup"
+            show_title = false
+            "#,
+        )
+        .unwrap();
+        assert!(!pres_false.show_title);
+
+        let pres_true: super::ViewPresentation = toml::from_str(
+            r#"
+            mode = "popup"
+            show_title = true
+            "#,
+        )
+        .unwrap();
+        assert!(pres_true.show_title);
     }
 }

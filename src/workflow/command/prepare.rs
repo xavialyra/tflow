@@ -5,12 +5,9 @@ use crate::workflow::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     NavigationMode, NavigationRequest,
 };
-use crate::workflow::config::{
-    Command, CommandAction, CompiledConfig, ProducerKind, normalize_key,
-};
-use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use crate::workflow::config::{CommandAction, CompiledConfig, ProducerKind};
+use anyhow::{Context, Result};
+use serde_json::Value;
 use std::path::Path;
 
 pub(crate) enum PreparedAction {
@@ -22,6 +19,9 @@ pub(crate) enum PreparedAction {
     Call(Box<CallRequest>),
     Return {
         value: Value,
+    },
+    InvokeCommand {
+        command: crate::workflow::command::CommandRef,
     },
     Execute {
         prepared: PreparedProcess,
@@ -60,22 +60,14 @@ fn prepare_action(
     context: CommandContext,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    match action {
-        CommandAction::OpenCommands => {
-            prepare_builtin_commands(config, command_invocation, context)
-        }
-        CommandAction::OpenParameters => {
-            prepare_builtin_parameters(config, command_invocation, context)
-        }
-        _ => prepare_producer_action(
-            config,
-            invocation,
-            action,
-            command_invocation,
-            context,
-            cancellation,
-        ),
-    }
+    prepare_producer_action(
+        config,
+        invocation,
+        action,
+        command_invocation,
+        context,
+        cancellation,
+    )
 }
 
 fn prepare_producer_action(
@@ -107,6 +99,16 @@ fn prepare_producer_action(
         ProducerKind::Script => {
             let root = command_root(config, &command_invocation);
             let source = crate::workflow::config::parse_producer_script_handler(handler, root)?;
+            let active_view = &context.page.view_ref;
+            let query = config
+                .query_definition(active_view)
+                .unwrap_or_else(|_| serde_json::json!({"type": "string"}));
+            let view = serde_json::json!({
+                "ref": active_view,
+                "query": query,
+                "values": context.page.parameters.values(),
+                "raw_input": context.page.parameters.raw_input(),
+            });
             let request = crate::protocol::command_request(
                 &context.owner,
                 command_invocation.id(),
@@ -114,6 +116,8 @@ fn prepare_producer_action(
                 invocation.input_value(),
                 &context.current,
                 &context.engine_type,
+                &context.commands,
+                &view,
             );
             crate::protocol::run_script_response(
                 command_invocation.source_view(),
@@ -159,14 +163,15 @@ pub(crate) fn prepare_return_processor(
     result: &crate::view::ViewResult,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    let command = match &origin {
-        CommandOrigin::View(reference) => {
-            let member_id = crate::workflow::config::package_id(&reference.view);
-            config.find_command(member_id, &reference.id).cloned()
-        }
-        CommandOrigin::Session { definition, .. } => Some((**definition).clone()),
-    }
-    .context("return processor origin is not configured")?;
+    // The command id is the unique FQID; the current View is the execution
+    // context, so the same lookup serves every binding layer.
+    let command = config
+        .find_command(
+            crate::workflow::config::package_id(origin.source_view()),
+            origin.id(),
+        )
+        .cloned()
+        .context("return processor origin is not configured")?;
     let command_invocation = CommandInvocation::from_origin(origin.clone(), command);
     let source_label = format!(
         "{}.commands.{}.return_processor",
@@ -231,9 +236,6 @@ fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
         | CommandAction::Navigate { handler, .. }
         | CommandAction::Call { handler, .. }
         | CommandAction::Return { handler, .. } => Ok(handler),
-        CommandAction::OpenCommands | CommandAction::OpenParameters => {
-            bail!("built-in actions do not have a producer handler")
-        }
     }
 }
 
@@ -254,7 +256,8 @@ fn prepare_protocol_operation(
             replace,
             clear_input,
         } => {
-            let target = config.resolve_view(&target)?;
+            let caller_view = command_invocation.source_view();
+            let target = config.resolve_view_scoped(&target, caller_view)?;
             let request = match query {
                 Some(query) => NavigationRequest::new(target, "").with_parameters(query),
                 None => NavigationRequest::with_defaults(target),
@@ -275,7 +278,8 @@ fn prepare_protocol_operation(
             query,
             presentation,
         } => {
-            let target = config.resolve_view(&target)?;
+            let caller_view = command_invocation.source_view();
+            let target = config.resolve_view_scoped(&target, caller_view)?;
             let request = match query {
                 Some(query) => NavigationRequest::new(target, "").with_parameters(query),
                 None => NavigationRequest::with_defaults(target),
@@ -290,6 +294,9 @@ fn prepare_protocol_operation(
         }
         crate::protocol::ProtocolOperation::Return { value } => {
             Ok(PreparedAction::Return { value })
+        }
+        crate::protocol::ProtocolOperation::InvokeCommand { command } => {
+            Ok(PreparedAction::InvokeCommand { command })
         }
         crate::protocol::ProtocolOperation::Run {
             argv,
@@ -316,9 +323,17 @@ fn command_root<'a>(
     config: &'a CompiledConfig,
     command_invocation: &CommandInvocation,
 ) -> Option<&'a Path> {
-    config
-        .workflow_root(command_invocation.id())
-        .or_else(|| config.workflow_root(command_invocation.source_view()))
+    // A command reference is either a fully qualified `<workflow>.<command>`
+    // or a local id resolved against the view that declares the binding. The
+    // owning workflow determines where relative script files are read from, so
+    // an item binding published by another workflow must not borrow the
+    // aggregate view's script root.
+    let id = command_invocation.id();
+    let owner = id.split_once('.').map_or_else(
+        || command_invocation.source_view(),
+        |(workflow, _)| workflow,
+    );
+    config.workflow_root(owner)
 }
 
 fn prepared_direct_process(root: Option<&Path>, argv: Vec<String>) -> Result<PreparedProcess> {
@@ -338,112 +353,6 @@ fn prepared_direct_process(root: Option<&Path>, argv: Vec<String>) -> Result<Pre
     })
 }
 
-pub(crate) const COMMANDS_POPUP_WIDTH: u16 = 50;
-pub(crate) const COMMANDS_POPUP_HEIGHT: u16 = 10;
-pub(crate) const QUERY_POPUP_WIDTH: u16 = 54;
-pub(crate) const QUERY_POPUP_HEIGHT: u16 = 12;
-
-pub(crate) fn is_commands_view(view: &str, target: &str) -> bool {
-    view == target
-        || view == "__commands:main"
-        || crate::workflow::config::package_id(view) == "__commands"
-}
-
-pub(crate) fn is_query_view(view: &str, target: &str) -> bool {
-    view == target
-        || view == "__query:main"
-        || view == "__form:main"
-        || crate::workflow::config::package_id(view) == "__query"
-        || crate::workflow::config::package_id(view) == "__form"
-}
-
-fn prepare_builtin_commands(
-    config: &CompiledConfig,
-    command_invocation: CommandInvocation,
-    context: CommandContext,
-) -> Result<PreparedAction> {
-    let target = config.resolve_view("__commands:main")?;
-    if is_commands_view(&context.page.view_ref, &target) {
-        return Ok(PreparedAction::Noop);
-    }
-    let commands = collect_available_commands(config, &context.page.view_ref, true)?
-        .into_values()
-        .collect::<Vec<_>>();
-    let request = NavigationRequest::new(target, "")
-        .with_parameters(json!({"commands": commands}))
-        .with_presentation(
-            crate::workflow::config::ViewPresentation::popup(
-                COMMANDS_POPUP_WIDTH,
-                COMMANDS_POPUP_HEIGHT,
-            )
-            .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
-        );
-    Ok(PreparedAction::Call(Box::new(CallRequest {
-        request,
-        origin: command_invocation.origin(),
-        context,
-        return_processor: None,
-    })))
-}
-
-fn prepare_builtin_parameters(
-    config: &CompiledConfig,
-    command_invocation: CommandInvocation,
-    context: CommandContext,
-) -> Result<PreparedAction> {
-    let target = config
-        .resolve_view("__query:main")
-        .or_else(|_| config.resolve_view("__form:main"))?;
-    if is_query_view(&context.page.view_ref, &target) {
-        return Ok(PreparedAction::Noop);
-    }
-    let payload = serde_json::to_string(&json!({
-        "target": context.page.view_ref,
-        "query": config.query_definition(&context.page.view_ref)?,
-        "values": context.page.parameters.values().clone(),
-    }))
-    .context("could not serialize parameter form payload")?;
-    let request = NavigationRequest::with_defaults(target)
-        .with_parameters(json!({"payload": payload}))
-        .with_presentation(crate::workflow::config::ViewPresentation::popup(
-            QUERY_POPUP_WIDTH,
-            QUERY_POPUP_HEIGHT,
-        ));
-    Ok(PreparedAction::Call(Box::new(CallRequest {
-        request,
-        origin: command_invocation.origin(),
-        context,
-        return_processor: None,
-    })))
-}
-
-pub(crate) fn collect_available_commands(
-    config: &CompiledConfig,
-    page_view: &str,
-    include_globals: bool,
-) -> Result<BTreeMap<String, Value>> {
-    let mut commands = BTreeMap::new();
-    if include_globals {
-        for (id, command) in config.session_commands() {
-            if id != "commands" && id != "parameters" {
-                commands.insert(
-                    format!("session/{id}"),
-                    runtime_command_value("session", &id, &command)?,
-                );
-            }
-        }
-    }
-    let member_id = crate::workflow::config::package_id(page_view);
-    for (id, command) in config.workflow_commands(member_id) {
-        let local_id = id.strip_prefix(&format!("{member_id}:")).unwrap_or(&id);
-        commands.insert(
-            format!("{page_view}/{local_id}"),
-            runtime_command_value(page_view, local_id, &command)?,
-        );
-    }
-    Ok(commands)
-}
-
 #[cfg(test)]
 pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
     match (left == "enter", right == "enter") {
@@ -451,21 +360,6 @@ pub(crate) fn compare_bindings(left: &str, right: &str) -> std::cmp::Ordering {
         (false, true) => std::cmp::Ordering::Greater,
         _ => left.cmp(right),
     }
-}
-
-pub(crate) fn runtime_command_value(owner: &str, id: &str, command: &Command) -> Result<Value> {
-    let key = match &command.key {
-        Some(raw) => {
-            normalize_key(raw).with_context(|| format!("invalid command key for {owner}/{id}"))?
-        }
-        None => String::new(),
-    };
-    Ok(json!({
-        "ref": {"view": owner, "id": id},
-        "owner": owner,
-        "key": key,
-        "label": command.label,
-    }))
 }
 
 #[cfg(test)]
@@ -486,93 +380,47 @@ mod tests {
     }
 
     #[test]
-    fn fixture_commands_have_serializable_references() {
+    fn fully_qualified_command_resolves_its_own_workflow_script_root() {
+        // An aggregate view dispatches `apps.open`; the command's relative
+        // script files must resolve under the apps workflow, not the aggregate.
         let config = crate::workflow::config::load_test_fixture().unwrap();
-        let commands = collect_available_commands(&config, "dmenu:main", true).unwrap();
-        let (key, value) = commands.iter().next().expect("fixture exposes commands");
-        let (view, id) = key.split_once('/').expect("command key has an owner");
-        assert_eq!(value["ref"]["view"], view);
-        assert_eq!(value["ref"]["id"], id);
-    }
-
-    #[test]
-    fn is_commands_view_identifies_builtin_command_view() {
-        assert!(is_commands_view("__commands:main", "__commands:main"));
-        assert!(is_commands_view("__commands:detail", "__commands:main"));
-        assert!(!is_commands_view("core:default", "__commands:main"));
-        assert!(!is_commands_view("sys:main", "__commands:main"));
-    }
-
-    #[test]
-    fn prepare_builtin_commands_returns_noop_when_already_in_commands_view() {
-        let config = crate::workflow::config::load_test_fixture().unwrap();
-        let invocation = CommandInvocation::session_command(
-            "__commands:main",
-            "commands",
-            crate::workflow::config::CommandBinding::builtin_commands()
-                .as_command("commands")
-                .unwrap(),
-        );
-        let param_snap = crate::workflow::parameter::ParameterSnapshot::from_parts(
-            serde_json::Value::Null,
-            String::new(),
-            crate::input::InputSourceIdentity::default(),
-            0,
-        );
-        let context = CommandContext {
-            page: super::super::CommandOwnerContext {
-                view_ref: "__commands:main".to_string(),
-                parameters: param_snap.clone(),
+        let command = config
+            .find_command("core", "apps.open")
+            .cloned()
+            .expect("fixture exposes apps.open");
+        let invocation = CommandInvocation::view(
+            "core:default",
+            crate::workflow::command::CommandRef {
+                id: "apps.open".to_string(),
+                revision: 0,
             },
-            owner: super::super::CommandOwnerContext {
-                view_ref: "__commands:main".to_string(),
-                parameters: param_snap,
-            },
-            current: Value::Null,
-            engine_type: "picker".to_string(),
-        };
-        let prepared = prepare_builtin_commands(&config, invocation, context).unwrap();
-        assert!(matches!(prepared, PreparedAction::Noop));
-    }
-
-    #[test]
-    fn is_query_view_identifies_builtin_query_view() {
-        assert!(is_query_view("__query:main", "__query:main"));
-        assert!(is_query_view("__query:detail", "__query:main"));
-        assert!(is_query_view("__form:main", "__query:main"));
-        assert!(!is_query_view("core:default", "__query:main"));
-        assert!(!is_query_view("sys:main", "__query:main"));
-    }
-
-    #[test]
-    fn prepare_builtin_parameters_returns_noop_when_already_in_query_view() {
-        let config = crate::workflow::config::load_test_fixture().unwrap();
-        let invocation = CommandInvocation::session_command(
-            "__query:main",
-            "parameters",
-            crate::workflow::config::CommandBinding::builtin_parameters()
-                .as_command("parameters")
-                .unwrap(),
+            command,
         );
-        let param_snap = crate::workflow::parameter::ParameterSnapshot::from_parts(
-            serde_json::Value::Null,
-            String::new(),
-            crate::input::InputSourceIdentity::default(),
-            0,
+        let root = command_root(&config, &invocation).expect("apps workflow root");
+        assert!(
+            root.ends_with("workflows/apps"),
+            "cross-workflow command must resolve its own root, got {}",
+            root.display()
         );
-        let context = CommandContext {
-            page: super::super::CommandOwnerContext {
-                view_ref: "__query:main".to_string(),
-                parameters: param_snap.clone(),
+
+        // A local binding in the aggregate keeps using the aggregate root.
+        let local = config
+            .find_command("core", "complete")
+            .cloned()
+            .expect("fixture exposes core.complete");
+        let local_invocation = CommandInvocation::view(
+            "core:default",
+            crate::workflow::command::CommandRef {
+                id: "complete".to_string(),
+                revision: 0,
             },
-            owner: super::super::CommandOwnerContext {
-                view_ref: "__query:main".to_string(),
-                parameters: param_snap,
-            },
-            current: Value::Null,
-            engine_type: "form".to_string(),
-        };
-        let prepared = prepare_builtin_parameters(&config, invocation, context).unwrap();
-        assert!(matches!(prepared, PreparedAction::Noop));
+            local,
+        );
+        let local_root = command_root(&config, &local_invocation).expect("core workflow root");
+        assert!(
+            local_root.ends_with("workflows/core"),
+            "local command must resolve the caller root, got {}",
+            local_root.display()
+        );
     }
 }

@@ -18,12 +18,12 @@ impl CompiledConfig {
     ) -> Result<Self> {
         Ok(Self {
             entrypoint: entrypoint.clone(),
-            default_view: Some(entrypoint),
             entrypoint_query: None,
             suite_file: None,
             image_protocol: super::ImageProtocol::default(),
             log_file: None,
-            commands: super::CommandConfig::default(),
+            chrome_commands_show: vec!["enter".to_string(), "ctrl+k".to_string()],
+            host_bindings: BTreeMap::new(),
             aliases,
             view_aliases,
             all_commands,
@@ -54,11 +54,6 @@ impl CompiledConfig {
         let mut views = BTreeMap::new();
         let mut workflows = BTreeMap::new();
         let mut all_commands = BTreeMap::new();
-        let user_wf_count = raw
-            .workflows
-            .iter()
-            .filter(|(id, _)| !id.starts_with("__"))
-            .count();
 
         for (package_id, workflow) in raw.workflows {
             let metadata = WorkflowMetadata {
@@ -67,14 +62,12 @@ impl CompiledConfig {
                 styles: workflow.styles,
             };
             for (cmd_id, mut command) in workflow.commands {
+                validate_command_id(&cmd_id)?;
                 if command.label.is_empty() {
                     command.label = cmd_id.clone();
                 }
-                let fqid = format!("{package_id}:{cmd_id}");
-                all_commands.insert(fqid.clone(), command.clone());
-                if user_wf_count <= 1 && !package_id.starts_with("__") {
-                    all_commands.insert(cmd_id.clone(), command.clone());
-                }
+                let fqid = format!("{package_id}.{cmd_id}");
+                all_commands.insert(fqid, command);
             }
             for (view_name, view) in workflow.views {
                 let view_ref = qualify_view_ref(&package_id, &view_name)?;
@@ -86,7 +79,7 @@ impl CompiledConfig {
         }
 
         let aliases = raw.aliases;
-        let entrypoint = if let Some(ep) = raw.entrypoint.or(raw.default_view) {
+        let entrypoint = if let Some(ep) = raw.entrypoint {
             if views.contains_key(&ep) {
                 ep
             } else if let Some(target) = aliases.get(&ep) {
@@ -136,12 +129,14 @@ impl CompiledConfig {
         )?;
         Ok(Self {
             entrypoint: compiled.entrypoint.clone(),
-            default_view: compiled.default_view.clone(),
             entrypoint_query: None,
             suite_file: None,
             image_protocol: raw.image_protocol,
             log_file: raw.log_file,
-            commands: raw.commands,
+            chrome_commands_show: raw
+                .chrome_commands_show
+                .unwrap_or_else(|| vec!["enter".to_string(), "ctrl+k".to_string()]),
+            host_bindings: raw.host_bindings,
             aliases: compiled.aliases,
             view_aliases: compiled.view_aliases,
             all_commands: compiled.all_commands,
@@ -167,4 +162,14 @@ fn qualify_view_ref(workflow: &str, view: &str) -> Result<ViewRef> {
         );
     }
     Ok(format!("{}:{}", workflow, view))
+}
+
+fn validate_command_id(command_id: &str) -> Result<()> {
+    if command_id.trim().is_empty()
+        || command_id.contains('.')
+        || command_id.chars().any(char::is_whitespace)
+    {
+        bail!("command ID {:?} is not valid", command_id);
+    }
+    Ok(())
 }

@@ -98,7 +98,7 @@ impl ParameterRegistry {
         Ok(state)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn bind_cli(&self, view_ref: &str, arguments: &[String]) -> Result<ParameterState> {
         let mut state = self.instantiate(view_ref)?;
         self.apply_cli(&mut state, arguments)?;
@@ -622,11 +622,6 @@ impl ParameterBinding {
         state.revision = snapshot.revision;
         state.input_rejected = input_rejected;
         Ok(state)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn bind_cli(&self, arguments: &[String]) -> Result<ParameterState> {
-        self.registry.bind_cli(&self.view_ref, arguments)
     }
 
     pub(crate) fn apply_cli(&self, state: &mut ParameterState, arguments: &[String]) -> Result<()> {
