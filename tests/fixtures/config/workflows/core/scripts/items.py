@@ -146,15 +146,15 @@ def main():
             cells.append(badge_cell)
             constraints.append({"Length": badge_width})
 
-    def inspect_view_keymap(view_ref):
+    def inspect_view_bindings(view_ref):
         if os.path.exists(suite_file):
             cmd = [tflow_bin, "-s", suite_file, "--inspect", view_ref]
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 if res.returncode == 0 and res.stdout.strip():
                     contract = json.loads(res.stdout.strip())
-                    if isinstance(contract, dict) and "keymap" in contract:
-                        km = contract["keymap"]
+                    if isinstance(contract, dict) and "bindings" in contract:
+                        km = contract["bindings"]
                         if isinstance(km, dict):
                             return {k: v for k, v in km.items() if k}
             except Exception:
@@ -168,20 +168,20 @@ def main():
             try:
                 with open(wf_toml, "r", encoding="utf-8") as handle:
                     content = handle.read()
-                in_keymap = False
-                keymap = {}
+                in_bindings = False
+                bindings = {}
                 for line in content.splitlines():
                     line = line.strip()
                     if line.startswith("[") and line.endswith("]"):
-                        in_keymap = line == f"[views.{view_name}.keymap]"
+                        in_bindings = line == f"[views.{view_name}.bindings]"
                         continue
-                    if in_keymap and "=" in line and not line.startswith("#"):
+                    if in_bindings and "=" in line and not line.startswith("#"): 
                         k, v = [p.strip() for p in line.split("=", 1)]
                         k = k.strip("\"'")
                         v = v.strip("\"'")
                         if k:
-                            keymap[k] = f"{member}:{v}"
-                return keymap
+                            bindings[k] = f"{member}.{v}"
+                return bindings
             except Exception:
                 pass
         return {}
@@ -254,11 +254,11 @@ def main():
             continue
 
         raw_items = fetch_items_for_view(view_ref)
-        keymap = inspect_view_keymap(view_ref)
+        bindings = inspect_view_bindings(view_ref)
 
         for item in raw_items:
             current_bindings = item.get("bindings") or {}
-            combined = dict(keymap) if keymap else {}
+            combined = dict(bindings) if bindings else {}
             combined.update(current_bindings)
             item["bindings"] = combined
             add_view_badge(item, view_badge(view_ref, source))

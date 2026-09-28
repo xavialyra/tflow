@@ -14,7 +14,7 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.sh"
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "run"
 "" = "info"
 

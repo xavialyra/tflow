@@ -385,7 +385,14 @@ pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
     }
 
     let mut settings = toml::Table::new();
-    for key in ["image_protocol", "log_file", "defaults"] {
+    for key in [
+        "image_protocol",
+        "log_file",
+        "picker",
+        "capture",
+        "embedded",
+        "form",
+    ] {
         if let Some(value) = config.as_table_mut().unwrap().remove(key) {
             settings.insert(key.to_string(), value);
         }
@@ -451,18 +458,21 @@ fn materialize_test_workflow(
                 if let Some(view_cmds) = view_tbl.remove("commands")
                     && let Some(view_cmds_table) = view_cmds.as_table()
                 {
-                    let keymap = view_tbl
-                        .entry("keymap".to_string())
+                    let bindings = view_tbl
+                        .entry("bindings".to_string())
                         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
                         .as_table_mut()
                         .unwrap();
                     for (cmd_id, cmd_val) in view_cmds_table {
-                        if let Some(cmd_table) = cmd_val.as_table()
-                            && let Some(key) = cmd_table.get("key").and_then(toml::Value::as_str)
+                        let mut promoted = cmd_val.clone();
+                        if let Some(cmd_table) = promoted.as_table_mut()
+                            && let Some(key) = cmd_table
+                                .remove("key")
+                                .and_then(|value| value.as_str().map(str::to_string))
                         {
-                            keymap.insert(key.to_string(), toml::Value::String(cmd_id.clone()));
+                            bindings.insert(key, toml::Value::String(cmd_id.clone()));
                         }
-                        promoted_commands.push((cmd_id.clone(), cmd_val.clone()));
+                        promoted_commands.push((cmd_id.clone(), promoted));
                     }
                 }
                 if let Some(engine) = view_tbl
@@ -500,6 +510,45 @@ fn materialize_test_workflow(
             .unwrap();
         for (cmd_id, cmd_val) in promoted_commands {
             wf_cmds.insert(cmd_id, cmd_val);
+        }
+    }
+
+    // Test fixtures historically placed a physical key on workflow commands.
+    // Convert that fixture-only shorthand into the new key-centric bindings
+    // table before the production parser sees the manifest.
+    let fixture_entrypoint = matched_entrypoint
+        .clone()
+        .or_else(|| first_view_name.clone())
+        .unwrap_or_else(|| "main".to_string());
+    let mut root_command_keys = Vec::new();
+    if let Some(commands) = manifest_table
+        .get_mut("commands")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for (command_id, command) in commands.iter_mut() {
+            if let Some(key) = command
+                .as_table_mut()
+                .and_then(|table| table.remove("key"))
+                .and_then(|value| value.as_str().map(str::to_string))
+            {
+                root_command_keys.push((key, command_id.clone()));
+            }
+        }
+    }
+    if !root_command_keys.is_empty()
+        && let Some(view) = manifest_table
+            .get_mut("views")
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|views| views.get_mut(&fixture_entrypoint))
+            .and_then(toml::Value::as_table_mut)
+    {
+        let bindings = view
+            .entry("bindings".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .unwrap();
+        for (key, command_id) in root_command_keys {
+            bindings.insert(key, toml::Value::String(command_id));
         }
     }
 
@@ -613,6 +662,32 @@ pub fn run_dmenu_steps_waiting_for_text(
         .read_to_end(&mut stdout)
         .expect("could not read invocation stdout");
     RunResult { status, stdout }
+}
+
+/// Runs the dmenu fixture, waits for `before` on screen, sends `keys`, and
+/// returns the screen as soon as `after` appears. The invocation is killed on
+/// return, so the caller only inspects what it needs from the frame.
+pub fn run_dmenu_keys_capturing_screen(keys: &[u8], before: &str, after: &str) -> Vec<u8> {
+    let _guard = lock_dmenu_tests();
+    let config = fixture_config();
+    let config = config.to_str().expect("fixture config path is not UTF-8");
+    let mut process = spawn(&["--suite", config, "dmenu:main"]);
+    process
+        .input
+        .take()
+        .expect("invocation input pipe is missing")
+        .write_all(b"first\nsecond\n")
+        .expect("could not write invocation input");
+    wait_for_text(&process.master, before);
+    process
+        .master
+        .write_all(keys)
+        .expect("could not write invocation key input");
+    process
+        .master
+        .flush()
+        .expect("could not flush invocation key input");
+    wait_for_text(&process.master, after)
 }
 
 pub fn run_tty_dmenu(keys: &[u8]) -> RunResult {

@@ -35,9 +35,11 @@ input_placeholder = "Search components"
 producer = "script"
 [views.main.engine.config.items.handler]
 script = '''#!/usr/bin/env python3
+import atexit
 import json
 import os
 import shutil
+import tempfile
 import subprocess
 import sys
 import urllib.request
@@ -90,9 +92,13 @@ DEFAULT_CANDIDATES = [
     }
 ]
 
-def workflow_cache_dir():
-    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_home, "tflow", "workflows")
+_WORKFLOW_SESSION_DIR = None
+
+def cleanup_workflow_session():
+    if _WORKFLOW_SESSION_DIR:
+        shutil.rmtree(_WORKFLOW_SESSION_DIR, ignore_errors=True)
+
+atexit.register(cleanup_workflow_session)
 
 def package_names(root):
     if not os.path.isdir(root):
@@ -106,31 +112,21 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Use a checkout when available, otherwise clone the repository cache."""
+    """Use one temporary checkout for this wizard process."""
+    global _WORKFLOW_SESSION_DIR
     candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
     if has_workflows(candidate):
         return os.path.realpath(candidate)
-
-    cache = os.path.join(workflow_cache_dir(), "repository")
-    source = os.path.join(cache, "examples", "default-suite", "workflows")
-    if has_workflows(source):
-        return source
-
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    staging = f"{cache}.staging-{os.getpid()}"
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", staging],
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
-        if not has_workflows(os.path.join(staging, "examples", "default-suite", "workflows")):
-            raise RuntimeError("Cloned repository has no example workflows")
-        os.replace(staging, cache)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return source if has_workflows(source) else None
+    if _WORKFLOW_SESSION_DIR:
+        source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
+        if has_workflows(source):
+            return source
+    _WORKFLOW_SESSION_DIR = tempfile.mkdtemp(prefix="tflow-setup-")
+    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", _WORKFLOW_SESSION_DIR], check=True, stdout=subprocess.DEVNULL)
+    source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
+    if not has_workflows(source):
+        raise RuntimeError("Cloned repository has no example workflows")
+    return source
 
 def source_signature(source):
     """Fingerprint the source tree; any edit or added package changes it."""
@@ -148,51 +144,8 @@ def source_signature(source):
     return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
 
 def ensure_workflow_cache():
-    """Return the cache, re-copying the source whenever the source changed.
-
-    The marker records the source fingerprint, so editing the workflow source
-    refreshes the cache on the next run. With no source configured this returns
-    None rather than trusting whatever the cache happens to hold.
-    """
-    cache = workflow_cache_dir()
-    source = workflow_source_dir()
-    if source is None:
-        return None
-
-    repository_source = os.path.join(
-        workflow_cache_dir(), "repository", "examples", "default-suite", "workflows"
-    )
-    if os.path.realpath(source) == os.path.realpath(repository_source):
-        return source
-
-    signature = source_signature(source)
-    marker = os.path.join(cache, ".bootstrap-source")
-    if has_workflows(cache):
-        try:
-            with open(marker, encoding="utf-8") as f:
-                if f.read().strip() == signature:
-                    return cache
-        except OSError:
-            pass
-
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    staging = f"{cache}.staging-{os.getpid()}"
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        shutil.copytree(
-            source,
-            staging,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".bootstrap-*"),
-        )
-        if not has_workflows(staging):
-            return None
-        with open(os.path.join(staging, ".bootstrap-source"), "w", encoding="utf-8") as f:
-            f.write(signature + "\n")
-        shutil.rmtree(cache, ignore_errors=True)
-        os.replace(staging, cache)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return cache if has_workflows(cache) else None
+    """Return the process-local source used by this wizard invocation."""
+    return workflow_source_dir()
 
 def fetch_catalog():
     ensure_workflow_cache()
@@ -355,7 +308,7 @@ def main():
             "border": True,
         })
 
-    # 2. Actions & Keymap Banner
+    # 2. Actions & Bindings Banner
     actions_text = (
         "Keybindings & Fast Actions:\n"
         "  • [Tab]         Toggle selected workflow\n"
@@ -388,7 +341,7 @@ if __name__ == "__main__":
     main()
 '''
 
-[views.main.keymap]
+[views.main.bindings]
 tab = "toggle"
 "ctrl+a" = "select_all"
 "ctrl+r" = "clear_all"
@@ -565,12 +518,13 @@ def resolve_tflow_bin():
     return which if which else "tflow"
 
 def generate_settings_content():
-    return """[defaults.picker.bindings]
-exit = ["ctrl+c", "ctrl+d"]
-toggle_preview = ["ctrl+p"]
-back = ["escape"]
-select_previous = ["up"]
-select_next = ["down"]
+    return """[picker.bindings]
+\"ctrl+c\" = "exit"
+\"ctrl+d\" = "exit"
+\"ctrl+p\" = "toggle_preview"
+\"escape\" = "back"
+\"up\" = "select_previous"
+\"down\" = "select_next"
 """
 
 def main():
@@ -630,7 +584,6 @@ finally:
             "version": 1,
             "operation": {
                 "type": "run",
-                "mode": "foreground",
                 "argv": [sys.executable, "-c", runner_script],
                 "exit": False,
             },
@@ -650,9 +603,11 @@ type = "run"
 producer = "script"
 [commands.install.handler]
 script = '''#!/usr/bin/env python3
+import atexit
 import json
 import os
 import shutil
+import tempfile
 import subprocess
 import sys
 
@@ -704,9 +659,13 @@ def resolve_target_dirs():
         config_dir = os.path.join(home, ".config", "tflow")
     return config_dir
 
-def workflow_cache_dir():
-    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(cache_home, "tflow", "workflows")
+_WORKFLOW_SESSION_DIR = None
+
+def cleanup_workflow_session():
+    if _WORKFLOW_SESSION_DIR:
+        shutil.rmtree(_WORKFLOW_SESSION_DIR, ignore_errors=True)
+
+atexit.register(cleanup_workflow_session)
 
 def package_names(root):
     if not os.path.isdir(root):
@@ -720,31 +679,21 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Use a checkout when available, otherwise clone the repository cache."""
+    """Use one temporary checkout for this wizard process."""
+    global _WORKFLOW_SESSION_DIR
     candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
     if has_workflows(candidate):
         return os.path.realpath(candidate)
-
-    cache = os.path.join(workflow_cache_dir(), "repository")
-    source = os.path.join(cache, "examples", "default-suite", "workflows")
-    if has_workflows(source):
-        return source
-
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    staging = f"{cache}.staging-{os.getpid()}"
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", staging],
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
-        if not has_workflows(os.path.join(staging, "examples", "default-suite", "workflows")):
-            raise RuntimeError("Cloned repository has no example workflows")
-        os.replace(staging, cache)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return source if has_workflows(source) else None
+    if _WORKFLOW_SESSION_DIR:
+        source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
+        if has_workflows(source):
+            return source
+    _WORKFLOW_SESSION_DIR = tempfile.mkdtemp(prefix="tflow-setup-")
+    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", _WORKFLOW_SESSION_DIR], check=True, stdout=subprocess.DEVNULL)
+    source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
+    if not has_workflows(source):
+        raise RuntimeError("Cloned repository has no example workflows")
+    return source
 
 def source_signature(source):
     """Fingerprint the source tree; any edit or added package changes it."""
@@ -762,51 +711,7 @@ def source_signature(source):
     return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
 
 def ensure_workflow_cache():
-    """Return the cache, re-copying the source whenever the source changed.
-
-    The marker records the source fingerprint, so editing the workflow source
-    refreshes the cache on the next run. With no source configured this returns
-    None rather than trusting whatever the cache happens to hold.
-    """
-    cache = workflow_cache_dir()
-    source = workflow_source_dir()
-    if source is None:
-        return None
-
-    repository_source = os.path.join(
-        workflow_cache_dir(), "repository", "examples", "default-suite", "workflows"
-    )
-    if os.path.realpath(source) == os.path.realpath(repository_source):
-        return source
-
-    signature = source_signature(source)
-    marker = os.path.join(cache, ".bootstrap-source")
-    if has_workflows(cache):
-        try:
-            with open(marker, encoding="utf-8") as f:
-                if f.read().strip() == signature:
-                    return cache
-        except OSError:
-            pass
-
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    staging = f"{cache}.staging-{os.getpid()}"
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
-        shutil.copytree(
-            source,
-            staging,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".bootstrap-*"),
-        )
-        if not has_workflows(staging):
-            return None
-        with open(os.path.join(staging, ".bootstrap-source"), "w", encoding="utf-8") as f:
-            f.write(signature + "\n")
-        shutil.rmtree(cache, ignore_errors=True)
-        os.replace(staging, cache)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return cache if has_workflows(cache) else None
+    return workflow_source_dir()
 
 def core_entrypoint(cache_root):
     """`[workflow].entrypoint` of the core package: the suite must target it.
@@ -869,16 +774,17 @@ def generate_suite_manifest(selected, entrypoint):
 
 def generate_settings_manifest():
     return """# Passive host settings for tflow
-[defaults.picker]
+[picker]
 left_prefix = "$route"
 left_prefix_backspace = "root"
 
-[defaults.picker.bindings]
-exit = ["ctrl+c", "ctrl+d"]
-toggle_preview = ["ctrl+p"]
-back = ["escape"]
-select_previous = ["up"]
-select_next = ["down"]
+[picker.bindings]
+\"ctrl+c\" = "exit"
+\"ctrl+d\" = "exit"
+\"ctrl+p\" = "toggle_preview"
+\"escape\" = "back"
+\"up\" = "select_previous"
+\"down\" = "select_next"
 """
 
 def patch_settings_file(path):
@@ -894,11 +800,11 @@ def patch_settings_file(path):
 
     display = ['left_prefix = "$route"', 'left_prefix_backspace = "root"']
     lines = text.splitlines()
-    if "[defaults.picker]" in lines:
-        at = lines.index("[defaults.picker]") + 1
+    if "[picker]" in lines:
+        at = lines.index("[picker]") + 1
         lines = lines[:at] + display + lines[at:]
     else:
-        lines = ["[defaults.picker]"] + display + [""] + lines
+        lines = ["[picker]"] + display + [""] + lines
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip("\n") + "\n")
@@ -1019,7 +925,6 @@ You are ready to launch! Try running:
             "version": 1,
             "operation": {
                 "type": "run",
-                "mode": "foreground",
                 "argv": [sys.executable, "-c", "import sys; print(sys.argv[1])", msg],
                 "exit": True,
             },
@@ -1038,6 +943,5 @@ label = "Cancel"
 type = "run"
 producer = "declared"
 [commands.cancel.handler]
-mode = "foreground"
 argv = ["true"]
 exit = true

@@ -23,6 +23,7 @@ content_type = { type = "enum", options = ["all", "text", "image", "binary"], de
 type = "picker"
 
 [views.default.engine.config]
+input_placeholder = "Search clipboard history"
 preview_ratio = 0.35
 preview_min_width = 24
 preview_default_open = true
@@ -38,13 +39,29 @@ producer = "script"
 [views.default.engine.config.preview.handler]
 file = "scripts/preview.py"
 
-[views.default.keymap]
-escape = "back"
-"ctrl+p" = "toggle_preview"
+[views.default.bindings]
+"escape" = "@engine:picker.back"
+"ctrl+p" = "@engine:picker.toggle_preview"
+tab = "next_type"
+"shift+tab" = "previous_type"
 enter = "copy"
 
+[commands.previous_type]
+label = "Previous content type"
+type = "navigate"
+producer = "script"
+[commands.previous_type.handler]
+file = "scripts/cycle-type.py"
+
+[commands.next_type]
+label = "Next content type"
+type = "navigate"
+producer = "script"
+[commands.next_type.handler]
+file = "scripts/cycle-type.py"
+
 [commands.copy]
-label = "Restore"
+label = "Copy"
 type = "run"
 producer = "script"
 [commands.copy.handler]

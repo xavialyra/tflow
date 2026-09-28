@@ -31,7 +31,7 @@ json.dump({"version": 1, "output": message}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 '''
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "copy"
 "ctrl+r" = "inline_multiline"
 "ctrl+s" = "inline_single"
@@ -62,7 +62,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["python3", "-c", "import sys; print('ECHO_MULTILINE:' + sys.argv[1])", message],
         "exit": True,
     },
@@ -87,7 +86,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["python3", "-c", "import sys; print('ECHO_SINGLE:' + sys.argv[1])", message],
         "exit": True,
     },
@@ -112,7 +110,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["python3", "-c", "import sys; print('ECHO_PYTHON:' + sys.argv[1])", message],
         "exit": True,
     },

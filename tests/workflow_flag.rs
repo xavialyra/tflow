@@ -228,7 +228,7 @@ fn isolated_workflow_runs_interactively_through_pty() {
             { display = "First Option", value = "first", metadata = {} }
         ]
 
-        [views.main.keymap]
+        [views.main.bindings]
         enter = "run"
 
         [commands.run]
@@ -427,7 +427,7 @@ entrypoint = "choose"
 type = "picker"
 [views.choose.engine.config]
 items = [{ display = "Streamed choice", value = "chosen" }]
-[views.choose.keymap]
+[views.choose.bindings]
 enter = "accept"
 [commands.accept]
 type = "return"

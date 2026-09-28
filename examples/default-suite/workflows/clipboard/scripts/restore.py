@@ -52,7 +52,6 @@ def main():
             "version": 1,
             "operation": {
                 "type": "run",
-                "mode": "foreground",
                 "argv": [
                     "sh",
                     "-c",
@@ -62,7 +61,7 @@ def main():
                     mime,
                 ],
                 "exit": True,
-                "success_message": "Restored to clipboard",
+                "success_message": "Copied to clipboard",
             },
         },
         sys.stdout,

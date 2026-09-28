@@ -102,7 +102,7 @@ def main():
     def view_contract(view_ref):
         """The `--inspect` contract for one View, or None when it is unavailable.
 
-        One call serves both the keymap and the source badge, so an aggregate
+        One call serves both the bindings and the source badge, so an aggregate
         refresh spawns one `--inspect` process per source View instead of two.
         """
         if tflow_bin and os.path.exists(suite_file):
@@ -117,11 +117,11 @@ def main():
                 pass
         return None
 
-    def keymap_of(contract):
-        keymap = contract.get("keymap") if isinstance(contract, dict) else None
-        if not isinstance(keymap, dict):
+    def bindings_of(contract):
+        bindings = contract.get("bindings") if isinstance(contract, dict) else None
+        if not isinstance(bindings, dict):
             return {}
-        return {key: value for key, value in keymap.items() if key}
+        return {key: value for key, value in bindings.items() if key}
 
     def fetch_items_for_view(view_ref):
         # 1. Primary: Use headless CLI extraction with query propagation
@@ -229,12 +229,12 @@ def main():
     all_items = []
     for view_ref, source, raw_items in source_items:
         contract = contracts.get(view_ref) or view_contract(view_ref)
-        keymap = keymap_of(contract)
+        bindings = bindings_of(contract)
 
         for item in raw_items:
-            if keymap:
+            if bindings:
                 current_bindings = item.get("bindings") or {}
-                combined = dict(keymap)
+                combined = dict(bindings)
                 combined.update(current_bindings)
                 item["bindings"] = combined
             add_view_badge(item, view_badge(view_ref, source, contract))

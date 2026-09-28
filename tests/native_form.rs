@@ -25,6 +25,9 @@ entrypoint = "native-form:main"
 native-form = { dir = "./workflows/native-form" }
 selectors = { dir = "./workflows/selectors" }
 
+[host.bindings]
+"ctrl+k" = "selectors.palette"
+
 [aliases]
 native-form = "native-form:main"
 "#,
@@ -41,6 +44,7 @@ entrypoint = "commands"
 [views.commands.query]
 type = "object"
 commands = { type = "array<object>", default = [] }
+revision = { type = "integer", default = 0 }
 
 [views.commands.engine]
 type = "picker"
@@ -52,12 +56,14 @@ producer = "script"
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-items = [{"display": command["label"], "metadata": {"command": command["ref"]}}
-         for command in request["context"]["parameters"]["commands"]]
+parameters = request["context"]["parameters"]
+revision = parameters.get("revision", 0)
+items = [{"display": command["label"], "metadata": {"command": {"id": command["id"], "revision": revision}}}
+         for command in parameters["commands"]]
 json.dump({"version": 1, "items": items}, sys.stdout)
 '''
 
-[views.commands.keymap]
+[views.commands.bindings]
 enter = "accept"
 
 [commands.accept]
@@ -70,6 +76,36 @@ import json, sys
 request = json.load(sys.stdin)
 reference = request["context"]["engine"]["state"]["item"]["metadata"]["command"]
 json.dump({"version": 1, "operation": {"type": "return", "value": reference}}, sys.stdout)
+'''
+
+[commands.palette]
+label = "Commands"
+type = "call"
+producer = "script"
+[commands.palette.handler]
+script = '''#!/usr/bin/env python3
+import json, sys
+context = json.load(sys.stdin).get("context", {})
+envelope = context.get("commands", {})
+if not isinstance(envelope, dict):
+    envelope = {}
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "call",
+        "target": "selectors:commands",
+        "query": {"commands": envelope.get("commands", []), "revision": envelope.get("revision", 0)},
+        "presentation": {"mode": "popup", "width": 50, "height": 10, "anchor": "bottom-right", "show_title": False},
+    },
+}, sys.stdout)
+'''
+[commands.palette.return_processor]
+producer = "script"
+[commands.palette.return_processor.handler]
+script = '''#!/usr/bin/env python3
+import json, sys
+result = json.load(sys.stdin).get("context", {}).get("result")
+json.dump({"version": 1, "operation": {"type": "invoke-command", "command": result}}, sys.stdout)
 '''
 "#,
     )
@@ -94,7 +130,7 @@ fields = [
     { name = "enabled", label = "Enabled", type = "boolean", value = false },
     { name = "options", label = "Options", type = "json", value = { tags = [] } },
 ]
-[views.main.keymap]
+[views.main.bindings]
 enter = "submit"
 "ctrl+l" = "details"
 "ctrl+t" = "string_form"
@@ -107,7 +143,7 @@ type = "form"
 [views.dynamic.engine.config.content]
 producer = "script"
 handler = { file = "scripts/content.py" }
-[views.dynamic.keymap]
+[views.dynamic.bindings]
 enter = "submit"
 
 [commands.submit]
@@ -143,7 +179,7 @@ type = "form"
 [views.string.engine.config.content]
 producer = "script"
 handler = { file = "scripts/string-content.py" }
-[views.string.keymap]
+[views.string.bindings]
 "" = "submit"
 
 [views.failed.engine]

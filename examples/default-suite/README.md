@@ -39,6 +39,9 @@ This directory contains the default suite configuration and member workflows for
 - **`calculator`**:
   - `Enter`: Copy evaluation result to clipboard.
   - `Ctrl+P`: Toggle detailed base conversions (Hex, Bin, Oct).
+- **`clipboard`**:
+  - `Enter`: Restore the selected history entry to the clipboard.
+  - `Tab` / `Shift+Tab`: Switch to the next / previous content type filter (`all`, `text`, `image`, `binary`).
 - **`sys`**:
   - `Enter`: Execute action (prompts confirmation for Reboot and Shut down).
 

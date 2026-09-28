@@ -48,7 +48,7 @@ argv += ["gio", "launch", value]
 json.dump(
     {
         "version": 1,
-        "operation": {"type": "run", "mode": "foreground", "argv": argv, "exit": True},
+        "operation": {"type": "run", "argv": argv, "exit": True},
     },
     sys.stdout,
     separators=(",", ":"),

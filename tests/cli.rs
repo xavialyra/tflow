@@ -1,6 +1,6 @@
 mod support;
 
-use std::{fs, process::Command};
+use std::{fs, path::PathBuf, process::Command};
 
 use support::{binary_path, fixture_config, temporary_root, write_test_config};
 
@@ -104,7 +104,7 @@ fn check_rejects_suite_command_registration() {
         .args(["--check", "--suite"])
         .arg(&config)
         .output()
-        .expect("could not validate the session command override");
+        .expect("could not validate the host command override");
     assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("unknown field `commands`"),
@@ -115,7 +115,7 @@ fn check_rejects_suite_command_registration() {
 }
 
 #[test]
-fn check_rejects_reserved_builtin_selectors_workflow() {
+fn check_allows_workflow_with_double_underscore() {
     let root = temporary_root();
     let config = root.join("config.toml");
     let manifest = root.join("workflows/__selectors/workflow.toml");
@@ -127,6 +127,7 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
         [workflow]
         api = 1
         name = "User selectors"
+        entrypoint = "main"
 
         [views.main.engine]
         type = "picker"
@@ -138,16 +139,12 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
         .args(["--check", "--workflow"])
         .arg(manifest.parent().unwrap())
         .output()
-        .expect("could not validate the reserved workflow ID");
+        .expect("could not validate the workflow ID");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(!output.status.success(), "stderr: {stderr}");
-    assert!(
-        stderr.contains("workflow ID \"__selectors\" is reserved for built-in workflows; user workflow IDs cannot start with '__'"),
-        "stderr: {stderr}"
-    );
+    assert!(output.status.success(), "stderr: {stderr}");
 
-    // Also verify single-file workflows with __ prefix are rejected
+    // Also verify single-file workflows with __ prefix are accepted
     fs::remove_file(&manifest).unwrap();
     let single_file = root.join("workflows/__custom.toml");
     fs::write(
@@ -156,6 +153,7 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
         [workflow]
         api = 1
         name = "User custom"
+        entrypoint = "main"
 
         [views.main.engine]
         type = "picker"
@@ -166,31 +164,27 @@ fn check_rejects_reserved_builtin_selectors_workflow() {
         .args(["--check", "--workflow"])
         .arg(&single_file)
         .output()
-        .expect("could not validate single-file reserved workflow ID");
+        .expect("could not validate single-file workflow ID");
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
-    assert!(!output2.status.success(), "stderr: {stderr2}");
-    assert!(
-        stderr2.contains("workflow ID \"__custom\" is reserved for built-in workflows; user workflow IDs cannot start with '__'"),
-        "stderr: {stderr2}"
-    );
+    assert!(output2.status.success(), "stderr: {stderr2}");
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn check_rejects_unknown_defaults_fields() {
+fn check_rejects_unknown_engine_default_fields() {
     for (source, expected) in [
         (
             r#"
-            [defaults.capture]
+            [capture]
             binding = { copy = ["enter"] }
             "#,
             "unknown field `binding`",
         ),
         (
             r#"
-            [defaults.captuer.bindings]
-            copy = ["enter"]
+            [captuer.bindings]
+            "enter" = "copy"
             "#,
             "unknown field `captuer`",
         ),
@@ -232,15 +226,19 @@ fn check_rejects_unknown_defaults_fields() {
 }
 
 #[test]
-fn check_rejects_picker_binding_conflicts_with_defaults() {
+fn flattened_engine_bindings_override_builtin_defaults() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
         &config,
         r#"
         default_view = "core:default"
-        [defaults.picker.bindings]
-        exit = ["up"]
+        [picker]
+        left_prefix = "$route"
+
+        [picker.bindings]
+        "up" = "exit"
+        "escape" = false
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -257,121 +255,10 @@ fn check_rejects_picker_binding_conflicts_with_defaults() {
         .output()
         .expect("could not run tflow --check");
 
-    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("picker key \"up\" is assigned to both"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_capture_binding_conflicts_with_defaults() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-        [defaults.capture.bindings]
-        back = ["enter"]
-
-        [workflows.core.views.default.engine]
-        type = "capture"
-        [workflows.core.views.default.engine.config]
-        output = "captured"
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--suite"])
-        .arg(&config)
-        .arg("--settings")
-        .arg(root.join("settings.toml"))
-        .output()
-        .expect("could not run tflow --check");
-
-    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
-    assert!(
+        output.status.success(),
+        "flattened key-centric engine bindings must validate: {:?}",
         String::from_utf8_lossy(&output.stderr)
-            .contains("capture key \"enter\" is assigned to both"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_embedded_binding_conflicts_with_defaults() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-        [defaults.embedded.bindings]
-        cancel = ["escape", "escape"]
-
-        [workflows.core.views.default.engine]
-        type = "embedded"
-        [workflows.core.views.default.engine.config]
-        command = ["echo", "hi"]
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--suite"])
-        .arg(&config)
-        .arg("--settings")
-        .arg(root.join("settings.toml"))
-        .output()
-        .expect("could not run tflow --check");
-
-    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("embedded key \"escape\" is assigned to both"),
-        "stderr: {:?}",
-        output.stderr
-    );
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn check_rejects_form_binding_conflicts_with_defaults() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-        [defaults.form.bindings]
-        focus_next = ["escape"]
-
-        [workflows.core.views.default.engine]
-        type = "form"
-        [workflows.core.views.default.engine.config]
-        content = { producer = "declared", handler = { fields = [{ name = "foo" }] } }
-        "#,
-    )
-    .unwrap();
-
-    let output = launcher_command()
-        .args(["--check", "--suite"])
-        .arg(&config)
-        .arg("--settings")
-        .arg(root.join("settings.toml"))
-        .output()
-        .expect("could not run tflow --check");
-
-    assert!(!output.status.success(), "stderr: {:?}", output.stderr);
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("form key \"escape\" is assigned to both"),
-        "stderr: {:?}",
-        output.stderr
     );
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1279,8 +1166,24 @@ fn fixture_inspect_all_returns_sorted_view_contracts() {
         .expect("sys:main must be inspectable");
     assert_eq!(sys["alias"], "sys");
     assert_eq!(sys["engine"], "picker");
-    assert_eq!(sys["commands"]["sys:run"]["label"], "Run");
-    assert_eq!(sys["keymap"]["enter"], "sys:run");
+    let commands = sys["commands"]
+        .as_array()
+        .expect("declaration commands are an entry list");
+    let run = commands
+        .iter()
+        .find(|command| command["id"] == "sys.run")
+        .expect("sys.run is declared");
+    assert_eq!(run["label"], "Run");
+    assert_eq!(run["key"], "enter");
+    assert_eq!(run["layer"], "view");
+    // Declaration only: no runtime revision leaks into --inspect.
+    assert!(run.get("revision").is_none());
+    assert_eq!(sys["bindings"]["enter"], "sys.run");
+    // Unbinding rules are part of the declaration contract.
+    assert_eq!(
+        sys["unbind"],
+        serde_json::json!({"keys": [], "commands": [], "layers": []})
+    );
 
     let output_view = views
         .iter()
@@ -1785,4 +1688,33 @@ fn items_query_mode_producer_script_failure_exit_1() {
         .expect("could not run items query");
     assert_eq!(output.status.code(), Some(1));
     fs::remove_dir_all(root).unwrap();
+}
+
+/// The shipped examples are documentation: a drift here is a broken tutorial.
+/// Gate them with the same `--check` a user runs.
+#[test]
+fn bundled_examples_validate() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let suite = launcher_command()
+        .args(["--check", "--suite"])
+        .arg(root.join("examples/default-suite"))
+        .output()
+        .expect("could not run tflow --check on the example suite");
+    assert!(
+        suite.status.success(),
+        "examples/default-suite is invalid: {}",
+        String::from_utf8_lossy(&suite.stderr)
+    );
+
+    let workflow = launcher_command()
+        .args(["--check", "--workflow"])
+        .arg(root.join("examples/init.toml"))
+        .output()
+        .expect("could not run tflow --check on examples/init.toml");
+    assert!(
+        workflow.status.success(),
+        "examples/init.toml is invalid: {}",
+        String::from_utf8_lossy(&workflow.stderr)
+    );
 }

@@ -1,7 +1,10 @@
 mod support;
 
 use std::fmt::Write as _;
-use support::{run_dmenu, run_dmenu_steps, run_dmenu_steps_waiting_for_text, run_tty_dmenu};
+use support::{
+    run_dmenu, run_dmenu_keys_capturing_screen, run_dmenu_steps, run_dmenu_steps_waiting_for_text,
+    run_tty_dmenu,
+};
 
 #[test]
 fn accepts_a_selected_line_without_terminal_bytes_on_stdout() {
@@ -127,7 +130,7 @@ fn dmenu_can_cancel_the_global_command_selector_and_continue() {
         &[],
         b"first\nsecond\n",
         &[&b"\x0b"[..], &b"\x1b\r"[..]],
-        &["first", "commands"],
+        &["first", "Edit Query"],
     );
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"first\n");
@@ -215,4 +218,30 @@ fn dmenu_parameter_form_preserves_current_typed_input() {
     );
     assert_eq!(result.status, 0);
     assert_eq!(result.stdout, b"second\n");
+}
+
+/// An engine action is reachable by id like any other command. The dmenu fixture
+/// binds `escape` to `@engine:picker.exit` in its own View layer, so the palette
+/// lists it; selecting it must run it, and `picker.exit` means dmenu's own
+/// engine exits -- with the fixture's cancel exit code.
+#[test]
+fn command_palette_runs_an_engine_action_selected_by_reference() {
+    // Rows are ordered by key: Copy selection, Accept, Exit.
+    let screen = run_dmenu_keys_capturing_screen(b"\x0b\x1b[B\x1b[B", "first", "Exit");
+    let screen = String::from_utf8_lossy(&screen);
+    assert!(
+        screen.contains("Copy selection") && screen.contains("Exit"),
+        "palette should list the workflow's own commands and bindings: {screen:?}"
+    );
+
+    let result = run_dmenu_steps(
+        &[],
+        b"first\nsecond\n",
+        &[&b"\x0b"[..], &b"\x1b[B\x1b[B\r"[..]],
+    );
+    assert_eq!(
+        result.status, 1,
+        "the engine action exited the dmenu picker"
+    );
+    assert!(result.stdout.is_empty(), "exit is not an accepted value");
 }

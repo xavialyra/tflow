@@ -11,7 +11,7 @@ type = "picker"
 [views.menu.engine.config]
 items = [{ display = "Open shell" }]
 
-[views.menu.keymap]
+[views.menu.bindings]
 enter = "open"
 
 [commands.open]

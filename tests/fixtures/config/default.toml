@@ -18,6 +18,10 @@ recipe = { file = "./workflows/recipe.toml" }
 shell = { dir = "./workflows/shell" }
 sys = { dir = "./workflows/sys" }
 
+[host.bindings]
+"ctrl+k" = "__commands.palette"
+"ctrl+g" = "__parameters.edit"
+
 [aliases]
 app = "apps:main"
 form-demo = "form:main"

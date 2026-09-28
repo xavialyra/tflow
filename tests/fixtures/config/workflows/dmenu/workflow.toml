@@ -26,8 +26,8 @@ accept-nth = { type = "string", nullable = true }
 match-nth = { type = "string", nullable = true }
 nth-delimiter = { type = "string", nullable = true }
 
-[views.main.keymap]
-"escape" = "exit"
+[views.main.bindings]
+"escape" = "@engine:picker.exit"
 enter = "accept"
 "" = "copy"
 

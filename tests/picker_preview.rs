@@ -126,10 +126,10 @@ fn slow_preview_keeps_items_responsive_and_selection_hide_and_exit_reap_children
         [workflows.sample.views.main.engine.config.preview]
         producer = "script"
         handler = { file = "scripts/preview.py" }
-        [workflows.sample.views.main.keymap]
-        "ctrl+p" = "toggle_preview"
-        "alt+k" = "preview_scroll_up"
-        "alt+j" = "preview_scroll_down"
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "@engine:picker.toggle_preview"
+        "alt+k" = "@engine:picker.preview_scroll_up"
+        "alt+j" = "@engine:picker.preview_scroll_down"
         "#,
     )
     .unwrap();

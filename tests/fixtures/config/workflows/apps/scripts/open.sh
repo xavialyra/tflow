@@ -27,6 +27,6 @@ tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as f:
     json.dump(weights, f, separators=(",", ":"))
 os.replace(tmp, path)
-json.dump({"version": 1, "operation": {"type": "run", "mode": "foreground", "argv": ["setsid", "--wait", "gio", "launch", value], "exit": True}}, sys.stdout, separators=(",", ":"))
+json.dump({"version": 1, "operation": {"type": "run", "argv": ["setsid", "--wait", "gio", "launch", value], "exit": True}}, sys.stdout, separators=(",", ":"))
 sys.stdout.write("\n")
 '

@@ -19,7 +19,7 @@ items = [
     { display = "Second Option", value = "second_option" },
 ]
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "run"
 
 [commands.run]

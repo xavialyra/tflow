@@ -20,7 +20,6 @@ def main():
             "version": 1,
             "operation": {
                 "type": "run",
-                "mode": "foreground",
                 "argv": [
                     "printf",
                     "Submitted selected: %s\\n",

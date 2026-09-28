@@ -48,7 +48,6 @@ def main():
         "version": 1,
         "operation": {
             "type": "run",
-            "mode": "foreground",
             "argv": build_clipboard_command(value),
             "exit": False,
             "success_message": f"Copied '{value}' to clipboard",

@@ -4,7 +4,7 @@ name = "core"
 entrypoint = "default"
 
 [views.default]
-keymap_mode = "item_merge"
+binding_mode = "item_merge"
 
 [views.default.query]
 type = "object"
@@ -23,7 +23,7 @@ producer = "script"
 [views.default.engine.config.items.handler]
 file = "scripts/items.py"
 
-[views.default.keymap]
+[views.default.bindings]
 tab = "complete"
 space = "route_separator"
 
@@ -47,11 +47,10 @@ producer = "script"
 [views.completion.engine.config.items.handler]
 file = "scripts/completion.py"
 
-[views.completion.keymap]
+[views.completion.bindings]
 enter = "accept"
 
 [commands.complete]
-key = "tab"
 label = "Complete route"
 type = "navigate"
 producer = "script"
@@ -59,7 +58,6 @@ producer = "script"
 file = "scripts/complete.py"
 
 [commands.route_separator]
-key = "space"
 label = "Separate route"
 type = "navigate"
 producer = "script"

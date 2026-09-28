@@ -13,7 +13,6 @@ def main():
         "version": 1,
         "operation": {
             "type": "run",
-            "mode": "foreground",
             "argv": [
                 "sh", "-c", 'printf %s "$1" | setsid --fork --wait wl-copy',
                 "calculator-copy", value,

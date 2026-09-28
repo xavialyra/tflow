@@ -21,6 +21,10 @@ clipboard = { dir = "./workflows/clipboard" }
 shell = { dir = "./workflows/shell" }
 dmenu = { dir = "./workflows/dmenu" }
 
+[host.bindings]
+"ctrl+k" = "__commands.palette"
+"ctrl+g" = "__parameters.edit"
+
 [aliases]
 calc = "calculator:main"
 app = "apps:main"

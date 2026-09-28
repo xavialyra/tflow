@@ -1,20 +1,21 @@
 # Development and integration-test fixture; not a distributed default configuration.
 # theme = "fixture"
 image_protocol = "sixel"
-[defaults.capture.bindings]
-copy = ["enter"]
-back = ["escape"]
+[capture.bindings]
+"enter" = "copy"
+"escape" = "back"
 
-[defaults.picker]
+[picker]
 left_prefix = "$route"
 left_prefix_backspace = "root"
 
-[defaults.picker.bindings]
-exit = ["ctrl+c", "ctrl+d"]
-toggle_preview = ["ctrl+p"]
-back = ["escape"]
-select_previous = ["up"]
-select_next = ["down"]
-delete_backward = ["backspace"]
-clear_input = ["ctrl+u"]
-delete_word = ["ctrl+w"]
+[picker.bindings]
+"ctrl+c" = "exit"
+"ctrl+d" = "exit"
+"ctrl+p" = "toggle_preview"
+"escape" = "back"
+"up" = "select_previous"
+"down" = "select_next"
+"backspace" = "delete_backward"
+"ctrl+u" = "clear_input"
+"ctrl+w" = "delete_word"

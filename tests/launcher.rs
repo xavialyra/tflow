@@ -1,7 +1,7 @@
 mod support;
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
@@ -9,10 +9,10 @@ use std::time::Duration;
 use support::{
     current_screen, discard_pending_master_output, fixture_config,
     run_tty_invocation_with_blocked_stdout_signal, spawn_launcher, spawn_launcher_with_args,
-    spawn_launcher_with_args_and_env, spawn_launcher_with_redirected_stdout, temporary_root,
-    wait_for_fresh_screen, wait_for_fresh_text, wait_for_launcher_exit,
-    wait_for_launcher_exit_without_reading, wait_for_nonempty_file, wait_for_output,
-    wait_for_process_exit, wait_for_ready, wait_for_stable_text, wait_for_text, write_test_config,
+    spawn_launcher_with_args_and_env, temporary_root, wait_for_fresh_screen, wait_for_fresh_text,
+    wait_for_launcher_exit, wait_for_launcher_exit_without_reading, wait_for_nonempty_file,
+    wait_for_output, wait_for_process_exit, wait_for_ready, wait_for_stable_text, wait_for_text,
+    write_test_config,
 };
 
 fn write_workflow_script(root: &Path, workflow: &str, file: &str, source: &str) {
@@ -136,8 +136,8 @@ fn first_signal_exits_when_outer_terminal_stops_reading() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
-        [workflows.custom.views.main.keymap]
-        escape = false
+        [workflows.custom.views.main.unbind]
+        keys = ["escape"]
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
@@ -294,7 +294,7 @@ fn signal_exit_waits_for_items_worker_cleanup() {
 }
 
 #[test]
-fn foreground_command_failure_resumes_the_launcher_terminal() {
+fn command_failure_reports_error_and_keeps_launcher_usable() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -313,7 +313,7 @@ fn foreground_command_failure_resumes_the_launcher_terminal() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/fail.sh\"" ] }
+        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/fail.sh\"" ] }
         "#,
     )
     .unwrap();
@@ -345,7 +345,7 @@ fn foreground_command_failure_resumes_the_launcher_terminal() {
 }
 
 #[test]
-fn foreground_command_timeout_restores_terminal_and_resumes_the_launcher() {
+fn command_timeout_reports_error_and_keeps_launcher_usable() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -364,7 +364,7 @@ fn foreground_command_timeout_restores_terminal_and_resumes_the_launcher() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "sleep 30" ], timeout_ms = 200 }
+        handler = { argv = ["sh", "-c", "sleep 30" ], timeout_ms = 200 }
         "#,
     )
     .unwrap();
@@ -395,7 +395,7 @@ fn foreground_command_timeout_restores_terminal_and_resumes_the_launcher() {
 }
 
 #[test]
-fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
+fn stopped_command_terminates_and_resumes_the_launcher() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -414,7 +414,7 @@ fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/sleep.sh\"" ] }
+        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/sleep.sh\"" ] }
         "#,
     )
     .unwrap();
@@ -422,15 +422,12 @@ fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
         &root,
         "core",
         "scripts/sleep.sh",
-        "printf 'foreground-ready\\n'\nsleep 30\n",
+        "kill -STOP $$; sleep 30\n",
     );
 
     let mut process = spawn_launcher(&config);
     wait_for_ready(&process.master);
     process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "foreground-ready");
-    process.master.write_all(b"\x1a").unwrap();
     process.master.flush().unwrap();
     let output = wait_for_text(&process.master, "external effect failed");
     assert!(
@@ -448,9 +445,10 @@ fn stopped_foreground_command_reclaims_the_terminal_and_resumes_the_launcher() {
 }
 
 #[test]
-fn foreground_command_uses_the_controlling_terminal_and_restores_the_launcher() {
+fn command_cancellation_reaps_descendant() {
     let root = temporary_root();
     let config = root.join("config.toml");
+    let descendant_pid = root.join("command-descendant.pid");
     write_test_config(
         &config,
         r#"
@@ -467,84 +465,14 @@ fn foreground_command_uses_the_controlling_terminal_and_restores_the_launcher() 
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/read-terminal.sh\"" ] }
+        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/child.sh\""], exit = true }
         "#,
     )
     .unwrap();
     write_workflow_script(
         &root,
         "core",
-        "scripts/read-terminal.sh",
-        "printf 'child-ready\\n'\nIFS= read -r input\nprintf 'child-read:%s\\n' \"$input\"\nprintf 'child-stderr\\n' >&2\nIFS= read -r _\n",
-    );
-
-    let mut process = spawn_launcher_with_redirected_stdout(&config);
-    wait_for_ready(&process.master);
-    process.master.write_all(b"\r").unwrap();
-    process.master.flush().unwrap();
-    wait_for_text(&process.master, "child-ready");
-    process.master.write_all(b"terminal-input\n").unwrap();
-    process.master.flush().unwrap();
-    let child_output = wait_for_text(&process.master, "child-stderr");
-    let child_output = String::from_utf8_lossy(&child_output);
-    assert!(child_output.contains("child-read:terminal-input"));
-    assert!(child_output.contains("child-stderr"));
-
-    process.master.write_all(b"continue\n").unwrap();
-    process.master.flush().unwrap();
-    let resumed = wait_for_fresh_screen(&process.master, |visible| visible.contains("Item"));
-    assert!(
-        String::from_utf8_lossy(&resumed).contains("Item"),
-        "launcher did not redraw after foreground command: {resumed:?}"
-    );
-    assert_eq!(process.current_termios().c_lflag & libc::ICANON, 0);
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-    assert_terminal_restored(&process, &output);
-    let mut redirected_stdout = process.take_stdout().unwrap();
-    let mut redirected_output = Vec::new();
-    redirected_stdout
-        .read_to_end(&mut redirected_output)
-        .unwrap();
-    assert!(
-        !String::from_utf8_lossy(&redirected_output).contains("child-"),
-        "foreground child used redirected launcher stdout: {redirected_output:?}"
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn foreground_command_cancellation_restores_terminal_and_reaps_descendant() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    let descendant_pid = root.join("foreground-descendant.pid");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = [{display = "Item", value = "value"}]
-
-        [workflows.core.views.default.commands.run]
-        key = "enter"
-        label = "Run"
-        type = "run"
-        producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/foreground.sh\""], exit = true }
-        "#,
-    )
-    .unwrap();
-    write_workflow_script(
-        &root,
-        "core",
-        "scripts/foreground.sh",
+        "scripts/child.sh",
         "#!/bin/sh\nsh -c 'trap \"\" TERM; printf \"%s\" $$ > \"$DESCENDANT_PID\"; while :; do sleep 1; done' &\nwhile :; do sleep 1; done\n",
     );
     let descendant_pid_path = descendant_pid.to_string_lossy().into_owned();
@@ -580,8 +508,8 @@ fn signal_exit_terminates_embedded_process() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
-        [workflows.custom.views.main.keymap]
-        escape = false
+        [workflows.custom.views.main.unbind]
+        keys = ["escape"]
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
@@ -617,8 +545,8 @@ fn embedded_pty_disconnect_cancels_a_running_child() {
         default_view = "custom:main"
 
         [workflows.custom.views.main]
-        [workflows.custom.views.main.keymap]
-        escape = false
+        [workflows.custom.views.main.unbind]
+        keys = ["escape"]
         [workflows.custom.views.main.engine]
         type = "embedded"
         [workflows.custom.views.main.engine.config]
@@ -692,7 +620,7 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         label = "Exit"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/exit.sh\""], exit = true }
+        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/exit.sh\""], exit = true }
         "#,
     )
     .unwrap();
@@ -728,7 +656,7 @@ fn external_copy_feedback_requires_success_and_is_logged_on_exit() {
             key = "enter"
             type = "run"
             producer = "declared"
-            handler = {{mode = "foreground", argv = ["sh", "-c", "exit {code}"], exit = {exit}, success_message = "Copied to clipboard"}}
+            handler = {{argv = ["sh", "-c", "exit {code}"], exit = {exit}, success_message = "Copied to clipboard"}}
         "#)).unwrap();
         let mut process = spawn_launcher(&config);
         wait_for_ready(&process.master);
@@ -783,7 +711,7 @@ fn loads_items_and_runs_a_view_command() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'command-marker:value\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'command-marker:value\\n'"], exit = true }
         "#,
     )
     .expect("could not write items command config");
@@ -843,7 +771,7 @@ fn application_launch_detaches_started_process_from_launcher_group() {
         label = "Open"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"], exit = true }
+        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"], exit = true }
         "#,
     )
     .unwrap();
@@ -925,7 +853,7 @@ fn loads_items_from_a_native_toml_array() {
         label = "Run"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'static-marker:static-value\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'static-marker:static-value\\n'"], exit = true }
         "#,
     )
     .expect("could not write static items config");
@@ -1135,7 +1063,7 @@ fn waits_for_items_before_running_enter_command() {
 
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'picker-marker:value\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'picker-marker:value\\n'"], exit = true }
         "#,
     )
     .expect("could not write launcher integration config");
@@ -1188,7 +1116,7 @@ fn view_commands_accept_unreserved_control_bindings() {
 
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'ctrl-command:value\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'ctrl-command:value\\n'"], exit = true }
         "#,
     )
     .expect("could not write control command config");
@@ -1237,15 +1165,15 @@ fn view_command_overrides_printable_picker_binding() {
             { display = "First", value = "first" },
             { display = "Second", value = "second" },
         ]
-        [workflows.core.views.default.keymap]
-        "space" = "select_next"
+        [workflows.core.views.default.bindings]
+        "space" = "@engine:picker.select_next"
         [workflows.core.views.default.commands.space]
         key = "space"
         label = "HiddenSpace"
         type = "run"
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'hidden-space-command\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'hidden-space-command\\n'"], exit = true }
 
         [workflows.core.views.default.commands.accept]
         key = "enter"
@@ -1253,10 +1181,10 @@ fn view_command_overrides_printable_picker_binding() {
         type = "run"
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'space-selection:first\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'space-selection:first\\n'"], exit = true }
         "#,
     )
-    .expect("could not write printable keymap config");
+    .expect("could not write printable bindings config");
     write_workflow_script(
         &root,
         "core",
@@ -1274,7 +1202,6 @@ fn view_command_overrides_printable_picker_binding() {
     wait_for_ready(&process.master);
     let initial = wait_for_text(&process.master, "First");
     let initial = String::from_utf8_lossy(&initial);
-    assert!(initial.contains("Commands"), "output: {initial}");
     assert!(initial.contains("Accept"), "output: {initial}");
     process.master.write_all(b" ").unwrap();
     process.master.flush().unwrap();
@@ -1282,6 +1209,67 @@ fn view_command_overrides_printable_picker_binding() {
     assert_eq!(status, 0);
     assert!(
         String::from_utf8_lossy(&output).contains("hidden-space-command"),
+        "output: {:?}",
+        output
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// `unbind.keys` releases a physical key rather than claiming it: the key stops
+/// dispatching its command and drops through to raw input, so a printable key
+/// that a View bound is typed into the picker's input row instead of running the
+/// command.
+#[test]
+fn unbinding_a_key_releases_it_to_raw_input() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+
+        [workflows.core.views.default]
+        [workflows.core.views.default.bindings]
+        "x" = "marker"
+        [workflows.core.views.default.unbind]
+        keys = ["x"]
+        [workflows.core.views.default.engine]
+        type = "picker"
+        [workflows.core.views.default.engine.config]
+        items = [
+            { display = "First", value = "first" },
+            { display = "Second", value = "second" },
+        ]
+        [workflows.core.views.default.commands.marker]
+        label = "Marker"
+        type = "run"
+        producer = "declared"
+        handler = { argv = ["sh", "-c", "printf 'marker-ran\\n'"], exit = true }
+        "#,
+    )
+    .expect("could not write the unbind fixture");
+
+    let mut process = spawn_launcher(&config);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "First");
+    process.master.write_all(b"x").unwrap();
+    process.master.flush().unwrap();
+    // The released key is consumed by raw input: the query row shows it.
+    let screen = wait_for_fresh_text(&process.master, "x");
+    let screen = String::from_utf8_lossy(&screen);
+    assert!(
+        !screen.contains("marker-ran"),
+        "the released key must not run its command: {screen}"
+    );
+
+    // Escape clears the query first (root view with a non-empty query), so the
+    // second escape leaves the View.
+    process.master.write_all(b"\x1b\x1b").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0, "output: {:?}", output);
+    assert!(
+        !String::from_utf8_lossy(&output).contains("marker-ran"),
         "output: {:?}",
         output
     );
@@ -1330,8 +1318,8 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         type = "picker"
         [workflows.core.views.default.engine.config]
         items = [{display = "First", value = "first"}]
-        [workflows.core.views.default.keymap]
-        space = "toggle_preview"
+        [workflows.core.views.default.bindings]
+        space = "@engine:picker.toggle_preview"
 
         [workflows.core.views.default.commands.inspect]
         key = "enter"
@@ -1339,7 +1327,7 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         type = "run"
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'toggle-query::end\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'toggle-query::end\\n'"], exit = true }
         "#,
     )
     .expect("could not write default preview config");
@@ -1367,7 +1355,7 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
 }
 
 #[test]
-fn uppercase_printable_keymap_binding_matches_input() {
+fn uppercase_printable_binding_matches_input() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1383,18 +1371,18 @@ fn uppercase_printable_keymap_binding_matches_input() {
             { display = "First", value = "first" },
             { display = "Second", value = "second" },
         ]
-        [workflows.core.views.default.keymap]
-        a = "select_next"
+        [workflows.core.views.default.bindings]
+        a = "@engine:picker.select_next"
         [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
         type = "run"
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'uppercase-selection:second\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'uppercase-selection:second\\n'"], exit = true }
         "#,
     )
-    .expect("could not write uppercase keymap config");
+    .expect("could not write uppercase bindings config");
     write_workflow_script(
         &root,
         "core",
@@ -1431,8 +1419,8 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         type = "picker"
         [workflows.core.views.default.engine.config]
         items = []
-        [workflows.core.views.default.keymap]
-        a = "select_next"
+        [workflows.core.views.default.bindings]
+        a = "@engine:picker.select_next"
         [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
@@ -1457,7 +1445,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["printf", "uppercase-input:%s\\n", value],
         "exit": True,
     },
@@ -1500,7 +1487,7 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         type = "run"
 
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'tab-command\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'tab-command\\n'"], exit = true }
         "#,
     )
     .expect("could not write Tab command config");
@@ -1630,206 +1617,6 @@ fi
     fs::remove_dir_all(root).expect("could not remove cancellation integration config");
 }
 
-#[test]
-fn ctrl_g_opens_native_parameter_form_and_replaces_the_target_view() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "example:main"
-
-        [workflows.example.views.main.engine]
-        type = "picker"
-        [workflows.example.views.main.engine.config]
-        items = [{ display = "Ready", value = "ready" }]
-
-        [workflows.example.views.main.query]
-        type = "object"
-        input = "name"
-        name = { type = "string", default = "" }
-    "#,
-    )
-    .unwrap();
-    let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "Ready");
-    send_bytes(&mut process, b"\x07");
-    wait_for_text(&process.master, "name");
-    send_bytes(&mut process, b"changed\r");
-    wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("changed")
-            && !screen.contains("__query:main")
-            && !screen.contains("__form:main")
-    });
-    send_bytes(&mut process, b"\x03");
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctrl_g_builds_a_form_from_the_target_query_and_replaces_typed_parameters() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "dynamic:main"
-
-        [workflows.dynamic.views.main]
-        [workflows.dynamic.views.main.query]
-        type = "object"
-        input = "title"
-        title = { type = "string", default = "initial title" }
-        count = { type = "integer", default = 2 }
-        enabled = { type = "boolean", default = false }
-        tags = { type = "array<string>", default = ["one"] }
-        metadata = { type = "object", default = { mode = "safe" } }
-
-        [workflows.dynamic.views.main.engine]
-        type = "capture"
-        [workflows.dynamic.views.main.engine.config.output]
-        producer = "script"
-        [workflows.dynamic.views.main.engine.config.output.handler]
-        script = '''#!/usr/bin/env python3
-import json
-import sys
-
-request = json.load(sys.stdin)
-parameters = request.get("context", {}).get("parameters", {})
-output = "|".join([
-    str(parameters.get("title", "")),
-    str(parameters.get("count", "")),
-    str(parameters.get("enabled", "")),
-    json.dumps(parameters.get("tags", []), separators=(",", ":")),
-    json.dumps(parameters.get("metadata", {}), separators=(",", ":")),
-])
-json.dump({"version": 1, "output": output}, sys.stdout)
-sys.stdout.write("\n")
-'''
-    "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "dynamic");
-    send_bytes(&mut process, b"\x07");
-    wait_for_fresh_screen(&process.master, |screen| {
-        let field_position = |label: &str| {
-            screen.lines().position(|line| {
-                line.contains(&format!("> {label}")) || line.contains(&format!("  {label}"))
-            })
-        };
-        let Some(title) = field_position("title") else {
-            return false;
-        };
-        let Some(count) = field_position("count") else {
-            return false;
-        };
-        let Some(enabled) = field_position("enabled") else {
-            return false;
-        };
-        title < count
-            && count < enabled
-            && screen.contains("initial title")
-            && screen.contains("> title")
-            && screen.contains("2")
-            && screen.contains("false")
-    });
-
-    send_bytes(
-        &mut process,
-        b"\x15changed\t\x157\t \t\x15{\"mode\":\"fast\"}\t\x15[\"x\",\"y\"]\r",
-    );
-    wait_for_fresh_text(
-        &process.master,
-        "changed|7|True|[\"x\",\"y\"]|{\"mode\":\"fast\"}",
-    );
-    send_bytes(&mut process, b"\x1b");
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctrl_g_repeated_does_not_open_nested_query_panel() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "dynamic:main"
-
-        [workflows.dynamic.views.main]
-        [workflows.dynamic.views.main.query]
-        type = "string"
-
-        [workflows.dynamic.views.main.engine]
-        type = "picker"
-        [workflows.dynamic.views.main.engine.config]
-        items = [{ display = "Ready", value = "ready" }]
-    "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "Ready");
-
-    // First Ctrl+G opens the query form
-    send_bytes(&mut process, b"\x07");
-    wait_for_text(&process.master, "__query:main");
-
-    // Second Ctrl+G should be a no-op (stay), NOT open a nested query panel
-    send_bytes(&mut process, b"\x07");
-
-    // Single Escape should exit the query form and return to the main view
-    send_bytes(&mut process, b"\x1b");
-    wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Ready") && !screen.contains("__query:main")
-    });
-
-    send_bytes(&mut process, b"\x03");
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn ctrl_g_builds_a_single_query_field_for_a_string_view() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "dynamic:main"
-
-        [workflows.dynamic.views.main]
-        [workflows.dynamic.views.main.query]
-        type = "string"
-
-        [workflows.dynamic.views.main.engine]
-        type = "picker"
-        [workflows.dynamic.views.main.engine.config]
-        items = [{ display = "Ready", value = "ready" }]
-    "#,
-    )
-    .unwrap();
-
-    let mut process = spawn_launcher(&config);
-    wait_for_text(&process.master, "dynamic");
-    send_bytes(&mut process, b"initial");
-    send_bytes(&mut process, b"\x07");
-    wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("> Query") && screen.contains("initial")
-    });
-    send_bytes(&mut process, b"\x15changed\r");
-    wait_for_fresh_text(&process.master, "changed");
-    send_bytes(&mut process, b"\x03");
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0, "launcher output: {output:?}");
-    fs::remove_dir_all(root).unwrap();
-}
-
 fn send_bytes(process: &mut support::LauncherProcess, bytes: &[u8]) {
     process.master.write_all(bytes).unwrap();
     process.master.flush().unwrap();
@@ -1866,7 +1653,7 @@ fn picker_left_prefix_marks_views_pushed_on_a_parent() {
     .expect("could not write left prefix config");
     fs::write(
         root.join("settings.toml"),
-        "[defaults.picker]\nleft_prefix = \"\u{3008}\"\n",
+        "[picker]\nleft_prefix = \"\u{3008}\"\n",
     )
     .expect("could not write left prefix settings");
 
@@ -1949,7 +1736,7 @@ fn picker_left_prefix_route_mode_uses_the_alias() {
     .expect("could not write route prefix config");
     fs::write(
         root.join("settings.toml"),
-        "[defaults.picker]\nleft_prefix = \"$route\"\n",
+        "[picker]\nleft_prefix = \"$route\"\n",
     )
     .expect("could not write route prefix settings");
 
@@ -2059,7 +1846,7 @@ fn backspace_chain_screen(settings: &str, expected_item: &str, expected_input: &
 #[test]
 fn left_prefix_backspace_parent_returns_one_level() {
     let screen = backspace_chain_screen(
-        "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"parent\"\n",
+        "[picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"parent\"\n",
         "Mid entry",
         "mid e",
     );
@@ -2070,7 +1857,7 @@ fn left_prefix_backspace_parent_returns_one_level() {
 #[test]
 fn left_prefix_backspace_root_returns_to_the_root_view() {
     let screen = backspace_chain_screen(
-        "[defaults.picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"root\"\n",
+        "[picker]\nleft_prefix = \"$route\"\nleft_prefix_backspace = \"root\"\n",
         "Root entry",
         "e",
     );
@@ -2081,7 +1868,7 @@ fn left_prefix_backspace_root_returns_to_the_root_view() {
 #[test]
 fn left_prefix_backspace_unset_leaves_backspace_inert() {
     let screen = backspace_chain_screen(
-        "[defaults.picker]\nleft_prefix = \"$route\"\n",
+        "[picker]\nleft_prefix = \"$route\"\n",
         "Leaf entry",
         "leaf e",
     );
@@ -2163,78 +1950,6 @@ fn ctrl_k_passes_page_commands_through_selector_query_and_invokes_an_opaque_ref(
 }
 
 #[test]
-fn command_palette_opens_for_an_empty_aggregate_view() {
-    let root = temporary_root();
-    let config = root.join("config.toml");
-    write_test_config(
-        &config,
-        r#"
-        default_view = "core:default"
-
-        [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
-        items = []
-        [workflows.core.views.default.commands.aggregate]
-        label = "Aggregate command"
-        type = "return"
-        producer = "declared"
-        handler = { value = "aggregate" }
-
-        [workflows.selectors.views.commands]
-        [workflows.selectors.views.commands.engine]
-        type = "picker"
-        [workflows.selectors.views.commands.engine.config.items]
-        producer = "script"
-        [workflows.selectors.views.commands.engine.config.items.handler]
-        file = "scripts/items.sh"
-        [workflows.selectors.views.commands.query]
-        type = "object"
-        input = "search"
-        search = { type = "string", default = "" }
-        commands = { type = "array<object>", default = [] }
-        "#,
-    )
-    .expect("could not write empty aggregate command config");
-    write_workflow_script(
-        &root,
-        "selectors",
-        "scripts/items.sh",
-        r#"#!/usr/bin/env python3
-import json
-import sys
-
-request = json.load(sys.stdin)
-commands = request["context"]["parameters"].get("commands", [])
-items = [
-    {"display": command["label"], "value": command["label"]}
-    for command in commands
-]
-json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
-sys.stdout.write("\n")
-"#,
-    );
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    wait_for_text(&process.master, "(no matches)");
-    process.master.write_all(b"\x0b").unwrap();
-    process.master.flush().unwrap();
-    let output = wait_for_text(&process.master, "Aggregate command");
-    assert!(
-        String::from_utf8_lossy(&output).contains("Aggregate command"),
-        "aggregate command did not reach the command palette: {output:?}"
-    );
-
-    process.master.write_all(b"\x03").unwrap();
-    process.master.flush().unwrap();
-    let (status, _) = wait_for_launcher_exit(&mut process);
-    assert_eq!(status, 0);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
     let root = temporary_root();
     let config = root.join("config.toml");
@@ -2258,7 +1973,7 @@ fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
         label = "Aggregate command"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'aggregate-view-command\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'aggregate-view-command\\n'"], exit = true }
         "#,
     )
     .expect("could not write aggregate View command config");
@@ -2373,7 +2088,7 @@ fn items_errors_are_logged_and_do_not_block_exit() {
 }
 
 #[test]
-fn view_keymap_dispatches_workflow_command_with_selected_item() {
+fn view_bindings_dispatches_workflow_command_with_selected_item() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -2385,11 +2100,11 @@ fn view_keymap_dispatches_workflow_command_with_selected_item() {
         label = "Page"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'page-command\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'page-command\\n'"], exit = true }
 
         [workflows.core.views.default]
-        [workflows.core.views.default.keymap]
-        "ctrl+r" = "core:page"
+        [workflows.core.views.default.bindings]
+        "ctrl+r" = "core.page"
 
         [workflows.core.views.default.engine]
         type = "picker"
@@ -2427,16 +2142,16 @@ fn item_bindings_dispatch_and_display_in_footer() {
         label = "Selection"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"], exit = true }
 
         [workflows.core.views.default]
-        keymap_mode = "item_merge"
-        [workflows.core.views.default.keymap]
+        binding_mode = "item_merge"
+        [workflows.core.views.default.bindings]
 
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config]
-        items = [{display = "Row", value = "row", bindings = { enter = "core:open" }}]
+        items = [{display = "Row", value = "row", bindings = { enter = "core.open" }}]
         "#,
     )
     .unwrap();
@@ -2559,9 +2274,11 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         [workflows.core.views.capture.engine.config]
         output = "capture-marker:value\u001b[31m\n\u4e16\u754c\u001b[0m"
 
-        [workflows.core.views.capture.keymap]
-        enter = false
-        "ctrl+y" = "copy"
+        [workflows.core.views.capture.unbind]
+        keys = ["enter"]
+
+        [workflows.core.views.capture.bindings]
+        "ctrl+y" = "@engine:capture.copy"
 "#,
     )
     .expect("could not write capture integration config");
@@ -2638,8 +2355,8 @@ fn capture_keeps_workflow_commands_available() {
         r#"
         default_view = "core:default"
 
-        [defaults.capture.bindings]
-        copy = ["ctrl+y"]
+        [capture.bindings]
+        "ctrl+y" = "copy"
 
         [workflows.core.commands.details]
         key = "ctrl+k"
@@ -2887,7 +2604,6 @@ json.dump({
     "version": 1,
     "operation": {
         "type": "run",
-        "mode": "foreground",
         "argv": ["printf", "producer-command:%s\\n", value],
         "exit": True,
     },
@@ -3143,6 +2859,10 @@ fn command_selector_displays_keybindings_for_commands() {
         screen.contains("Info"),
         "screen should contain command label 'Info': {screen}"
     );
+    assert!(
+        !screen.contains("Commands"),
+        "command palette must not list the command palette command itself: {screen}"
+    );
 
     process.master.write_all(b"\x1b").unwrap();
     process.master.flush().unwrap();
@@ -3196,7 +2916,14 @@ fn command_selector_can_open_edit_query_form_and_apply_parameters() {
     let output = wait_for_text(&process.master, "Edit Query");
     let screen = String::from_utf8_lossy(&output);
     assert!(screen.contains("Edit Query"));
-    assert!(screen.contains("[host]"));
+    assert!(
+        screen.contains("ctrl+g"),
+        "palette should place the command key on the right: {screen:?}"
+    );
+    assert!(
+        !screen.contains("[view]"),
+        "palette should not render layer source badges: {screen:?}"
+    );
 
     // Navigate down twice: Info -> Run -> Edit Query
     process.master.write_all(b"\x1b[B").unwrap();
@@ -3209,9 +2936,10 @@ fn command_selector_can_open_edit_query_form_and_apply_parameters() {
     process.master.flush().unwrap();
 
     // Query form popup should open
-    let form_output = wait_for_text(&process.master, "__query:main");
+    let form_output = wait_for_text(&process.master, "Query");
     let form_screen = String::from_utf8_lossy(&form_output);
-    assert!(form_screen.contains("__query:main"));
+    assert!(form_screen.contains("Query"));
+    assert!(!form_screen.contains("__query:main"));
 
     // Cancel form with Escape
     process.master.write_all(b"\x1b").unwrap();
@@ -3313,11 +3041,11 @@ fn aggregate_view_footer_commands_survive_a_slow_refresh() {
         label = "Open"
         type = "run"
         producer = "declared"
-        handler = { mode = "foreground", argv = ["sh", "-c", "printf 'opened\\n'"], exit = true }
+        handler = { argv = ["sh", "-c", "printf 'opened\\n'"], exit = true }
 
         [workflows.slow.views.main]
-        keymap_mode = "item_merge"
-        [workflows.slow.views.main.keymap]
+        binding_mode = "item_merge"
+        [workflows.slow.views.main.bindings]
         [workflows.slow.views.main.engine]
         type = "picker"
         [workflows.slow.views.main.engine.config.items]
@@ -3333,7 +3061,7 @@ fn aggregate_view_footer_commands_survive_a_slow_refresh() {
         "scripts/items.sh",
         r#"#!/bin/sh
 sleep 0.35
-printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{"enter":"slow:open"}}]}'
+printf '%s\n' '{"version":1,"items":[{"display":"Row","value":"row","bindings":{"enter":"slow.open"}}]}'
 "#,
     );
 
@@ -3383,6 +3111,128 @@ fn tab_completion_without_candidates_does_not_open_popup() {
         !screen.contains("completion"),
         "popup opened when no candidates existed: {screen}"
     );
+
+    process.master.write_all(b"\x03").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn workflow_local_view_navigation_supports_bare_local_and_prefixed_syntax() {
+    let root = temporary_root();
+    let suite_path = root.join("suite.toml");
+    let wf1_path = root.join("wf1.toml");
+    let wf2_path = root.join("wf2.toml");
+
+    std::fs::write(
+        &wf1_path,
+        r#"
+[workflow]
+api = 1
+name = "Workflow 1"
+entrypoint = "main"
+
+[views.main.engine]
+type = "picker"
+[views.main.engine.config]
+items = [{display = "Go to subview", value = "go"}]
+[views.main.bindings]
+enter = "jump_sub"
+
+[views.sub.engine]
+type = "picker"
+[views.sub.engine.config]
+items = [{display = "In Subview", value = "sub"}]
+[views.sub.bindings]
+enter = "jump_back"
+
+[commands.jump_sub]
+label = "Jump Sub"
+type = "navigate"
+producer = "declared"
+handler = {target = "sub"}
+
+[commands.jump_back]
+label = "Jump Back"
+type = "navigate"
+producer = "declared"
+handler = {target = "main"}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &wf2_path,
+        r#"
+[workflow]
+api = 1
+name = "Workflow 2"
+entrypoint = "main"
+
+[views.main.engine]
+type = "picker"
+[views.main.engine.config]
+items = [{display = "Workflow 2 main", value = "wf2"}]
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &suite_path,
+        format!(
+            r#"
+[suite]
+api = 1
+name = "Test Suite"
+entrypoint = "w1:main"
+
+[workflows]
+w1 = {{ file = "{}" }}
+w2 = {{ file = "{}" }}
+"#,
+            wf1_path.display(),
+            wf2_path.display(),
+        ),
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher(&suite_path);
+    wait_for_text(&process.master, "Go to subview");
+
+    // Press Enter to navigate to local "sub" view
+    send_bytes(&mut process, b"\r");
+    wait_for_text(&process.master, "In Subview");
+
+    // Press Enter in subview to navigate back to local "main" view (even though w2 also has a "main" view!)
+    send_bytes(&mut process, b"\r");
+    wait_for_text(&process.master, "Go to subview");
+
+    send_bytes(&mut process, b"\x03");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_view_can_open_query_form() {
+    let mut process = spawn_launcher_with_args(&fixture_config(), &[]);
+    wait_for_ready(&process.master);
+    wait_for_text(&process.master, "Type a route or search");
+
+    // Press Ctrl+G to open parameter form
+    process.master.write_all(b"\x07").unwrap();
+    process.master.flush().unwrap();
+
+    let output = wait_for_text(&process.master, "search");
+    let screen = String::from_utf8_lossy(&output);
+    assert!(screen.contains("search"));
+    assert!(screen.contains("sources"));
+
+    // Cancel form with Escape
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_text(&process.master, "Type a route or search");
 
     process.master.write_all(b"\x03").unwrap();
     process.master.flush().unwrap();

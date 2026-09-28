@@ -23,7 +23,7 @@ producer = "script"
 [views.main.engine.config.preview.handler]
 file = "scripts/preview.py"
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "run"
 
 [commands.run]
@@ -51,7 +51,7 @@ producer = "script"
 [views.confirm.engine.config.items.handler]
 file = "scripts/confirm_items.py"
 
-[views.confirm.keymap]
+[views.confirm.bindings]
 enter = "confirm_exec"
 
 [commands.confirm_exec]

@@ -4,7 +4,7 @@ name = "core"
 entrypoint = "main"
 
 [views.main]
-keymap_mode = "item_merge"
+binding_mode = "item_merge"
 
 [views.main.query]
 type = "object"
@@ -26,7 +26,7 @@ file = "scripts/items.py"
 # The aggregate View is item-driven: each aggregated item carries the bindings
 # of the View it came from. The table below is the base layer that stays
 # available while the list is empty or still loading.
-[views.main.keymap]
+[views.main.bindings]
 tab = "complete"
 space = "separate_route"
 
@@ -39,7 +39,7 @@ filter = { type = "string", default = "" }
 type = "picker"
 
 # The popup shows no route marker of its own, even when
-# `[defaults.picker] left_prefix` renders one for other non-root Views.
+# `[picker] left_prefix` renders one for other non-root Views.
 [views.completion.engine.config]
 show_left_prefix = false
 
@@ -48,7 +48,7 @@ producer = "script"
 [views.completion.engine.config.items.handler]
 file = "scripts/completion.py"
 
-[views.completion.keymap]
+[views.completion.bindings]
 enter = "accept_route"
 
 [commands.complete]

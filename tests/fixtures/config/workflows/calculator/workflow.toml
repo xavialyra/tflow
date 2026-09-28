@@ -13,7 +13,7 @@ producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.py"
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "copy"
 
 [commands.copy]

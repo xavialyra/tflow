@@ -24,7 +24,7 @@ producer = "script"
 [views.main.engine.config.preview.handler]
 file = "scripts/preview.py"
 
-[views.main.keymap]
+[views.main.bindings]
 enter = "open"
 "ctrl+o" = "openx"
 "ctrl+w" = "weight"
@@ -43,7 +43,7 @@ producer = "script"
 [views.weight.engine.config.content.handler]
 file = "scripts/weight-content.sh"
 
-[views.weight.keymap]
+[views.weight.bindings]
 enter = "save"
 
 [commands.open]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Space-key route separator for the core entry View.
 
-Space is bound in the View's keymap, so the engine does not insert it. If the
+Space is bound in the View's bindings, so the engine does not insert it. If the
 current input names a known route the command jumps to it and consumes the
 input. Otherwise it re-mounts this View with a literal space appended, carrying
 the current parameters and the selected item (`__focus`) so filtering and
