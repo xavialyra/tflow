@@ -43,14 +43,7 @@ fn context() -> ViewContext {
     ViewContext::new(ViewInstanceId(1), "form")
 }
 fn key(form: &mut FormView, key: Key) -> ViewDecision {
-    form.event(
-        ViewEvent::Input(InputEvent::Key {
-            key,
-            raw: Vec::new(),
-        }),
-        &context(),
-    )
-    .unwrap()
+    crate::view::dispatch_test_key(form, key, &[], &context()).unwrap()
 }
 fn paste(form: &mut FormView, text: &str) {
     form.event(
@@ -408,7 +401,7 @@ fn closing_cancels_content_work_and_rejects_late_completions() {
 }
 
 #[test]
-fn registry_accepts_form_and_rejects_picker_sources_or_custom_keymaps() {
+fn registry_accepts_form_and_rejects_picker_sources_or_custom_bindings() {
     let registry = crate::engine::EngineRegistry::new();
     assert_eq!(
         registry
@@ -598,10 +591,6 @@ fn form_discrete_navigation_and_exit_commands() {
 
     let cmds = form.engine_commands(&context());
     assert_eq!(cmds.len(), 7);
-    assert!(
-        cmds.iter()
-            .all(|c| matches!(c.handler, crate::command::CommandHandler::Event))
-    );
 
     assert_eq!(form.publication.current["focused"], "first");
 
@@ -632,31 +621,28 @@ fn form_discrete_navigation_and_exit_commands() {
 }
 
 #[test]
-fn form_bindings_can_be_customized_and_disabled_via_keymap() {
+fn form_engine_table_uses_root_defaults_and_tombstones() {
     let mut config = config(
         json!({"producer":"declared", "handler":{"fields":[{"name": "a"}]}}),
         TaskRuntime::new(),
     );
     config.bindings = ProjectedBindingConfig {
         defaults: Some(json!({
-            "focus_next": ["ctrl+n"],
-            "cancel": ["ctrl+q"]
+            "ctrl+n": "focus_next",
+            "ctrl+q": "cancel",
+            "escape": false
         })),
-        view_keymap: Some(json!({
-            "ctrl+q": false,
-            "alt+x": "cancel"
-        })),
-        engine_fields: Default::default(),
     };
     let mut form = FormView::new(config, &request(), ViewInstanceId(1)).unwrap();
     form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
         .unwrap();
 
+    // The engine owns only its root defaults; a `[views.*.bindings]` rebind is
+    // resolved by the command index, not by the engine table.
     let cmds = form.engine_commands(&context());
     let keys: Vec<_> = cmds.iter().filter_map(|c| c.key).collect();
     assert!(keys.contains(&Key::Ctrl('n')));
-    assert!(keys.contains(&Key::Alt('x')));
-    assert!(!keys.contains(&Key::Ctrl('q')));
+    assert!(keys.contains(&Key::Ctrl('q')));
     assert!(!keys.contains(&Key::Escape));
 }
 

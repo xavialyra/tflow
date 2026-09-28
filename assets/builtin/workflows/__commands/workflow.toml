@@ -1,0 +1,155 @@
+[workflow]
+api = 1
+name = "Command Palette"
+entrypoint = "main"
+
+[views.main]
+chrome_commands_show = ["enter"]
+
+[views.main.engine]
+type = "picker"
+
+[views.main.engine.config]
+show_input = false
+show_divider = false
+
+[views.main.engine.config.items]
+producer = "script"
+[views.main.engine.config.items.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+commands = parameters.get("commands", []) if isinstance(parameters, dict) else []
+revision = parameters.get("revision", 0) if isinstance(parameters, dict) else 0
+engine = context.get("engine", {})
+state = engine.get("state", {}) if isinstance(engine, dict) else {}
+query = state.get("input", "") if isinstance(state, dict) else ""
+if not isinstance(commands, list) or not isinstance(query, str):
+    raise SystemExit("invalid command palette request")
+tokens = query.casefold().split()
+
+items = []
+for command in commands:
+    if not isinstance(command, dict):
+        continue
+    command_id = command.get("id")
+    if not isinstance(command_id, str) or not command_id:
+        continue
+    label = str(command.get("label", command_id))
+    key_value = command.get("key")
+    key = key_value if isinstance(key_value, str) else ""
+    # Curation, not reachability: the Engine layer is the Engine's own default
+    # keymap, not a command this View offers. Every entry published is runnable
+    # by id, including an Engine action the View binds itself (layer "view").
+    # The palette command itself is excluded: you are already inside it.
+    if str(command.get("layer", "")) == "engine":
+        continue
+    if command_id == "__commands.palette":
+        continue
+    searchable = " ".join((label, key)).casefold()
+    if not all(token in searchable for token in tokens):
+        continue
+    items.append({
+        "value": key or command_id,
+        "metadata": {"command": {"id": command_id, "revision": revision}},
+        "display": {
+            "constraints": [{"Fill": 1}, {"Length": 8}],
+            "cells": [
+                {"text": label},
+                {"text": key, "align": "right", "slot": "badge"},
+            ],
+        },
+    })
+
+json.dump({"version": 1, "items": items}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+
+[views.main.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+commands = { type = "array<object>", default = [] }
+revision = { type = "integer", default = 0 }
+
+[views.main.bindings]
+enter = "accept"
+
+[views.main.unbind]
+layers = ["host"]
+
+[commands.accept]
+label = "Select"
+type = "return"
+producer = "script"
+[commands.accept.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+state = request.get("context", {}).get("engine", {}).get("state", {})
+item = state.get("item") if isinstance(state, dict) else None
+ref = item.get("metadata", {}).get("command") if isinstance(item, dict) else None
+if not isinstance(ref, dict) or not isinstance(ref.get("id"), str):
+    raise SystemExit("command palette selection has no command reference")
+json.dump({
+    "version": 1,
+    "operation": {"type": "return", "value": ref},
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+
+[commands.palette]
+label = "Commands"
+type = "call"
+producer = "script"
+[commands.palette.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+context = json.load(sys.stdin).get("context", {})
+envelope = context.get("commands", {})
+if not isinstance(envelope, dict):
+    envelope = {}
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "call",
+        "target": "__commands:main",
+        "query": {
+            "commands": envelope.get("commands", []),
+            "revision": envelope.get("revision", 0),
+        },
+        "presentation": {
+            "mode": "popup",
+            "width": 50,
+            "height": 10,
+            "anchor": "bottom-right",
+            "show_title": False,
+        },
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+[commands.palette.return_processor]
+producer = "script"
+[commands.palette.return_processor.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+result = json.load(sys.stdin).get("context", {}).get("result")
+if not isinstance(result, dict):
+    raise SystemExit("command palette returned an invalid command reference")
+json.dump({
+    "version": 1,
+    "operation": {"type": "invoke-command", "command": result},
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''

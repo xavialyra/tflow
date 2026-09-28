@@ -9,7 +9,7 @@ pub(crate) struct ThemeLoadOptions {
 }
 
 pub(crate) fn cli_named_theme(name: String) -> ThemeRef {
-    if name.eq_ignore_ascii_case("terminal") {
+    if name.eq_ignore_ascii_case("default") || name.eq_ignore_ascii_case("terminal") {
         ThemeRef::Builtin { name }
     } else {
         ThemeRef::Named { name }
@@ -43,10 +43,10 @@ impl ThemeLoader<'_> {
     fn resolve_reference(&self, reference: &ThemeRef) -> Result<ResolvedTheme> {
         match reference {
             ThemeRef::Builtin { name } => {
-                if name.eq_ignore_ascii_case("terminal") {
-                    Ok(ResolvedTheme::terminal())
+                if name.eq_ignore_ascii_case("default") || name.eq_ignore_ascii_case("terminal") {
+                    Ok(ResolvedTheme::default_theme())
                 } else {
-                    bail!("unknown builtin theme {:?}; expected terminal", name)
+                    bail!("unknown builtin theme {:?}; expected default", name)
                 }
             }
             ThemeRef::Named { name } => {

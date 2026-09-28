@@ -15,6 +15,10 @@ fn request(target: &str) -> NavigationRequest {
     )
 }
 
+fn key(view: &mut dyn View, key: Key, context: &ViewContext) -> ViewDecision {
+    crate::view::dispatch_test_key(view, key, &[], context).unwrap()
+}
+
 fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> PickerProtocolConfig {
     let config = crate::workflow::config::load_test_fixture().unwrap();
     let parameter_binding = config.parameter_binding("core:default").unwrap();
@@ -171,14 +175,7 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
 
     // Typing proves the hint was presentation only: the fresh query starts at
     // the cursor with no leftover placeholder text behind it.
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Char('a'),
-            raw: vec![b'a'],
-        }),
-        &context,
-    )
-    .unwrap();
+    key(view.as_mut(), Key::Char('a'), &context);
     render(view.as_ref(), &mut terminal);
     let buffer = terminal.backend().buffer();
     let row: String = (0..size.width)
@@ -454,8 +451,7 @@ fn view_with_stale_aware_runtime(
         runtime,
         renderer: create_renderer(RendererFactoryContext).unwrap(),
         options: PickerOptions::default(),
-        keymap: PickerKeymap::from_values(None, None).unwrap(),
-        disabled_keys: HashSet::new(),
+        bindings: PickerBindings::from_defaults(None).unwrap(),
         left_prefix: None,
         theme: ResolvedTheme::terminal(),
         parameter_binding,
@@ -506,15 +502,7 @@ fn backspace_decision(
     view.editor.clear();
     let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
     context.has_parent = true;
-    let decision = view
-        .event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Backspace,
-                raw: Vec::new(),
-            }),
-            &context,
-        )
-        .unwrap();
+    let decision = key(&mut view, Key::Backspace, &context);
     drop(view);
     tasks.shutdown_and_wait();
     decision
@@ -629,14 +617,7 @@ fn preview_body_size_tracks_resize_and_committed_starts() {
     assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 6))));
     view.event(resize(12), &context).unwrap();
     assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Escape,
-            raw: Vec::new(),
-        }),
-        &context,
-    )
-    .unwrap();
+    key(&mut view, Key::Escape, &context);
     assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
     view.action(&context, "picker.toggle_preview").unwrap();
     assert_eq!(seen.lock().unwrap().last(), Some(&("action", (40, 10))));
@@ -657,15 +638,7 @@ fn tab_no_longer_opens_builtin_completion() {
     view.editor = EditorBuffer::from_raw("oth", 3);
 
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    let decision = view
-        .event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Tab,
-                raw: b"\t".to_vec(),
-            }),
-            &context,
-        )
-        .unwrap();
+    let decision = key(&mut view, Key::Tab, &context);
     assert!(matches!(decision, ViewDecision::Stay));
     assert_eq!(view.editor.raw, "oth");
     assert_eq!(
@@ -691,14 +664,7 @@ fn invalid_input_keeps_the_active_task_registered_until_its_stale_completion_is_
 
     view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
         .unwrap();
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Char('x'),
-            raw: Vec::new(),
-        }),
-        &context,
-    )
-    .unwrap();
+    key(&mut view, Key::Char('x'), &context);
     assert!(input_rejected.load(Ordering::Acquire));
 
     let event = wait_for_task_event(&tasks);
@@ -777,15 +743,7 @@ fn static_display_options_reach_picker_rendering_and_input() {
         )
         .unwrap();
         let context = ViewContext::new(ViewInstanceId(1), "core:default");
-        let decision = view
-            .event(
-                ViewEvent::Input(InputEvent::Key {
-                    key: Key::Char('x'),
-                    raw: Vec::new(),
-                }),
-                &context,
-            )
-            .unwrap();
+        let decision = key(view.as_mut(), Key::Char('x'), &context);
         if !show_input {
             assert!(matches!(decision, ViewDecision::Stay));
         }
@@ -820,27 +778,13 @@ fn static_display_options_reach_picker_rendering_and_input() {
         );
         if !show_input {
             assert!(matches!(
-                view.event(
-                    ViewEvent::Input(InputEvent::Key {
-                        key: Key::Backspace,
-                        raw: Vec::new(),
-                    }),
-                    &context,
-                )
-                .unwrap(),
+                key(view.as_mut(), Key::Backspace, &context),
                 ViewDecision::Stay
             ));
             let mut context = context.clone();
             context.has_parent = true;
             assert!(matches!(
-                view.event(
-                    ViewEvent::Input(InputEvent::Key {
-                        key: Key::Backspace,
-                        raw: Vec::new(),
-                    }),
-                    &context,
-                )
-                .unwrap(),
+                key(view.as_mut(), Key::Backspace, &context),
                 ViewDecision::Close
             ));
         }
@@ -920,21 +864,6 @@ fn covered_picker_hides_cursor_and_restores_on_activation() {
 }
 
 #[test]
-fn explicitly_disabled_keys_patch_is_respected() {
-    let disabled = explicitly_disabled_keys(
-        None,
-        Some(&serde_json::json!({
-            "tab": false,
-            "escape": false,
-        })),
-    );
-    assert!(disabled.contains(&Key::Tab.binding_identity()));
-    assert!(disabled.contains(&Key::Escape.binding_identity()));
-    let empty_override = explicitly_disabled_keys(Some(&serde_json::json!({"back": []})), None);
-    assert!(empty_override.contains(&Key::Escape.binding_identity()));
-}
-
-#[test]
 fn picker_preview_declared_image_renders_after_decode_and_encoding() {
     let temp_dir = std::env::temp_dir().join(format!("test-picker-img-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir).unwrap();
@@ -967,14 +896,7 @@ fn picker_preview_declared_image_renders_after_decode_and_encoding() {
     view.event(ViewEvent::Resize(size), &context).unwrap();
     view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
         .unwrap();
-    view.event(
-        ViewEvent::Input(InputEvent::Key {
-            key: Key::Ctrl('p'),
-            raw: vec![0x10],
-        }),
-        &context,
-    )
-    .unwrap();
+    key(view.as_mut(), Key::Ctrl('p'), &context);
     let render_context =
         RenderContext::new(size, Some(crate::terminal::ImagePicker::test_halfblocks()));
     let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
@@ -1024,6 +946,7 @@ mod preview_correlation_tests {
             &Value::Null,
             page,
             MountTaskLease::new(ViewMountId(instance.0)),
+            None,
         )
         .unwrap();
         let definition = engines.definition(&config, page).unwrap();
@@ -1031,7 +954,7 @@ mod preview_correlation_tests {
             identity: ViewIdentity::new(page, "picker"),
             engine: crate::engine::project_engine_config(&config, page, &definition, Value::Null)
                 .unwrap(),
-            bindings: crate::engine::project_binding_config(&config, page, &definition).unwrap(),
+            bindings: crate::engine::project_binding_config(&config, &definition).unwrap(),
             services,
             parameter_binding: config.parameter_binding(page).unwrap(),
             theme: ResolvedTheme::terminal(),
@@ -1060,14 +983,7 @@ mod preview_correlation_tests {
         .unwrap();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
             .unwrap();
-        view.event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Ctrl('p'),
-                raw: vec![0x10],
-            }),
-            &context,
-        )
-        .unwrap();
+        key(view.as_mut(), Key::Ctrl('p'), &context);
         let mut events = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
@@ -1164,6 +1080,7 @@ mod preview_correlation_tests {
                 &Value::Null,
                 page,
                 MountTaskLease::new(ViewMountId(instance.0)),
+                None,
             )
             .unwrap();
             services.set_preview_cache(cache.clone());
@@ -1177,8 +1094,7 @@ mod preview_correlation_tests {
                     Value::Null,
                 )
                 .unwrap(),
-                bindings: crate::engine::project_binding_config(&config, page, &definition)
-                    .unwrap(),
+                bindings: crate::engine::project_binding_config(&config, &definition).unwrap(),
                 services,
                 parameter_binding: config.parameter_binding(page).unwrap(),
                 theme: ResolvedTheme::terminal(),
@@ -1248,14 +1164,7 @@ mod preview_correlation_tests {
         .unwrap();
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), context)
             .unwrap();
-        view.event(
-            ViewEvent::Input(InputEvent::Key {
-                key: Key::Ctrl('p'),
-                raw: vec![0x10],
-            }),
-            context,
-        )
-        .unwrap();
+        key(view.as_mut(), Key::Ctrl('p'), context);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut content = String::new();

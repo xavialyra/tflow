@@ -493,7 +493,6 @@ impl PickerPreview {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(super) fn document_scroll_state(&self) -> (bool, u16) {
         (self.document.is_some(), self.scroll)
     }

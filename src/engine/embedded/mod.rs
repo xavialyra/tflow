@@ -10,14 +10,13 @@ use self::session::{EmbeddedSession, EmbeddedStartPlan};
 pub(crate) use self::terminal::{EmbeddedTerminal, EmbeddedTerminalSnapshot};
 
 use super::{
-    ActionId, EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput, EngineDecision,
-    EngineEmission, EngineNotice, EngineRuntime, EngineValidationContext, ExternalTickResult,
-    InputBindingFactoryContext, RawInputReceiver, RenderModel, RendererFactoryContext,
-    RuntimeFactoryContext, require_field, validate_fields,
+    EmbeddedResultConfig, EmbeddedResultFormat, EngineActionInput, EngineDecision, EngineEmission,
+    EngineNotice, EngineRuntime, EngineValidationContext, ExternalTickResult, RawInputReceiver,
+    RenderModel, RendererFactoryContext, RuntimeFactoryContext, require_field, validate_fields,
 };
 use crate::execution::PreparedProcess;
 use crate::identity::{ENV_INPUT, ENV_WORKFLOW_DIR};
-use crate::input::keymap::{ActionBindings, KeymapAction};
+use crate::input::bindings::{ActionBindings, BindingAction};
 use crate::workflow::config::Defaults;
 use anyhow::{Context, Result};
 use ratatui::{Frame, layout::Rect};
@@ -39,16 +38,14 @@ pub(super) enum EmbeddedAction {
     Cancel,
 }
 
-impl EmbeddedAction {
+impl BindingAction for EmbeddedAction {
+    const LABEL: &'static str = "embedded";
+
     fn label(self) -> &'static str {
         match self {
             Self::Cancel => "Cancel",
         }
     }
-}
-
-impl KeymapAction for EmbeddedAction {
-    const LABEL: &'static str = "embedded";
 
     fn name(self) -> &'static str {
         match self {
@@ -83,14 +80,18 @@ fn default_result_limit() -> usize {
     DEFAULT_RESULT_LIMIT
 }
 
-pub(super) type EmbeddedKeymap = ActionBindings<EmbeddedAction>;
+pub(super) type EmbeddedBindings = ActionBindings<EmbeddedAction>;
+
+/// Resolves a bare Embedded action name into `("embedded.<action>", label)`.
+pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
+    crate::input::bindings::binding_action_spec::<EmbeddedAction>(name)
+}
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: &["command", "result"],
-            binding: &[],
-            binding_defaults: Some(&["defaults", "embedded", "bindings"]),
+            binding_defaults: Some(&["embedded", "bindings"]),
         })
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
 }
@@ -113,7 +114,7 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
         .as_ref()
         .map(crate::workflow::config::toml_to_json)
         .transpose()?;
-    EmbeddedKeymap::validate_values(bindings.as_ref(), None).context("embedded bindings")
+    EmbeddedBindings::validate_defaults(bindings.as_ref()).context("embedded bindings")
 }
 
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
@@ -211,29 +212,6 @@ pub(super) fn create_renderer(
     _context: RendererFactoryContext,
 ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
     Ok(Box::new(EmbeddedRenderer))
-}
-
-pub(crate) fn create_input_bindings(
-    context: InputBindingFactoryContext,
-) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
-    let keymap =
-        EmbeddedKeymap::from_values(context.bindings.defaults, context.bindings.view_keymap)?;
-    let mut bindings = Vec::new();
-    for (key, action) in keymap.bindings() {
-        match action {
-            EmbeddedAction::Cancel => {
-                bindings.push(crate::workflow::command::InputActionBinding {
-                    key,
-                    action: crate::workflow::command::ResolvedInputAction::Engine(ActionId::new(
-                        "embedded.cancel",
-                    )),
-                    label: Some(EmbeddedAction::Cancel.label().to_string()),
-                    enabled: true,
-                });
-            }
-        }
-    }
-    Ok(bindings)
 }
 
 struct EmbeddedView {
@@ -472,7 +450,7 @@ fn parse_result_config_value(
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedAction, EmbeddedKeymap, EmbeddedSession, EngineRuntime};
+    use super::{EmbeddedAction, EmbeddedBindings, EmbeddedSession, EngineRuntime};
     use crate::execution::PreparedProcess;
     use crate::lifecycle::CancellationToken;
 
@@ -507,25 +485,21 @@ mod tests {
 
     #[test]
     fn cancel_defaults_to_escape_and_can_be_customized_or_disabled() {
-        let default_keymap = EmbeddedKeymap::from_values(None, None).unwrap();
+        let default_bindings = EmbeddedBindings::from_defaults(None).unwrap();
         assert_eq!(
-            default_keymap.action(crate::input::Key::Escape),
+            default_bindings.action(crate::input::Key::Escape),
             Some(EmbeddedAction::Cancel)
         );
 
-        let customized = EmbeddedKeymap::from_values(
-            Some(serde_json::json!({"cancel": ["ctrl+q"]})),
-            Some(serde_json::json!({"ctrl+q": false, "alt+x": "cancel"})),
-        )
+        let customized = EmbeddedBindings::from_defaults(Some(serde_json::json!({
+            "alt+x": "cancel",
+            "escape": false
+        })))
         .unwrap();
         assert_eq!(
             customized.action(crate::input::Key::Alt('x')),
             Some(EmbeddedAction::Cancel)
         );
-        assert_eq!(customized.action(crate::input::Key::Ctrl('q')), None);
-
-        let tombstone =
-            EmbeddedKeymap::from_values(None, Some(serde_json::json!({"escape": false}))).unwrap();
-        assert_eq!(tombstone.action(crate::input::Key::Escape), None);
+        assert_eq!(customized.action(crate::input::Key::Escape), None);
     }
 }

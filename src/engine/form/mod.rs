@@ -10,7 +10,7 @@ use crate::engine::{
     EngineDefinition, EngineValidationContext, FactoryFieldPlan, ProjectedBindingConfig,
     ProjectedEngineConfig,
 };
-use crate::input::keymap::{ActionBindings, KeymapAction};
+use crate::input::bindings::{ActionBindings, BindingAction};
 use crate::input::{InputEvent, Key, ViewMountId};
 use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{
@@ -40,7 +40,7 @@ impl FormAction {
     const ALL: [Self; 4] = [Self::FocusNext, Self::FocusPrev, Self::Cancel, Self::Exit];
 }
 
-impl KeymapAction for FormAction {
+impl BindingAction for FormAction {
     const LABEL: &'static str = "form";
 
     fn name(self) -> &'static str {
@@ -56,6 +56,15 @@ impl KeymapAction for FormAction {
         Self::ALL.into_iter().find(|action| action.name() == name)
     }
 
+    fn label(self) -> &'static str {
+        match self {
+            Self::FocusNext => "Next Field",
+            Self::FocusPrev => "Previous Field",
+            Self::Cancel => "Cancel",
+            Self::Exit => "Exit",
+        }
+    }
+
     fn default_bindings() -> &'static [(Key, Self)] {
         &[
             (Key::Tab, Self::FocusNext),
@@ -69,13 +78,17 @@ impl KeymapAction for FormAction {
     }
 }
 
-pub(super) type FormKeymap = ActionBindings<FormAction>;
+pub(super) type FormBindings = ActionBindings<FormAction>;
+
+/// Resolves a bare Form action name into `("form.<action>", label)`.
+pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
+    crate::input::bindings::binding_action_spec::<FormAction>(name)
+}
 
 pub(super) fn definition() -> EngineDefinition {
     EngineDefinition::new().with_factory_fields(FactoryFieldPlan {
         runtime: &["content"],
-        binding: &[],
-        binding_defaults: Some(&["defaults", "form", "bindings"]),
+        binding_defaults: Some(&["form", "bindings"]),
     })
 }
 
@@ -112,7 +125,7 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
         .as_ref()
         .map(toml_to_json)
         .transpose()?;
-    FormKeymap::validate_values(bindings.as_ref(), None).context("form bindings")
+    FormBindings::validate_defaults(bindings.as_ref()).context("form bindings")
 }
 
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
@@ -150,7 +163,7 @@ pub(crate) fn create_protocol_view(
 struct FormView {
     instance: ViewInstanceId,
     target: String,
-    keymap: FormKeymap,
+    bindings: FormBindings,
     parameters: Value,
     raw_input: String,
     runtime_snapshot: Value,
@@ -192,12 +205,11 @@ impl FormView {
         };
         let ready = script.is_none();
         let publication = ViewPublication::new(content::state(&fields, 0, ready), ready);
-        let keymap =
-            FormKeymap::from_values(config.bindings.defaults, config.bindings.view_keymap)?;
+        let bindings = FormBindings::from_defaults(config.bindings.defaults)?;
         Ok(Self {
             instance,
             target: request.target.clone(),
-            keymap,
+            bindings,
             parameters: request.query.values.clone(),
             raw_input: config.raw_input,
             runtime_snapshot: config.runtime_snapshot,
@@ -492,18 +504,18 @@ pub(super) const CMD_EXIT: &str = "form.exit";
 impl View for FormView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
-        for (key, action) in self.keymap.bindings() {
-            let (id, label) = match action {
-                FormAction::FocusNext => (CMD_FOCUS_NEXT, "Next Field"),
-                FormAction::FocusPrev => (CMD_FOCUS_PREV, "Previous Field"),
-                FormAction::Cancel => (CMD_CANCEL, "Cancel"),
-                FormAction::Exit => (CMD_EXIT, "Exit"),
+        for (key, action) in self.bindings.bindings() {
+            let id = match action {
+                FormAction::FocusNext => CMD_FOCUS_NEXT,
+                FormAction::FocusPrev => CMD_FOCUS_PREV,
+                FormAction::Cancel => CMD_CANCEL,
+                FormAction::Exit => CMD_EXIT,
             };
             entries.push(crate::command::CommandEntry::for_event(
                 id,
-                Some(label.to_string()),
+                Some(action.label().to_string()),
                 Some(key),
-                crate::command::CommandScope::Engine,
+                crate::command::BindingLayer::Engine,
             ));
         }
         entries
@@ -559,7 +571,6 @@ impl View for FormView {
             status: Some(self.status()),
             error: self.error.clone(),
             bindings: None,
-            overflow_command: None,
             has_unbound: false,
         })
     }
@@ -599,8 +610,8 @@ impl View for FormView {
             }
             ViewEvent::Task(task) if self.registry.accepts(&task) => self.poll(),
             ViewEvent::Input(InputEvent::Eof) => ViewDecision::Exit,
-            ViewEvent::Input(InputEvent::Key { key, raw }) if self.active => {
-                self.dispatch_key_event(key, &raw, context)?
+            ViewEvent::Input(InputEvent::Key { .. }) if self.active => {
+                anyhow::bail!("key input must be resolved by the command registry")
             }
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..

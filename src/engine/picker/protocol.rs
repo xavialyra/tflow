@@ -4,16 +4,15 @@
 //! responsible for item loading, selection, and preview
 
 use super::{
-    PickerKeymap, PickerOptions, PickerView, PickerViewServices, PrefixBackspace,
-    create_input_bindings, create_renderer,
+    PickerBindings, PickerOptions, PickerView, PickerViewServices, PrefixBackspace, create_renderer,
 };
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
     EngineNavigationRequest, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
-    InputBindingFactoryContext, ProjectedBindingConfig, ProjectedEngineConfig,
-    RendererFactoryContext, ViewContext as EngineContext, ViewIdentity,
+    ProjectedBindingConfig, ProjectedEngineConfig, RendererFactoryContext,
+    ViewContext as EngineContext, ViewIdentity,
 };
-use crate::input::keymap::KeymapAction;
+use crate::input::bindings::BindingAction;
 use crate::input::{EditorBuffer, InputEvent, InputSourceIdentity, Key, ViewMountId};
 #[cfg(test)]
 use crate::protocol::contracts::{TaskEvent, TaskOutcome};
@@ -34,7 +33,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 use serde_json::Value;
-use std::{collections::HashSet, ops::Range};
+use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -124,24 +123,7 @@ pub(crate) fn create_protocol_view(
         runtime.set_initial_focus(Some(focus.clone()));
     }
     let runtime: Box<dyn EngineRuntime> = Box::new(runtime);
-    let mut disabled_keys = explicitly_disabled_keys(
-        config.bindings.defaults.as_ref(),
-        config.bindings.view_keymap.as_ref(),
-    );
-    let keymap = PickerKeymap::from_values(
-        config.bindings.defaults.clone(),
-        config.bindings.view_keymap.clone(),
-    )?;
-    let bindings = create_input_bindings(InputBindingFactoryContext {
-        identity: config.identity.clone(),
-        bindings: config.bindings,
-    })?;
-    disabled_keys.extend(
-        bindings
-            .iter()
-            .filter(|binding| !binding.enabled)
-            .map(|binding| binding.key.binding_identity()),
-    );
+    let resolved = PickerBindings::from_defaults(config.bindings.defaults.clone())?;
     let renderer = create_renderer(RendererFactoryContext)?;
     let snapshot = parameter_snapshot(mount_id, &request.query, request.input.as_ref(), 0);
     let editor = initial_editor(&config.parameter_binding, &snapshot, request.input.as_ref())?;
@@ -167,8 +149,7 @@ pub(crate) fn create_protocol_view(
     Ok(Box::new(PickerProtocolView {
         runtime,
         renderer,
-        keymap,
-        disabled_keys,
+        bindings: resolved,
         left_prefix: config.left_prefix,
         theme: config.theme,
         parameter_binding: config.parameter_binding,
@@ -258,8 +239,7 @@ struct PickerProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
     options: PickerOptions,
-    keymap: PickerKeymap,
-    disabled_keys: HashSet<crate::input::BindingKey>,
+    bindings: PickerBindings,
     left_prefix: Option<String>,
     theme: ResolvedTheme,
     parameter_binding: ParameterBinding,
@@ -595,40 +575,31 @@ impl View for PickerProtocolView {
             status,
             error: self.diagnostic.clone(),
             bindings: None,
-            overflow_command: None,
             has_unbound: false,
         })
     }
 
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
-        for (key, action) in self.keymap.bindings() {
-            let (id, label) = match action {
-                super::keymap::PickerAction::Exit => (CMD_EXIT, "Exit"),
-                super::keymap::PickerAction::Back => (CMD_BACK, "Back"),
-                super::keymap::PickerAction::SelectPrevious => {
-                    (CMD_SELECT_PREVIOUS, "Select Previous")
-                }
-                super::keymap::PickerAction::SelectNext => (CMD_SELECT_NEXT, "Select Next"),
-                super::keymap::PickerAction::TogglePreview => {
-                    (CMD_TOGGLE_PREVIEW, "Toggle Preview")
-                }
-                super::keymap::PickerAction::PreviewScrollUp => {
-                    (CMD_PREVIEW_SCROLL_UP, "Scroll Preview Up")
-                }
-                super::keymap::PickerAction::PreviewScrollDown => {
-                    (CMD_PREVIEW_SCROLL_DOWN, "Scroll Preview Down")
-                }
-                super::keymap::PickerAction::ClearInput => (CMD_CLEAR_INPUT, "Clear Input"),
-                super::keymap::PickerAction::DeleteWord => (CMD_DELETE_WORD, "Delete Word"),
-                super::keymap::PickerAction::DeleteBackward => (CMD_DELETE_BACKWARD, "Delete"),
+        for (key, action) in self.bindings.bindings() {
+            let id = match action {
+                super::bindings::PickerAction::Exit => CMD_EXIT,
+                super::bindings::PickerAction::Back => CMD_BACK,
+                super::bindings::PickerAction::SelectPrevious => CMD_SELECT_PREVIOUS,
+                super::bindings::PickerAction::SelectNext => CMD_SELECT_NEXT,
+                super::bindings::PickerAction::TogglePreview => CMD_TOGGLE_PREVIEW,
+                super::bindings::PickerAction::PreviewScrollUp => CMD_PREVIEW_SCROLL_UP,
+                super::bindings::PickerAction::PreviewScrollDown => CMD_PREVIEW_SCROLL_DOWN,
+                super::bindings::PickerAction::ClearInput => CMD_CLEAR_INPUT,
+                super::bindings::PickerAction::DeleteWord => CMD_DELETE_WORD,
+                super::bindings::PickerAction::DeleteBackward => CMD_DELETE_BACKWARD,
             };
 
             entries.push(crate::command::CommandEntry::for_event(
                 id,
-                Some(label.to_string()),
+                Some(action.label().to_string()),
                 Some(key),
-                crate::command::CommandScope::Engine,
+                crate::command::BindingLayer::Engine,
             ));
         }
 
@@ -741,8 +712,8 @@ impl View for PickerProtocolView {
             | ViewEvent::Lifecycle(LifecycleEvent::TransitionRejected { .. }) => {
                 Ok(ViewDecision::Stay)
             }
-            ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                self.dispatch_key_event(key, &raw, context)
+            ViewEvent::Input(InputEvent::Key { .. }) => {
+                anyhow::bail!("key input must be resolved by the command registry")
             }
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..
@@ -917,46 +888,10 @@ impl FallbackInputReceiver for PickerProtocolView {
         context: &ViewContext,
     ) -> Result<ViewDecision> {
         self.rebuild_context(context);
-        let result = (|| {
-            if self.disabled_keys.contains(&key.binding_identity()) {
-                return Ok(ViewDecision::Stay);
-            }
-            self.apply_key(context, key)
-        })();
+        let result = self.apply_key(context, key);
         self.sync_auxiliary_size();
         result
     }
-}
-
-fn explicitly_disabled_keys(
-    defaults: Option<&Value>,
-    patch: Option<&Value>,
-) -> HashSet<crate::input::BindingKey> {
-    let mut disabled = HashSet::new();
-    if let Some(bindings) = defaults.and_then(Value::as_object) {
-        for (action, keys) in bindings {
-            if !keys.as_array().is_some_and(Vec::is_empty) {
-                continue;
-            }
-            for (key, candidate_action) in
-                <super::keymap::PickerAction as KeymapAction>::default_bindings()
-            {
-                if candidate_action.name() == action {
-                    disabled.insert(key.binding_identity());
-                }
-            }
-        }
-    }
-    if let Some(patch) = patch.and_then(Value::as_object) {
-        for (source, value) in patch {
-            if value.as_bool() == Some(false)
-                && let Ok(key) = Key::parse_binding(source)
-            {
-                disabled.insert(key.binding_identity());
-            }
-        }
-    }
-    disabled
 }
 
 struct VisibleEditorQuery {

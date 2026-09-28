@@ -1,11 +1,11 @@
-mod keymap;
+mod bindings;
 mod protocol;
 mod render;
 mod session;
 
 pub(crate) use protocol::{CaptureProtocolConfig, create_protocol_view};
 
-use self::keymap::{CaptureAction, CaptureKeymap};
+use self::bindings::{CaptureAction, CaptureBindings};
 pub(crate) use self::render::CaptureRenderer;
 use self::session::CaptureSession;
 use super::{
@@ -14,7 +14,6 @@ use super::{
     RendererFactoryContext, RuntimeFactoryContext, ViewContextPublication, require_field,
     validate_fields,
 };
-use crate::input::keymap::KeymapAction;
 use crate::workflow::config::{
     Defaults, ProducerKind, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
 };
@@ -26,8 +25,7 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: &["output"],
-            binding: &[],
-            binding_defaults: Some(&["defaults", "capture", "bindings"]),
+            binding_defaults: Some(&["capture", "bindings"]),
         })
         .with_actions([
             crate::engine::ActionSpec::unit("capture.copy"),
@@ -93,15 +91,16 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
         .as_ref()
         .map(toml_to_json)
         .transpose()?;
-    CaptureKeymap::validate_values(bindings.as_ref(), None).context("capture bindings")
+    CaptureBindings::validate_defaults(bindings.as_ref()).context("capture bindings")
 }
 
-pub(super) fn validate_keymap(_name: &str, _view: &View) -> Result<()> {
+pub(super) fn validate_bindings(_name: &str, _view: &View) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn is_capture_action(name: &str) -> bool {
-    self::keymap::CaptureAction::parse(name).is_some()
+/// Resolves a bare Capture action name into `("capture.<action>", label)`.
+pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
+    crate::input::bindings::binding_action_spec::<self::bindings::CaptureAction>(name)
 }
 
 fn validate_declared_output(value: &toml::Value) -> Result<()> {

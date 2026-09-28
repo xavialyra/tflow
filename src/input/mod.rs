@@ -1,5 +1,5 @@
+pub(crate) mod bindings;
 mod editor;
-pub(crate) mod keymap;
 mod pipeline;
 mod runtime;
 
@@ -33,6 +33,9 @@ pub(crate) enum Key {
 pub(crate) struct BindingKey(Key);
 
 impl BindingKey {
+    /// Case-folds the key into its identity form. This is the single place that
+    /// normalizes key identity; `Key::parse_binding` and `Key::binding_name`
+    /// share the same lowercase spelling.
     pub(crate) fn from_key(key: Key) -> Self {
         Self(match key {
             Key::Char(character) if character.is_ascii_alphabetic() => {
@@ -99,6 +102,16 @@ impl Key {
                 }
             }
         }
+    }
+
+    /// The one canonical spelling of `source`: parse it (which trims,
+    /// lowercases, and resolves aliases) and render its canonical name. Every
+    /// surface that needs a canonical key spelling — TOML keys, the runtime
+    /// snapshot, `--inspect` — goes through this.
+    pub(crate) fn canonical_binding_name(source: &str) -> Result<String> {
+        Self::parse_binding(source)?
+            .binding_name()
+            .with_context(|| format!("key binding {:?} has no canonical name", source))
     }
 
     pub(crate) fn binding_name(self) -> Option<String> {
@@ -320,6 +333,19 @@ mod tests {
         DecodedInput {
             key,
             raw: raw.to_vec(),
+        }
+    }
+
+    #[test]
+    fn canonical_binding_name_is_stable_and_resolves_aliases() {
+        // Aliases collapse onto their conventional spelling...
+        assert_eq!(Key::canonical_binding_name("CTRL+J").unwrap(), "enter");
+        assert_eq!(Key::canonical_binding_name("ctrl+i").unwrap(), "tab");
+        assert_eq!(Key::canonical_binding_name("backtab").unwrap(), "shift+tab");
+        assert_eq!(Key::canonical_binding_name("A").unwrap(), "a");
+        // ...and the canonical spelling round-trips unchanged.
+        for key in ["enter", "tab", "shift+tab", "ctrl+y", "alt+x", "space"] {
+            assert_eq!(Key::canonical_binding_name(key).unwrap(), key);
         }
     }
 

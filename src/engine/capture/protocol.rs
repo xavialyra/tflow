@@ -3,13 +3,14 @@
 //! Capture remains implemented by `CaptureView` and `CaptureRenderer`; this
 //! module translates their engine runtime contract to the common View protocol.
 
-use super::{CaptureKeymap, create_renderer, create_view};
+use super::{CaptureBindings, create_renderer, create_view};
 use crate::engine::{
     ActionId, BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission,
     EngineNavigationRequest, EngineRuntime, EngineRuntimeSnapshot, EngineTick,
     ProjectedBindingConfig, ProjectedEngineConfig, RendererFactoryContext, RuntimeFactoryContext,
     ViewContext as EngineContext, ViewIdentity,
 };
+use crate::input::bindings::BindingAction;
 use crate::input::{EditorBuffer, InputEvent, InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationObserver;
 #[cfg(test)]
@@ -28,7 +29,7 @@ use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
 
 /// Inputs required by the opt-in Capture adapter. Values must already be
-/// projected from static configuration in the same host scope that produced the navigation request.
+/// projected from static configuration in the same host layer that produced the navigation request.
 pub(crate) struct CaptureProtocolConfig {
     pub(crate) identity: ViewIdentity,
     pub(crate) engine: ProjectedEngineConfig,
@@ -116,10 +117,7 @@ fn create_protocol_view_state(
         parameters: parameters.clone(),
         cancellation: config.cancellation,
     };
-    let keymap = CaptureKeymap::from_values(
-        config.bindings.defaults.clone(),
-        config.bindings.view_keymap.clone(),
-    )?;
+    let bindings = CaptureBindings::from_defaults(config.bindings.defaults.clone())?;
     let renderer = create_renderer(RendererFactoryContext)?;
     let runtime = create_view(runtime_context)?;
     let engine_context = engine_context(
@@ -136,7 +134,7 @@ fn create_protocol_view_state(
     Ok(CaptureProtocolView {
         runtime,
         renderer,
-        keymap,
+        bindings,
         starter,
         runtime_snapshot: config.runtime_snapshot,
         parameters,
@@ -162,7 +160,7 @@ fn create_protocol_view_state(
 struct CaptureProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
-    keymap: CaptureKeymap,
+    bindings: CaptureBindings,
     starter: MountTaskStarter,
     runtime_snapshot: Value,
     parameters: ParameterSnapshot,
@@ -405,16 +403,16 @@ pub(super) const CMD_BACK: &str = "capture.back";
 impl View for CaptureProtocolView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
-        for (key, action) in self.keymap.bindings() {
-            let (id, label) = match action {
-                super::CaptureAction::Copy => (CMD_COPY, "Copy"),
-                super::CaptureAction::Back => (CMD_BACK, "Back"),
+        for (key, action) in self.bindings.bindings() {
+            let id = match action {
+                super::CaptureAction::Copy => CMD_COPY,
+                super::CaptureAction::Back => CMD_BACK,
             };
             entries.push(crate::command::CommandEntry::for_event(
                 id,
-                Some(label.to_string()),
+                Some(action.label().to_string()),
                 Some(key),
-                crate::command::CommandScope::Engine,
+                crate::command::BindingLayer::Engine,
             ));
         }
         entries
@@ -449,7 +447,6 @@ impl View for CaptureProtocolView {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: None,
-            overflow_command: None,
             has_unbound: false,
         })
     }
@@ -496,8 +493,8 @@ impl View for CaptureProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                self.dispatch_key_event(key, &raw, context)
+            ViewEvent::Input(InputEvent::Key { .. }) => {
+                anyhow::bail!("key input must be resolved by the command registry")
             }
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
             ViewEvent::Task(task) => {
@@ -748,18 +745,12 @@ mod tests {
                 .unwrap(),
             ViewDecision::Stay
         ));
-        assert!(
-            matches!(view.event(ViewEvent::Input(InputEvent::Key { key: crate::input::Key::Enter, raw: b"\r".to_vec() }), &context).unwrap(), ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured")
-        );
         assert!(matches!(
-            view.event(
-                ViewEvent::Input(InputEvent::Key {
-                    key: crate::input::Key::Escape,
-                    raw: vec![0x1b]
-                }),
-                &context
-            )
-            .unwrap(),
+            view.on_command(CMD_COPY, &context).unwrap(),
+            ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "captured"
+        ));
+        assert!(matches!(
+            view.on_command(CMD_BACK, &context).unwrap(),
             ViewDecision::Close
         ));
     }

@@ -48,14 +48,6 @@ impl ProjectedEngineConfig {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectedBindingConfig {
     pub(crate) defaults: Option<Value>,
-    pub(crate) view_keymap: Option<Value>,
-    pub(crate) engine_fields: BTreeMap<String, Value>,
-}
-
-impl ProjectedBindingConfig {
-    pub(crate) fn engine_field(&self, name: &str) -> Option<&Value> {
-        self.engine_fields.get(name)
-    }
 }
 
 pub(crate) struct RuntimeFactoryContext {
@@ -66,12 +58,6 @@ pub(crate) struct RuntimeFactoryContext {
 }
 
 pub(crate) struct RendererFactoryContext;
-
-pub(crate) struct InputBindingFactoryContext {
-    #[allow(dead_code)]
-    pub(crate) identity: ViewIdentity,
-    pub(crate) bindings: ProjectedBindingConfig,
-}
 
 pub(crate) struct EngineValidationContext<'a> {
     pub(crate) view_ref: &'a str,

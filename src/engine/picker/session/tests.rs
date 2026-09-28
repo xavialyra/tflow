@@ -474,53 +474,42 @@ fn failed_or_cancelled_polled_tasks_reset_the_handle_and_prepare_retry_work() {
 }
 
 #[test]
-fn item_commands_are_disabled_when_results_have_no_selected_item() {
+fn command_envelope_comes_from_the_registry() {
+    use crate::command::{BindingLayer, CommandEntry, CommandRegistry};
+
     let (_config, mut picker) = test_picker(116);
-    picker.services.page_commands.insert(
-        "core:default".to_string(),
-        BTreeMap::from([
-            (
-                "enter".to_string(),
-                serde_json::json!({
-                    "ref": {"view": "core:default", "id": "requires_items"},
-                    "label": "Requires item"
-                }),
-            ),
-            (
-                "tab".to_string(),
-                serde_json::json!({
-                    "ref": {"view": "core:default", "id": "selection_scope"},
-                    "label": "Selection scope"
-                }),
-            ),
-        ]),
-    );
-    let source = crate::input::InputSourceIdentity {
-        frame: crate::input::ViewMountId(116),
-        generation: 0,
-    };
-    let parameters = test_parameters("", source, 1);
-    picker
-        .request_items("core:default", "", "", parameters.clone())
+    let mut registry = CommandRegistry::new();
+    registry
+        .replace_layer(
+            BindingLayer::View,
+            vec![
+                CommandEntry::for_event(
+                    "requires_items",
+                    Some("Requires item".to_string()),
+                    Some(crate::input::Key::Enter),
+                    BindingLayer::View,
+                ),
+                CommandEntry::for_event(
+                    "selection_scope",
+                    Some("Selection layer".to_string()),
+                    Some(crate::input::Key::Tab),
+                    BindingLayer::View,
+                ),
+            ],
+        )
         .unwrap();
-    picker.items_task_state = ItemsTaskState::Idle;
-    picker.parameter_snapshot = Some(parameters.clone());
-    picker.frame.results = ResultsState::Ready(String::new());
+    picker.services.registry = Some(std::sync::Arc::new(std::sync::RwLock::new(registry)));
 
     let runtime = picker
         .runtime_update(&EngineRuntimeSnapshot::default(), "")
         .unwrap();
+    let envelope = &runtime.value["command"];
+    assert!(envelope["revision"].as_u64().unwrap() >= 1);
     assert_eq!(
-        runtime.value["command"],
+        envelope["commands"],
         serde_json::json!([
-            {
-                "ref": {"view": "core:default", "id": "requires_items"},
-                "label": "Requires item"
-            },
-            {
-                "ref": {"view": "core:default", "id": "selection_scope"},
-                "label": "Selection scope"
-            }
+            {"id": "requires_items", "label": "Requires item", "key": "enter", "layer": "view"},
+            {"id": "selection_scope", "label": "Selection layer", "key": "tab", "layer": "view"}
         ])
     );
 }
@@ -1024,6 +1013,7 @@ mod preview_provider_tests {
             &Value::Null,
             page,
             MountTaskLease::new(mount),
+            None,
         )
         .unwrap();
         let preview_config = crate::engine::picker::preview::parse(

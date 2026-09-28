@@ -1,0 +1,196 @@
+[workflow]
+api = 1
+name = "Parameter Editor"
+entrypoint = "main"
+
+[views.main]
+chrome_commands_show = ["enter"]
+
+[views.main.engine]
+type = "form"
+
+[views.main.engine.config.content]
+producer = "script"
+[views.main.engine.config.content.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+payload = request.get("context", {}).get("parameters", {}).get("payload")
+if not isinstance(payload, str):
+    raise SystemExit("parameter editor payload is missing")
+try:
+    payload = json.loads(payload)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"parameter editor payload is invalid: {error}")
+query = payload.get("query")
+values = payload.get("values")
+if not isinstance(query, dict):
+    raise SystemExit("parameter editor query definition is missing")
+
+fields = []
+query_type = query.get("type", "string")
+if query_type == "string":
+    if not isinstance(values, str):
+        raise SystemExit("string query values are invalid")
+    fields.append({"name": "query", "label": "Query", "type": "string", "value": values})
+elif query_type == "object":
+    names = []
+    input_field = query.get("input")
+    if isinstance(input_field, str) and input_field in query:
+        names.append(input_field)
+    names.extend(sorted(name for name in query if name not in ("type", "input", "input_order") and name not in names))
+    if not isinstance(values, dict):
+        raise SystemExit("object query values are invalid")
+    for name in names:
+        definition = query.get(name)
+        if not isinstance(definition, dict) or not isinstance(definition.get("type"), str):
+            raise SystemExit(f"query field {name!r} is invalid")
+        type_name = definition["type"]
+        field_type = type_name if type_name in ("string", "password", "integer", "number", "boolean", "enum") else "json"
+        field = {
+            "name": name,
+            "label": name,
+            "type": field_type,
+            "required": "default" not in definition and not definition.get("nullable", False),
+            "value": values.get(name, definition.get("default")),
+        }
+        if type_name == "enum" and "options" in definition:
+            field["options"] = definition["options"]
+        fields.append(field)
+else:
+    raise SystemExit(f"unsupported query type {query_type!r}")
+
+json.dump({"version": 1, "content": {"fields": fields}}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+
+[views.main.query]
+type = "object"
+input = "payload"
+payload = { type = "string", default = "" }
+
+[views.main.bindings]
+enter = "accept"
+
+[views.main.unbind]
+layers = ["host"]
+
+[commands.accept]
+label = "Apply"
+type = "return"
+producer = "script"
+[commands.accept.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+context = request.get("context", {})
+parameters = context.get("parameters", {})
+state = context.get("engine", {}).get("state", {})
+payload_text = parameters.get("payload") if isinstance(parameters, dict) else None
+if not isinstance(payload_text, str) or not isinstance(state, dict):
+    raise SystemExit("parameter editor request is invalid")
+try:
+    payload = json.loads(payload_text)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"parameter editor payload is invalid: {error}")
+target = payload.get("target")
+query = payload.get("query")
+values = state.get("values")
+if not isinstance(target, str) or not target or not isinstance(query, dict):
+    raise SystemExit("parameter editor target is invalid")
+if state.get("valid") is not True or not isinstance(values, dict):
+    raise SystemExit("parameter editor values are invalid")
+if query.get("type", "string") == "string":
+    parameters_value = values.get("query")
+    if not isinstance(parameters_value, str):
+        raise SystemExit("parameter editor string value is invalid")
+else:
+    for name, definition in query.items():
+        if isinstance(definition, dict) and definition.get("nullable", False) and values.get(name) == "":
+            values[name] = None
+    parameters_value = values
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "return",
+        "value": {"target": target, "parameters": parameters_value},
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+
+[commands.edit]
+label = "Edit Query"
+type = "call"
+producer = "script"
+[commands.edit.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+context = json.load(sys.stdin).get("context", {})
+view = context.get("view", {})
+if not isinstance(view, dict) or not isinstance(view.get("ref"), str):
+    raise SystemExit("parameter editor has no active view")
+query = view.get("query", {"type": "string"})
+values = view.get("values")
+raw_input = view.get("raw_input", "")
+
+if isinstance(query, dict) and isinstance(values, dict):
+    input_field = query.get("input")
+    if isinstance(input_field, str) and raw_input:
+        values = dict(values)
+        values[input_field] = raw_input
+elif query == {"type": "string"} and raw_input:
+    values = raw_input
+
+payload = json.dumps({
+    "target": view["ref"],
+    "query": query,
+    "values": values,
+}, separators=(",", ":"))
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "call",
+        "target": "__parameters:main",
+        "query": {"payload": payload},
+        "presentation": {
+            "mode": "popup",
+            "width": 54,
+            "height": 12,
+            "show_title": False,
+        },
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
+[commands.edit.return_processor]
+producer = "script"
+[commands.edit.return_processor.handler]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+result = json.load(sys.stdin).get("context", {}).get("result")
+if not isinstance(result, dict):
+    raise SystemExit("parameter editor returned an invalid result")
+target = result.get("target")
+parameters = result.get("parameters")
+if not isinstance(target, str) or not isinstance(parameters, (dict, str)):
+    raise SystemExit("parameter editor result is missing target or parameters")
+json.dump({
+    "version": 1,
+    "operation": {
+        "type": "navigate",
+        "target": target,
+        "query": parameters,
+        "replace": True,
+    },
+}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''

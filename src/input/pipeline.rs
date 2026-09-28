@@ -57,8 +57,7 @@ impl InputPipeline {
         self.pending.is_empty()
     }
 
-    /// Discard launcher input already decoded or buffered before a foreground
-    /// command takes over the terminal.
+    /// Discard launcher input already decoded or buffered before a command is executed.
     pub(crate) fn discard_pending(&mut self) {
         self.pending.clear();
         self.decoder.take_pending_raw();
@@ -99,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn discarding_after_a_foreground_trigger_removes_decoded_and_partial_input() {
+    fn discarding_after_a_command_trigger_removes_decoded_and_partial_input() {
         let mut pipeline = InputPipeline::default();
         pipeline.feed_normal(b"\rqueued");
         assert!(matches!(pipeline.pop_input(), Some(InputEvent::Key { .. })));

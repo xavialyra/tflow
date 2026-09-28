@@ -1,6 +1,6 @@
+mod bindings;
 pub(crate) mod display;
 mod items;
-mod keymap;
 mod preview;
 mod protocol;
 mod render;
@@ -8,22 +8,19 @@ mod runtime;
 mod session;
 mod tasks;
 
+use self::bindings::PickerBindings;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use self::display::ItemDisplayInput;
 pub(crate) use self::display::SlotToken;
 pub(crate) use self::items::run_items_producer_raw;
 use self::items::{ItemsRequest, PickerItemsDefinition, PickerItemsLoader};
-use self::keymap::PickerKeymap;
 pub(crate) use self::preview::PreviewDocumentCache;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
 use self::session::PickerOptions;
 pub(crate) use self::session::{PickerView, PrefixBackspace};
 use self::tasks::PickerItemsScheduler;
-use super::{
-    EngineValidationContext, InputBindingFactoryContext, RendererFactoryContext, validate_fields,
-};
-use crate::input::keymap::KeymapAction;
+use super::{EngineValidationContext, RendererFactoryContext, validate_fields};
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
     CompiledConfig, Defaults, ProducerKind, View, parse_producer_script_handler, toml_to_json,
@@ -52,7 +49,10 @@ impl PickerTaskServices {
 
 #[derive(Clone, Default)]
 pub(crate) struct PickerViewServices {
-    page_commands: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Session command registry, when the host exposes one. When present the
+    /// Picker publishes the live command envelope; otherwise it publishes an
+    /// empty envelope until the first registry update.
+    registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
     workflow_roots: BTreeMap<String, PathBuf>,
     preview_sources: BTreeMap<String, preview::PreviewSource>,
     /// Session-scoped cache shared by every Picker instance mounted by one
@@ -82,10 +82,6 @@ impl PickerViewServices {
 impl PickerViewServices {
     pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
-        services.page_commands.insert(
-            root_view_ref.to_string(),
-            crate::workflow::command::collect_available_commands(config, root_view_ref, false)?,
-        );
 
         if let Some(value) = config
             .view(root_view_ref)
@@ -105,14 +101,6 @@ impl PickerViewServices {
                 .insert(package.to_string(), root.to_path_buf());
         }
         Ok(services)
-    }
-
-    pub(crate) fn page_commands(&self, page_view: &str) -> Result<BTreeMap<String, Value>> {
-        Ok(self
-            .page_commands
-            .get(page_view)
-            .cloned()
-            .unwrap_or_default())
     }
 
     pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
@@ -155,11 +143,13 @@ pub(crate) fn mount_data(
     input: &Value,
     view_ref: &str,
     lease: MountTaskLease,
+    registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
 ) -> Result<PickerViewServices> {
     let projection = Arc::new(crate::workflow::config::PickerItemsProjection::from_config(
         config, input, view_ref,
     )?);
     let mut view_services = PickerViewServices::from_config(config, view_ref)?;
+    view_services.registry = registry;
     view_services.launch_input = input.clone();
     let plan = PickerMountPlan {
         definition: PickerItemsDefinition::new(Arc::clone(&projection), view_ref)?,
@@ -252,8 +242,7 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
         .with_factory_fields(crate::engine::FactoryFieldPlan {
             runtime: CONFIG_FIELDS,
-            binding: &["preview_ratio", "preview_min_width", "preview"],
-            binding_defaults: Some(&["defaults", "picker", "bindings"]),
+            binding_defaults: Some(&["picker", "bindings"]),
         })
         .with_actions([
             crate::engine::ActionSpec::unit("picker.select_next"),
@@ -373,111 +362,22 @@ pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {
         .as_ref()
         .map(toml_to_json)
         .transpose()?;
-    PickerKeymap::validate_values(bindings.as_ref(), None).context("picker bindings")
+    PickerBindings::validate_defaults(bindings.as_ref()).context("picker bindings")
 }
 
-pub(super) fn validate_keymap(_name: &str, _view: &View) -> Result<()> {
+pub(super) fn validate_bindings(_name: &str, _view: &View) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn is_picker_action(name: &str) -> bool {
-    self::keymap::PickerAction::parse(name).is_some()
+/// Resolves a bare Picker action name into `("picker.<action>", label)`.
+pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
+    crate::input::bindings::binding_action_spec::<self::bindings::PickerAction>(name)
 }
 
 pub(super) fn create_renderer(
     _context: RendererFactoryContext,
 ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
     Ok(Box::new(PickerRenderer::new()))
-}
-
-pub(crate) fn create_input_bindings(
-    context: InputBindingFactoryContext,
-) -> Result<Vec<crate::workflow::command::InputActionBinding>> {
-    let bindings = context.bindings;
-    let (preview_ratio, preview_min_width, _) = preview_options(
-        bindings.engine_field("preview_ratio"),
-        bindings.engine_field("preview_min_width"),
-        None,
-    )?;
-    self::preview::parse(
-        preview_ratio,
-        preview_min_width,
-        bindings.engine_field("preview").cloned(),
-    )?;
-    let keymap = PickerKeymap::from_values(bindings.defaults, bindings.view_keymap)?;
-    Ok(keymap
-        .bindings()
-        .map(|(key, action)| {
-            let (action, enabled) = match action {
-                self::keymap::PickerAction::Exit => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.exit"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::Back => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.back"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::ClearInput => (
-                    crate::workflow::command::ResolvedInputAction::Edit(
-                        crate::workflow::command::EditorAction::ClearInput,
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::DeleteBackward => (
-                    crate::workflow::command::ResolvedInputAction::Edit(
-                        crate::workflow::command::EditorAction::DeleteBackward,
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::DeleteWord => (
-                    crate::workflow::command::ResolvedInputAction::Edit(
-                        crate::workflow::command::EditorAction::DeleteWord,
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::SelectPrevious => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.select_previous"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::SelectNext => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.select_next"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::PreviewScrollUp => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.preview_scroll_up"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::PreviewScrollDown => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.preview_scroll_down"),
-                    ),
-                    true,
-                ),
-                self::keymap::PickerAction::TogglePreview => (
-                    crate::workflow::command::ResolvedInputAction::Engine(
-                        crate::engine::ActionId::new("picker.toggle_preview"),
-                    ),
-                    true,
-                ),
-            };
-            crate::workflow::command::InputActionBinding {
-                key,
-                action,
-                label: None,
-                enabled,
-            }
-        })
-        .collect())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -627,7 +527,7 @@ items = [
 producer = "script"
 [views.main.engine.config.preview.handler]
 file = "scripts/preview.py"
-[views.main.keymap]
+[views.main.bindings]
 "ctrl+p" = "toggle_preview"
 "alt+k" = "preview_scroll_up"
 "alt+j" = "preview_scroll_down"

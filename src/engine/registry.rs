@@ -74,19 +74,19 @@ impl EngineRegistry {
         match view.selected_engine_type() {
             crate::workflow::config::ENGINE_PICKER => {
                 super::picker::validate_config(context)?;
-                super::picker::validate_keymap(name, view)
+                super::picker::validate_bindings(name, view)
             }
             crate::workflow::config::ENGINE_FORM => {
                 super::form::validate_config(context)?;
-                default_validate_keymap(crate::workflow::config::ENGINE_FORM, name, view)
+                default_validate_bindings(crate::workflow::config::ENGINE_FORM, name, view)
             }
             crate::workflow::config::ENGINE_CAPTURE => {
                 super::capture::validate_config(context)?;
-                super::capture::validate_keymap(name, view)
+                super::capture::validate_bindings(name, view)
             }
             crate::workflow::config::ENGINE_EMBEDDED => {
                 super::embedded::validate_config(context)?;
-                default_validate_keymap(crate::workflow::config::ENGINE_EMBEDDED, name, view)
+                default_validate_bindings(crate::workflow::config::ENGINE_EMBEDDED, name, view)
             }
             engine_type => bail!("view {:?} uses unsupported engine {:?}", name, engine_type),
         }
@@ -97,7 +97,7 @@ impl EngineRegistry {
     }
 }
 
-fn default_validate_keymap(_engine_type: &str, _name: &str, _view: &View) -> Result<()> {
+fn default_validate_bindings(_engine_type: &str, _name: &str, _view: &View) -> Result<()> {
     Ok(())
 }
 
@@ -160,11 +160,11 @@ mod tests {
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let bound_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[keymap]\n\"ctrl+b\" = \"cancel\"",
+            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[bindings]\n\"ctrl+b\" = \"cancel\"",
         );
         registry
             .validate_config("bound-embedded", &bound_embedded)
-            .expect("embedded View keymap should be accepted");
+            .expect("embedded View bindings should be accepted");
 
         let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());

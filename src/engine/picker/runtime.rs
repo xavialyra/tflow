@@ -62,12 +62,15 @@ impl PickerView {
         } = projection;
         let frame = self.current();
         let results_current = self.results_current(&input);
-        let page_view = self.current_view_ref();
-        let commands = self
-            .services
-            .page_commands(page_view)?
-            .into_values()
-            .collect::<Vec<_>>();
+        // The Picker publishes the same runtime envelope as the palette. Without
+        // a registry (direct engine unit tests) it publishes the empty envelope.
+        let commands = match &self.services.registry {
+            Some(registry) => {
+                crate::command::ChromeSnapshot::from_registry(&registry.read().unwrap())
+                    .runtime_envelope()
+            }
+            None => serde_json::json!({"revision": 0, "commands": []}),
+        };
         let items = if results_current {
             frame
                 .selection

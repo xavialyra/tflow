@@ -38,37 +38,27 @@ pub(crate) fn project_engine_config(
 
 pub(crate) fn project_binding_config(
     config: &CompiledConfig,
-    view_ref: &str,
     definition: &EngineDefinition,
 ) -> Result<ProjectedBindingConfig> {
     let defaults = match definition.factory_fields.binding_defaults {
-        Some(path) if path == ["defaults", "picker", "bindings"] => config
+        Some(path) if path == ["picker", "bindings"] => config
             .picker_default_bindings()
             .map(toml_to_json)
             .transpose()?,
-        Some(path) if path == ["defaults", "capture", "bindings"] => config
+        Some(path) if path == ["capture", "bindings"] => config
             .capture_default_bindings()
             .map(toml_to_json)
             .transpose()?,
-        Some(path) if path == ["defaults", "embedded", "bindings"] => config
+        Some(path) if path == ["embedded", "bindings"] => config
             .embedded_default_bindings()
             .map(toml_to_json)
             .transpose()?,
-        Some(path) if path == ["defaults", "form", "bindings"] => config
+        Some(path) if path == ["form", "bindings"] => config
             .form_default_bindings()
             .map(toml_to_json)
             .transpose()?,
         Some(path) => anyhow::bail!("unsupported engine binding defaults path {:?}", path),
         None => None,
     };
-    let view_keymap = config
-        .view(view_ref)
-        .and_then(|view| view.keymap.as_ref())
-        .map(serde_json::to_value)
-        .transpose()?;
-    Ok(ProjectedBindingConfig {
-        defaults,
-        view_keymap,
-        engine_fields: fields_for_view(config, view_ref, definition.factory_fields.binding)?,
-    })
+    Ok(ProjectedBindingConfig { defaults })
 }

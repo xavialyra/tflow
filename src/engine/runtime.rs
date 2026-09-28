@@ -538,7 +538,6 @@ pub(crate) trait EngineRuntime {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FactoryFieldPlan {
     pub(crate) runtime: &'static [&'static str],
-    pub(crate) binding: &'static [&'static str],
     pub(crate) binding_defaults: Option<&'static [&'static str]>,
 }
 

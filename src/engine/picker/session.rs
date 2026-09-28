@@ -446,10 +446,6 @@ impl PickerView {
             )
     }
 
-    pub(crate) fn current_view_ref(&self) -> &str {
-        &self.frame.view
-    }
-
     fn request_current(&mut self, context: &ViewContext) -> Result<Option<EngineDecision>> {
         if context.input_rejected() {
             return Ok(None);

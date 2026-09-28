@@ -145,19 +145,25 @@ impl Default for ResolvedTheme {
     }
 }
 
-pub(super) const DEFAULT_THEME_TOML: &str = include_str!("builtin/terminal.toml");
+pub(super) const DEFAULT_THEME_TOML: &str =
+    include_str!("../../../assets/builtin/themes/default.toml");
 
 pub(super) fn default_raw_theme() -> &'static RawTheme {
     static THEME: std::sync::OnceLock<RawTheme> = std::sync::OnceLock::new();
     THEME.get_or_init(|| {
-        toml::from_str(DEFAULT_THEME_TOML).expect("builtin terminal.toml must be valid")
+        toml::from_str(DEFAULT_THEME_TOML).expect("builtin default.toml must be valid")
     })
 }
 
 impl ResolvedTheme {
+    pub(crate) fn default_theme() -> Self {
+        Self::from_raw(default_raw_theme(), "builtin default")
+            .expect("builtin default theme must be valid")
+    }
+
+    #[inline]
     pub(crate) fn terminal() -> Self {
-        Self::from_raw(default_raw_theme(), "builtin terminal")
-            .expect("builtin terminal theme must be valid")
+        Self::default_theme()
     }
 
     pub(super) fn from_raw(raw: &RawTheme, source: &str) -> Result<Self> {
@@ -625,7 +631,7 @@ impl ResolvedTheme {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn resolve_slot_style(
         &self,
         slot: crate::engine::SlotToken,

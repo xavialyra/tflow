@@ -3,14 +3,15 @@
 //! The PTY and terminal implementation remain owned by the existing
 //! Embedded Engine runtime. This adapter only translates the runtime's
 
-use super::{create_input_bindings, create_renderer, create_view};
+use super::{EmbeddedAction, EmbeddedBindings, create_renderer, create_view};
 use crate::engine::{
     ActionId, EngineActionInput, EngineDecision, EngineEmission, EngineNavigationRequest,
     EngineRuntime, EngineRuntimeSnapshot, EngineTick, ExternalTickAction, ExternalTickResult,
-    InputBindingFactoryContext, ProjectedBindingConfig, ProjectedEngineConfig, RawInputReceiver,
-    RendererFactoryContext, RuntimeFactoryContext, ViewContext as EngineContext, ViewIdentity,
+    ProjectedBindingConfig, ProjectedEngineConfig, RawInputReceiver, RendererFactoryContext,
+    RuntimeFactoryContext, ViewContext as EngineContext, ViewIdentity,
 };
 use crate::input::InputEvent;
+use crate::input::bindings::BindingAction;
 use crate::input::{EditorSnapshot, ViewMountId};
 use crate::lifecycle::CancellationObserver;
 use crate::protocol::contracts::ViewInstanceId;
@@ -85,10 +86,7 @@ fn create_protocol_view_state(
         parameters: parameters.clone(),
         cancellation: config.cancellation,
     })?;
-    let bindings = create_input_bindings(InputBindingFactoryContext {
-        identity: identity.clone(),
-        bindings: config.bindings,
-    })?;
+    let bindings = EmbeddedBindings::from_defaults(config.bindings.defaults)?;
     let renderer = create_renderer(RendererFactoryContext)?;
     let engine_context = engine_context(
         instance,
@@ -126,7 +124,7 @@ fn create_protocol_view_state(
 struct EmbeddedProtocolView {
     runtime: Box<dyn EngineRuntime>,
     renderer: Box<dyn crate::engine::ViewRenderer>,
-    bindings: Vec<crate::workflow::command::InputActionBinding>,
+    bindings: EmbeddedBindings,
     theme: ResolvedTheme,
     input_raw: String,
     parameters: ParameterSnapshot,
@@ -335,20 +333,16 @@ impl View for EmbeddedProtocolView {
 
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
-        for binding in &self.bindings {
-            if !binding.enabled {
-                continue;
-            }
-            if let crate::workflow::command::ResolvedInputAction::Engine(action) = &binding.action
-                && action.as_str() == CMD_CANCEL
-            {
-                entries.push(crate::command::CommandEntry::for_event(
-                    CMD_CANCEL,
-                    Some("Cancel".to_string()),
-                    Some(binding.key),
-                    crate::command::CommandScope::Engine,
-                ));
-            }
+        for (key, action) in self.bindings.bindings() {
+            let id = match action {
+                EmbeddedAction::Cancel => CMD_CANCEL,
+            };
+            entries.push(crate::command::CommandEntry::for_event(
+                id,
+                Some(action.label().to_string()),
+                Some(key),
+                crate::command::BindingLayer::Engine,
+            ));
         }
         entries
     }
@@ -373,7 +367,6 @@ impl View for EmbeddedProtocolView {
             status: self.status.clone().or(chrome.status),
             error: self.error.clone(),
             bindings: None,
-            overflow_command: None,
             has_unbound: false,
         })
     }
@@ -424,8 +417,8 @@ impl View for EmbeddedProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Input(InputEvent::Key { key, raw }) => {
-                self.dispatch_key_event(key, &raw, context)
+            ViewEvent::Input(InputEvent::Key { .. }) => {
+                anyhow::bail!("key input must be resolved by the command registry")
             }
             ViewEvent::Input(InputEvent::Paste { raw, .. })
             | ViewEvent::Input(InputEvent::Bytes(raw)) => {
@@ -680,11 +673,10 @@ mod tests {
     fn raw_key_paste_and_bytes_are_forwarded_losslessly() {
         let script = "read -r line; printf '%s' \"$line\"";
         let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", script]));
-        view.event(
-            ViewEvent::Input(InputEvent::Key {
-                key: crate::input::Key::Char('x'),
-                raw: vec![0x1b, b'[', b'1', b'~'],
-            }),
+        crate::view::dispatch_test_key(
+            view.as_mut(),
+            crate::input::Key::Char('x'),
+            &[0x1b, b'[', b'1', b'~'],
             &context,
         )
         .unwrap();
@@ -735,15 +727,7 @@ mod tests {
     #[test]
     fn cancel_binding_returns_without_forwarding_escape() {
         let (mut view, context) = mounted_view(config(&["/bin/sh", "-c", "sleep 2"]));
-        let decision = view
-            .event(
-                ViewEvent::Input(InputEvent::Key {
-                    key: crate::input::Key::Escape,
-                    raw: vec![0x1b],
-                }),
-                &context,
-            )
-            .unwrap();
+        let decision = view.on_command(CMD_CANCEL, &context).unwrap();
         assert!(matches!(decision, ViewDecision::Close));
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
             .unwrap();
@@ -898,5 +882,24 @@ mod tests {
         view.event(ViewEvent::Lifecycle(LifecycleEvent::Closed), &context)
             .unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The embedded engine publishes one Engine-layer row per effective binding,
+    /// exactly like the other engines: the row exists only for keys that
+    /// survived the engine table's `false` removals.
+    #[test]
+    fn engine_commands_expose_the_effective_embedded_binding() {
+        let view = create_protocol_view(
+            config(&["/bin/sh", "-c", "true"]),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        let entries = view.engine_commands(&context());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, CMD_CANCEL);
+        assert_eq!(entries[0].label.as_deref(), Some("Cancel"));
+        assert_eq!(entries[0].key, Some(crate::input::Key::Escape));
+        assert_eq!(entries[0].layer, crate::command::BindingLayer::Engine);
     }
 }
