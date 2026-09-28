@@ -43,7 +43,7 @@ response = {
     "version": 1,
     "operation": {
         "type": "navigate",
-        "target": "default",
+        "target": "main",
         "query": query,
         "replace": True,
     },

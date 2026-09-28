@@ -50,55 +50,41 @@ DEFAULT_CANDIDATES = [
         "name": "Quick Calculator",
         "desc": "Real-time math evaluation with formatted display & clipboard copy.",
         "feed": "calculator:main",
-        "aliases": {"calc": "calculator:main"},
-        "deps": {"optional": ["wl-copy", "xclip"]}
+        "deps": {"optional": ["wl-copy", "xclip"]},
     },
     {
         "id": "apps",
         "name": "Desktop Applications",
         "desc": "Search and launch GUI / desktop apps with icon preview & weight stats.",
         "feed": "apps:main",
-        "aliases": {"app": "apps:main"},
-        "deps": {"optional": ["gio", "setsid"]}
+        "deps": {"optional": ["gio", "setsid"]},
     },
     {
         "id": "sys",
         "name": "System & Session Controls",
         "desc": "Fast system actions for locking screen, sleeping, restarting, or shutting down.",
         "feed": "sys:main",
-        "aliases": {"sys": "sys:main"},
-        "deps": {"optional": ["systemctl", "loginctl"]}
+        "deps": {"optional": ["systemctl", "loginctl"]},
     },
     {
         "id": "clipboard",
         "name": "Clipboard History",
         "desc": "Search, preview, and restore clipboard history entries.",
-        "aliases": {"clip": "clipboard:default"},
-        "deps": {"optional": ["wl-paste", "wl-copy", "xclip"]}
+        "deps": {"optional": ["wl-paste", "wl-copy", "xclip"]},
     },
     {
         "id": "shell",
         "name": "Shell Runner",
         "desc": "Quick interactive shell commands running in an embedded terminal.",
-        "aliases": {"shell": "shell:main"},
-        "deps": {"required": ["sh"]}
+        "deps": {"required": ["sh"]},
     },
     {
         "id": "dmenu",
         "name": "dmenu Emulation",
         "desc": "CLI pipeline filter compatible with dmenu scripts and keybindings.",
-        "aliases": {"dmenu": "dmenu:main"},
-        "deps": {}
-    }
+        "deps": {},
+    },
 ]
-
-_WORKFLOW_SESSION_DIR = None
-
-def cleanup_workflow_session():
-    if _WORKFLOW_SESSION_DIR:
-        shutil.rmtree(_WORKFLOW_SESSION_DIR, ignore_errors=True)
-
-atexit.register(cleanup_workflow_session)
 
 def package_names(root):
     if not os.path.isdir(root):
@@ -112,39 +98,33 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Use one temporary checkout for this wizard process."""
-    global _WORKFLOW_SESSION_DIR
+    """Resolve workflow sources using local checkout or a persistent disk cache."""
+    env_dir = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
+    if env_dir and has_workflows(env_dir):
+        return os.path.realpath(env_dir)
+
     candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
     if has_workflows(candidate):
         return os.path.realpath(candidate)
-    if _WORKFLOW_SESSION_DIR:
-        source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
-        if has_workflows(source):
-            return source
-    _WORKFLOW_SESSION_DIR = tempfile.mkdtemp(prefix="tflow-setup-")
-    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", _WORKFLOW_SESSION_DIR], check=True, stdout=subprocess.DEVNULL)
-    source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
-    if not has_workflows(source):
-        raise RuntimeError("Cloned repository has no example workflows")
-    return source
 
-def source_signature(source):
-    """Fingerprint the source tree; any edit or added package changes it."""
-    newest = 0.0
-    files = 0
-    for package in package_names(source):
-        for root, dirs, names in os.walk(os.path.join(source, package)):
-            dirs[:] = [name for name in dirs if name != "__pycache__"]
-            for name in names:
-                files += 1
-                try:
-                    newest = max(newest, os.path.getmtime(os.path.join(root, name)))
-                except OSError:
-                    pass
-    return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
+    cache_base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    cache_dir = os.path.join(cache_base, "tflow", "init-workflows-cache")
+    cached_source = os.path.join(cache_dir, "examples", "default-suite", "workflows")
+    if has_workflows(cached_source):
+        return os.path.realpath(cached_source)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", cache_dir],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if not has_workflows(cached_source):
+        raise RuntimeError("Cloned repository has no example workflows")
+    return os.path.realpath(cached_source)
 
 def ensure_workflow_cache():
-    """Return the process-local source used by this wizard invocation."""
     return workflow_source_dir()
 
 def fetch_catalog():
@@ -616,35 +596,30 @@ DEFAULT_CANDIDATES = [
         "id": "calculator",
         "name": "Quick Calculator",
         "feed": "calculator:main",
-        "aliases": {"calc": "calculator:main"},
     },
     {
         "id": "apps",
         "name": "Desktop Applications",
         "feed": "apps:main",
-        "aliases": {"app": "apps:main"},
     },
     {
         "id": "sys",
         "name": "System & Session Controls",
         "feed": "sys:main",
-        "aliases": {"sys": "sys:main"},
     },
     {
         "id": "clipboard",
         "name": "Clipboard History",
-        "aliases": {"clip": "clipboard:default"},
+        "feed": "clipboard:main",
     },
     {
         "id": "shell",
         "name": "Shell Runner",
-        "aliases": {"shell": "shell:main"},
     },
     {
         "id": "dmenu",
         "name": "dmenu Emulation",
-        "aliases": {"dmenu": "dmenu:main"},
-    }
+    },
 ]
 
 def fetch_catalog():
@@ -659,14 +634,6 @@ def resolve_target_dirs():
         config_dir = os.path.join(home, ".config", "tflow")
     return config_dir
 
-_WORKFLOW_SESSION_DIR = None
-
-def cleanup_workflow_session():
-    if _WORKFLOW_SESSION_DIR:
-        shutil.rmtree(_WORKFLOW_SESSION_DIR, ignore_errors=True)
-
-atexit.register(cleanup_workflow_session)
-
 def package_names(root):
     if not os.path.isdir(root):
         return []
@@ -679,36 +646,31 @@ def has_workflows(root):
     return bool(package_names(root))
 
 def workflow_source_dir():
-    """Use one temporary checkout for this wizard process."""
-    global _WORKFLOW_SESSION_DIR
+    """Resolve workflow sources using local checkout or a persistent disk cache."""
+    env_dir = os.environ.get("TFLOW_WORKFLOWS_BOOTSTRAP_DIR")
+    if env_dir and has_workflows(env_dir):
+        return os.path.realpath(env_dir)
+
     candidate = os.path.join(os.getcwd(), "examples", "default-suite", "workflows")
     if has_workflows(candidate):
         return os.path.realpath(candidate)
-    if _WORKFLOW_SESSION_DIR:
-        source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
-        if has_workflows(source):
-            return source
-    _WORKFLOW_SESSION_DIR = tempfile.mkdtemp(prefix="tflow-setup-")
-    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", _WORKFLOW_SESSION_DIR], check=True, stdout=subprocess.DEVNULL)
-    source = os.path.join(_WORKFLOW_SESSION_DIR, "examples", "default-suite", "workflows")
-    if not has_workflows(source):
-        raise RuntimeError("Cloned repository has no example workflows")
-    return source
 
-def source_signature(source):
-    """Fingerprint the source tree; any edit or added package changes it."""
-    newest = 0.0
-    files = 0
-    for package in package_names(source):
-        for root, dirs, names in os.walk(os.path.join(source, package)):
-            dirs[:] = [name for name in dirs if name != "__pycache__"]
-            for name in names:
-                files += 1
-                try:
-                    newest = max(newest, os.path.getmtime(os.path.join(root, name)))
-                except OSError:
-                    pass
-    return f"{os.path.realpath(source)}|{int(newest)}|{files}|{','.join(package_names(source))}"
+    cache_base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    cache_dir = os.path.join(cache_base, "tflow", "init-workflows-cache")
+    cached_source = os.path.join(cache_dir, "examples", "default-suite", "workflows")
+    if has_workflows(cached_source):
+        return os.path.realpath(cached_source)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "https://github.com/xavialyra/tflow.git", cache_dir],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if not has_workflows(cached_source):
+        raise RuntimeError("Cloned repository has no example workflows")
+    return os.path.realpath(cached_source)
 
 def ensure_workflow_cache():
     return workflow_source_dir()
@@ -765,9 +727,14 @@ def generate_suite_manifest(selected, entrypoint):
     lines += ["", "[workflows]", 'core = { dir = "./workflows/core" }']
     lines += [f'{wf} = {{ dir = "./workflows/{wf}" }}' for wf in selected]
 
-    lines += ["", "[aliases]"]
+    alias_lines = []
     for wf in selected:
         for alias, target in catalog_map.get(wf, {}).get("aliases", {}).items():
+            alias_lines.append(f'{alias} = "{target}"')
+    if alias_lines:
+        lines += ["", "[aliases]"] + alias_lines
+
+    return "\n".join(lines) + "\n"
             lines.append(f'{alias} = "{target}"')
 
     return "\n".join(lines) + "\n"
