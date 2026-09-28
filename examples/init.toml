@@ -50,6 +50,7 @@ DEFAULT_CANDIDATES = [
         "name": "Quick Calculator",
         "desc": "Real-time math evaluation with formatted display & clipboard copy.",
         "feed": "calculator:main",
+        "aliases": {"calc": "calculator:main"},
         "deps": {"optional": ["wl-copy", "xclip"]},
     },
     {
@@ -57,6 +58,7 @@ DEFAULT_CANDIDATES = [
         "name": "Desktop Applications",
         "desc": "Search and launch GUI / desktop apps with icon preview & weight stats.",
         "feed": "apps:main",
+        "aliases": {"app": "apps:main"},
         "deps": {"optional": ["gio", "setsid"]},
     },
     {
@@ -70,6 +72,7 @@ DEFAULT_CANDIDATES = [
         "id": "clipboard",
         "name": "Clipboard History",
         "desc": "Search, preview, and restore clipboard history entries.",
+        "aliases": {"clip": "clipboard:main"},
         "deps": {"optional": ["wl-paste", "wl-copy", "xclip"]},
     },
     {
@@ -626,11 +629,13 @@ DEFAULT_CANDIDATES = [
         "id": "calculator",
         "name": "Quick Calculator",
         "feed": "calculator:main",
+        "aliases": {"calc": "calculator:main"},
     },
     {
         "id": "apps",
         "name": "Desktop Applications",
         "feed": "apps:main",
+        "aliases": {"app": "apps:main"},
     },
     {
         "id": "sys",
@@ -641,6 +646,7 @@ DEFAULT_CANDIDATES = [
         "id": "clipboard",
         "name": "Clipboard History",
         "feed": "clipboard:main",
+        "aliases": {"clip": "clipboard:main"},
     },
     {
         "id": "shell",

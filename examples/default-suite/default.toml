@@ -25,3 +25,8 @@ dmenu = { dir = "./workflows/dmenu" }
 "ctrl+k" = "__commands.palette"
 "ctrl+g" = "__parameters.edit"
 
+[aliases]
+calc = "calculator:main"
+app = "apps:main"
+clip = "clipboard:main"
+

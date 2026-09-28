@@ -6,15 +6,15 @@ This directory contains the default suite configuration and member workflows for
 
 ## Workflows Overview
 
-| Workflow | Entrypoint | Description |
-| :--- | :--- | :--- |
-| **`core`** | `core:main` | Unified aggregate hub querying apps, calculator, and system tools with live route completion. |
-| **`apps`** | `apps:main` | XDG desktop application launcher with icon preview, keyword search, launch frequency ranking, and weight configuration form. |
-| **`calculator`** | `calculator:main` | Real-time mathematical expression evaluator with multi-representation preview (decimal, hex, binary, octal) and clipboard copy. |
-| **`sys`** | `sys:main` | System session controls (lock, sleep, logout, reboot, poweroff) with safety confirmation prompts for destructive actions. |
-| **`clipboard`** | `clipboard:main` | Searchable clipboard history powered by `cliphist` with image/text previews and cross-platform restoration. |
-| **`shell`** | `shell:main` | Embedded terminal running user's default `$SHELL` inside a PTY view. |
-| **`dmenu`** | `dmenu:main` | Standard dmenu replacement for shell pipelines with index and projection support. |
+| Workflow | Entrypoint | Shorthand Alias | Description |
+| :--- | :--- | :--- | :--- |
+| **`core`** | `core:main` | *(suite entry)* | Unified aggregate hub querying apps, calculator, and system tools with live route completion. |
+| **`apps`** | `apps:main` | `app` | XDG desktop application launcher with icon preview, keyword search, launch frequency ranking, and weight configuration form. |
+| **`calculator`** | `calculator:main` | `calc` | Real-time mathematical expression evaluator with multi-representation preview (decimal, hex, binary, octal) and clipboard copy. |
+| **`sys`** | `sys:main` | `sys` | System session controls (lock, sleep, logout, reboot, poweroff) with safety confirmation prompts for destructive actions. |
+| **`clipboard`** | `clipboard:main` | `clip` | Searchable clipboard history powered by `cliphist` with image/text previews and cross-platform restoration. |
+| **`shell`** | `shell:main` | `shell` | Embedded terminal running user's default `$SHELL` inside a PTY view. |
+| **`dmenu`** | `dmenu:main` | `dmenu` | Standard dmenu replacement for shell pipelines with index and projection support. |
 
 ---
 
