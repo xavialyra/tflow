@@ -1,5 +1,5 @@
 use super::*;
-use crate::command::{CommandEntry, CommandRegistry, CommandScope};
+use crate::command::{BindingLayer, CommandEntry, CommandRegistry};
 use crate::protocol::ProtocolCommandService;
 use crate::view::{
     EffectRequest, EffectResult, MapRouteCatalog, ParsedQuery, View, ViewContext, ViewFactory,
@@ -50,12 +50,11 @@ impl View for SyntheticView {
     }
 
     fn engine_commands(&self, _: &ViewContext) -> Vec<CommandEntry> {
-        vec![CommandEntry::new(
+        vec![CommandEntry::for_event(
             "local",
             Some("ok".to_string()),
             Some(crate::input::Key::Enter),
-            CommandScope::Engine,
-            Arc::new(|| Ok(ViewDecision::Stay)),
+            BindingLayer::Engine,
         )]
     }
 
@@ -293,43 +292,39 @@ fn session() -> (
 fn command_registry_resolution_follows_view_over_engine_over_host() {
     let mut registry = CommandRegistry::new();
     registry
-        .replace_scope(
-            CommandScope::Host,
+        .replace_layer(
+            BindingLayer::Host,
             vec![
                 CommandEntry::new(
                     "host_x",
                     Some("host-x".into()),
                     Some(crate::input::Key::Char('x')),
-                    CommandScope::Host,
-                    Arc::new(|| Ok(ViewDecision::Stay)),
+                    BindingLayer::Host,
                 ),
                 CommandEntry::new(
                     "host_g",
                     Some("host-only".into()),
                     Some(crate::input::Key::Char('g')),
-                    CommandScope::Host,
-                    Arc::new(|| Ok(ViewDecision::Stay)),
+                    BindingLayer::Host,
                 ),
             ],
         )
         .unwrap();
     registry
-        .replace_scope(
-            CommandScope::View,
+        .replace_layer(
+            BindingLayer::View,
             vec![
                 CommandEntry::new(
                     "view_x",
                     Some("view-x".into()),
                     Some(crate::input::Key::Char('x')),
-                    CommandScope::View,
-                    Arc::new(|| Ok(ViewDecision::Stay)),
+                    BindingLayer::View,
                 ),
                 CommandEntry::new(
                     "view_l",
                     Some("view-only".into()),
                     Some(crate::input::Key::Char('l')),
-                    CommandScope::View,
-                    Arc::new(|| Ok(ViewDecision::Stay)),
+                    BindingLayer::View,
                 ),
             ],
         )
@@ -507,18 +502,13 @@ fn delivers_lossless_input_and_honors_global_precedence() {
         "global.copy",
         None,
         Some(crate::input::Key::Char('g')),
-        CommandScope::Host,
-        Arc::new(|| {
-            Ok(ViewDecision::Effect(EffectRequest::CopyToClipboard(
-                "global".to_string(),
-            )))
-        }),
+        BindingLayer::Host,
     );
     session
         .registry
         .write()
         .unwrap()
-        .replace_scope(CommandScope::Host, vec![global_cmd])
+        .replace_layer(BindingLayer::Host, vec![global_cmd])
         .unwrap();
     session
         .input(InputEvent::Key {
@@ -600,161 +590,9 @@ fn passthrough_binding_still_prepares_its_command_decision() {
     let view_cmds = service.build_view_commands(&context, &snapshot).unwrap();
     let accept_cmd = view_cmds
         .into_iter()
-        .find(|entry| entry.id == "accept")
+        .find(|entry| entry.id == "dmenu.accept")
         .expect("view commands must contain accept");
-    assert!(matches!(
-        accept_cmd.execute_action().unwrap(),
-        ViewDecision::Return(_)
-    ));
-}
-
-#[test]
-fn command_call_records_caller_and_runs_non_null_return_continuation() {
-    let config = crate::workflow::config::load_test_fixture().unwrap();
-    let cancellation = crate::lifecycle::CancellationToken::new();
-    let caller = ViewContext::new(ViewInstanceId(41), "dmenu:main");
-    let parameters = config.instantiate_parameters("dmenu:main").unwrap();
-    let snapshot = ViewCommandSnapshot {
-        engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
-        parameters: config.parameter_values(&parameters).unwrap(),
-        raw_input: String::new(),
-        runtime: serde_json::json!({"revision": 2}),
-        publication: Some(crate::view::ViewPublication::new(
-            serde_json::json!({
-                "item": {
-                    "text": "first",
-                    "value": "0",
-                    "metadata": {},
-                },
-                "input": ""
-            }),
-            true,
-        )),
-        revision: 2,
-    };
-
-    let stdin_path =
-        std::env::temp_dir().join(format!("tflow-protocol-session-{}", std::process::id()));
-    std::fs::write(&stdin_path, b"first\n").unwrap();
-    let invocation = Arc::new(
-        crate::workflow::InvocationContext::new(
-            "dmenu:main".to_string(),
-            serde_json::json!({
-                "stdin": {
-                    "path": stdin_path.to_string_lossy(),
-                    "length": 6,
-                    "is_tty": false
-                }
-            }),
-            config.instantiate_parameters("dmenu:main").unwrap(),
-        )
-        .unwrap(),
-    );
-    let service = ProtocolCommandService::new(Arc::new(config), invocation, cancellation);
-    let shared_snapshot = Arc::new(RwLock::new(ChromeSnapshot::default()));
-    let registry = Arc::new(RwLock::new(CommandRegistry::new()));
-    let host_cmds = service
-        .build_host_commands(shared_snapshot.clone(), Arc::clone(&registry))
-        .unwrap();
-
-    let engine_cmds = service.build_engine_commands(&caller, &snapshot).unwrap();
-    registry
-        .write()
-        .unwrap()
-        .replace_scope(CommandScope::Host, host_cmds.clone())
-        .unwrap();
-    registry
-        .write()
-        .unwrap()
-        .replace_scope(CommandScope::Engine, engine_cmds)
-        .unwrap();
-    *shared_snapshot.write().unwrap() = ChromeSnapshot::from_registry(&registry.read().unwrap())
-        .with_active_instance(Some(caller.instance));
-
-    let cmd_entry = host_cmds.into_iter().find(|e| e.id == "commands").unwrap();
-    let call_decision = cmd_entry.execute_action().unwrap();
-    let ViewDecision::Transition(crate::view::TransitionRequest::Call {
-        request: req,
-        continuation: crate::view::Continuation::Call(boundary),
-    }) = call_decision
-    else {
-        panic!("commands must call");
-    };
-    assert_eq!(
-        req.presentation.width,
-        Some(crate::workflow::command::COMMANDS_POPUP_WIDTH.into())
-    );
-    assert_eq!(
-        req.presentation.height,
-        Some(crate::workflow::command::COMMANDS_POPUP_HEIGHT.into())
-    );
-
-    // When already in commands view, executing commands returns Stay directly
-    *shared_snapshot.write().unwrap() = ChromeSnapshot::from_registry(&registry.read().unwrap())
-        .with_active_instance(Some(caller.instance))
-        .with_active_view(
-            Some("__commands:main".to_string()),
-            serde_json::Value::Null,
-            "",
-        );
-    let stay_decision = cmd_entry.execute_action().unwrap();
-    assert!(matches!(stay_decision, ViewDecision::Stay));
-
-    let selected_command = serde_json::json!({"ref": {"id": "accept"}});
-    let continued = boundary
-        .handler
-        .resume(
-            &crate::view::ViewLocation::new("__commands:main"),
-            &caller,
-            &snapshot,
-            &ViewResult::new(selected_command),
-        )
-        .unwrap();
-    let ViewDecision::Return(result) = continued else {
-        panic!("selected command must continue into its configured return");
-    };
-    assert_eq!(result.value, serde_json::json!("first"));
-
-    // Expired or unknown command ID does not execute old callback and returns Stay
-    let unknown_command = serde_json::json!({"ref": {"id": "nonexistent"}});
-    let continued_unknown = boundary
-        .handler
-        .resume(
-            &crate::view::ViewLocation::new("__commands:main"),
-            &caller,
-            &snapshot,
-            &ViewResult::new(unknown_command),
-        )
-        .unwrap();
-    assert!(matches!(continued_unknown, ViewDecision::Stay));
-
-    // Selected Host parameters command executes and transitions to form call
-    let parameters_command = serde_json::json!({"ref": {"id": "parameters"}});
-    let continued_params = boundary
-        .handler
-        .resume(
-            &crate::view::ViewLocation::new("__commands:main"),
-            &caller,
-            &snapshot,
-            &ViewResult::new(parameters_command),
-        )
-        .unwrap();
-    let ViewDecision::Transition(crate::view::TransitionRequest::Call { request, .. }) =
-        continued_params
-    else {
-        panic!("parameters command must transition to form call");
-    };
-    assert_eq!(request.target, "__query:main");
-    assert_eq!(
-        request.presentation.width,
-        Some(crate::workflow::command::QUERY_POPUP_WIDTH.into())
-    );
-    assert_eq!(
-        request.presentation.height,
-        Some(crate::workflow::command::QUERY_POPUP_HEIGHT.into())
-    );
-
-    std::fs::remove_file(stdin_path).unwrap();
+    assert_eq!(accept_cmd.layer, crate::command::BindingLayer::View);
 }
 
 #[test]
@@ -1204,28 +1042,26 @@ fn custom_view_commands_switch_to_exclusive_commands_in_session() {
         "completion.accept",
         Some("Accept".to_string()),
         Some(crate::input::Key::Enter),
-        CommandScope::View,
-        Arc::new(|| Ok(ViewDecision::Stay)),
+        BindingLayer::View,
     );
     let cancel = CommandEntry::new(
         "completion.cancel",
         Some("Cancel".to_string()),
         Some(crate::input::Key::Escape),
-        CommandScope::View,
-        Arc::new(|| Ok(ViewDecision::Stay)),
+        BindingLayer::View,
     );
 
     session
         .registry
         .write()
         .unwrap()
-        .replace_scope(CommandScope::View, vec![accept, cancel])
+        .replace_layer(BindingLayer::View, vec![accept, cancel])
         .unwrap();
     session
         .registry
         .write()
         .unwrap()
-        .replace_scope(CommandScope::Engine, Vec::new())
+        .replace_layer(BindingLayer::Engine, Vec::new())
         .unwrap();
 
     assert_eq!(
@@ -1268,15 +1104,13 @@ fn session_reconciles_engine_commands_from_active_view() {
                     "engine.copy",
                     Some("Copy".to_string()),
                     Some(crate::input::Key::Enter),
-                    CommandScope::Engine,
-                    Arc::new(|| Ok(ViewDecision::Stay)),
+                    BindingLayer::Engine,
                 ),
                 CommandEntry::new(
                     "engine.back",
                     Some("Back".to_string()),
                     Some(crate::input::Key::Escape),
-                    CommandScope::Engine,
-                    Arc::new(|| Ok(ViewDecision::Close)),
+                    BindingLayer::Engine,
                 ),
             ]
         }
@@ -1333,8 +1167,8 @@ fn session_reconciles_engine_commands_from_active_view() {
         "engine.back"
     );
     assert_eq!(
-        registry.resolve(crate::input::Key::Enter).unwrap().scope,
-        CommandScope::Engine
+        registry.resolve(crate::input::Key::Enter).unwrap().layer,
+        BindingLayer::Engine
     );
 }
 
@@ -1425,10 +1259,66 @@ fn session_dispatches_to_fallback_receiver_when_key_unbound() {
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].0, Key::Char('z'));
     assert_eq!(captured[0].1, b"z");
+    drop(captured);
+
+    // A binding released by `unbind.keys` behaves exactly like one that was
+    // never declared: the entry survives (it is still invokable by id) but stops
+    // claiming the key, so raw input handling gets it.
+    //
+    // The entry is injected into the Host layer because the View and Engine
+    // layers are rebuilt from the active view on every dispatch, so a released
+    // Host binding is guaranteed to still exist when the key arrives.
+    session
+        .registry
+        .write()
+        .unwrap()
+        .replace_layer(
+            BindingLayer::Host,
+            vec![crate::command::CommandEntry::new(
+                "fallback_view.page",
+                None,
+                Some(Key::Char('q')),
+                BindingLayer::Host,
+            )],
+        )
+        .unwrap();
+    session
+        .registry
+        .write()
+        .unwrap()
+        .replace_unbinds(crate::command::UnbindRules {
+            keys: std::collections::HashSet::from([Key::Char('q').binding_identity()]),
+            ..Default::default()
+        });
+    let decision = session
+        .input(InputEvent::Key {
+            key: Key::Char('q'),
+            raw: b"q".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(decision, ViewDecision::Stay);
+    let captured = unbound_log.borrow();
+    assert_eq!(
+        captured.len(),
+        2,
+        "a key released by unbind must reach the fallback receiver"
+    );
+    assert_eq!(captured[1].0, Key::Char('q'));
+    assert_eq!(captured[1].1, b"q");
+    drop(captured);
+    assert!(
+        session
+            .registry
+            .read()
+            .unwrap()
+            .resolve_id("fallback_view.page")
+            .is_some(),
+        "a released binding keeps its identity"
+    );
 }
 
 #[test]
-fn session_dispatches_view_handler_command_directly_to_view_on_command() {
+fn session_dispatches_an_engine_action_to_the_views_engine() {
     use crate::command::CommandEntry;
     use crate::input::Key;
 
@@ -1442,7 +1332,7 @@ fn session_dispatches_view_handler_command_directly_to_view_on_command() {
                 "custom.action",
                 Some("Custom Action".to_string()),
                 Some(Key::Down),
-                CommandScope::Engine,
+                BindingLayer::Engine,
             )]
         }
 
@@ -2265,5 +2155,128 @@ fn custom_theme_backdrop_style_applies_custom_color_and_modifiers() {
         base_cell
             .modifier
             .contains(ratatui::style::Modifier::ITALIC)
+    );
+}
+
+#[test]
+fn popup_show_title_controls_border_title_visibility() {
+    for (show_title, title_expected) in [(true, true), (false, false)] {
+        let (mut session, _, _) = session();
+        session.start_root(request("root")).unwrap();
+        session
+            .resize(TerminalSize {
+                width: 40,
+                height: 10,
+            })
+            .unwrap();
+
+        let mut popup_req = request("child");
+        popup_req.presentation = crate::workflow::config::ViewPresentation {
+            mode: crate::workflow::config::ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::BottomRight,
+            width: Some(20.into()),
+            height: Some(5.into()),
+            show_title,
+            ..Default::default()
+        };
+        session.router.push(popup_req).unwrap();
+        session.sync_active_commands().unwrap();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Popup top row is y = 5, from x = 20 to x = 39.
+        let mut top_line = String::new();
+        for x in 20..40 {
+            top_line.push_str(buffer.cell((x, 5)).unwrap().symbol());
+        }
+
+        if title_expected {
+            assert!(
+                top_line.contains("child"),
+                "expected title 'child' in top border when show_title=true, got {top_line}"
+            );
+        } else {
+            assert!(
+                !top_line.contains("child"),
+                "expected NO title 'child' in top border when show_title=false, got {top_line}"
+            );
+            for x in 21..39 {
+                assert_eq!(
+                    buffer.cell((x, 5)).unwrap().symbol(),
+                    "─",
+                    "expected continuous border at x={x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn inactive_popup_respects_show_title() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    // 1. Child popup with show_title = false
+    let mut child_req = request("child");
+    child_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(30.into()),
+        height: Some(8.into()),
+        show_title: false,
+        ..Default::default()
+    };
+    session.router.push(child_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // 2. Grandchild popup on top
+    let mut grandchild_req = request("grandchild");
+    grandchild_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(16.into()),
+        height: Some(4.into()),
+        show_title: true,
+        ..Default::default()
+    };
+    session.router.push(grandchild_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Child popup (30x8 centered) top edge is at y = 1, from x = 5 to x = 34.
+    let mut child_top_line = String::new();
+    for x in 5..35 {
+        child_top_line.push_str(buffer.cell((x, 1)).unwrap().symbol());
+    }
+    assert!(
+        !child_top_line.contains("child"),
+        "inactive popup with show_title=false must not render title, got {child_top_line}"
+    );
+
+    // Grandchild popup (16x4 centered) top edge is at y = 3, from x = 12 to x = 27.
+    let mut grandchild_top_line = String::new();
+    for x in 12..28 {
+        grandchild_top_line.push_str(buffer.cell((x, 3)).unwrap().symbol());
+    }
+    assert!(
+        grandchild_top_line.contains("grandchild"),
+        "active popup with show_title=true must render title, got {grandchild_top_line}"
     );
 }

@@ -1,7 +1,7 @@
 use crate::execution::{ensure_script_success, run_resolved_script_with_stdin_outcome_with_limit};
 use crate::lifecycle::CancellationStatus;
 use crate::view::ViewResult;
-use crate::workflow::command::CommandOwnerContext;
+use crate::workflow::command::{CommandOwnerContext, CommandRef};
 use crate::workflow::config::{ResolvedScriptSource, ViewPresentation};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -27,8 +27,10 @@ pub(crate) enum ProtocolOperation {
     Return {
         value: Value,
     },
+    InvokeCommand {
+        command: CommandRef,
+    },
     Run {
-        mode: String,
         argv: Vec<String>,
         exit: bool,
         success_message: Option<String>,
@@ -42,6 +44,7 @@ impl ProtocolOperation {
             Self::Navigate { .. } => "navigate",
             Self::Call { .. } => "call",
             Self::Return { .. } => "return",
+            Self::InvokeCommand { .. } => "invoke-command",
             Self::Run { .. } => "run",
         }
     }
@@ -121,8 +124,10 @@ enum RawOperation {
     Return {
         value: Value,
     },
+    InvokeCommand {
+        command: CommandRef,
+    },
     Run {
-        mode: String,
         argv: Vec<String>,
         #[serde(default)]
         exit: bool,
@@ -181,14 +186,15 @@ pub(crate) fn parse_response(
                     presentation,
                 },
                 RawOperation::Return { value } => ProtocolOperation::Return { value },
+                RawOperation::InvokeCommand { command } => {
+                    ProtocolOperation::InvokeCommand { command }
+                }
                 RawOperation::Run {
-                    mode,
                     argv,
                     exit,
                     success_message,
                     timeout_ms,
                 } => ProtocolOperation::Run {
-                    mode,
                     argv,
                     exit,
                     success_message,
@@ -264,7 +270,8 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                         && presentation.min_width.is_none()
                         && presentation.max_width.is_none()
                         && presentation.min_height.is_none()
-                        && presentation.max_height.is_none()),
+                        && presentation.max_height.is_none()
+                        && presentation.show_title),
                 "{} operation width and height require popup mode",
                 source_label
             );
@@ -289,17 +296,16 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
                 );
             }
         }
-        ProtocolOperation::Run {
-            mode,
-            argv,
-            timeout_ms,
-            ..
-        } => {
+        ProtocolOperation::InvokeCommand { command } => {
             anyhow::ensure!(
-                mode == "foreground",
-                "{} run operation mode must be foreground",
+                !command.id.is_empty(),
+                "{} invoke-command reference must include a non-empty id",
                 source_label
             );
+        }
+        ProtocolOperation::Run {
+            argv, timeout_ms, ..
+        } => {
             anyhow::ensure!(
                 !argv.is_empty(),
                 "{} run operation argv must not be empty",
@@ -643,6 +649,7 @@ fn producer_context(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn command_request(
     owner: &CommandOwnerContext,
     command_id: &str,
@@ -650,6 +657,8 @@ pub(crate) fn command_request(
     input: &Value,
     engine_state: &Value,
     engine_type: &str,
+    commands: &Value,
+    view: &Value,
 ) -> Value {
     let mut context = producer_context(owner.parameters.values(), input, engine_type, engine_state);
     if let Value::Object(ref mut map) = context {
@@ -657,6 +666,8 @@ pub(crate) fn command_request(
             "command".to_string(),
             json!({"id": command_id, "type": operation_type}),
         );
+        map.insert("commands".to_string(), commands.clone());
+        map.insert("view".to_string(), view.clone());
     }
     json!({
         "version": PROTOCOL_VERSION,
@@ -722,6 +733,44 @@ mod tests {
         assert!(matches!(
             null,
             ProtocolOutcome::Operation(ProtocolOperation::Return { value: Value::Null })
+        ));
+    }
+
+    #[test]
+    fn invoke_command_operations_carry_revision_aware_references() {
+        let parsed = parse_response(
+            br#"{"version":1,"operation":{"type":"invoke-command","command":{"id":"open","revision":42}}}"#,
+            Some("invoke-command"),
+            "test",
+        )
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            ProtocolOutcome::Operation(ProtocolOperation::InvokeCommand {
+                command: CommandRef { revision: 42, .. }
+            })
+        ));
+
+        let invalid = parse_response(
+            br#"{"version":1,"operation":{"type":"invoke-command","command":{"id":"","revision":42}}}"#,
+            None,
+            "test",
+        );
+        assert!(invalid.is_err());
+
+        // The runtime palette envelope only needs identity + revision; the
+        // owning View is a dispatch-origin detail, not part of the payload.
+        let payload = parse_response(
+            br#"{"version":1,"operation":{"type":"invoke-command","command":{"id":"open","revision":42}}}"#,
+            Some("invoke-command"),
+            "test",
+        )
+        .unwrap();
+        assert!(matches!(
+            payload,
+            ProtocolOutcome::Operation(ProtocolOperation::InvokeCommand {
+                command: CommandRef { revision: 42, .. }
+            })
         ));
     }
 
@@ -798,7 +847,16 @@ mod tests {
                 0,
             ),
         };
-        let command = command_request(&owner, "open", "navigate", &input, &engine_state, "picker");
+        let command = command_request(
+            &owner,
+            "open",
+            "navigate",
+            &input,
+            &engine_state,
+            "picker",
+            &json!([]),
+            &json!({"ref": "core:main"}),
+        );
         let items = items_request(&parameters, &input, "picker", &engine_state);
         let capture = capture_request(&parameters, &input, "picker", &engine_state);
         let returned = return_request(
@@ -825,6 +883,8 @@ mod tests {
             command["context"]["command"],
             json!({"id": "open", "type": "navigate"})
         );
+        assert_eq!(command["context"]["commands"], json!([]));
+        assert_eq!(command["context"]["view"]["ref"], "core:main");
         assert_eq!(returned["context"]["result"], json!({"raw": true}));
     }
 
@@ -838,8 +898,7 @@ mod tests {
 
     #[test]
     fn parse_response_allows_any_operation_when_expected_is_none() {
-        let run =
-            br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["true"]}}"#;
+        let run = br#"{"version":1,"operation":{"type":"run","argv":["true"]}}"#;
         let parsed = parse_response(run, None, "test").unwrap();
         assert_eq!(parsed.operation().unwrap().operation_type(), "run");
         let call = br#"{"version":1,"operation":{"type":"call","target":"view:other"}}"#;
@@ -924,7 +983,8 @@ mod tests {
 
     #[test]
     fn run_operation_accepts_valid_timeout_and_rejects_zero() {
-        let valid = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["echo","ok"],"timeout_ms":5000}}"#;
+        let valid =
+            br#"{"version":1,"operation":{"type":"run","argv":["echo","ok"],"timeout_ms":5000}}"#;
         let outcome = parse_response(valid, None, "test").unwrap();
         match outcome {
             ProtocolOutcome::Operation(ProtocolOperation::Run { timeout_ms, .. }) => {
@@ -933,8 +993,29 @@ mod tests {
             _ => panic!("expected Run operation"),
         }
 
-        let zero = br#"{"version":1,"operation":{"type":"run","mode":"foreground","argv":["echo","ok"],"timeout_ms":0}}"#;
+        let zero =
+            br#"{"version":1,"operation":{"type":"run","argv":["echo","ok"],"timeout_ms":0}}"#;
         let err = parse_response(zero, None, "test").unwrap_err();
         assert!(err.to_string().contains("timeout_ms must be positive"));
+    }
+
+    #[test]
+    fn presentation_show_title_requires_popup_mode() {
+        let inline_show_title_false = br#"{"version":1,"operation":{"type":"navigate","target":"a:b","presentation":{"mode":"inline","show_title":false}}}"#;
+        let err = parse_response(inline_show_title_false, Some("navigate"), "test").unwrap_err();
+        assert!(err.to_string().contains("require popup mode"));
+
+        let popup_show_title_false = br#"{"version":1,"operation":{"type":"navigate","target":"a:b","presentation":{"mode":"popup","show_title":false}}}"#;
+        let ok = parse_response(popup_show_title_false, Some("navigate"), "test").unwrap();
+        assert!(matches!(
+            ok,
+            ProtocolOutcome::Operation(ProtocolOperation::Navigate {
+                presentation: ViewPresentation {
+                    show_title: false,
+                    ..
+                },
+                ..
+            })
+        ));
     }
 }

@@ -189,7 +189,6 @@ pub(crate) struct ViewChrome {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) bindings: Option<BindingSet>,
-    pub(crate) overflow_command: Option<(String, String)>,
     pub(crate) has_unbound: bool,
 }
 
@@ -393,6 +392,12 @@ pub(crate) enum ViewDecision {
     Stay,
     Invalidate,
     ClearInput,
+    /// Hand this action id to the View's own engine. Execution reaches an engine
+    /// action long after the instance that owns it was located, and only the
+    /// router holds live instances, so the action travels as a decision and the
+    /// engine's own decision replaces it. This is how `picker.exit` reaches a
+    /// picker no matter which side triggered it (a key or a command reference).
+    EngineAction(String),
     Transition(TransitionRequest),
     Return(ViewResult),
     Effect(EffectRequest),
@@ -484,6 +489,26 @@ pub(crate) trait FallbackInputReceiver {
     ) -> Result<ViewDecision>;
 }
 
+#[cfg(test)]
+pub(crate) fn dispatch_test_key(
+    view: &mut dyn View,
+    key: Key,
+    raw: &[u8],
+    context: &ViewContext,
+) -> Result<ViewDecision> {
+    if let Some(command) = view.engine_commands(context).into_iter().find(|command| {
+        command
+            .key
+            .is_some_and(|bound| bound.binding_identity() == key.binding_identity())
+    }) {
+        return view.on_command(&command.id, context);
+    }
+    if let Some(receiver) = view.fallback_receiver() {
+        return receiver.on_unbound_key(key, raw, context);
+    }
+    Ok(ViewDecision::Stay)
+}
+
 pub(crate) trait View {
     fn is_embedded_terminal(&self) -> bool {
         false
@@ -493,6 +518,11 @@ pub(crate) trait View {
         0
     }
 
+    /// The actions this View's engine handles itself.
+    ///
+    /// Every entry published here is an engine action dispatched through
+    /// [`Self::on_command`] by id after the command registry resolves a key or
+    /// command reference.
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         Vec::new()
     }
@@ -507,26 +537,6 @@ pub(crate) trait View {
     /// ignore it.
     fn clear_input(&mut self, _context: &ViewContext) -> Result<()> {
         Ok(())
-    }
-
-    fn dispatch_key_event(
-        &mut self,
-        key: Key,
-        raw: &[u8],
-        context: &ViewContext,
-    ) -> Result<ViewDecision> {
-        for cmd in self.engine_commands(context) {
-            if cmd.matches_binding(key) {
-                return match cmd.handler {
-                    crate::command::CommandHandler::Action(action) => action.execute(),
-                    crate::command::CommandHandler::Event => self.on_command(&cmd.id, context),
-                };
-            }
-        }
-        if let Some(receiver) = self.fallback_receiver() {
-            return receiver.on_unbound_key(key, raw, context);
-        }
-        Ok(ViewDecision::Stay)
     }
 
     fn fallback_receiver(&mut self) -> Option<&mut dyn FallbackInputReceiver> {
@@ -599,6 +609,14 @@ pub(crate) trait RouteCatalog {
 
 pub(crate) trait HostServices {
     fn task_runtime(&self) -> Option<crate::task::TaskRuntime> {
+        None
+    }
+
+    /// The session command registry, when the host owns one. Engines read it to
+    /// publish the live command projection instead of a static config snapshot.
+    fn command_registry(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>> {
         None
     }
 }
@@ -1128,7 +1146,7 @@ impl Router {
         decision: ViewDecision,
         source: ViewInstanceId,
         executor: &mut dyn EffectExecutor,
-    ) -> Result<()> {
+    ) -> Result<ViewDecision> {
         self.process_decision_inner(decision, &mut Some(executor), Some(source))
     }
 
@@ -1180,12 +1198,19 @@ impl Router {
         Ok(decision)
     }
 
+    /// Applies one decision and reports what it resolved to.
+    ///
+    /// Every decision resolves to itself except [`ViewDecision::EngineAction`],
+    /// which resolves to the engine's own decision.
     fn process_decision_inner(
         &mut self,
         decision: ViewDecision,
         executor: &mut Option<&mut dyn EffectExecutor>,
         source: Option<ViewInstanceId>,
-    ) -> Result<()> {
+    ) -> Result<ViewDecision> {
+        // The match consumes the decision, and every branch but `EngineAction`
+        // resolves to it unchanged, so keep the identity case.
+        let applied = decision.clone();
         if decision.is_structural()
             && let Some(source) = source
             && self.active().map(|entry| entry.id) != Some(source)
@@ -1325,9 +1350,20 @@ impl Router {
             ViewDecision::Exit => {
                 self.close_all()?;
             }
+            ViewDecision::EngineAction(id) => {
+                let Some(source) = source else {
+                    return Ok(ViewDecision::Stay);
+                };
+                let Some(index) = self.stack.iter().position(|entry| entry.id == source) else {
+                    return Ok(ViewDecision::Stay);
+                };
+                let context = self.stack[index].context.clone();
+                let resolved = self.stack[index].view.on_command(&id, &context)?;
+                return self.process_decision_inner(resolved, executor, Some(source));
+            }
             ViewDecision::Stay | ViewDecision::Invalidate => {}
         }
-        Ok(())
+        Ok(applied)
     }
 
     #[cfg(test)]
@@ -1489,7 +1525,8 @@ impl Router {
             };
             decision
         };
-        self.process_decision_inner(decision, executor, Some(boundary.caller))
+        self.process_decision_inner(decision, executor, Some(boundary.caller))?;
+        Ok(())
     }
 
     fn close_all(&mut self) -> Result<()> {

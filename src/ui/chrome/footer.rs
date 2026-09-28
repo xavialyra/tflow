@@ -20,7 +20,6 @@ pub(crate) struct FooterModel {
     pub(crate) error: Option<String>,
     pub(crate) info: Option<String>,
     pub(crate) commands: Vec<(String, String)>,
-    pub(crate) overflow_command: Option<(String, String)>,
 }
 
 impl FooterModel {
@@ -115,7 +114,6 @@ impl FooterRenderer {
                 Some(model.location.label()),
                 status,
                 &model.commands,
-                model.overflow_command.as_ref(),
             )
         };
 

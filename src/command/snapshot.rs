@@ -1,4 +1,4 @@
-use super::registry::{CommandRegistry, CommandScope};
+use super::registry::{BindingLayer, CommandRegistry};
 use crate::input::Key;
 #[cfg(test)]
 use crate::view::{Binding, BindingSet};
@@ -9,7 +9,7 @@ pub(crate) struct ResolvedCommand {
     pub(crate) id: String,
     pub(crate) label: Option<String>,
     pub(crate) key: Option<Key>,
-    pub(crate) scope: CommandScope,
+    pub(crate) layer: BindingLayer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -20,6 +20,7 @@ pub(crate) struct ChromeSnapshot {
     pub(crate) active_view: Option<String>,
     pub(crate) active_parameters: Value,
     pub(crate) active_raw_input: String,
+    pub(crate) chrome_commands_show: Option<Vec<String>>,
 }
 
 impl ChromeSnapshot {
@@ -31,7 +32,7 @@ impl ChromeSnapshot {
                 id: e.id.clone(),
                 label: e.label.clone(),
                 key,
-                scope: e.scope,
+                layer: e.layer,
             })
             .collect();
         Self {
@@ -41,6 +42,7 @@ impl ChromeSnapshot {
             active_view: None,
             active_parameters: Value::Null,
             active_raw_input: String::new(),
+            chrome_commands_show: None,
         }
     }
 
@@ -84,274 +86,265 @@ impl ChromeSnapshot {
         BindingSet::new(bindings)
     }
 
+    /// Resolves the configured physical keys (`chrome_commands_show`) against
+    /// the current entries. `entries` is already ordered `View > Engine > Host`
+    /// with shadowed keys cleared, so the first match is the winning binding.
+    /// Unset or unbound keys produce no hint.
     pub(crate) fn footer_commands(&self) -> Vec<(String, String)> {
-        let view_entries = self
-            .entries
-            .iter()
-            .filter(|e| e.scope == CommandScope::View)
-            .collect::<Vec<_>>();
-
-        let enter_entry = [CommandScope::View, CommandScope::Engine, CommandScope::Host]
-            .into_iter()
-            .find_map(|scope| {
-                self.entries.iter().find(|e| {
-                    e.scope == scope
-                        && (e.key == Some(Key::Enter)
-                            || e.key.and_then(|k| k.binding_name()).as_deref() == Some("enter"))
-                })
-            });
-
-        let enter_in_view = enter_entry.is_some_and(|e| e.scope == CommandScope::View);
-        let has_more_view_commands = if enter_in_view {
-            view_entries.len() > 1
-        } else {
-            !view_entries.is_empty()
+        let Some(bindings) = &self.chrome_commands_show else {
+            return Vec::new();
         };
-
-        let mut commands = Vec::new();
-        if let Some(enter) = enter_entry {
-            let label = enter.label.clone().unwrap_or_else(|| "Enter".to_string());
-            commands.push(("enter".to_string(), label));
-        }
-        if has_more_view_commands && let Some(overflow) = self.overflow_command() {
-            commands.push(overflow);
-        }
-        commands
-    }
-
-    pub(crate) fn overflow_command(&self) -> Option<(String, String)> {
-        self.entries
+        bindings
             .iter()
-            .find(|e| e.scope == CommandScope::Host && e.id == "commands")
-            .and_then(|e| {
-                let key_name = e.key.and_then(|k| k.binding_name())?;
-                let label = e.label.clone().unwrap_or_else(|| "Commands".to_string());
-                Some((key_name, label))
+            .filter_map(|binding| {
+                let key = Key::parse_binding(binding).ok()?;
+                self.entries
+                    .iter()
+                    .find(|entry| {
+                        entry
+                            .key
+                            .is_some_and(|bound| bound.binding_identity() == key.binding_identity())
+                    })
+                    .map(|entry| {
+                        (
+                            binding.clone(),
+                            entry.label.clone().unwrap_or_else(|| entry.id.clone()),
+                        )
+                    })
             })
+            .collect()
     }
 
-    pub(crate) fn to_picker_parameters(&self) -> serde_json::Value {
+    pub(crate) fn with_chrome_commands_show(mut self, bindings: Vec<String>) -> Self {
+        self.chrome_commands_show = Some(bindings);
+        self
+    }
+
+    /// The single runtime command projection: `{revision, commands: [entry]}`.
+    ///
+    /// `revision` is a property of the snapshot as a whole (every entry shares
+    /// it), so it lives on the envelope, never on an entry. Each entry carries
+    /// the stable identity, display label, effective key (`null` when unbound,
+    /// shadowed, or declared keyless), and the winning layer.
+    pub(crate) fn runtime_envelope(&self) -> serde_json::Value {
         let commands = self
             .entries
             .iter()
             .map(|e| {
-                let key_name = e.key.and_then(|k| k.binding_name()).unwrap_or_default();
-                let label = e.label.as_deref().unwrap_or(&e.id);
-                let scope_name = e.scope.as_str();
                 json!({
-                    "ref": {
-                        "view": scope_name,
-                        "id": e.id,
-                        "revision": self.revision,
-                    },
                     "id": e.id,
-                    "label": label,
-                    "key": key_name,
-                    "scope": scope_name,
-                    "owner": scope_name,
+                    "label": e.label.as_deref().unwrap_or(&e.id),
+                    "key": e.key.and_then(|key| key.binding_name()),
+                    "layer": e.layer.as_str(),
                 })
             })
             .collect::<Vec<_>>();
-        json!({ "commands": commands })
+        json!({ "revision": self.revision, "commands": commands })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::CommandScope;
+    use crate::command::BindingLayer;
     use crate::input::Key;
 
-    fn host_commands_entry() -> ResolvedCommand {
-        ResolvedCommand {
-            id: "commands".to_string(),
-            label: Some("Commands".to_string()),
-            key: Some(Key::Ctrl('k')),
-            scope: CommandScope::Host,
-        }
-    }
-
     #[test]
-    fn footer_commands_shows_only_enter_when_only_enter_exists() {
+    fn unset_chrome_commands_show_produces_no_hints() {
         let snapshot = ChromeSnapshot {
-            entries: vec![
-                host_commands_entry(),
-                ResolvedCommand {
-                    id: "open".to_string(),
-                    label: Some("Open".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::View,
-                },
-            ],
+            entries: vec![ResolvedCommand {
+                id: "open".to_string(),
+                label: Some("Open".to_string()),
+                key: Some(Key::Enter),
+                layer: BindingLayer::View,
+            }],
             ..Default::default()
         };
-        let commands = snapshot.footer_commands();
-        assert_eq!(commands, vec![("enter".to_string(), "Open".to_string())]);
+        assert!(snapshot.footer_commands().is_empty());
     }
 
     #[test]
-    fn footer_commands_shows_enter_and_commands_when_more_commands_exist() {
+    fn configured_footer_bindings_resolve_highest_layer_for_a_key() {
         let snapshot = ChromeSnapshot {
+            chrome_commands_show: Some(vec!["enter".to_string()]),
             entries: vec![
-                host_commands_entry(),
-                ResolvedCommand {
-                    id: "open".to_string(),
-                    label: Some("Open".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::View,
-                },
-                ResolvedCommand {
-                    id: "preview".to_string(),
-                    label: Some("Preview".to_string()),
-                    key: Some(Key::Ctrl('p')),
-                    scope: CommandScope::View,
-                },
-            ],
-            ..Default::default()
-        };
-        let commands = snapshot.footer_commands();
-        assert_eq!(
-            commands,
-            vec![
-                ("enter".to_string(), "Open".to_string()),
-                ("ctrl+k".to_string(), "Commands".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn footer_commands_shows_only_commands_when_no_enter_but_other_commands_exist() {
-        let snapshot = ChromeSnapshot {
-            entries: vec![
-                host_commands_entry(),
-                ResolvedCommand {
-                    id: "inspect".to_string(),
-                    label: Some("Inspect".to_string()),
-                    key: Some(Key::Char(' ')),
-                    scope: CommandScope::View,
-                },
-            ],
-            ..Default::default()
-        };
-        let commands = snapshot.footer_commands();
-        assert_eq!(
-            commands,
-            vec![("ctrl+k".to_string(), "Commands".to_string())]
-        );
-    }
-
-    #[test]
-    fn footer_commands_shows_nothing_when_no_view_commands() {
-        let snapshot = ChromeSnapshot {
-            entries: vec![host_commands_entry()],
-            ..Default::default()
-        };
-        let commands = snapshot.footer_commands();
-        assert!(commands.is_empty());
-    }
-
-    #[test]
-    fn footer_commands_shows_engine_enter_when_no_view_enter() {
-        let snapshot = ChromeSnapshot {
-            entries: vec![
-                host_commands_entry(),
-                ResolvedCommand {
-                    id: "submit".to_string(),
-                    label: Some("Submit".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::Engine,
-                },
-            ],
-            ..Default::default()
-        };
-        let commands = snapshot.footer_commands();
-        assert_eq!(commands, vec![("enter".to_string(), "Submit".to_string())]);
-    }
-
-    #[test]
-    fn footer_commands_view_enter_overrides_engine_and_host_enter() {
-        let snapshot = ChromeSnapshot {
-            entries: vec![
-                ResolvedCommand {
-                    id: "host_default".to_string(),
-                    label: Some("Default".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::Host,
-                },
-                ResolvedCommand {
-                    id: "engine_submit".to_string(),
-                    label: Some("Submit".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::Engine,
-                },
                 ResolvedCommand {
                     id: "view_open".to_string(),
                     label: Some("Open".to_string()),
                     key: Some(Key::Enter),
-                    scope: CommandScope::View,
-                },
-            ],
-            ..Default::default()
-        };
-        let commands = snapshot.footer_commands();
-        assert_eq!(commands, vec![("enter".to_string(), "Open".to_string())]);
-    }
-
-    #[test]
-    fn footer_commands_engine_enter_overrides_host_enter() {
-        let snapshot = ChromeSnapshot {
-            entries: vec![
-                ResolvedCommand {
-                    id: "host_default".to_string(),
-                    label: Some("Default".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::Host,
+                    layer: BindingLayer::View,
                 },
                 ResolvedCommand {
                     id: "engine_submit".to_string(),
                     label: Some("Submit".to_string()),
                     key: Some(Key::Enter),
-                    scope: CommandScope::Engine,
+                    layer: BindingLayer::Engine,
+                },
+                ResolvedCommand {
+                    id: "host_default".to_string(),
+                    label: Some("Default".to_string()),
+                    key: Some(Key::Enter),
+                    layer: BindingLayer::Host,
                 },
             ],
             ..Default::default()
         };
-        let commands = snapshot.footer_commands();
-        assert_eq!(commands, vec![("enter".to_string(), "Submit".to_string())]);
+        assert_eq!(
+            snapshot.footer_commands(),
+            vec![("enter".to_string(), "Open".to_string())]
+        );
     }
 
     #[test]
-    fn footer_commands_shows_engine_enter_and_view_overflow() {
+    fn chrome_hint_is_omitted_when_the_entry_exposes_no_key() {
+        // An entry with no key (declared keyless, shadowed, or unbound) cannot
+        // satisfy `chrome_commands_show`, so it produces no footer hint.
         let snapshot = ChromeSnapshot {
+            chrome_commands_show: Some(vec!["ctrl+k".to_string(), "enter".to_string()]),
             entries: vec![
-                host_commands_entry(),
                 ResolvedCommand {
-                    id: "submit".to_string(),
-                    label: Some("Submit".to_string()),
-                    key: Some(Key::Enter),
-                    scope: CommandScope::Engine,
+                    id: "palette".to_string(),
+                    label: Some("Commands".to_string()),
+                    key: None,
+                    layer: BindingLayer::Host,
                 },
+                ResolvedCommand {
+                    id: "open".to_string(),
+                    label: Some("Open".to_string()),
+                    key: Some(Key::Enter),
+                    layer: BindingLayer::View,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.footer_commands(),
+            vec![("enter".to_string(), "Open".to_string())]
+        );
+    }
+
+    #[test]
+    fn configured_footer_bindings_resolve_labels_and_skip_unknown_keys() {
+        let snapshot = ChromeSnapshot {
+            chrome_commands_show: Some(vec![
+                "ctrl+p".to_string(),
+                "ctrl+q".to_string(),
+                "enter".to_string(),
+            ]),
+            entries: vec![
                 ResolvedCommand {
                     id: "preview".to_string(),
                     label: Some("Preview".to_string()),
                     key: Some(Key::Ctrl('p')),
-                    scope: CommandScope::View,
+                    layer: BindingLayer::View,
+                },
+                ResolvedCommand {
+                    id: "open".to_string(),
+                    label: Some("Open".to_string()),
+                    key: Some(Key::Enter),
+                    layer: BindingLayer::View,
                 },
             ],
             ..Default::default()
         };
-        let commands = snapshot.footer_commands();
+        // `ctrl+q` is declared but bound to nothing, so it produces no hint.
         assert_eq!(
-            commands,
+            snapshot.footer_commands(),
             vec![
-                ("enter".to_string(), "Submit".to_string()),
-                ("ctrl+k".to_string(), "Commands".to_string()),
+                ("ctrl+p".to_string(), "Preview".to_string()),
+                ("enter".to_string(), "Open".to_string()),
             ]
         );
     }
 
     #[test]
-    fn to_picker_parameters_orders_view_engine_host_with_metadata() {
+    fn empty_configured_footer_bindings_disable_hints() {
+        let snapshot = ChromeSnapshot {
+            chrome_commands_show: Some(Vec::new()),
+            entries: vec![ResolvedCommand {
+                id: "open".to_string(),
+                label: Some("Open".to_string()),
+                key: Some(Key::Enter),
+                layer: BindingLayer::View,
+            }],
+            ..Default::default()
+        };
+        assert!(snapshot.footer_commands().is_empty());
+    }
+
+    /// The user-visible end of the multi-key fix: a command bound to two keys
+    /// advertises both, instead of one key being dropped by the projection.
+    #[test]
+    fn footer_hints_cover_every_key_of_one_command() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .replace_layer(
+                BindingLayer::Engine,
+                vec![
+                    crate::command::CommandEntry::for_event(
+                        "picker.exit",
+                        Some("Exit".to_string()),
+                        Some(Key::Ctrl('c')),
+                        BindingLayer::Engine,
+                    ),
+                    crate::command::CommandEntry::for_event(
+                        "picker.exit",
+                        Some("Exit".to_string()),
+                        Some(Key::Ctrl('d')),
+                        BindingLayer::Engine,
+                    ),
+                ],
+            )
+            .unwrap();
+
+        let snapshot = ChromeSnapshot::from_registry(&registry)
+            .with_chrome_commands_show(vec!["ctrl+c".to_string(), "ctrl+d".to_string()]);
+        assert_eq!(
+            snapshot.footer_commands(),
+            vec![
+                ("ctrl+c".to_string(), "Exit".to_string()),
+                ("ctrl+d".to_string(), "Exit".to_string()),
+            ]
+        );
+    }
+
+    /// Pins the end-to-end unwinding of `unbind` through the registry-derived
+    /// snapshot: the physical binding disappears (so Chrome hints stay honest)
+    /// while the command remains discoverable and invokable by identity.
+    #[test]
+    fn registry_unbind_clears_the_key_but_keeps_the_palette_entry() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .replace_layer(
+                BindingLayer::Host,
+                vec![crate::command::CommandEntry::new(
+                    "__commands.palette",
+                    Some("Commands".to_string()),
+                    Some(Key::Ctrl('k')),
+                    BindingLayer::Host,
+                )],
+            )
+            .unwrap();
+        registry.replace_unbinds(crate::command::UnbindRules {
+            layers: std::collections::HashSet::from([BindingLayer::Host]),
+            ..Default::default()
+        });
+
+        let snapshot = ChromeSnapshot::from_registry(&registry)
+            .with_chrome_commands_show(vec!["ctrl+k".to_string()]);
+
+        // The key is unbound, so no footer hint is produced...
+        assert!(snapshot.footer_commands().is_empty());
+        // ...but the command stays in the command list without a key.
+        let envelope = snapshot.runtime_envelope();
+        let commands = envelope["commands"].clone();
+        assert_eq!(commands.as_array().unwrap().len(), 1);
+        assert_eq!(commands[0]["id"], "__commands.palette");
+        assert!(commands[0]["key"].is_null());
+    }
+
+    #[test]
+    fn runtime_envelope_orders_view_engine_host_with_metadata() {
         let snapshot = ChromeSnapshot {
             revision: 42,
             entries: vec![
@@ -359,38 +352,41 @@ mod tests {
                     id: "view_select".to_string(),
                     label: Some("Select".to_string()),
                     key: Some(Key::Enter),
-                    scope: CommandScope::View,
+                    layer: BindingLayer::View,
                 },
                 ResolvedCommand {
                     id: "engine_filter".to_string(),
                     label: Some("Filter".to_string()),
                     key: None,
-                    scope: CommandScope::Engine,
+                    layer: BindingLayer::Engine,
                 },
                 ResolvedCommand {
                     id: "parameters".to_string(),
                     label: Some("Parameters".to_string()),
                     key: Some(Key::Ctrl('g')),
-                    scope: CommandScope::Host,
+                    layer: BindingLayer::Host,
                 },
             ],
             ..Default::default()
         };
 
-        let params = snapshot.to_picker_parameters();
-        let commands = params["commands"].as_array().unwrap();
+        let envelope = snapshot.runtime_envelope();
+        // The revision is a single snapshot-wide envelope field.
+        assert_eq!(envelope["revision"], 42);
+        let commands = envelope["commands"].as_array().unwrap();
         assert_eq!(commands.len(), 3);
 
         assert_eq!(commands[0]["id"], "view_select");
-        assert_eq!(commands[0]["scope"], "view");
+        assert_eq!(commands[0]["layer"], "view");
         assert_eq!(commands[0]["key"], "enter");
 
+        // A keyless entry exposes `null`, not an empty string masquerading as a key.
         assert_eq!(commands[1]["id"], "engine_filter");
-        assert_eq!(commands[1]["scope"], "engine");
-        assert_eq!(commands[1]["key"], "");
+        assert_eq!(commands[1]["layer"], "engine");
+        assert!(commands[1]["key"].is_null());
 
         assert_eq!(commands[2]["id"], "parameters");
-        assert_eq!(commands[2]["scope"], "host");
+        assert_eq!(commands[2]["layer"], "host");
         assert_eq!(commands[2]["key"], "ctrl+g");
     }
 }

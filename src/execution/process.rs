@@ -1,12 +1,10 @@
 use crate::lifecycle::CancellationStatus;
 #[cfg(test)]
 use crate::lifecycle::CancellationToken;
-use crate::terminal::{Terminal, set_terminal_foreground_process_group};
 use std::io;
-use std::os::fd::RawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,42 +23,12 @@ pub(crate) enum ProcessWait {
     Stopped(libc::c_int),
 }
 
-#[derive(Debug)]
-pub(crate) struct ForegroundTerminalReclaimError {
-    source: io::Error,
-}
-
-impl ForegroundTerminalReclaimError {
-    fn new(source: io::Error) -> Self {
-        Self { source }
-    }
-}
-
-impl std::fmt::Display for ForegroundTerminalReclaimError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "could not reclaim launcher terminal ownership: {}",
-            self.source
-        )
-    }
-}
-
-impl std::error::Error for ForegroundTerminalReclaimError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
 impl ProcessGroupGuard {
-    pub(crate) fn spawn(mut command: Command, terminal_fd: Option<RawFd>) -> io::Result<Self> {
+    pub(crate) fn spawn(mut command: Command) -> io::Result<Self> {
         unsafe {
             command.pre_exec(move || {
                 if libc::setpgid(0, 0) != 0 {
                     return Err(io::Error::last_os_error());
-                }
-                if let Some(fd) = terminal_fd {
-                    set_terminal_foreground_process_group(fd, libc::getpgrp())?;
                 }
                 Ok(())
             });
@@ -240,7 +208,7 @@ impl PreparedProcess {
         let Some(program) = self.argv.first() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "foreground command has an empty argv",
+                "command has an empty argv",
             ));
         };
         let mut command = Command::new(program);
@@ -255,15 +223,10 @@ impl PreparedProcess {
     }
 }
 
-/// Run a prepared foreground command and reap its managed process group.
-///
-/// When a usable terminal is supplied, this function hands it to the child
-/// group and reclaims it before returning. It also owns command construction,
-/// cancellation-aware waiting, and cleanup of the leader and its descendants.
-pub(crate) fn run_foreground_process(
+/// Run a prepared non-interactive command and reap its managed process group.
+pub(crate) fn run_command_process(
     prepared: &PreparedProcess,
     cancellation: &dyn CancellationStatus,
-    terminal: Option<&Terminal>,
 ) -> io::Result<ExitStatus> {
     if cancellation.is_cancelled() {
         return Err(io::Error::new(
@@ -274,25 +237,11 @@ pub(crate) fn run_foreground_process(
 
     let deadline = prepared.timeout.map(|t| Instant::now() + t);
     let mut command = prepared.command()?;
-    let terminal_handoff = terminal
-        .map(|terminal| terminal.configure_foreground_command(&mut command))
-        .transpose()?
-        .unwrap_or(false);
-    let terminal_fd = terminal.and_then(Terminal::foreground_terminal_fd);
-    let mut process = match ProcessGroupGuard::spawn(command, terminal_fd) {
-        Ok(process) => process,
-        Err(error) => {
-            if terminal_handoff
-                && let Some(terminal) = terminal
-                && let Err(reclaim_error) = terminal.reclaim_foreground_process()
-            {
-                return Err(io::Error::other(ForegroundTerminalReclaimError::new(
-                    reclaim_error,
-                )));
-            }
-            return Err(error);
-        }
-    };
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+
+    let mut process = ProcessGroupGuard::spawn(command)?;
 
     let result = loop {
         if cancellation.is_cancelled() {
@@ -309,7 +258,7 @@ pub(crate) fn run_foreground_process(
             let timeout = prepared.timeout.unwrap_or_default();
             break Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("foreground command timed out after {timeout:?}"),
+                format!("command timed out after {timeout:?}"),
             ));
         }
         match process.try_wait_with_stops() {
@@ -321,7 +270,7 @@ pub(crate) fn run_foreground_process(
                 break Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     format!(
-                        "foreground command stopped by signal {signal}; launcher terminated the managed process group"
+                        "command stopped by signal {signal}; launcher terminated the managed process group"
                     ),
                 ));
             }
@@ -333,12 +282,6 @@ pub(crate) fn run_foreground_process(
         process.force_kill();
     }
 
-    if terminal_handoff
-        && let Some(terminal) = terminal
-        && let Err(error) = terminal.reclaim_foreground_process()
-    {
-        return Err(io::Error::other(ForegroundTerminalReclaimError::new(error)));
-    }
     result
 }
 
@@ -358,8 +301,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
         let started = std::time::Instant::now();
-        let worker =
-            thread::spawn(move || run_foreground_process(&prepared, &worker_cancellation, None));
+        let worker = thread::spawn(move || run_command_process(&prepared, &worker_cancellation));
         thread::sleep(Duration::from_millis(50));
         cancellation.cancel();
 
@@ -372,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn stopped_foreground_command_is_interrupted_and_reaped() {
+    fn stopped_command_is_interrupted_and_reaped() {
         let prepared = PreparedProcess {
             argv: vec![
                 "sh".to_string(),
@@ -385,8 +327,8 @@ mod tests {
         };
         let started = std::time::Instant::now();
 
-        let error = run_foreground_process(&prepared, &CancellationToken::new(), None)
-            .expect_err("a stopped foreground process should interrupt execution");
+        let error = run_command_process(&prepared, &CancellationToken::new())
+            .expect_err("a stopped process should interrupt execution");
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(error.to_string().contains("stopped by signal"));
@@ -405,7 +347,7 @@ mod tests {
             current_dir: None,
             timeout: None,
         };
-        let status = run_foreground_process(&prepared, &CancellationToken::new(), None).unwrap();
+        let status = run_command_process(&prepared, &CancellationToken::new()).unwrap();
         assert!(status.success());
         let descendant = fs::read_to_string(&pid_file)
             .unwrap()
@@ -442,8 +384,7 @@ mod tests {
         };
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
-        let worker =
-            thread::spawn(move || run_foreground_process(&prepared, &worker_cancellation, None));
+        let worker = thread::spawn(move || run_command_process(&prepared, &worker_cancellation));
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !pid_file.is_file() {
             assert!(
@@ -479,7 +420,7 @@ mod tests {
     fn guard_drop_kills_a_live_process() {
         let mut command = Command::new("sleep");
         command.arg("30");
-        let mut guard = ProcessGroupGuard::spawn(command, None).unwrap();
+        let mut guard = ProcessGroupGuard::spawn(command).unwrap();
         assert!(guard.try_wait().unwrap().is_none());
         let pid = guard.pid();
         guard.force_kill();
@@ -487,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_command_timeout_terminates_and_reaps_process_group() {
+    fn command_timeout_terminates_and_reaps_process_group() {
         let pid_file =
             std::env::temp_dir().join(format!("tflow-timeout-descendant-{}", std::process::id()));
         fs::remove_file(&pid_file).ok();
@@ -502,8 +443,8 @@ mod tests {
             timeout: Some(Duration::from_millis(100)),
         };
         let started = std::time::Instant::now();
-        let error = run_foreground_process(&prepared, &CancellationToken::new(), None)
-            .expect_err("foreground command should time out");
+        let error = run_command_process(&prepared, &CancellationToken::new())
+            .expect_err("command should time out");
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(2));

@@ -546,38 +546,89 @@ fn view_contract(
     view_ref: &str,
     view: &crate::workflow::config::View,
 ) -> serde_json::Value {
-    let keymap_mode = match view.keymap_mode {
-        crate::workflow::config::KeymapMode::ItemMerge => "item_merge",
-        crate::workflow::config::KeymapMode::View => "view",
+    let binding_mode = match view.binding_mode {
+        crate::workflow::config::BindingMode::ItemMerge => "item_merge",
+        crate::workflow::config::BindingMode::View => "view",
     };
     let member_id = crate::workflow::config::package_id(view_ref);
-    let commands = config.workflow_commands(member_id);
-    let commands_json: serde_json::Map<String, serde_json::Value> = commands
-        .into_iter()
-        .map(|(fqid, cmd)| (fqid, serde_json::json!({ "label": cmd.label })))
-        .collect();
 
-    let mut keymap_json = serde_json::Map::new();
-    if let Some(keymap) = &view.keymap {
-        for (key, val) in keymap {
-            if let Some(cmd_id) = val.as_str() {
-                let resolved_fqid = config
-                    .resolve_command_fqid(member_id, cmd_id)
-                    .unwrap_or_else(|| cmd_id.to_string());
-                keymap_json.insert(key.clone(), serde_json::Value::String(resolved_fqid));
-            } else if val.as_bool() == Some(false) {
-                keymap_json.insert(key.clone(), serde_json::Value::Bool(false));
+    // Declaration contract: the same entry shape as the runtime snapshot, but
+    // resolved statically and with no `revision` (that is runtime-only). `key`
+    // is the View's declared binding for the command, if any; `bindings` below
+    // repeats the declared table with every address resolved to a command FQID.
+    // A View binding always names a command, so there is nothing else to keep.
+    let mut declared_keys: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    if let Some(bindings) = &view.bindings {
+        for (key, val) in bindings {
+            let Some(address) = val.as_str() else {
+                continue;
+            };
+            // Engine actions are not workflow commands, so they never match an
+            // entry of the `commands` list below.
+            if let Some(crate::workflow::config::ResolvedAddress::Command { fqid, .. }) =
+                config.resolve_address(member_id, address)
+            {
+                declared_keys.entry(fqid).or_insert_with(|| key.clone());
             }
         }
     }
+    let commands_json: Vec<serde_json::Value> = config
+        .workflow_commands(member_id)
+        .into_iter()
+        .map(|(fqid, cmd)| {
+            serde_json::json!({
+                "id": fqid,
+                "label": cmd.label,
+                "key": declared_keys.get(&fqid),
+                "layer": "view",
+            })
+        })
+        .collect();
+
+    let mut bindings_json = serde_json::Map::new();
+    if let Some(bindings) = &view.bindings {
+        for (key, val) in bindings {
+            let Some(address) = val.as_str() else {
+                continue;
+            };
+            if let Some(resolved) = config.resolve_address(member_id, address) {
+                bindings_json.insert(
+                    key.clone(),
+                    serde_json::Value::String(resolved.binding_address()),
+                );
+            }
+        }
+    }
+
+    // Unbinding is part of the declaration, so the contract must expose it: a
+    // consumer otherwise sees a declared `key` above with no way to know the
+    // View removes it. Command addresses are resolved to FQIDs, like `bindings`.
+    let unbind_commands: Vec<String> = view
+        .unbind
+        .commands
+        .iter()
+        .filter_map(|address| {
+            config
+                .resolve_address(member_id, address)
+                .map(|resolved| resolved.fqid().to_string())
+        })
+        .collect();
+    let unbind_json = serde_json::json!({
+        "keys": view.unbind.keys,
+        "commands": unbind_commands,
+        "layers": view.unbind.layers,
+    });
+
     serde_json::json!({
         "view": view_ref,
         "alias": config.alias_for_view(view_ref),
         "engine": view.selected_engine_type(),
         "query": view.query,
-        "keymap_mode": keymap_mode,
+        "binding_mode": binding_mode,
         "commands": commands_json,
-        "keymap": keymap_json,
+        "bindings": bindings_json,
+        "unbind": unbind_json,
     })
 }
 
@@ -677,6 +728,43 @@ fn default_suite_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::effective_cli_args_from;
+
+    /// `--inspect` names every command by the same FQID the runtime projection
+    /// publishes, and resolves binding addresses to that same spelling, so a
+    /// consumer never has to translate between the two contracts.
+    #[test]
+    fn inspect_contract_names_commands_by_their_runtime_fqid() {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+
+        let sys = config.view("sys:main").expect("sys:main view");
+        let sys = super::view_contract(&config, "sys:main", sys);
+        assert!(
+            sys["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|command| command["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("sys."))),
+            "view commands are FQIDs: {sys}"
+        );
+        assert_eq!(sys["bindings"]["enter"], "sys.run");
+
+        // An engine address keeps its `@engine:<engine>.<action>` prefix in the
+        // resolved bindings map, so the map matches configuration syntax and
+        // round-trips into item bindings.
+        let dmenu = config.view("dmenu:main").expect("dmenu:main view");
+        let dmenu = super::view_contract(&config, "dmenu:main", dmenu);
+        assert_eq!(dmenu["bindings"]["escape"], "@engine:picker.exit");
+        assert!(
+            dmenu["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|command| command["id"] == "dmenu.accept"),
+            "workflow commands are FQIDs: {dmenu}"
+        );
+    }
 
     #[test]
     fn injects_the_entrypoint_stem_for_all_noncanonical_entrypoints() {

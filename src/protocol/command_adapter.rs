@@ -6,6 +6,8 @@ use crate::view::{
 use anyhow::Result;
 
 pub(crate) trait CommandService {
+    fn registry(&self) -> std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>;
+
     fn build_host_commands(
         &self,
         shared_snapshot: std::sync::Arc<std::sync::RwLock<crate::command::ChromeSnapshot>>,
@@ -18,15 +20,21 @@ pub(crate) trait CommandService {
         snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>>;
 
-    fn build_engine_commands(
-        &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
-    ) -> Result<Vec<crate::command::CommandEntry>>;
-
     fn is_view_dynamic(&self, target: &str) -> bool;
 
+    fn chrome_commands_show(&self, target: Option<&str>) -> Result<Vec<String>>;
+
+    fn unbind_rules(&self, target: Option<&str>) -> Result<crate::command::UnbindRules>;
+
     fn update_active_snapshot(&self, snapshot: &ViewCommandSnapshot);
+
+    /// Executes a registry entry whose handler is resolved at dispatch time.
+    fn execute_entry(
+        &self,
+        entry: &crate::command::CommandEntry,
+        caller: ViewInstanceId,
+        expected_call_revision: Option<u64>,
+    ) -> Result<ViewDecision>;
 }
 
 pub(crate) trait ViewCommandProvider: Send + Sync {
@@ -42,9 +50,6 @@ pub(crate) struct StaticViewCommandProvider {
     target: String,
     member_id: String,
     config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: crate::lifecycle::CancellationToken,
-    active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
 }
 
 impl ViewCommandProvider for StaticViewCommandProvider {
@@ -54,46 +59,25 @@ impl ViewCommandProvider for StaticViewCommandProvider {
 
     fn provide_commands(
         &self,
-        context: &ViewContext,
-        snapshot: &ViewCommandSnapshot,
+        _context: &ViewContext,
+        _snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>> {
-        let source = ViewCommandSource::new(
-            &self.config,
-            &self.invocation,
-            &self.cancellation,
-            &self.active_snapshot,
-            context.instance,
-            &self.target,
-            &self.member_id,
-        );
-        let page = command_page_owner(context, snapshot);
+        let source = ViewCommandSource::new(&self.config, &self.target, &self.member_id);
         let declared = self
             .config
             .view(&self.target)
-            .and_then(|view| view.keymap.as_ref())
-            .is_some_and(|keymap| !keymap.is_empty());
+            .and_then(|view| view.bindings.as_ref())
+            .is_some_and(|bindings| !bindings.is_empty());
 
         if declared {
-            return Ok(source.declared_entries(&page));
+            return Ok(source.declared_entries());
         }
 
-        // Without a keymap table every workflow command of the View's own
-        // workflow is a candidate, keyed only where the command declares one.
-        let mut seen_keys = std::collections::HashSet::new();
+        // Without a bindings table every workflow command of the View's own
+        // workflow is a candidate without a physical shortcut.
         let mut entries = Vec::new();
-        for (fqid, cmd) in self.config.workflow_commands(&self.member_id) {
-            let mut key = cmd.key.as_ref().and_then(|raw| {
-                crate::workflow::config::normalize_key(raw)
-                    .ok()
-                    .and_then(|normalized| crate::input::Key::parse_binding(&normalized).ok())
-            });
-            if let Some(bound) = key
-                && !seen_keys.insert(bound.binding_identity())
-            {
-                key = None;
-            }
-            let local_id = source.local_id(&fqid).to_string();
-            if let Some(entry) = source.entry(&page, &fqid, local_id, key) {
+        for (fqid, _cmd) in self.config.workflow_commands(&self.member_id) {
+            if let Some(entry) = source.entry(&fqid, None) {
                 entries.push(entry);
             }
         }
@@ -105,9 +89,6 @@ pub(crate) struct ItemViewCommandProvider {
     target: String,
     member_id: String,
     config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: crate::lifecycle::CancellationToken,
-    active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
 }
 
 impl ViewCommandProvider for ItemViewCommandProvider {
@@ -117,24 +98,15 @@ impl ViewCommandProvider for ItemViewCommandProvider {
 
     fn provide_commands(
         &self,
-        context: &ViewContext,
+        _context: &ViewContext,
         snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>> {
-        let source = ViewCommandSource::new(
-            &self.config,
-            &self.invocation,
-            &self.cancellation,
-            &self.active_snapshot,
-            context.instance,
-            &self.target,
-            &self.member_id,
-        );
-        let page = command_page_owner(context, snapshot);
+        let source = ViewCommandSource::new(&self.config, &self.target, &self.member_id);
 
         // The View's own bindings form the base layer and stay available even
         // when the item list is empty, so keys the View owns (route completion,
         // for example) do not depend on there being a focused item.
-        let mut entries = source.declared_entries(&page);
+        let mut entries = source.declared_entries();
 
         let Some(bindings) = snapshot
             .publication
@@ -153,9 +125,10 @@ impl ViewCommandProvider for ItemViewCommandProvider {
         let mut seen_keys = std::collections::HashSet::new();
 
         for (key_str, val) in bindings {
-            if val.as_bool() == Some(false) {
-                continue;
-            }
+            // Item bindings are command references: a non-string value names no
+            // command, so an item can rebind a base key but never remove one.
+            // Removing a base binding is the View's own decision
+            // (`[views.<name>.unbind]`).
             let Some(cmd_target) = val.as_str() else {
                 continue;
             };
@@ -171,7 +144,7 @@ impl ViewCommandProvider for ItemViewCommandProvider {
                     });
                 }
             }
-            if let Some(entry) = source.entry(&page, cmd_target, cmd_target.to_string(), key) {
+            if let Some(entry) = source.entry(cmd_target, key) {
                 entries.push(entry);
             }
         }
@@ -188,15 +161,13 @@ fn parse_binding_key(key_str: &str) -> Option<crate::input::Key> {
     }
 }
 
-/// Turns one declared keymap entry or focused-item binding into a View-scope
+/// Turns one declared bindings entry or focused-item binding into a View-layer
 /// command entry. Both providers share the same wiring, so only the layer that
-/// supplies the binding (View keymap vs. focused item) differs between them.
+/// supplies the binding (View bindings vs. focused item) differs between them.
+/// The entry stores only plain data; the owning View is recorded so the handler
+/// can be resolved at dispatch time.
 struct ViewCommandSource<'a> {
     config: &'a std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: &'a std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: &'a crate::lifecycle::CancellationToken,
-    active_snapshot: &'a std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
-    caller: ViewInstanceId,
     target: &'a str,
     member_id: &'a str,
 }
@@ -204,88 +175,66 @@ struct ViewCommandSource<'a> {
 impl<'a> ViewCommandSource<'a> {
     fn new(
         config: &'a std::sync::Arc<crate::workflow::config::CompiledConfig>,
-        invocation: &'a std::sync::Arc<crate::workflow::InvocationContext>,
-        cancellation: &'a crate::lifecycle::CancellationToken,
-        active_snapshot: &'a std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
-        caller: ViewInstanceId,
         target: &'a str,
         member_id: &'a str,
     ) -> Self {
         Self {
             config,
-            invocation,
-            cancellation,
-            active_snapshot,
-            caller,
             target,
             member_id,
         }
     }
 
-    fn local_id<'b>(&self, cmd_target: &'b str) -> &'b str {
-        cmd_target
-            .strip_prefix(&format!("{}:", self.member_id))
-            .unwrap_or(cmd_target)
-    }
-
-    /// `id` is the View-scope key, which also identifies the command reference.
+    /// Resolves one binding address into a View-layer command entry.
+    ///
+    /// The entry id is the resolved FQID, so the whole registry addresses every
+    /// command the same way (`<workflow>.<command>` or `<engine>.<action>`): a
+    /// command reached from the declared table, from a focused item's bindings,
+    /// from `unbind.commands`, or from `--inspect` carries one single id, and
+    /// the same command cannot appear twice under two spellings.
     fn entry(
         &self,
-        page: &crate::workflow::command::CommandOwnerContext,
-        cmd_target: &str,
-        id: String,
+        address: &str,
         key: Option<crate::input::Key>,
     ) -> Option<crate::command::CommandEntry> {
-        let cmd = self.config.find_command(self.member_id, cmd_target)?;
-        let cmd_wf = cmd_target
-            .split_once(':')
-            .map(|(workflow, _)| workflow)
-            .unwrap_or(self.member_id);
-        let action = create_command_action(CommandActionInput {
-            config: std::sync::Arc::clone(self.config),
-            invocation: std::sync::Arc::clone(self.invocation),
-            cancellation: self.cancellation.clone(),
-            caller: self.caller,
-            active_snapshot: std::sync::Arc::clone(self.active_snapshot),
-            command_ref: crate::workflow::command::CommandRef {
-                view: self.target.to_string(),
-                id: id.clone(),
-            },
-            command: cmd.clone(),
-            page: page.clone(),
-            cmd_wf: cmd_wf.to_string(),
-        });
-        Some(crate::command::CommandEntry::new(
-            id,
-            Some(cmd.label.clone()),
-            key,
-            crate::command::CommandScope::View,
-            action,
-        ))
+        let resolved = self.config.resolve_address(self.member_id, address)?;
+        Some(match resolved {
+            crate::workflow::config::ResolvedAddress::Engine { fqid, label } => {
+                crate::command::CommandEntry::new(
+                    fqid,
+                    Some(label.to_string()),
+                    key,
+                    crate::command::BindingLayer::View,
+                )
+            }
+            crate::workflow::config::ResolvedAddress::Command { fqid, label } => {
+                crate::command::CommandEntry::new(
+                    fqid,
+                    Some(label),
+                    key,
+                    crate::command::BindingLayer::View,
+                )
+            }
+        })
     }
 
-    /// The View's own `[views.<name>.keymap]` table. A `keymap_mode = "view"`
-    /// View publishes exactly these; a `keymap_mode = "item_merge"` View
+    /// The View's own `[views.<name>.bindings]` table. A `binding_mode = "view"`
+    /// View publishes exactly these; a `binding_mode = "item_merge"` View
     /// publishes them as the base layer that the focused item's bindings
     /// override per physical key.
-    fn declared_entries(
-        &self,
-        page: &crate::workflow::command::CommandOwnerContext,
-    ) -> Vec<crate::command::CommandEntry> {
-        let Some(keymap) = self
+    fn declared_entries(&self) -> Vec<crate::command::CommandEntry> {
+        let Some(bindings) = self
             .config
             .view(self.target)
-            .and_then(|view| view.keymap.as_ref())
+            .and_then(|view| view.bindings.as_ref())
         else {
             return Vec::new();
         };
-        keymap
+        bindings
             .iter()
-            .filter(|(_, value)| value.as_bool() != Some(false))
             .filter_map(|(key_str, value)| {
                 let cmd_target = value.as_str()?;
-                let id = self.local_id(cmd_target).to_string();
-                self.entry(page, cmd_target, id, parse_binding_key(key_str))
+                self.entry(cmd_target, parse_binding_key(key_str))
             })
             .collect()
     }
@@ -297,6 +246,12 @@ pub(crate) struct ProtocolCommandService {
     invocation: std::sync::Arc<crate::workflow::InvocationContext>,
     cancellation: crate::lifecycle::CancellationToken,
     active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
+    registry: std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>,
+    shared_snapshot: std::sync::Arc<
+        std::sync::RwLock<
+            Option<std::sync::Arc<std::sync::RwLock<crate::command::ChromeSnapshot>>>,
+        >,
+    >,
 }
 
 impl ProtocolCommandService {
@@ -310,7 +265,19 @@ impl ProtocolCommandService {
             invocation,
             cancellation,
             active_snapshot: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            registry: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::command::CommandRegistry::new(),
+            )),
+            shared_snapshot: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// The session command registry handle, shared with the host so engines can
+    /// publish the live command projection.
+    pub(crate) fn registry_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>> {
+        std::sync::Arc::clone(&self.registry)
     }
 
     pub(crate) fn view_command_provider(&self, target: &str) -> Box<dyn ViewCommandProvider> {
@@ -318,67 +285,125 @@ impl ProtocolCommandService {
         let is_item_mode = self
             .config
             .view(target)
-            .is_some_and(|v| v.keymap_mode == crate::workflow::config::KeymapMode::ItemMerge);
+            .is_some_and(|v| v.binding_mode == crate::workflow::config::BindingMode::ItemMerge);
         if is_item_mode {
             Box::new(ItemViewCommandProvider {
                 target: target.to_string(),
                 member_id: member_id.to_string(),
                 config: std::sync::Arc::clone(&self.config),
-                invocation: std::sync::Arc::clone(&self.invocation),
-                cancellation: self.cancellation.clone(),
-                active_snapshot: std::sync::Arc::clone(&self.active_snapshot),
             })
         } else {
             Box::new(StaticViewCommandProvider {
                 target: target.to_string(),
                 member_id: member_id.to_string(),
                 config: std::sync::Arc::clone(&self.config),
-                invocation: std::sync::Arc::clone(&self.invocation),
-                cancellation: self.cancellation.clone(),
-                active_snapshot: std::sync::Arc::clone(&self.active_snapshot),
             })
         }
     }
 }
 
-struct CommandActionInput {
-    config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: crate::lifecycle::CancellationToken,
-    caller: ViewInstanceId,
-    active_snapshot: std::sync::Arc<std::sync::RwLock<Option<ViewCommandSnapshot>>>,
-    command_ref: crate::workflow::command::CommandRef,
-    command: crate::workflow::config::Command,
-    page: crate::workflow::command::CommandOwnerContext,
-    cmd_wf: String,
-}
+impl ProtocolCommandService {
+    /// Resolves the entry's handler at dispatch time and executes it.
+    ///
+    /// The registry stores only plain data, so the invocation is rebuilt from
+    /// the live snapshot here. Depth is bounded so a workflow cannot recurse
+    /// through `invoke-command` without limit.
+    pub(crate) fn execute_entry(
+        &self,
+        entry: &crate::command::CommandEntry,
+        caller: ViewInstanceId,
+        expected_call_revision: Option<u64>,
+    ) -> Result<ViewDecision> {
+        let depth = crate::command::command_call_depth().saturating_add(1);
+        crate::command::execute_at_depth(depth, || {
+            let prepared = self
+                .prepare_entry(entry, caller)
+                .map_err(crate::view::operation_failure)?;
+            match prepared {
+                // A View whose feed is still loading keeps its own commands
+                // inert, exactly as the previous pre-baked closure did.
+                EntryExecution::Deferred => Ok(crate::view::ViewDecision::Stay),
+                EntryExecution::Engine => {
+                    // An engine action is a key event, not a definition: the
+                    // instance this decision lands on lets its own engine run it.
+                    Ok(crate::view::ViewDecision::EngineAction(entry.id.clone()))
+                }
+                EntryExecution::Command(action) => {
+                    map_prepared_action(self, action, caller, expected_call_revision)
+                        .map_err(crate::view::operation_failure)
+                }
+            }
+        })
+    }
 
-fn create_command_action(
-    input: CommandActionInput,
-) -> std::sync::Arc<dyn crate::command::CommandAction> {
-    let CommandActionInput {
-        config,
-        invocation,
-        cancellation,
-        caller,
-        active_snapshot,
-        command_ref,
-        command,
-        page,
-        cmd_wf,
-    } = input;
-    std::sync::Arc::new(move || {
-        let snap_opt = active_snapshot.read().unwrap().clone();
-        if snap_opt.as_ref().is_some_and(|snap| {
-            snap.engine_type == crate::workflow::config::ENGINE_PICKER
-                && snap
-                    .publication
-                    .as_ref()
-                    .is_some_and(|publication| !publication.ready)
-        }) {
-            return Ok(ViewDecision::Stay);
+    fn active_snapshot_is_loading(&self) -> bool {
+        self.active_snapshot
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|snap| {
+                snap.engine_type == crate::workflow::config::ENGINE_PICKER
+                    && snap
+                        .publication
+                        .as_ref()
+                        .is_some_and(|publication| !publication.ready)
+            })
+    }
+
+    /// The one place that decides how a registry entry is executed.
+    ///
+    /// The binding layer only controls priority. The id selects either a
+    /// built-in engine action or a workflow command; execution context always
+    /// comes from the currently active View.
+    fn prepare_entry(
+        &self,
+        entry: &crate::command::CommandEntry,
+        caller: ViewInstanceId,
+    ) -> Result<EntryExecution> {
+        if entry.layer == crate::command::BindingLayer::View && self.active_snapshot_is_loading() {
+            return Ok(EntryExecution::Deferred);
         }
-        let (current, engine_type, owner) = if let Some(snap) = &snap_opt {
+        if crate::engine::engine_action_from_id(&entry.id).is_some() {
+            return Ok(EntryExecution::Engine);
+        }
+        let execution = self.command_execution(entry, caller)?;
+        Ok(EntryExecution::Command(
+            crate::workflow::command::prepare_command_action(
+                &self.config,
+                &self.invocation,
+                execution,
+                &self.cancellation,
+            )?,
+        ))
+    }
+
+    fn command_execution(
+        &self,
+        entry: &crate::command::CommandEntry,
+        caller: ViewInstanceId,
+    ) -> Result<crate::workflow::command::CommandExecution> {
+        let chrome = self
+            .shared_snapshot
+            .read()
+            .unwrap()
+            .clone()
+            .map(|snapshot| snapshot.read().unwrap().clone())
+            .unwrap_or_default();
+        let active_view = chrome
+            .active_view
+            .clone()
+            .unwrap_or_else(|| self.invocation.root_view().to_string());
+        let command = self
+            .config
+            .find_command(crate::workflow::config::package_id(&active_view), &entry.id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("command {:?} is no longer configured", entry.id))?;
+        let command_ref = crate::workflow::command::CommandRef {
+            id: entry.id.clone(),
+            revision: self.registry.read().unwrap().revision(),
+        };
+        let snap_opt = self.active_snapshot.read().unwrap().clone();
+        let (current, engine_type, page) = if let Some(snap) = &snap_opt {
             let mut current = snap
                 .publication
                 .as_ref()
@@ -398,292 +423,85 @@ fn create_command_action(
                     serde_json::Value::String(snap.raw_input.clone()),
                 );
             }
-            let live_owner = command_owner_from_snap(&config, &cmd_wf, caller, snap, &page);
-            (current, snap.engine_type.clone(), live_owner)
+            (
+                current,
+                snap.engine_type.clone(),
+                crate::workflow::command::CommandOwnerContext {
+                    view_ref: active_view.clone(),
+                    parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
+                        snap.parameters.clone(),
+                        snap.raw_input.clone(),
+                        crate::input::InputSourceIdentity {
+                            frame: crate::input::ViewMountId(caller.0),
+                            generation: snap.revision,
+                        },
+                        snap.revision,
+                    ),
+                },
+            )
         } else {
-            (serde_json::Value::Null, "view".to_string(), page.clone())
+            (
+                serde_json::Value::Null,
+                "session".to_string(),
+                crate::workflow::command::CommandOwnerContext {
+                    view_ref: active_view.clone(),
+                    parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
+                        chrome.active_parameters,
+                        chrome.active_raw_input,
+                        crate::input::InputSourceIdentity {
+                            frame: crate::input::ViewMountId(caller.0),
+                            generation: 0,
+                        },
+                        0,
+                    ),
+                },
+            )
         };
-
-        let execution = crate::workflow::command::CommandExecution {
+        let commands =
+            crate::command::ChromeSnapshot::from_registry(&self.registry.read().unwrap())
+                .runtime_envelope();
+        Ok(crate::workflow::command::CommandExecution {
             invocation: crate::workflow::command::CommandInvocation::view(
-                command_ref.clone(),
-                command.clone(),
+                active_view,
+                command_ref,
+                command,
             ),
             context: crate::workflow::command::CommandContext {
                 page: page.clone(),
-                owner,
+                owner: page,
                 current,
                 engine_type,
+                commands,
             },
-        };
-        let prepared = crate::workflow::command::prepare_command_action(
-            &config,
-            &invocation,
-            execution,
-            &cancellation,
-        )
-        .map_err(crate::view::operation_failure)?;
-        map_prepared_action(&config, &invocation, &cancellation, prepared, caller)
-            .map_err(crate::view::operation_failure)
-    })
-}
-
-fn command_owner_from_snap(
-    config: &crate::workflow::config::CompiledConfig,
-    cmd_wf: &str,
-    caller: ViewInstanceId,
-    snap: &ViewCommandSnapshot,
-    page: &crate::workflow::command::CommandOwnerContext,
-) -> crate::workflow::command::CommandOwnerContext {
-    let member_id = crate::workflow::config::package_id(&page.view_ref);
-    if cmd_wf == member_id {
-        page.clone()
-    } else {
-        let (values, raw_input) = if let Ok(state) = config.instantiate_parameters(cmd_wf) {
-            (
-                config
-                    .parameter_values(&state)
-                    .unwrap_or(serde_json::Value::Null),
-                state.raw_input().to_string(),
-            )
-        } else {
-            (snap.parameters.clone(), snap.raw_input.clone())
-        };
-        let parameters = crate::workflow::parameter::ParameterSnapshot::from_parts(
-            values,
-            raw_input,
-            crate::input::InputSourceIdentity {
-                frame: crate::input::ViewMountId(caller.0),
-                generation: snap.revision,
-            },
-            snap.revision,
-        );
-        crate::workflow::command::CommandOwnerContext {
-            view_ref: cmd_wf.to_string(),
-            parameters,
-        }
+        })
     }
 }
 
 impl CommandService for ProtocolCommandService {
+    fn registry(&self) -> std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>> {
+        std::sync::Arc::clone(&self.registry)
+    }
+
     fn build_host_commands(
         &self,
         shared_snapshot: std::sync::Arc<std::sync::RwLock<crate::command::ChromeSnapshot>>,
-        registry: std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>,
+        _registry: std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>,
     ) -> Result<Vec<crate::command::CommandEntry>> {
+        *self.shared_snapshot.write().unwrap() = Some(std::sync::Arc::clone(&shared_snapshot));
         let mut entries = Vec::new();
-        let session_cmds = self.config.session_commands();
-
-        if let Some(cmd) = session_cmds.get("commands") {
-            let key = match &cmd.key {
-                Some(k) => Some(crate::input::Key::parse_binding(
-                    &crate::workflow::config::normalize_key(k)?,
-                )?),
-                None => None,
-            };
-            let label = cmd.label.clone();
-            let target = self
+        for (key_name, id) in self.config.host_bindings() {
+            let id = id.clone();
+            let cmd = self
                 .config
-                .resolve_view("__commands:main")
-                .unwrap_or_else(|_| "__commands:main".to_string());
-
-            let config_clone = std::sync::Arc::clone(&self.config);
-            let snapshot_clone = std::sync::Arc::clone(&shared_snapshot);
-            let registry_clone = std::sync::Arc::clone(&registry);
-            let service_clone = std::sync::Arc::new(self.clone());
-            let invocation_clone = std::sync::Arc::clone(&self.invocation);
-            let cancellation_clone = self.cancellation.clone();
-            let action = std::sync::Arc::new(move || {
-                let snapshot = snapshot_clone.read().unwrap();
-                if let Some(active_view) = snapshot.active_view.as_deref()
-                    && crate::workflow::command::is_commands_view(active_view, &target)
-                {
-                    return Ok(ViewDecision::Stay);
-                }
-                let parameters = snapshot.to_picker_parameters();
-                let active_caller = snapshot.active_instance.unwrap_or(ViewInstanceId(0));
-                drop(snapshot);
-
-                let nav = crate::workflow::command::NavigationRequest::new(target.clone(), "")
-                    .with_parameters(parameters)
-                    .with_presentation(
-                        crate::workflow::config::ViewPresentation::popup(
-                            crate::workflow::command::COMMANDS_POPUP_WIDTH,
-                            crate::workflow::command::COMMANDS_POPUP_HEIGHT,
-                        )
-                        .with_anchor(crate::workflow::config::PopupAnchor::BottomRight),
-                    );
-                let req = protocol_navigation_request(&config_clone, nav)?;
-
-                let processor_service = std::sync::Arc::clone(&service_clone);
-                let processor_registry = std::sync::Arc::clone(&registry_clone);
-                let processor_snapshot = std::sync::Arc::clone(&snapshot_clone);
-                let result_processor: CallResultProcessor =
-                    std::sync::Arc::new(move |_source, caller, snapshot, result| {
-                        if active_caller != ViewInstanceId(0) && caller.instance != active_caller {
-                            return Ok(ViewDecision::Stay);
-                        }
-                        let command_id = result
-                            .value
-                            .as_str()
-                            .or_else(|| result.value.get("id").and_then(|v| v.as_str()))
-                            .or_else(|| {
-                                result
-                                    .value
-                                    .get("ref")
-                                    .and_then(|r| r.get("id"))
-                                    .and_then(|v| v.as_str())
-                            })
-                            .map(str::to_owned);
-                        let Some(command_id) = command_id else {
-                            return Ok(ViewDecision::Stay);
-                        };
-                        let view_cmds = processor_service.build_view_commands(caller, snapshot)?;
-                        let engine_cmds =
-                            processor_service.build_engine_commands(caller, snapshot)?;
-                        let mut registry = processor_registry.write().unwrap();
-                        registry.replace_scope(crate::command::CommandScope::View, view_cmds)?;
-                        registry
-                            .replace_scope(crate::command::CommandScope::Engine, engine_cmds)?;
-                        {
-                            let mut snap = processor_snapshot.write().unwrap();
-                            *snap = crate::command::ChromeSnapshot::from_registry(&registry)
-                                .with_active_instance(Some(caller.instance))
-                                .with_active_view(
-                                    Some(caller.location.target.clone()),
-                                    snapshot.parameters.clone(),
-                                    snapshot.raw_input.clone(),
-                                );
-                        }
-                        processor_service.update_active_snapshot(snapshot);
-                        match registry.dispatch_id(&command_id) {
-                            Ok(decision) => Ok(decision),
-                            Err(_) => Ok(ViewDecision::Stay),
-                        }
-                    });
-                let handler = std::sync::Arc::new(ProtocolCallReturnHandler {
-                    config: std::sync::Arc::clone(&config_clone),
-                    invocation: std::sync::Arc::clone(&invocation_clone),
-                    cancellation: cancellation_clone.clone(),
-                    origin: None,
-                    context: None,
-                    return_processor: None,
-                    result_processor: Some(result_processor),
-                });
-
-                let boundary = CallBoundary {
-                    caller: active_caller,
-                    handler,
-                };
-
-                Ok(crate::view::ViewDecision::Transition(
-                    crate::view::TransitionRequest::Call {
-                        request: req,
-                        continuation: crate::view::Continuation::Call(boundary),
-                    },
-                ))
-            });
-
-            entries.push(crate::command::CommandEntry::new(
-                "commands",
-                Some(label),
-                key,
-                crate::command::CommandScope::Host,
-                action,
-            ));
-        }
-
-        for (id, cmd) in session_cmds {
-            if id == "commands" {
-                continue;
-            }
-            let key = match &cmd.key {
-                Some(k) => Some(crate::input::Key::parse_binding(
-                    &crate::workflow::config::normalize_key(k)?,
-                )?),
-                None => None,
-            };
-            let config_clone = std::sync::Arc::clone(&self.config);
-            let invocation_clone = std::sync::Arc::clone(&self.invocation);
-            let cancellation_clone = self.cancellation.clone();
-            let snapshot_clone = std::sync::Arc::clone(&shared_snapshot);
-            let id_clone = id.clone();
-            let cmd_clone = cmd.clone();
-            let action = std::sync::Arc::new(move || {
-                let active_snapshot = snapshot_clone.read().unwrap().clone();
-                let active_view = active_snapshot
-                    .active_view
-                    .clone()
-                    .unwrap_or_else(|| invocation_clone.root_view().to_string());
-                if id_clone == "parameters"
-                    && crate::workflow::command::is_query_view(&active_view, "__query:main")
-                {
-                    return Ok(ViewDecision::Stay);
-                }
-                let active_parameters = active_snapshot.active_parameters.clone();
-                let active_raw_input = active_snapshot.active_raw_input.clone();
-                let execution = crate::workflow::command::CommandExecution {
-                    invocation: crate::workflow::command::CommandInvocation::session_command(
-                        invocation_clone.root_view(),
-                        &id_clone,
-                        cmd_clone.clone(),
-                    ),
-                    context: crate::workflow::command::CommandContext {
-                        page: crate::workflow::command::CommandOwnerContext {
-                            view_ref: active_view.clone(),
-                            parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
-                                active_parameters.clone(),
-                                active_raw_input.clone(),
-                                crate::input::InputSourceIdentity {
-                                    frame: crate::input::ViewMountId(0),
-                                    generation: 0,
-                                },
-                                0,
-                            ),
-                        },
-                        owner: crate::workflow::command::CommandOwnerContext {
-                            view_ref: active_view,
-                            parameters: crate::workflow::parameter::ParameterSnapshot::from_parts(
-                                active_parameters,
-                                active_raw_input,
-                                crate::input::InputSourceIdentity {
-                                    frame: crate::input::ViewMountId(0),
-                                    generation: 0,
-                                },
-                                0,
-                            ),
-                        },
-                        current: serde_json::Value::Null,
-                        engine_type: "session".to_string(),
-                    },
-                };
-                let prepared = crate::workflow::command::prepare_command_action(
-                    &config_clone,
-                    &invocation_clone,
-                    execution,
-                    &cancellation_clone,
-                )
-                .map_err(crate::view::operation_failure)?;
-                let caller = snapshot_clone
-                    .read()
-                    .unwrap()
-                    .active_instance
-                    .unwrap_or(ViewInstanceId(1));
-                map_prepared_action(
-                    &config_clone,
-                    &invocation_clone,
-                    &cancellation_clone,
-                    prepared,
-                    caller,
-                )
-                .map_err(crate::view::operation_failure)
-            });
+                .find_command(&self.config.entrypoint, &id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("host command {:?} is missing", id))?;
+            let key = Some(crate::input::Key::parse_binding(key_name)?);
             entries.push(crate::command::CommandEntry::new(
                 id,
                 Some(cmd.label),
                 key,
-                crate::command::CommandScope::Host,
-                action,
+                crate::command::BindingLayer::Host,
             ));
         }
 
@@ -692,6 +510,41 @@ impl CommandService for ProtocolCommandService {
 
     fn is_view_dynamic(&self, target: &str) -> bool {
         self.view_command_provider(target).is_dynamic()
+    }
+
+    fn chrome_commands_show(&self, target: Option<&str>) -> Result<Vec<String>> {
+        target
+            .map(|target| self.config.chrome_commands_show(target))
+            .unwrap_or_else(|| Ok(vec!["enter".to_string(), "ctrl+k".to_string()]))
+    }
+
+    fn unbind_rules(&self, target: Option<&str>) -> Result<crate::command::UnbindRules> {
+        let Some((member_id, view)) =
+            target.and_then(|target| self.config.view(target).map(|view| (target, view)))
+        else {
+            return Ok(crate::command::UnbindRules::default());
+        };
+        let member_id = crate::workflow::config::package_id(member_id);
+        let mut rules = crate::command::UnbindRules::default();
+        for layer in &view.unbind.layers {
+            let layer = crate::command::BindingLayer::from_layer(layer)
+                .ok_or_else(|| anyhow::anyhow!("unknown unbind layer {layer:?}"))?;
+            rules.layers.insert(layer);
+        }
+        for address in &view.unbind.commands {
+            let resolved = self
+                .config
+                .resolve_address(member_id, address)
+                .ok_or_else(|| anyhow::anyhow!("unbind command {address:?} is not configured"))?;
+            // Entry ids are FQIDs, so a command address needs no rewriting.
+            rules.commands.insert(resolved.fqid().to_string());
+        }
+        for key in &view.unbind.keys {
+            rules
+                .keys
+                .insert(crate::input::Key::parse_binding(key)?.binding_identity());
+        }
+        Ok(rules)
     }
 
     fn build_view_commands(
@@ -704,35 +557,17 @@ impl CommandService for ProtocolCommandService {
         provider.provide_commands(context, snapshot)
     }
 
-    fn build_engine_commands(
-        &self,
-        _context: &ViewContext,
-        _snapshot: &ViewCommandSnapshot,
-    ) -> Result<Vec<crate::command::CommandEntry>> {
-        Ok(Vec::new())
-    }
-
     fn update_active_snapshot(&self, snapshot: &ViewCommandSnapshot) {
         *self.active_snapshot.write().unwrap() = Some(snapshot.clone());
     }
-}
 
-pub(crate) fn command_page_owner(
-    context: &ViewContext,
-    snapshot: &ViewCommandSnapshot,
-) -> crate::workflow::command::CommandOwnerContext {
-    let parameters = crate::workflow::parameter::ParameterSnapshot::from_parts(
-        snapshot.parameters.clone(),
-        snapshot.raw_input.clone(),
-        crate::input::InputSourceIdentity {
-            frame: crate::input::ViewMountId(context.instance.0),
-            generation: snapshot.revision,
-        },
-        snapshot.revision,
-    );
-    crate::workflow::command::CommandOwnerContext {
-        view_ref: context.location.target.clone(),
-        parameters,
+    fn execute_entry(
+        &self,
+        entry: &crate::command::CommandEntry,
+        caller: ViewInstanceId,
+        expected_call_revision: Option<u64>,
+    ) -> Result<ViewDecision> {
+        ProtocolCommandService::execute_entry(self, entry, caller, expected_call_revision)
     }
 }
 
@@ -744,9 +579,7 @@ type CallResultProcessor = std::sync::Arc<
 
 #[derive(Clone)]
 struct ProtocolCallReturnHandler {
-    config: std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: crate::lifecycle::CancellationToken,
+    commands: ProtocolCommandService,
     origin: Option<crate::workflow::command::CommandOrigin>,
     context: Option<crate::workflow::command::CommandContext>,
     return_processor: Option<crate::workflow::config::ReturnProcessor>,
@@ -762,44 +595,74 @@ impl CallReturnHandler for ProtocolCallReturnHandler {
         &self,
         _source: &ViewLocation,
         caller: &ViewContext,
-        _snapshot: &ViewCommandSnapshot,
+        snapshot: &ViewCommandSnapshot,
         result: &ViewResult,
     ) -> Result<ViewDecision> {
         if let Some(processor) = &self.result_processor {
-            return processor(_source, caller, _snapshot, result);
+            return processor(_source, caller, snapshot, result);
         }
         let (Some(origin), Some(context)) = (self.origin.clone(), self.context.clone()) else {
             return Ok(ViewDecision::Stay);
         };
+        let view_entries = self.commands.build_view_commands(caller, snapshot)?;
+        self.commands
+            .registry
+            .write()
+            .unwrap()
+            .replace_layer(crate::command::BindingLayer::View, view_entries)?;
+
+        if let Some(snap_ref) = self.commands.shared_snapshot.read().unwrap().as_ref() {
+            let mut snap = snap_ref.write().unwrap();
+            snap.active_instance = Some(caller.instance);
+            snap.active_view = Some(caller.location.target.clone());
+            snap.active_parameters = snapshot.parameters.clone();
+            snap.active_raw_input = snapshot.raw_input.clone();
+        }
+
+        // The palette snapshot carries one registry revision on its envelope.
+        let expected_call_revision = context
+            .commands
+            .get("revision")
+            .and_then(serde_json::Value::as_u64);
+
         if let Some(processor) = &self.return_processor {
             let action = crate::workflow::command::prepare_return_processor(
-                &self.config,
-                &self.invocation,
+                &self.commands.config,
+                &self.commands.invocation,
                 processor,
                 origin,
                 context,
                 caller,
                 result,
-                &self.cancellation,
+                &self.commands.cancellation,
             )?;
             return map_prepared_action(
-                &self.config,
-                &self.invocation,
-                &self.cancellation,
+                &self.commands,
                 action,
                 caller.instance,
+                expected_call_revision,
             );
         }
         Ok(ViewDecision::Stay)
     }
 }
 
+/// What executing a registry entry turns into.
+enum EntryExecution {
+    /// A declared command's operation, mapped to a decision by the protocol layer.
+    Command(crate::workflow::command::PreparedAction),
+    /// An engine action: no definition to run, the View's engine owns it.
+    Engine,
+    /// A View command while that View's feed is still loading: inert, like the
+    /// pre-baked closure it replaced.
+    Deferred,
+}
+
 pub(crate) fn map_prepared_action(
-    config: &std::sync::Arc<crate::workflow::config::CompiledConfig>,
-    invocation: &std::sync::Arc<crate::workflow::InvocationContext>,
-    cancellation: &crate::lifecycle::CancellationToken,
+    commands: &ProtocolCommandService,
     action: crate::workflow::command::PreparedAction,
     caller: ViewInstanceId,
+    expected_call_revision: Option<u64>,
 ) -> anyhow::Result<crate::view::ViewDecision> {
     use crate::view::{TransitionRequest, ViewDecision, ViewResult};
     use crate::workflow::command::PreparedAction;
@@ -809,7 +672,7 @@ pub(crate) fn map_prepared_action(
             mode,
             clear_input,
         } => {
-            let request = protocol_navigation_request(config, request)?;
+            let request = protocol_navigation_request(&commands.config, request)?;
             let transition = ViewDecision::Transition(match mode {
                 crate::workflow::command::NavigationMode::Push => TransitionRequest::Push(request),
                 crate::workflow::command::NavigationMode::Replace => {
@@ -826,48 +689,15 @@ pub(crate) fn map_prepared_action(
             }
         }
         PreparedAction::Call(call) => {
-            let is_parameter_form =
-                call.request.view_ref == "__query:main" || call.request.view_ref == "__form:main";
-            let request = protocol_navigation_request(config, call.request)?;
-            let result_processor = is_parameter_form.then(|| {
-                let config = std::sync::Arc::clone(config);
-                std::sync::Arc::new(
-                    move |_source: &ViewLocation,
-                          _caller: &ViewContext,
-                          _snapshot: &ViewCommandSnapshot,
-                          result: &ViewResult|
-                          -> anyhow::Result<ViewDecision> {
-                        let value = result.value.clone();
-                        let target = value
-                            .get("target")
-                            .and_then(|value| value.as_str())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("parameter form result has no target")
-                            })?;
-                        let parameters = value.get("parameters").cloned().ok_or_else(|| {
-                            anyhow::anyhow!("parameter form result has no parameters")
-                        })?;
-                        config.validate_parameter_values(target, &parameters)?;
-                        let request =
-                            crate::workflow::command::NavigationRequest::with_defaults(target)
-                                .with_parameters(parameters);
-                        let request = protocol_navigation_request(&config, request)?;
-                        Ok(ViewDecision::Transition(
-                            crate::view::TransitionRequest::Replace(request),
-                        ))
-                    },
-                ) as CallResultProcessor
-            });
+            let request = protocol_navigation_request(&commands.config, call.request)?;
             let boundary = CallBoundary {
                 caller,
                 handler: std::sync::Arc::new(ProtocolCallReturnHandler {
-                    config: std::sync::Arc::clone(config),
-                    invocation: std::sync::Arc::clone(invocation),
-                    cancellation: cancellation.clone(),
+                    commands: commands.clone(),
                     origin: Some(call.origin),
                     context: Some(call.context),
                     return_processor: call.return_processor,
-                    result_processor,
+                    result_processor: None,
                 }),
             };
             Ok(ViewDecision::Transition(TransitionRequest::Call {
@@ -876,6 +706,25 @@ pub(crate) fn map_prepared_action(
             }))
         }
         PreparedAction::Return { value } => Ok(ViewDecision::Return(ViewResult::new(value))),
+        PreparedAction::InvokeCommand { command } => {
+            let entry = {
+                let registry = commands.registry.read().unwrap();
+                let current_rev = registry.revision();
+                let matches_current = command.revision == current_rev;
+                let matches_call =
+                    expected_call_revision.is_some_and(|rev| command.revision == rev);
+                anyhow::ensure!(
+                    command.revision == 0 || matches_current || matches_call,
+                    "command reference is stale: expected revision {}, current revision {}",
+                    command.revision,
+                    current_rev
+                );
+                registry.resolve_id(&command.id).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("command {:?} is no longer available", command.id)
+                })?
+            };
+            commands.execute_entry(&entry, caller, Some(command.revision))
+        }
         PreparedAction::Execute {
             prepared,
             exit,
@@ -964,6 +813,111 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    /// A `[views.*.bindings]` value addresses an engine action explicitly as
+    /// `@engine:<engine>.<action>` (a View-layer engine action); a bare name
+    /// only ever resolves to a command of the current workflow. `dmenu:main`
+    /// binds `escape = "@engine:picker.exit"`.
+    #[test]
+    fn a_view_binding_addresses_an_engine_action_explicitly() {
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let member = crate::workflow::config::package_id("dmenu:main");
+        let source = ViewCommandSource::new(&config, "dmenu:main", member);
+        let entries = source.declared_entries();
+
+        let exit = entries
+            .iter()
+            .find(|entry| entry.id == "picker.exit")
+            .expect("@engine:picker.exit resolves to the engine action");
+        assert_eq!(exit.layer, crate::command::BindingLayer::View);
+        assert_eq!(exit.label.as_deref(), Some("Exit"));
+        assert_eq!(
+            exit.key.and_then(crate::input::Key::binding_name),
+            Some("escape".to_string())
+        );
+
+        // A workflow command in the same table is still indexed by its FQID.
+        let accept = entries
+            .iter()
+            .find(|entry| entry.id == "dmenu.accept")
+            .expect("enter = \"accept\" resolves to the workflow command");
+        assert_eq!(accept.layer, crate::command::BindingLayer::View);
+
+        // A bare engine-action name is not a command and has no engine sigil,
+        // so it resolves to nothing (validation rejects it earlier).
+        assert!(source.entry("exit", None).is_none());
+
+        // `@workflow:<command>` names a workflow command explicitly.
+        let explicit = source
+            .entry("@workflow:accept", None)
+            .expect("@workflow:accept resolves to the workflow command");
+        assert_eq!(explicit.id, "dmenu.accept");
+    }
+
+    #[test]
+    fn invoke_command_routes_engine_entries_and_rejects_stale_revisions() {
+        let config = std::sync::Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let invocation = std::sync::Arc::new(
+            crate::workflow::InvocationContext::new(
+                "core:default".to_string(),
+                serde_json::Value::Null,
+                config.instantiate_parameters("core:default").unwrap(),
+            )
+            .unwrap(),
+        );
+        let service = ProtocolCommandService::new(
+            config,
+            invocation,
+            crate::lifecycle::CancellationToken::new(),
+        );
+        let revision = {
+            let mut registry = service.registry.write().unwrap();
+            registry
+                .replace_layer(
+                    crate::command::BindingLayer::Engine,
+                    vec![crate::command::CommandEntry::for_event(
+                        "picker.select_next",
+                        Some("Select Next".to_string()),
+                        None,
+                        crate::command::BindingLayer::Engine,
+                    )],
+                )
+                .unwrap();
+            registry.revision()
+        };
+
+        let decision = map_prepared_action(
+            &service,
+            crate::workflow::command::PreparedAction::InvokeCommand {
+                command: crate::workflow::command::CommandRef {
+                    id: "picker.select_next".to_string(),
+                    revision,
+                },
+            },
+            crate::protocol::contracts::ViewInstanceId(1),
+            None,
+        )
+        .expect("an engine action is invokable by reference");
+        assert_eq!(
+            decision,
+            crate::view::ViewDecision::EngineAction("picker.select_next".to_string()),
+            "the instance the decision lands on lets its own engine run the action"
+        );
+
+        let stale = map_prepared_action(
+            &service,
+            crate::workflow::command::PreparedAction::InvokeCommand {
+                command: crate::workflow::command::CommandRef {
+                    id: "picker.select_next".to_string(),
+                    revision: revision.saturating_add(100),
+                },
+            },
+            crate::protocol::contracts::ViewInstanceId(1),
+            None,
+        )
+        .expect_err("a stale command reference must be rejected");
+        assert!(stale.to_string().contains("stale"));
+    }
+
     #[test]
     fn prepared_process_reaches_effect_request_unchanged() {
         let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
@@ -982,16 +936,20 @@ mod tests {
             timeout: None,
         };
 
+        let service = ProtocolCommandService::new(
+            config,
+            invocation,
+            crate::lifecycle::CancellationToken::new(),
+        );
         let decision = map_prepared_action(
-            &config,
-            &invocation,
-            &crate::lifecycle::CancellationToken::new(),
+            &service,
             crate::workflow::command::PreparedAction::Execute {
                 prepared: prepared.clone(),
                 exit: false,
                 success_message: Some("Copied to clipboard".into()),
             },
             ViewInstanceId(1),
+            None,
         )
         .unwrap();
 
@@ -1028,7 +986,55 @@ mod tests {
         }
     }
 
-    /// The fixture's `core:default` is `keymap_mode = "item_merge"` with a base keymap.
+    #[test]
+    fn cross_workflow_view_command_keeps_the_callers_live_parameters() {
+        let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
+        let invocation = Arc::new(
+            crate::workflow::InvocationContext::new(
+                "core:default".to_string(),
+                serde_json::Value::Null,
+                config.instantiate_parameters("core:default").unwrap(),
+            )
+            .unwrap(),
+        );
+        let service = ProtocolCommandService::new(
+            Arc::clone(&config),
+            invocation,
+            crate::lifecycle::CancellationToken::new(),
+        );
+        let snapshot = ViewCommandSnapshot {
+            engine_type: crate::workflow::config::ENGINE_PICKER.to_string(),
+            parameters: serde_json::json!({"search": "aggregate-query"}),
+            raw_input: "aggregate-query".to_string(),
+            runtime: serde_json::Value::Null,
+            publication: None,
+            revision: 7,
+        };
+        service.update_active_snapshot(&snapshot);
+
+        let entry = crate::command::CommandEntry::new(
+            "apps.open",
+            Some("Open".to_string()),
+            None,
+            crate::command::BindingLayer::View,
+        );
+        let execution = service
+            .command_execution(&entry, ViewInstanceId(1))
+            .unwrap();
+
+        assert_eq!(execution.context.page.view_ref, "core:default");
+        assert_eq!(execution.context.owner.view_ref, "core:default");
+        assert_eq!(
+            execution.context.owner.parameters.values(),
+            &snapshot.parameters
+        );
+        assert_eq!(
+            execution.context.owner.parameters.raw_input(),
+            snapshot.raw_input
+        );
+    }
+
+    /// The fixture's `core:default` is `binding_mode = "item_merge"` with a base bindings.
     fn item_mode_snapshot(
         config: &Arc<crate::workflow::config::CompiledConfig>,
         item_bindings: Option<serde_json::Value>,
@@ -1088,18 +1094,21 @@ mod tests {
         assert!(keys.contains(&Some("tab".to_string())), "{keys:?}");
         assert!(keys.contains(&Some("space".to_string())), "{keys:?}");
 
-        // The View scope rejects duplicate keys, so publishing it must be valid.
+        // The View layer rejects duplicate keys, so publishing it must be valid.
         crate::command::CommandRegistry::new()
-            .replace_scope(crate::command::CommandScope::View, entries)
+            .replace_layer(crate::command::BindingLayer::View, entries)
             .unwrap();
     }
 
+    /// A focused item may name its command in any address form; the entry is
+    /// always keyed by the resolved FQID, exactly like the declared table, so
+    /// `unbind.commands` and the runtime envelope address one single id.
     #[test]
     fn a_focused_item_overrides_the_item_mode_base_binding() {
         let config = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
         let service = item_mode_service(&config);
         let context = ViewContext::new(ViewInstanceId(51), "core:default");
-        let snapshot = item_mode_snapshot(&config, Some(serde_json::json!({"tab": "core:accept"})));
+        let snapshot = item_mode_snapshot(&config, Some(serde_json::json!({"tab": "accept"})));
 
         let entries = service.build_view_commands(&context, &snapshot).unwrap();
         let bound: Vec<(String, Option<String>)> = entries
@@ -1111,12 +1120,15 @@ mod tests {
             .filter(|(_, key)| key.as_deref() == Some("tab"))
             .collect::<Vec<_>>();
         assert_eq!(tab.len(), 1, "the base binding must be replaced: {bound:?}");
-        assert_eq!(tab[0].0, "core:accept");
+        assert_eq!(
+            tab[0].0, "core.accept",
+            "a bare item target is keyed by its FQID, like the declared table"
+        );
         // The base key the item did not claim survives.
         assert!(bound.iter().any(|(_, key)| key.as_deref() == Some("space")));
 
         crate::command::CommandRegistry::new()
-            .replace_scope(crate::command::CommandScope::View, entries)
+            .replace_layer(crate::command::BindingLayer::View, entries)
             .unwrap();
     }
 }

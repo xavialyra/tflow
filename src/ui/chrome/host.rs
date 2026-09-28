@@ -482,7 +482,7 @@ impl ContentHost {
             } else {
                 let mut block = Block::bordered();
                 let label = item.context.location.label();
-                if !label.is_empty() {
+                if presentation.show_title && !label.is_empty() {
                     let title_budget = (popup.width as usize).saturating_sub(4);
                     let clipped = super::clip(label, title_budget);
                     if !clipped.is_empty() {
@@ -503,13 +503,14 @@ impl ContentHost {
         popup: Rect,
         model: &super::FooterModel,
         theme: &Theme,
+        show_title: bool,
     ) {
         if popup.width == 0 || popup.height == 0 {
             return;
         }
         let mut block = Block::bordered().border_style(theme.chrome.border);
         let title = model.location.label();
-        if !title.is_empty() {
+        if show_title && !title.is_empty() {
             let title_budget = (popup.width as usize).saturating_sub(4);
             let clipped = super::clip(title, title_budget);
             if !clipped.is_empty() {

@@ -2,7 +2,7 @@ mod handoff;
 
 use self::handoff::{NavigationHandoff, SettledFrame, paint_retained};
 use super::command_adapter::CommandService;
-use crate::command::{ChromeSnapshot, CommandHandler, CommandRegistry, CommandScope};
+use crate::command::{BindingLayer, ChromeSnapshot, CommandRegistry};
 use crate::input::InputEvent;
 use crate::protocol::contracts::{TaskEvent, ViewInstanceId};
 #[cfg(test)]
@@ -68,6 +68,12 @@ struct TestCommandService;
 
 #[cfg(test)]
 impl CommandService for TestCommandService {
+    fn registry(&self) -> std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>> {
+        std::sync::Arc::new(std::sync::RwLock::new(
+            crate::command::CommandRegistry::new(),
+        ))
+    }
+
     fn build_host_commands(
         &self,
         _: std::sync::Arc<std::sync::RwLock<crate::command::ChromeSnapshot>>,
@@ -84,19 +90,39 @@ impl CommandService for TestCommandService {
         Ok(Vec::new())
     }
 
-    fn build_engine_commands(
-        &self,
-        _: &ViewContext,
-        _: &ViewCommandSnapshot,
-    ) -> Result<Vec<crate::command::CommandEntry>> {
-        Ok(Vec::new())
-    }
-
     fn is_view_dynamic(&self, _: &str) -> bool {
         false
     }
 
+    fn chrome_commands_show(&self, _: Option<&str>) -> Result<Vec<String>> {
+        Ok(vec!["enter".to_string(), "ctrl+k".to_string()])
+    }
+
+    fn unbind_rules(&self, _: Option<&str>) -> Result<crate::command::UnbindRules> {
+        Ok(crate::command::UnbindRules::default())
+    }
+
     fn update_active_snapshot(&self, _: &ViewCommandSnapshot) {}
+
+    fn execute_entry(
+        &self,
+        entry: &crate::command::CommandEntry,
+        _: crate::protocol::contracts::ViewInstanceId,
+        _: Option<u64>,
+    ) -> Result<ViewDecision> {
+        // Mirrors the real dispatcher: an engine action is not a definition, so
+        // it travels as a decision for the instance's own engine to run.
+        if entry.layer == crate::command::BindingLayer::Engine {
+            return Ok(ViewDecision::EngineAction(entry.id.clone()));
+        }
+        if entry.id == "global.copy" {
+            Ok(ViewDecision::Effect(
+                crate::view::EffectRequest::CopyToClipboard("global".to_string()),
+            ))
+        } else {
+            Ok(ViewDecision::Stay)
+        }
+    }
 }
 
 impl ProtocolSession {
@@ -129,12 +155,11 @@ impl ProtocolSession {
         router: Router,
         commands: Box<dyn CommandService>,
         theme: crate::ui::theme::ResolvedTheme,
-        _default_view: String,
         mut runtime_log: crate::diagnostics::RuntimeLog,
     ) -> Self {
         let warning = runtime_log.take_warning_record();
         let error_source = warning.as_ref().map(|_| ErrorSource::StartupWarning);
-        let registry = Arc::new(RwLock::new(CommandRegistry::new()));
+        let registry = commands.registry();
         let shared_snapshot = Arc::new(RwLock::new(ChromeSnapshot::default()));
         let host_entries = commands
             .build_host_commands(Arc::clone(&shared_snapshot), Arc::clone(&registry))
@@ -142,7 +167,7 @@ impl ProtocolSession {
         let _ = registry
             .write()
             .unwrap()
-            .replace_scope(CommandScope::Host, host_entries);
+            .replace_layer(BindingLayer::Host, host_entries);
         let active_id = router.active().map(|entry| entry.id);
         let chrome_snapshot = ChromeSnapshot::from_registry(&registry.read().unwrap())
             .with_active_instance(active_id);
@@ -292,9 +317,12 @@ impl ProtocolSession {
         let mut command_decision = ViewDecision::Stay;
 
         if let ViewEvent::Input(InputEvent::Key { key, raw }) = &event {
-            let entry_opt = self.registry.read().unwrap().resolve(*key).cloned();
+            let entry_opt = {
+                let registry = self.registry.read().unwrap();
+                registry.resolve(*key).cloned()
+            };
             if let Some(entry) = entry_opt {
-                if entry.scope == CommandScope::View {
+                if entry.layer == BindingLayer::View {
                     let is_loading = self.router.active().is_some_and(|a| {
                         let snapshot = a.view.command_snapshot();
                         snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
@@ -306,20 +334,14 @@ impl ProtocolSession {
                     }
                 }
                 executed_command = true;
-                command_decision = match entry.handler {
-                    CommandHandler::Action(action) => action.execute()?,
-                    CommandHandler::Event => {
-                        if let Some(active_instance) = self.router.active_mut() {
-                            let context = &active_instance.context;
-                            active_instance.view.on_command(&entry.id, context)?
-                        } else {
-                            ViewDecision::Stay
-                        }
-                    }
-                };
+                let caller = active.unwrap_or(crate::protocol::contracts::ViewInstanceId(1));
+                // Every entry executes the same way; a key press only chooses which
+                // entry, exactly like a command reference does.
+                command_decision = self.commands.execute_entry(&entry, caller, None)?;
                 if let Some(source) = active {
-                    self.router
-                        .process_with_effects(command_decision.clone(), source, effects)?;
+                    command_decision =
+                        self.router
+                            .process_with_effects(command_decision, source, effects)?;
                 }
             } else if let Some(active_instance) = self.router.active_mut() {
                 let context = &active_instance.context;
@@ -420,8 +442,10 @@ impl ProtocolSession {
             .as_ref()
             .is_some_and(|target| self.commands.is_view_dynamic(target));
         let revision_changed = active_revision != self.last_view_revision;
+        let unbind_rules = self.commands.unbind_rules(active_view.as_deref())?;
+        let unbind_changed = self.registry.write().unwrap().replace_unbinds(unbind_rules);
 
-        if is_same_instance && (!is_dynamic || !revision_changed) {
+        if is_same_instance && (!is_dynamic || !revision_changed) && !unbind_changed {
             if self.chrome_snapshot.active_view != active_view
                 || self.chrome_snapshot.active_parameters != active_parameters
                 || self.chrome_snapshot.active_raw_input != active_raw_input
@@ -429,6 +453,9 @@ impl ProtocolSession {
                 let reg = self.registry.read().unwrap();
                 self.chrome_snapshot = ChromeSnapshot::from_registry(&reg)
                     .with_active_instance(active_id)
+                    .with_chrome_commands_show(
+                        self.commands.chrome_commands_show(active_view.as_deref())?,
+                    )
                     .with_active_view(
                         active_view.clone(),
                         active_parameters.clone(),
@@ -457,13 +484,13 @@ impl ProtocolSession {
         let mut changed = false;
         let mut reg = self.registry.write().unwrap();
         if reg
-            .replace_scope(CommandScope::View, view_entries)?
+            .replace_layer(BindingLayer::View, view_entries)?
             .is_some()
         {
             changed = true;
         }
         if reg
-            .replace_scope(CommandScope::Engine, engine_entries)?
+            .replace_layer(BindingLayer::Engine, engine_entries)?
             .is_some()
         {
             changed = true;
@@ -477,6 +504,9 @@ impl ProtocolSession {
         {
             self.chrome_snapshot = ChromeSnapshot::from_registry(&reg)
                 .with_active_instance(active_id)
+                .with_chrome_commands_show(
+                    self.commands.chrome_commands_show(active_view.as_deref())?,
+                )
                 .with_active_view(active_view, active_parameters, active_raw_input);
             *self.shared_snapshot.write().unwrap() = self.chrome_snapshot.clone();
         }
@@ -635,7 +665,6 @@ impl ProtocolSession {
             error: self.active_error.clone().or(chrome_snapshot.error),
             info: self.active_info.as_ref().map(|info| info.label.clone()),
             commands: footer_commands,
-            overflow_command: self.chrome_snapshot.overflow_command(),
         };
         // Chrome grace uses the same retention decision as the pixels: while the
         // active instance loads, keep the settled status and commands so the
@@ -668,10 +697,6 @@ impl ProtocolSession {
                         } else {
                             current_footer.commands.clone()
                         },
-                        overflow_command: current_footer
-                            .overflow_command
-                            .clone()
-                            .or_else(|| retained.settled.footer.overflow_command.clone()),
                     }
                 }
             }
@@ -680,7 +705,17 @@ impl ProtocolSession {
         let footer_area = content_host.footer_area(area);
         if let Some(popup_rect) = active_popup_rect.filter(|_| retained.is_none()) {
             footer_renderer.render_blank(frame, footer_area, &self.theme);
-            content_host.render_active_popup_border(frame, popup_rect, &footer, &self.theme);
+            let show_title = self.router.stack()[active_index]
+                .context
+                .presentation
+                .show_title;
+            content_host.render_active_popup_border(
+                frame,
+                popup_rect,
+                &footer,
+                &self.theme,
+                show_title,
+            );
             if self.theme.chrome.dim_backdrop {
                 content_host.dim_backdrop(frame, area, popup_rect, self.theme.chrome.backdrop);
             }

@@ -30,8 +30,6 @@ pub(crate) struct EngineChrome {
     #[cfg(test)]
     pub(crate) commands: Vec<(String, String)>,
     #[cfg(test)]
-    pub(crate) overflow_command: Option<(String, String)>,
-    #[cfg(test)]
     pub(crate) presentation: ChromePresentation,
 }
 
@@ -101,36 +99,13 @@ pub(super) fn footer_line(
     title: Option<&str>,
     status: &str,
     commands: &[(String, String)],
-    overflow_command: Option<&(String, String)>,
 ) -> FooterContent {
     if width == 0 {
         return FooterContent::default();
     }
     let (left, title_span, status_span) = footer_label_spans(title, status);
-    let separator = "  ";
-    let separator_width = if !left.is_empty() {
-        UnicodeWidthStr::width(separator)
-    } else {
-        0
-    };
 
-    let complete = command_footer(commands);
-    let needed = UnicodeWidthStr::width(left.as_str())
-        + separator_width
-        + UnicodeWidthStr::width(complete.text.as_str());
-
-    let right = if needed > width {
-        // When width is constrained, show only the command footer.
-        if commands.is_empty() {
-            complete
-        } else if let Some(overflow_command) = overflow_command {
-            command_footer(std::slice::from_ref(overflow_command))
-        } else {
-            complete
-        }
-    } else {
-        complete
-    };
+    let right = command_footer(commands);
     if right.text.is_empty() {
         let text = clip(&left, width);
         let visible_end = text.len();
@@ -482,22 +457,8 @@ mod tests {
     }
 
     #[test]
-    fn footer_only_shows_the_overflow_binding_when_commands_do_not_fit() {
-        let wide = ChromeFrame::compose(
-            80,
-            &route(),
-            "",
-            EngineChrome {
-                status: Some("1 result".to_string()),
-                commands: vec![("enter".to_string(), "Open".to_string())],
-                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
-                ..EngineChrome::default()
-            },
-            None,
-        );
-        assert!(!wide.footer.contains("Ctrl-K"));
-
-        let narrow = ChromeFrame::compose(
+    fn footer_shows_clipped_commands_when_they_do_not_fit() {
+        let frame = ChromeFrame::compose(
             32,
             &route(),
             "",
@@ -506,13 +467,14 @@ mod tests {
                 commands: vec![
                     ("enter".to_string(), "Open".to_string()),
                     ("ctrl+p".to_string(), "Preview".to_string()),
+                    ("ctrl+k".to_string(), "Commands".to_string()),
                 ],
-                overflow_command: Some(("ctrl+k".to_string(), "Commands".to_string())),
                 ..EngineChrome::default()
             },
             None,
         );
-        assert!(narrow.footer.contains("Ctrl-K"));
+        assert!(UnicodeWidthStr::width(frame.footer.as_str()) <= 32);
+        assert!(frame.footer.contains("Enter"));
     }
 
     #[test]

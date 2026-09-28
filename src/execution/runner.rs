@@ -80,7 +80,7 @@ pub(crate) fn run_bounded_command_with_stdin_outcome(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut process_group = match ProcessGroupGuard::spawn(process, None) {
+    let mut process_group = match ProcessGroupGuard::spawn(process) {
         Ok(process_group) => process_group,
         Err(error) => {
             return BoundedCommandOutcome::without_managed_child(Err(
