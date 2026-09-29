@@ -64,6 +64,32 @@ italic = true
 }
 
 #[test]
+fn border_type_defaults_rounded_and_accepts_overrides() {
+    let raw: RawTheme = toml::from_str("").unwrap();
+    let theme = Theme::from_raw(&raw, "test").unwrap();
+    assert_eq!(theme.chrome.border_type, PopupBorderType::Rounded);
+
+    for (raw_str, expected) in [
+        ("plain", PopupBorderType::Plain),
+        ("rounded", PopupBorderType::Rounded),
+        ("double", PopupBorderType::Double),
+        ("thick", PopupBorderType::Thick),
+        ("quadrant-inside", PopupBorderType::QuadrantInside),
+        ("quadrant-outside", PopupBorderType::QuadrantOutside),
+    ] {
+        let raw: RawTheme = toml::from_str(&format!(
+            r##"
+[chrome]
+border_type = "{raw_str}"
+"##
+        ))
+        .unwrap();
+        let theme = Theme::from_raw(&raw, "test").unwrap();
+        assert_eq!(theme.chrome.border_type, expected);
+    }
+}
+
+#[test]
 fn dynamic_scheme_names_and_merged_references() {
     let raw: RawTheme = toml::from_str(
         r##"

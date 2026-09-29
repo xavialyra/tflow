@@ -1,9 +1,35 @@
 use super::color::{ResolvedScheme, resolve_color_reference, resolve_scheme};
 use anyhow::Result;
 use ratatui::style::Style;
+use ratatui::widgets::BorderType;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupBorderType {
+    Plain,
+    #[default]
+    Rounded,
+    Double,
+    Thick,
+    QuadrantInside,
+    QuadrantOutside,
+}
+
+impl From<PopupBorderType> for BorderType {
+    fn from(border_type: PopupBorderType) -> Self {
+        match border_type {
+            PopupBorderType::Plain => Self::Plain,
+            PopupBorderType::Rounded => Self::Rounded,
+            PopupBorderType::Double => Self::Double,
+            PopupBorderType::Thick => Self::Thick,
+            PopupBorderType::QuadrantInside => Self::QuadrantInside,
+            PopupBorderType::QuadrantOutside => Self::QuadrantOutside,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +124,7 @@ pub(crate) struct ChromeTheme {
     pub(crate) error: Style,
     pub(crate) backdrop: Style,
     pub(crate) dim_backdrop: bool,
+    pub(crate) border_type: PopupBorderType,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -346,6 +373,12 @@ impl ResolvedTheme {
             .or(default_raw.chrome.dim_backdrop)
             .unwrap_or(true);
 
+        let border_type = raw
+            .chrome
+            .border_type
+            .or(default_raw.chrome.border_type)
+            .unwrap_or_default();
+
         let preview_text = resolve_component(
             raw.picker.preview.text.as_ref(),
             default_raw.picker.preview.text.as_ref().unwrap(),
@@ -399,6 +432,7 @@ impl ResolvedTheme {
                 error: chrome_error,
                 backdrop: chrome_backdrop,
                 dim_backdrop,
+                border_type,
             },
             picker: PickerTheme {
                 text: picker_text,
@@ -787,6 +821,8 @@ pub(super) struct RawChromeTheme {
     pub(super) backdrop: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) dim_backdrop: Option<bool>,
+    #[serde(default)]
+    pub(super) border_type: Option<PopupBorderType>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -21,6 +21,7 @@ error = "ansi:red"
 # -----------------------------------------------------------------------------
 [chrome]
 dim_backdrop = true
+border_type = "rounded"
 
 [chrome.text]
 foreground = "scheme:foreground"

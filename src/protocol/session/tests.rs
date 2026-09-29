@@ -632,7 +632,7 @@ fn root_popup_uses_the_same_content_host_geometry_as_nested_popups() {
     );
     assert_eq!(
         terminal.backend().buffer().cell((14, 2)).unwrap().symbol(),
-        "┌"
+        "╭"
     );
     assert_eq!(
         terminal.backend().buffer().cell((15, 3)).unwrap().symbol(),
@@ -688,9 +688,9 @@ fn resize_and_render_follow_nested_content_host_geometry() {
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer.cell((1, 0)).unwrap().symbol(), " ");
     assert_eq!(buffer.cell((1, 1)).unwrap().symbol(), "r");
-    assert_eq!(buffer.cell((10, 1)).unwrap().symbol(), "┌");
+    assert_eq!(buffer.cell((10, 1)).unwrap().symbol(), "╭");
     assert_eq!(buffer.cell((11, 2)).unwrap().symbol(), "c");
-    assert_eq!(buffer.cell((15, 3)).unwrap().symbol(), "┌");
+    assert_eq!(buffer.cell((15, 3)).unwrap().symbol(), "╭");
     assert_eq!(buffer.cell((16, 4)).unwrap().symbol(), "g");
     assert_eq!(rendered.unwrap().footer.location.label(), "grandchild");
 }
@@ -769,7 +769,7 @@ fn transitions_effects_tasks_and_popup_render_footer_are_hosted() {
     );
     assert_eq!(
         terminal.backend().buffer().cell((15, 3)).unwrap().symbol(),
-        "┌"
+        "╭"
     );
     assert_eq!(
         terminal.backend().buffer().cell((16, 4)).unwrap().symbol(),
@@ -778,11 +778,11 @@ fn transitions_effects_tasks_and_popup_render_footer_are_hosted() {
     // Popup bottom border contains hints
     assert_eq!(
         terminal.backend().buffer().cell((15, 6)).unwrap().symbol(),
-        "└"
+        "╰"
     );
     assert_eq!(
         terminal.backend().buffer().cell((24, 6)).unwrap().symbol(),
-        "┘"
+        "╯"
     );
     let bottom_border: String = (15..=24)
         .map(|x| terminal.backend().buffer().cell((x, 6)).unwrap().symbol())
@@ -1754,7 +1754,7 @@ fn navigation_grace_defers_a_loading_popup_until_it_publishes() {
     assert!(!session.navigation.is_retaining());
     assert_eq!(
         terminal.backend().buffer().cell((10, 2)).unwrap().symbol(),
-        "┌"
+        "╭"
     );
     // Once published, global footer row (y = 9) is blanked for the active popup
     for x in 0..40 {
@@ -1992,7 +1992,7 @@ fn nested_popups_use_shared_viewport_dimensions_without_clipping() {
     // In a 40x10 terminal, viewport is (0, 0, 40, 10).
     // Grandchild popup (30x8) centered: x = (40 - 30)/2 = 5, y = (10 - 8)/2 = 1.
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer.cell((5, 1)).unwrap().symbol(), "┌");
+    assert_eq!(buffer.cell((5, 1)).unwrap().symbol(), "╭");
 }
 
 #[test]
@@ -2028,13 +2028,13 @@ fn bottom_right_popup_anchors_to_terminal_boundary_without_blank_gap() {
     // Popup is 20x5 in a 40x10 terminal anchored to BottomRight with 0 offsets.
     // x = 40 - 20 = 20, y = 10 - 5 = 5.
     // Top-left: (20, 5)
-    assert_eq!(buffer.cell((20, 5)).unwrap().symbol(), "┌");
+    assert_eq!(buffer.cell((20, 5)).unwrap().symbol(), "╭");
     // Top-right: (39, 5)
-    assert_eq!(buffer.cell((39, 5)).unwrap().symbol(), "┐");
+    assert_eq!(buffer.cell((39, 5)).unwrap().symbol(), "╮");
     // Bottom-left: (20, 9)
-    assert_eq!(buffer.cell((20, 9)).unwrap().symbol(), "└");
+    assert_eq!(buffer.cell((20, 9)).unwrap().symbol(), "╰");
     // Bottom-right: (39, 9)
-    assert_eq!(buffer.cell((39, 9)).unwrap().symbol(), "┘");
+    assert_eq!(buffer.cell((39, 9)).unwrap().symbol(), "╯");
 }
 
 #[test]
@@ -2090,7 +2090,7 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     // Top-left of child popup is at (5, 1). Since grandchild is 16x4 centered (x=12, y=3),
     // (5, 1) is OUTSIDE grandchild, so child's border MUST have Modifier::DIM.
     let child_border = buffer.cell((5, 1)).unwrap();
-    assert_eq!(child_border.symbol(), "┌");
+    assert_eq!(child_border.symbol(), "╭");
     assert!(
         child_border
             .modifier
@@ -2103,7 +2103,7 @@ fn popup_backdrop_dims_base_view_and_inactive_popup_borders() {
     // Top-left of grandchild popup is at (12, 3), which is the ACTIVE focus rect.
     // It must NOT have Modifier::DIM and must retain its active border color!
     let grandchild_border = buffer.cell((12, 3)).unwrap();
-    assert_eq!(grandchild_border.symbol(), "┌");
+    assert_eq!(grandchild_border.symbol(), "╭");
     assert!(
         !grandchild_border
             .modifier
@@ -2279,4 +2279,113 @@ fn inactive_popup_respects_show_title() {
         grandchild_top_line.contains("grandchild"),
         "active popup with show_title=true must render title, got {grandchild_top_line}"
     );
+}
+
+#[test]
+fn popup_border_type_controls_border_glyphs() {
+    for (border_type, tl, tr, bl, br) in [
+        (crate::ui::theme::PopupBorderType::Plain, "┌", "┐", "└", "┘"),
+        (crate::ui::theme::PopupBorderType::Rounded, "╭", "╮", "╰", "╯"),
+        (crate::ui::theme::PopupBorderType::Double, "╔", "╗", "╚", "╝"),
+        (crate::ui::theme::PopupBorderType::Thick, "┏", "┓", "┗", "┛"),
+    ] {
+        let (mut session, _, _) = session();
+        session.theme.chrome.border_type = border_type;
+        session.start_root(request("root")).unwrap();
+        session
+            .resize(TerminalSize {
+                width: 40,
+                height: 10,
+            })
+            .unwrap();
+
+        let mut popup_req = request("child");
+        popup_req.presentation = crate::workflow::config::ViewPresentation {
+            mode: crate::workflow::config::ViewPresentationMode::Popup,
+            anchor: crate::workflow::config::PopupAnchor::BottomRight,
+            width: Some(20.into()),
+            height: Some(5.into()),
+            ..Default::default()
+        };
+        session.router.push(popup_req).unwrap();
+        session.sync_active_commands().unwrap();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), None).unwrap();
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Popup is 20x5 anchored BottomRight in 40x10 -> x in 20..40, y in 5..10
+        assert_eq!(
+            buffer.cell((20, 5)).unwrap().symbol(),
+            tl,
+            "expected top-left {tl} for {border_type:?}"
+        );
+        assert_eq!(
+            buffer.cell((39, 5)).unwrap().symbol(),
+            tr,
+            "expected top-right {tr} for {border_type:?}"
+        );
+        assert_eq!(
+            buffer.cell((20, 9)).unwrap().symbol(),
+            bl,
+            "expected bottom-left {bl} for {border_type:?}"
+        );
+        assert_eq!(
+            buffer.cell((39, 9)).unwrap().symbol(),
+            br,
+            "expected bottom-right {br} for {border_type:?}"
+        );
+    }
+}
+
+#[test]
+fn inactive_popup_respects_border_type() {
+    let (mut session, _, _) = session();
+    session.theme.chrome.border_type = crate::ui::theme::PopupBorderType::Rounded;
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 40,
+            height: 10,
+        })
+        .unwrap();
+
+    // 1. Child popup
+    let mut child_req = request("child");
+    child_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(30.into()),
+        height: Some(8.into()),
+        ..Default::default()
+    };
+    session.router.push(child_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    // 2. Grandchild popup on top
+    let mut grandchild_req = request("grandchild");
+    grandchild_req.presentation = crate::workflow::config::ViewPresentation {
+        mode: crate::workflow::config::ViewPresentationMode::Popup,
+        width: Some(16.into()),
+        height: Some(4.into()),
+        ..Default::default()
+    };
+    session.router.push(grandchild_req).unwrap();
+    session.sync_active_commands().unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // Child popup (30x8 centered) top-left is at (5, 1) -> must be "╭"
+    assert_eq!(buffer.cell((5, 1)).unwrap().symbol(), "╭");
+    // Grandchild popup (16x4 centered) top-left is at (12, 3) -> must be "╭"
+    assert_eq!(buffer.cell((12, 3)).unwrap().symbol(), "╭");
 }

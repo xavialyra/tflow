@@ -619,6 +619,7 @@ impl ProtocolSession {
             content_area,
             self.router.stack(),
             &render_context,
+            &self.theme,
             |index, frame, rect, ctx| self.router.render_at(index, frame, rect, ctx),
         )?;
 

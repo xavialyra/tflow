@@ -445,6 +445,7 @@ impl ContentHost {
         content_area: Rect,
         stack: &[ViewInstance],
         render_context: &RenderContext,
+        theme: &Theme,
         mut render_at: F,
     ) -> Result<(RenderResult, Rect, Option<Rect>)>
     where
@@ -480,7 +481,7 @@ impl ContentHost {
                 active_popup_rect = Some(popup);
                 active_render_area = inner_area;
             } else {
-                let mut block = Block::bordered();
+                let mut block = Block::bordered().border_type(theme.chrome.border_type.into());
                 let label = item.context.location.label();
                 if presentation.show_title && !label.is_empty() {
                     let title_budget = (popup.width as usize).saturating_sub(4);
@@ -508,7 +509,9 @@ impl ContentHost {
         if popup.width == 0 || popup.height == 0 {
             return;
         }
-        let mut block = Block::bordered().border_style(theme.chrome.border);
+        let mut block = Block::bordered()
+            .border_type(theme.chrome.border_type.into())
+            .border_style(theme.chrome.border);
         let title = model.location.label();
         if show_title && !title.is_empty() {
             let title_budget = (popup.width as usize).saturating_sub(4);
