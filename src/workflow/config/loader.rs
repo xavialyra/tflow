@@ -940,4 +940,55 @@ mod tests {
             .expect_err("a suite must reject an unknown host binding target");
         assert!(error.to_string().contains("known workflow.command"));
     }
+
+    #[test]
+    fn entrypoint_defaults_to_main_when_omitted() {
+        let toml_src = r#"
+            [workflow]
+            api = 1
+            name = "demo"
+
+            [views.main]
+            engine = { type = "picker" }
+        "#;
+        let (header, workflow) = parse_atomic_workflow_package(toml_src, "test", "demo").unwrap();
+        assert_eq!(header.entrypoint, "main");
+        assert_eq!(workflow.entrypoint.as_deref(), Some("main"));
+        assert!(workflow.views.contains_key("main"));
+    }
+
+    #[test]
+    fn entrypoint_can_be_explicitly_configured() {
+        let toml_src = r#"
+            [workflow]
+            api = 1
+            name = "demo"
+            entrypoint = "search"
+
+            [views.search]
+            engine = { type = "picker" }
+        "#;
+        let (header, workflow) = parse_atomic_workflow_package(toml_src, "test", "demo").unwrap();
+        assert_eq!(header.entrypoint, "search");
+        assert_eq!(workflow.entrypoint.as_deref(), Some("search"));
+        assert!(workflow.views.contains_key("search"));
+    }
+
+    #[test]
+    fn entrypoint_defaulting_to_main_fails_if_main_view_missing() {
+        let toml_src = r#"
+            [workflow]
+            api = 1
+            name = "demo"
+
+            [views.custom]
+            engine = { type = "picker" }
+        "#;
+        let err = parse_atomic_workflow_package(toml_src, "test", "demo")
+            .expect_err("omitted entrypoint requires [views.main]");
+        assert!(
+            err.to_string().contains("entrypoint \"main\" does not match any declared view"),
+            "unexpected error message: {err}"
+        );
+    }
 }

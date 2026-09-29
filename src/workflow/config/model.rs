@@ -11,6 +11,10 @@ fn default_workflow_api() -> u32 {
     1
 }
 
+fn default_workflow_entrypoint() -> String {
+    "main".to_string()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowMetadata {
     pub name: String,
@@ -735,6 +739,7 @@ pub(crate) struct WorkflowHeader {
     #[serde(default = "default_workflow_api")]
     pub(super) api: u32,
     pub(super) name: String,
+    #[serde(default = "default_workflow_entrypoint")]
     pub(super) entrypoint: String,
 }
 

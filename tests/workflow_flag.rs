@@ -46,6 +46,43 @@ fn check_validates_isolated_single_file_workflow() {
 }
 
 #[test]
+fn check_validates_isolated_single_file_workflow_with_omitted_entrypoint() {
+    let root = temporary_root();
+    let workflow_file = root.join("omitted_entrypoint.toml");
+    fs::write(
+        &workflow_file,
+        r#"
+        [workflow]
+        api = 1
+        name = "Omitted Entrypoint Workflow"
+
+        [views.main.engine]
+        type = "picker"
+        "#,
+    )
+    .unwrap();
+
+    let output = launcher_command()
+        .args(["--check", "-w"])
+        .arg(&workflow_file)
+        .output()
+        .expect("could not run tflow --check -w");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.contains("configuration is valid:"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(&workflow_file.display().to_string()),
+        "stdout: {stdout}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn check_validates_isolated_workflow_directory() {
     let root = temporary_root();
     let package_dir = root.join("standalone_pack");

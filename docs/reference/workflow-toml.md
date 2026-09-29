@@ -43,7 +43,7 @@ entrypoint = "main"
 | :--- | :--- | :--- | :--- |
 | `api` | integer | Optional (default: `1`) | Workflow API specification version. Must be `1`. |
 | `name` | string | **Required** | Descriptive, human-readable name of the workflow. |
-| `entrypoint` | string | **Required** | The ID of the default View within this workflow to open first. |
+| `entrypoint` | string | Optional (default: `"main"`) | The ID of the default View within this workflow to open first. Defaults to `"main"`. |
 
 *Invariants: Workflow imports, direct inter-workflow code dependencies, and workflow-declared global aliases are strictly prohibited. A workflow's owner id (the suite member ID, or the file stem for a standalone `-w` workflow) is the first segment of every command FQID it declares; see [Workflow Commands](#workflow-commands-commandsid) for how that FQID index stays unique.*
 
