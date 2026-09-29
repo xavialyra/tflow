@@ -493,10 +493,10 @@ impl View for CaptureProtocolView {
                 LifecycleEvent::TransitionCommitted { .. }
                 | LifecycleEvent::TransitionRejected { .. },
             ) => Ok(ViewDecision::Stay),
-            ViewEvent::Input(InputEvent::Key { .. }) => {
-                anyhow::bail!("key input must be resolved by the command registry")
-            }
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
+            ViewEvent::Input(InputEvent::Key { .. })
+            | ViewEvent::Input(InputEvent::Paste { .. })
+            | ViewEvent::Input(InputEvent::Bytes(_)) => Ok(ViewDecision::Stay),
             ViewEvent::Task(task) => {
                 if !self.task_registry.accepts(&task) {
                     return Ok(ViewDecision::Stay);
@@ -540,9 +540,6 @@ impl View for CaptureProtocolView {
             ViewEvent::Resize(size) => {
                 self.content_size = (size.width, size.height);
                 Ok(ViewDecision::Invalidate)
-            }
-            ViewEvent::Input(InputEvent::Paste { .. }) | ViewEvent::Input(InputEvent::Bytes(_)) => {
-                Ok(ViewDecision::Stay)
             }
         }
     }
