@@ -5,7 +5,7 @@ use crate::workflow::command::{
     CallRequest, CommandContext, CommandExecution, CommandInvocation, CommandOrigin,
     NavigationMode, NavigationRequest,
 };
-use crate::workflow::config::{CommandAction, CompiledConfig, ProducerKind};
+use crate::workflow::config::{CommandAction, CompiledConfig, ExecutionMode};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
@@ -60,7 +60,7 @@ fn prepare_action(
     context: CommandContext,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    prepare_producer_action(
+    prepare_action_execution(
         config,
         invocation,
         action,
@@ -70,7 +70,7 @@ fn prepare_action(
     )
 }
 
-fn prepare_producer_action(
+fn prepare_action_execution(
     config: &CompiledConfig,
     invocation: &crate::workflow::InvocationContext,
     action: &CommandAction,
@@ -78,27 +78,25 @@ fn prepare_producer_action(
     context: CommandContext,
     cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
-    let producer = action
-        .producer()
-        .context("producer action is missing its producer kind")?;
-    let handler = producer_handler(action)?;
+    let execution = action.execution_mode();
+    let payload = action.payload();
     let source_label = format!(
         "{}.commands.{}",
         command_invocation.source_view(),
         command_invocation.id()
     );
-    let outcome = match producer {
-        ProducerKind::Declared => {
+    let outcome = match execution {
+        ExecutionMode::Declared => {
             let operation = crate::protocol::parse_declared_operation(
                 action.operation_type(),
-                handler,
+                payload,
                 &source_label,
             )?;
             crate::protocol::ProtocolOutcome::Operation(operation)
         }
-        ProducerKind::Script => {
+        ExecutionMode::Script => {
             let root = command_root(config, &command_invocation);
-            let source = crate::workflow::config::parse_producer_script_handler(handler, root)?;
+            let source = crate::workflow::config::parse_script_source(payload, root)?;
             let active_view = &context.page.view_ref;
             let query = config
                 .query_definition(active_view)
@@ -125,7 +123,7 @@ fn prepare_producer_action(
                 root,
                 &source,
                 &request,
-                (producer == ProducerKind::Declared).then_some(action.operation_type()),
+                (execution == ExecutionMode::Declared).then_some(action.operation_type()),
                 cancellation,
             )?
         }
@@ -178,22 +176,21 @@ pub(crate) fn prepare_return_processor(
         command_invocation.source_view(),
         command_invocation.id()
     );
-    let outcome = match processor.producer {
-        ProducerKind::Declared => {
+    let outcome = match processor.execution {
+        ExecutionMode::Declared => {
             let operation = crate::protocol::parse_declared_operation(
                 processor
                     .operation
                     .as_deref()
                     .context("declared return processor requires type")?,
-                &processor.handler,
+                &processor.payload,
                 &source_label,
             )?;
             crate::protocol::ProtocolOutcome::Operation(operation)
         }
-        ProducerKind::Script => {
+        ExecutionMode::Script => {
             let root = command_root(config, &command_invocation);
-            let source =
-                crate::workflow::config::parse_producer_script_handler(&processor.handler, root)?;
+            let source = crate::workflow::config::parse_script_source(&processor.payload, root)?;
             let request = crate::protocol::return_request(
                 context.owner.parameters.values(),
                 invocation.input_value(),
@@ -207,7 +204,7 @@ pub(crate) fn prepare_return_processor(
                 root,
                 &source,
                 &request,
-                (processor.producer == ProducerKind::Declared)
+                (processor.execution == ExecutionMode::Declared)
                     .then_some(processor.operation.as_deref().unwrap_or("")),
                 cancellation,
             )?
@@ -227,15 +224,6 @@ pub(crate) fn prepare_return_processor(
         crate::protocol::ProtocolOutcome::Feedback { message, level } => {
             Ok(PreparedAction::Feedback { message, level })
         }
-    }
-}
-
-fn producer_handler(action: &CommandAction) -> Result<&toml::Value> {
-    match action {
-        CommandAction::Run { handler, .. }
-        | CommandAction::Navigate { handler, .. }
-        | CommandAction::Call { handler, .. }
-        | CommandAction::Return { handler, .. } => Ok(handler),
     }
 }
 

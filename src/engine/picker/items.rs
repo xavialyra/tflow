@@ -1,7 +1,7 @@
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
 use crate::terminal::sanitize_text;
-use crate::workflow::config::{PickerItemsProjection, parse_producer_script_handler, toml_to_json};
+use crate::workflow::config::{PickerItemsProjection, parse_script_source, toml_to_json};
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -425,7 +425,7 @@ fn run_items_provider(
                     };
                 }
             };
-            let source = match parse_producer_script_handler(&handler, definition.workflow_root()) {
+            let source = match parse_script_source(&handler, definition.workflow_root()) {
                 Ok(source) => source,
                 Err(error) => {
                     return ItemsScriptOutcome {
@@ -486,7 +486,7 @@ pub(crate) fn run_items_producer_raw(
     }
     if let Some(obj) = json_val.as_object() {
         if obj.contains_key("file") || obj.contains_key("script") {
-            let source = parse_producer_script_handler(producer_value, script_root)?;
+            let source = parse_script_source(producer_value, script_root)?;
             let engine_state = serde_json::json!({
                 "input": raw_input,
             });

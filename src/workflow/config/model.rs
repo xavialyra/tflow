@@ -119,40 +119,38 @@ pub(crate) struct ResolvedScriptSource {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProducerScriptHandler {
+struct ScriptTargetConfig {
     #[serde(default)]
     file: Option<String>,
     #[serde(default)]
     script: Option<String>,
 }
 
-pub(crate) fn parse_producer_script_handler(
+pub(crate) fn parse_script_source(
     value: &toml::Value,
     script_root: Option<&Path>,
 ) -> Result<ResolvedScriptSource> {
-    let source = parse_producer_script_handler_shape(value)?;
+    let source = parse_script_source_shape(value)?;
     source.validate_target(script_root)?;
     Ok(source)
 }
 
 /// Parse inert handler data when a projection does not carry its workflow root.
 /// Configuration validation and mount preparation still validate the target.
-pub(crate) fn parse_producer_script_handler_shape(
-    value: &toml::Value,
-) -> Result<ResolvedScriptSource> {
-    let handler: ProducerScriptHandler = value
+pub(crate) fn parse_script_source_shape(value: &toml::Value) -> Result<ResolvedScriptSource> {
+    let target_cfg: ScriptTargetConfig = value
         .clone()
         .try_into()
-        .context("script producer handler must be a table with file or script")?;
-    let target = match (handler.file, handler.script) {
+        .context("script execution target must be a table with file or script")?;
+    let target = match (target_cfg.file, target_cfg.script) {
         (Some(file), None) if !file.trim().is_empty() => ResolvedScriptTarget::File(file),
         (None, Some(script)) if !script.trim().is_empty() => ResolvedScriptTarget::Inline(script),
         (Some(_), Some(_)) => {
-            bail!("script producer handler must define exactly one of file or script")
+            bail!("script execution target must define exactly one of file or script")
         }
-        (Some(_), None) => bail!("script producer handler file must be non-empty"),
-        (None, Some(_)) => bail!("script producer handler script must be non-empty"),
-        (None, None) => bail!("script producer handler must define exactly one of file or script"),
+        (Some(_), None) => bail!("script file must be non-empty"),
+        (None, Some(_)) => bail!("script body must be non-empty"),
+        (None, None) => bail!("script execution target must define exactly one of file or script"),
     };
     Ok(ResolvedScriptSource { target })
 }
@@ -553,7 +551,7 @@ impl View {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum ProducerKind {
+pub(crate) enum ExecutionMode {
     #[default]
     Declared,
     Script,
@@ -562,8 +560,8 @@ pub(crate) enum ProducerKind {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct ReturnProcessor {
     pub(crate) operation: Option<String>,
-    pub(crate) producer: ProducerKind,
-    pub(crate) handler: toml::Value,
+    pub(crate) execution: ExecutionMode,
+    pub(crate) payload: toml::Value,
 }
 
 impl<'de> Deserialize<'de> for ReturnProcessor {
@@ -591,15 +589,15 @@ impl<'de> Deserialize<'de> for ReturnProcessor {
             }
             None => None,
         };
-        let (producer, handler) = if fields.contains_key("file") || fields.contains_key("script") {
-            (ProducerKind::Script, toml::Value::Table(fields))
+        let (execution, payload) = if fields.contains_key("file") || fields.contains_key("script") {
+            (ExecutionMode::Script, toml::Value::Table(fields))
         } else {
-            (ProducerKind::Declared, toml::Value::Table(fields))
+            (ExecutionMode::Declared, toml::Value::Table(fields))
         };
         Ok(ReturnProcessor {
             operation,
-            producer,
-            handler,
+            execution,
+            payload,
         })
     }
 }
@@ -609,35 +607,44 @@ impl<'de> Deserialize<'de> for ReturnProcessor {
 pub enum CommandAction {
     Run {
         #[serde(default)]
-        producer: ProducerKind,
-        handler: toml::Value,
+        execution: ExecutionMode,
+        payload: toml::Value,
     },
     Navigate {
         #[serde(default)]
-        producer: ProducerKind,
-        handler: toml::Value,
+        execution: ExecutionMode,
+        payload: toml::Value,
     },
     Call {
         #[serde(default)]
-        producer: ProducerKind,
-        handler: toml::Value,
+        execution: ExecutionMode,
+        payload: toml::Value,
         #[serde(default)]
         return_processor: Option<ReturnProcessor>,
     },
     Return {
         #[serde(default)]
-        producer: ProducerKind,
-        handler: toml::Value,
+        execution: ExecutionMode,
+        payload: toml::Value,
     },
 }
 
 impl CommandAction {
-    pub(crate) fn producer(&self) -> Option<ProducerKind> {
+    pub(crate) fn execution_mode(&self) -> ExecutionMode {
         match self {
-            CommandAction::Run { producer, .. }
-            | CommandAction::Navigate { producer, .. }
-            | CommandAction::Call { producer, .. }
-            | CommandAction::Return { producer, .. } => Some(*producer),
+            CommandAction::Run { execution, .. }
+            | CommandAction::Navigate { execution, .. }
+            | CommandAction::Call { execution, .. }
+            | CommandAction::Return { execution, .. } => *execution,
+        }
+    }
+
+    pub(crate) fn payload(&self) -> &toml::Value {
+        match self {
+            CommandAction::Run { payload, .. }
+            | CommandAction::Navigate { payload, .. }
+            | CommandAction::Call { payload, .. }
+            | CommandAction::Return { payload, .. } => payload,
         }
     }
 
@@ -702,21 +709,21 @@ impl<'de> Deserialize<'de> for Command {
         }
 
         let is_script = fields.contains_key("file") || fields.contains_key("script");
-        let (producer, handler) = if is_script {
-            (ProducerKind::Script, toml::Value::Table(fields))
+        let (execution, payload) = if is_script {
+            (ExecutionMode::Script, toml::Value::Table(fields))
         } else {
-            (ProducerKind::Declared, toml::Value::Table(fields))
+            (ExecutionMode::Declared, toml::Value::Table(fields))
         };
 
         let action = match type_val.as_str() {
-            "run" => CommandAction::Run { producer, handler },
-            "navigate" => CommandAction::Navigate { producer, handler },
+            "run" => CommandAction::Run { execution, payload },
+            "navigate" => CommandAction::Navigate { execution, payload },
             "call" => CommandAction::Call {
-                producer,
-                handler,
+                execution,
+                payload,
                 return_processor,
             },
-            "return" => CommandAction::Return { producer, handler },
+            "return" => CommandAction::Return { execution, payload },
             other => {
                 return Err(serde::de::Error::custom(format!(
                     "unknown command type {:?}; expected \"run\", \"navigate\", \"call\", or \"return\"",
@@ -919,10 +926,10 @@ pub(crate) struct WorkflowHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandAction, ProducerKind, ResolvedScriptTarget, View, Workflow};
+    use super::{CommandAction, ExecutionMode, ResolvedScriptTarget, View, Workflow};
 
     #[test]
-    fn producer_script_handler_requires_one_literal_target() {
+    fn script_source_requires_one_literal_target() {
         for (source, expected) in [
             (
                 r#"file = "/tmp/run.sh""#,
@@ -934,7 +941,7 @@ mod tests {
             ),
         ] {
             let value: toml::Value = toml::from_str(source).unwrap();
-            let resolved = super::parse_producer_script_handler(&value, None).unwrap();
+            let resolved = super::parse_script_source(&value, None).unwrap();
             assert_eq!(resolved.target, expected);
         }
 
@@ -944,7 +951,7 @@ script = "printf ok"
 "#,
         )
         .unwrap();
-        assert!(super::parse_producer_script_handler(&ambiguous, None).is_err());
+        assert!(super::parse_script_source(&ambiguous, None).is_err());
 
         let invalid_source: toml::Value = toml::from_str(
             r#"source = "script"
@@ -952,17 +959,17 @@ file = "scripts/run.sh"
 "#,
         )
         .unwrap();
-        assert!(super::parse_producer_script_handler(&invalid_source, None).is_err());
+        assert!(super::parse_script_source(&invalid_source, None).is_err());
     }
 
     #[test]
-    fn producer_handler_accepts_inline_scripts_and_rejects_unknown_fields() {
+    fn script_source_accepts_inline_scripts_and_rejects_unknown_fields() {
         let value: toml::Value = toml::from_str(
             r#"script = "printf 'ok'"
 "#,
         )
         .unwrap();
-        let resolved = super::parse_producer_script_handler(&value, None).unwrap();
+        let resolved = super::parse_script_source(&value, None).unwrap();
         assert_eq!(
             resolved.target,
             ResolvedScriptTarget::Inline("printf 'ok'".to_string())
@@ -974,15 +981,14 @@ args = []
 "#,
         )
         .unwrap();
-        assert!(super::parse_producer_script_handler(&unknown, None).is_err());
+        assert!(super::parse_script_source(&unknown, None).is_err());
     }
 
     #[test]
     fn view_query_uses_the_canonical_key() {
         let view: View = toml::from_str(
             r#"
-            [engine]
-            type = "picker"
+            engine = "picker"
             [query]
             type = "string"
             "#,
@@ -994,7 +1000,7 @@ args = []
     }
 
     #[test]
-    fn command_handler_owns_no_operation_type() {
+    fn command_payload_owns_no_operation_type() {
         let wf: Workflow = toml::from_str(
             r#"
             [commands.open]
@@ -1004,13 +1010,13 @@ args = []
         )
         .unwrap();
         let CommandAction::Call {
-            producer, handler, ..
+            execution, payload, ..
         } = &wf.commands["open"].action
         else {
             panic!("expected call action");
         };
-        assert_eq!(*producer, ProducerKind::Declared);
-        assert_eq!(handler["target"].as_str(), Some("other:view"));
+        assert_eq!(*execution, ExecutionMode::Declared);
+        assert_eq!(payload["target"].as_str(), Some("other:view"));
     }
 
     #[test]

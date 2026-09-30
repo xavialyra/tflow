@@ -152,21 +152,25 @@ pub(super) fn create_view(
     context: RuntimeFactoryContext,
 ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
     let view_ref = context.identity.view_ref.clone();
-    let command = context
-        .config
-        .field("command")
-        .context("embedded engine requires a command field")?;
-    let command = command
-        .as_array()
-        .context("embedded command must be an argv array")?
-        .iter()
-        .map(|argument| {
-            argument
-                .as_str()
-                .map(str::to_string)
-                .context("embedded command arguments must be strings")
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let command = if let Some(typed) = context.config.as_embedded() {
+        typed.command.clone()
+    } else {
+        let command = context
+            .config
+            .field("command")
+            .context("embedded engine requires a command field")?;
+        command
+            .as_array()
+            .context("embedded command must be an argv array")?
+            .iter()
+            .map(|argument| {
+                argument
+                    .as_str()
+                    .map(str::to_string)
+                    .context("embedded command arguments must be strings")
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     if command.is_empty() {
         anyhow::bail!("embedded command must not be empty");
     }

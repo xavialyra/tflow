@@ -22,9 +22,7 @@ pub(crate) use self::session::{PickerView, PrefixBackspace};
 use self::tasks::PickerItemsScheduler;
 use super::{EngineValidationContext, RendererFactoryContext, validate_fields};
 use crate::task::{MountTaskLease, MountTaskStarter};
-use crate::workflow::config::{
-    CompiledConfig, Defaults, View, parse_producer_script_handler, toml_to_json,
-};
+use crate::workflow::config::{CompiledConfig, Defaults, View, parse_script_source, toml_to_json};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -321,8 +319,8 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
         toml::Value::Table(fields)
             if fields.contains_key("file") || fields.contains_key("script") =>
         {
-            parse_producer_script_handler(value, root)
-                .context("items script handler is invalid")
+            parse_script_source(value, root)
+                .context("items script is invalid")
                 .map(|_| ())
         }
         toml::Value::Table(fields) if fields.contains_key("items") => {

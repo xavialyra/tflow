@@ -15,7 +15,7 @@ use super::{
     validate_fields,
 };
 use crate::workflow::config::{
-    Defaults, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
+    Defaults, ResolvedScriptSource, View, parse_script_source, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -62,8 +62,8 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         .expect("required capture output was checked");
     if let toml::Value::Table(fields) = output {
         if fields.contains_key("file") || fields.contains_key("script") {
-            parse_producer_script_handler(output, context.script_root)
-                .context("capture output script handler is invalid")?;
+            parse_script_source(output, context.script_root)
+                .context("capture output script is invalid")?;
         } else if fields.contains_key("output") {
             validate_declared_output(output)?;
         } else {
@@ -176,6 +176,24 @@ fn prepare_output(
     config: &ProjectedEngineConfig,
     workflow_root: Option<&Path>,
 ) -> Result<PreparedCaptureOutput> {
+    if let Some(typed) = config.as_capture() {
+        if let Some(fields) = typed.output.as_table() {
+            if fields.contains_key("file") || fields.contains_key("script") {
+                let source = parse_script_source(&typed.output, workflow_root)?;
+                return Ok(PreparedCaptureOutput::Script {
+                    root: workflow_root.map(Path::to_path_buf),
+                    source,
+                });
+            }
+            if let Some(text) = fields.get("output").and_then(|t| t.as_str()) {
+                return Ok(PreparedCaptureOutput::Text(text.to_string()));
+            }
+        }
+        if let Some(text) = typed.output.as_str() {
+            return Ok(PreparedCaptureOutput::Text(text.to_string()));
+        }
+    }
+
     let output = config
         .field("output")
         .context("capture engine requires an output field")?;
@@ -183,7 +201,7 @@ fn prepare_output(
         if fields.contains_key("file") || fields.contains_key("script") {
             let handler = toml::Value::try_from(output.clone())
                 .context("capture output script handler could not be converted to TOML")?;
-            let source = parse_producer_script_handler(&handler, workflow_root)?;
+            let source = parse_script_source(&handler, workflow_root)?;
             return Ok(PreparedCaptureOutput::Script {
                 root: workflow_root.map(Path::to_path_buf),
                 source,

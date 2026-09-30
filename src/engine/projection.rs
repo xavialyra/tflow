@@ -1,4 +1,7 @@
-use super::{EngineDefinition, ProjectedBindingConfig, ProjectedEngineConfig};
+use super::{
+    CaptureConfig, EmbeddedConfig, EngineDefinition, FormConfig, PickerConfig,
+    ProjectedBindingConfig, ProjectedEngineConfig, TypedEngineConfig,
+};
 use crate::workflow::config::{CompiledConfig, toml_to_json};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -27,7 +30,36 @@ pub(crate) fn project_engine_config(
     definition: &EngineDefinition,
     launch_input: Value,
 ) -> Result<ProjectedEngineConfig> {
+    let view = config
+        .view(view_ref)
+        .with_context(|| format!("view {:?} disappeared during factory preparation", view_ref))?;
+
+    let typed = match view.selected_engine_type() {
+        "picker" => {
+            let table = view.picker.as_ref().cloned().unwrap_or_default();
+            let parsed: Option<PickerConfig> = toml::Value::Table(table).try_into().ok();
+            parsed.map(TypedEngineConfig::Picker)
+        }
+        "capture" => {
+            let table = view.capture.as_ref().cloned().unwrap_or_default();
+            let parsed: Option<CaptureConfig> = toml::Value::Table(table).try_into().ok();
+            parsed.map(TypedEngineConfig::Capture)
+        }
+        "form" => {
+            let table = view.form.as_ref().cloned().unwrap_or_default();
+            let parsed: Option<FormConfig> = toml::Value::Table(table).try_into().ok();
+            parsed.map(TypedEngineConfig::Form)
+        }
+        "embedded" => {
+            let table = view.embedded.as_ref().cloned().unwrap_or_default();
+            let parsed: Option<EmbeddedConfig> = toml::Value::Table(table).try_into().ok();
+            parsed.map(TypedEngineConfig::Embedded)
+        }
+        _ => None,
+    };
+
     Ok(ProjectedEngineConfig {
+        typed,
         fields: fields_for_view(config, view_ref, definition.factory_fields.runtime)?,
         workflow_root: config
             .workflow_root(view_ref)

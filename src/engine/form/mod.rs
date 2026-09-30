@@ -21,9 +21,7 @@ use crate::view::{
     FallbackInputReceiver, LifecycleEvent, NavigationRequest, View, ViewChrome,
     ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
-use crate::workflow::config::{
-    Defaults, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
-};
+use crate::workflow::config::{Defaults, ResolvedScriptSource, parse_script_source, toml_to_json};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
@@ -100,7 +98,7 @@ fn prepare(value: Value, root: Option<&std::path::Path>) -> Result<PreparedConte
     if let Some(obj) = value.as_object() {
         if obj.contains_key("file") || obj.contains_key("script") {
             let handler = toml::Value::try_from(value)?;
-            return Ok(PreparedContent::Script(parse_producer_script_handler(
+            return Ok(PreparedContent::Script(parse_script_source(
                 &handler, root,
             )?));
         }
@@ -188,14 +186,16 @@ impl FormView {
         request: &NavigationRequest,
         instance: ViewInstanceId,
     ) -> Result<Self> {
-        let prepared = prepare(
+        let content_val = if let Some(typed) = config.engine.as_form() {
+            toml_to_json(&typed.content)?
+        } else {
             config
                 .engine
                 .field("content")
                 .context("form requires content")?
-                .clone(),
-            config.engine.workflow_root.as_deref(),
-        )?;
+                .clone()
+        };
+        let prepared = prepare(content_val, config.engine.workflow_root.as_deref())?;
         let (fields, script) = match prepared {
             PreparedContent::Declared(fields) => (fields, None),
             PreparedContent::Script(source) => (Vec::new(), Some(source)),

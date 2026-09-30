@@ -476,7 +476,7 @@ pub(crate) fn run_script_capture_response(
 
 pub(crate) fn form_request(parameters: &Value, input: &Value, state: &Value) -> Value {
     json!({"version": PROTOCOL_VERSION, "entrypoint": "form-content",
-        "context": producer_context(parameters, input, "form", state)})
+        "context": script_context(parameters, input, "form", state)})
 }
 
 pub(crate) fn run_script_form_response(
@@ -563,7 +563,7 @@ pub(crate) fn run_script_preview_response(
 
 pub(crate) fn preview_request(parameters: &Value, input: &Value, state: &Value) -> Value {
     json!({"version": PROTOCOL_VERSION, "entrypoint": "picker-preview",
-        "context": producer_context(parameters, input, "picker", state)})
+        "context": script_context(parameters, input, "picker", state)})
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,7 +633,7 @@ fn run_script_output(
     }
 }
 
-fn producer_context(
+fn script_context(
     parameters: &Value,
     input: &Value,
     engine_type: &str,
@@ -660,7 +660,7 @@ pub(crate) fn command_request(
     commands: &Value,
     view: &Value,
 ) -> Value {
-    let mut context = producer_context(owner.parameters.values(), input, engine_type, engine_state);
+    let mut context = script_context(owner.parameters.values(), input, engine_type, engine_state);
     if let Value::Object(ref mut map) = context {
         map.insert(
             "command".to_string(),
@@ -685,7 +685,7 @@ pub(crate) fn items_request(
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "picker-items",
-        "context": producer_context(parameters, input, engine_type, engine_state),
+        "context": script_context(parameters, input, engine_type, engine_state),
     })
 }
 
@@ -698,7 +698,7 @@ pub(crate) fn capture_request(
     json!({
         "version": PROTOCOL_VERSION,
         "entrypoint": "capture-output",
-        "context": producer_context(parameters, input, engine_type, engine_state),
+        "context": script_context(parameters, input, engine_type, engine_state),
     })
 }
 
@@ -709,7 +709,7 @@ pub(crate) fn return_request(
     engine_type: &str,
     engine_state: &Value,
 ) -> Value {
-    let mut context = producer_context(parameters, input, engine_type, engine_state);
+    let mut context = script_context(parameters, input, engine_type, engine_state);
     if let Value::Object(ref mut map) = context {
         map.insert("result".to_string(), result.value.clone());
     }

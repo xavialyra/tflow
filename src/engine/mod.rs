@@ -8,8 +8,10 @@ mod registry;
 mod runtime;
 
 pub(crate) use api::{
-    EmbeddedResultConfig, EmbeddedResultFormat, EngineValidationContext, ProjectedBindingConfig,
-    ProjectedEngineConfig, RendererFactoryContext, RuntimeFactoryContext, ViewIdentity,
+    CaptureConfig, EmbeddedConfig, EmbeddedResultConfig, EmbeddedResultFormat,
+    EngineValidationContext, FormConfig, PickerConfig, ProjectedBindingConfig,
+    ProjectedEngineConfig, RendererFactoryContext, RuntimeFactoryContext, TypedEngineConfig,
+    ViewIdentity,
 };
 pub(crate) use capture::{
     CaptureProtocolConfig, create_protocol_view as create_capture_protocol_view,

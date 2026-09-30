@@ -23,10 +23,10 @@ fn validate_command_action(
             command_id
         );
     }
-    validate_producer_action(view_ref, command_id, action, views, script_root)
+    validate_command_action_execution(view_ref, command_id, action, views, script_root)
 }
 
-fn validate_producer_action(
+fn validate_command_action_execution(
     view_ref: &str,
     command_id: &str,
     action: &CommandAction,
@@ -34,23 +34,18 @@ fn validate_producer_action(
     script_root: Option<&Path>,
 ) -> Result<()> {
     let owner = format!("view {:?} command {:?}", view_ref, command_id);
-    let producer = action
-        .producer()
-        .expect("producer action validation requires a producer");
-    let handler = producer_handler(action);
+    let execution = action.execution_mode();
+    let payload = action.payload();
     let operation_type = action.operation_type();
-    match producer {
-        super::ProducerKind::Declared => {
-            let operation = crate::protocol::parse_declared_operation(
-                operation_type,
-                handler,
-                &format!("{owner} declared handler"),
-            )?;
+    match execution {
+        super::ExecutionMode::Declared => {
+            let operation =
+                crate::protocol::parse_declared_operation(operation_type, payload, &owner)?;
             validate_operation_target(view_ref, command_id, &operation, views)?;
         }
-        super::ProducerKind::Script => {
-            super::parse_producer_script_handler(handler, script_root)
-                .with_context(|| format!("{owner} script handler"))?;
+        super::ExecutionMode::Script => {
+            super::parse_script_source(payload, script_root)
+                .with_context(|| format!("{owner} script"))?;
         }
     }
 
@@ -64,15 +59,6 @@ fn validate_producer_action(
     Ok(())
 }
 
-fn producer_handler(action: &CommandAction) -> &toml::Value {
-    match action {
-        CommandAction::Run { handler, .. }
-        | CommandAction::Navigate { handler, .. }
-        | CommandAction::Call { handler, .. }
-        | CommandAction::Return { handler, .. } => handler,
-    }
-}
-
 fn validate_return_processor(
     view_ref: &str,
     command_id: &str,
@@ -84,19 +70,19 @@ fn validate_return_processor(
         "view {:?} command {:?} return processor",
         view_ref, command_id
     );
-    match processor.producer {
-        super::ProducerKind::Declared => {
+    match processor.execution {
+        super::ExecutionMode::Declared => {
             let operation = crate::protocol::parse_declared_operation(
                 processor
                     .operation
                     .as_deref()
                     .context("declared return processor requires type")?,
-                &processor.handler,
-                &format!("{owner} declared handler"),
+                &processor.payload,
+                &owner,
             )?;
             validate_operation_target(view_ref, command_id, &operation, views)?;
         }
-        super::ProducerKind::Script => {
+        super::ExecutionMode::Script => {
             if let Some(operation) = processor.operation.as_deref() {
                 anyhow::ensure!(
                     matches!(operation, "navigate" | "call" | "return" | "run"),
@@ -104,8 +90,8 @@ fn validate_return_processor(
                     operation
                 );
             }
-            super::parse_producer_script_handler(&processor.handler, script_root)
-                .with_context(|| format!("{owner} script handler"))?;
+            super::parse_script_source(&processor.payload, script_root)
+                .with_context(|| format!("{owner} script"))?;
         }
     }
     Ok(())

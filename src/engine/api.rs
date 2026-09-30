@@ -32,8 +32,50 @@ impl ViewIdentity {
     }
 }
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct PickerConfig {
+    #[serde(default)]
+    pub(crate) items: Option<toml::Value>,
+    #[serde(default)]
+    pub(crate) preview: Option<toml::Value>,
+    #[serde(default)]
+    pub(crate) input_placeholder: Option<String>,
+    #[serde(default)]
+    pub(crate) show_input: Option<bool>,
+    #[serde(default)]
+    pub(crate) show_left_prefix: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct CaptureConfig {
+    pub(crate) output: toml::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct FormConfig {
+    pub(crate) content: toml::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct EmbeddedConfig {
+    pub(crate) command: Vec<String>,
+    #[serde(default)]
+    pub(crate) result: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TypedEngineConfig {
+    Picker(PickerConfig),
+    Capture(CaptureConfig),
+    Form(FormConfig),
+    Embedded(EmbeddedConfig),
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectedEngineConfig {
+    pub(crate) typed: Option<TypedEngineConfig>,
     pub(crate) fields: BTreeMap<String, Value>,
     pub(crate) workflow_root: Option<PathBuf>,
     pub(crate) launch_input: Value,
@@ -42,6 +84,34 @@ pub(crate) struct ProjectedEngineConfig {
 impl ProjectedEngineConfig {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
+    }
+
+    pub(crate) fn as_picker(&self) -> Option<&PickerConfig> {
+        match self.typed.as_ref() {
+            Some(TypedEngineConfig::Picker(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_capture(&self) -> Option<&CaptureConfig> {
+        match self.typed.as_ref() {
+            Some(TypedEngineConfig::Capture(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_form(&self) -> Option<&FormConfig> {
+        match self.typed.as_ref() {
+            Some(TypedEngineConfig::Form(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_embedded(&self) -> Option<&EmbeddedConfig> {
+        match self.typed.as_ref() {
+            Some(TypedEngineConfig::Embedded(c)) => Some(c),
+            _ => None,
+        }
     }
 }
 
