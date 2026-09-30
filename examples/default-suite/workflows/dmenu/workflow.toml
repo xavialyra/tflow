@@ -3,16 +3,10 @@ api = 1
 name = "dmenu"
 
 [views.main]
+engine = "picker"
 cancel_exit_code = 1
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
-
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/items.sh"
 
 [views.main.query]

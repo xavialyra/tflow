@@ -21,17 +21,17 @@ Declare a form engine and its fields in the workflow. A form field can be requir
 The complete example is in [the form workflow](../../tests/fixtures/config/workflows/form/workflow.toml). Its [content.py](../../tests/fixtures/config/workflows/form/scripts/content.py) demonstrates dynamic content: the script receives a `form-content` request and returns the field specification from `context.parameters.spec`. The [submit.py](../../tests/fixtures/config/workflows/form/scripts/submit.py) script receives the validated engine state and returns its typed values.
 
 ```toml
+[views.input]
+engine = "form"
+
 [views.input.query]
 type = "object"
 name = { type = "string", default = "" }
 environment = { type = "string", default = "dev" }
 enabled = { type = "boolean", default = true }
 
-[views.input.engine]
-type = "form"
-[views.input.engine.config.content]
-producer = "script"
-handler = { file = "scripts/content.py" }
+[views.input.form.content]
+file = "scripts/content.py"
 
 [views.input.bindings]
 enter = "submit"

@@ -51,7 +51,7 @@ fn send(process: &mut support::LauncherProcess, keys: &[u8]) {
 #[test]
 fn default_preview_is_collapsed_and_resolves_page_and_item_details() {
     let items = r#"items = [{ display = "Selected item", value = "selected-value", metadata = { summary = "DETAILS_MARKER" } }]"#;
-    let page_preview = r#"[workflows.sample.views.main.preview]
+    let page_preview = r#"[workflows.sample.views.main.picker.preview]
 script = '''#!/usr/bin/env python3
 import json, sys
 json.dump({"version": 1, "preview": {"type": "paragraph", "text": "PAGE_MARKER"}}, sys.stdout)
@@ -64,9 +64,7 @@ json.dump({"version": 1, "preview": {"type": "paragraph", "text": "PAGE_MARKER"}
             &format!(
                 r#"
             default_view = "sample:main"
-            [workflows.sample.views.main.engine]
-            type = "picker"
-            [workflows.sample.views.main.engine.config]
+            [workflows.sample.views.main.picker]
             {items}
             {page_config}
         "#
@@ -118,13 +116,10 @@ fn slow_preview_keeps_items_responsive_and_selection_hide_and_exit_reap_children
         &config,
         r#"
         default_view = "sample:main"
-        [workflows.sample.views.main.preview]
+        [workflows.sample.views.main.picker.preview]
         file = "scripts/preview.py"
-        [workflows.sample.views.main.engine]
-        type = "picker"
-        [workflows.sample.views.main.engine.config.items]
-        producer = "script"
-        handler = { file = "scripts/items.py" }
+        [workflows.sample.views.main.picker.items]
+        file = "scripts/items.py"
         [workflows.sample.views.main.bindings]
         "ctrl+p" = "@engine:picker.toggle_preview"
         "alt+k" = "@engine:picker.preview_scroll_up"
@@ -253,12 +248,10 @@ fn preview_co_located_syntax_configures_and_renders_preview() {
         &config,
         r#"
         default_view = "sample:main"
-        [workflows.sample.views.main.engine]
-        type = "picker"
-        [workflows.sample.views.main.engine.config]
+        [workflows.sample.views.main.picker]
         items = [{ display = "Item 1", value = "val1" }]
 
-        [workflows.sample.views.main.preview]
+        [workflows.sample.views.main.picker.preview]
         file = "scripts/preview.py"
         width = "40%"
         min_width = 20

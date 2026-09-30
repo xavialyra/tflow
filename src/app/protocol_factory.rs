@@ -170,7 +170,7 @@ impl ViewFactory for ProtocolViewFactory {
                 let preview = self
                     .config
                     .view(target)
-                    .and_then(|view| view.preview.as_ref())
+                    .and_then(|view| view.selected_preview())
                     .map(crate::workflow::config::toml_to_json)
                     .transpose()?;
                 let config = PickerProtocolConfig {

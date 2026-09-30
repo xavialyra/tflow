@@ -56,8 +56,10 @@ fn check_rejects_unknown_workflow_manifest_fields() {
         name = "Unknown"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
 
         [plugin]
         name = "Unknown"
@@ -129,8 +131,10 @@ fn check_allows_workflow_with_double_underscore() {
         name = "User selectors"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -155,8 +159,10 @@ fn check_allows_workflow_with_double_underscore() {
         name = "User custom"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -377,12 +383,11 @@ fn check_rejects_picker_preview_field_shape_mismatches() {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // Verify engine.config no longer accepts old preview_ratio / preview_min_width / preview_default_open / preview
+    // Verify picker table no longer accepts old preview_ratio / preview_min_width / preview_default_open
     for old_field in [
         "preview_ratio = 0.35",
         "preview_min_width = 24",
         "preview_default_open = true",
-        "preview = {}",
     ] {
         let root = temporary_root();
         let config = root.join("config.toml");
@@ -1137,8 +1142,9 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
         api = 1
         name = "demo"
         entrypoint = "main"
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+        [views.main.picker]
         [commands.run]
         type = "run"
         producer = "script"
@@ -1307,10 +1313,12 @@ fn positional_inspect_is_a_view_selector_not_a_subcommand() {
 api = 1
 name = "Tool"
 entrypoint = "inspect"
-[views.inspect.engine]
-type = "picker"
-[views.items.engine]
-type = "picker"
+[views.inspect]
+engine = "picker"
+[views.inspect.picker]
+[views.items]
+engine = "picker"
+[views.items.picker]
 "#,
     )
     .unwrap();
@@ -1344,7 +1352,11 @@ fn discovered_settings_resolve_themes_from_the_settings_directory() {
     )
     .unwrap();
     let workflow = root.join("tool.toml");
-    fs::write(&workflow, "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    fs::write(
+        &workflow,
+        "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main]\nengine = 'picker'\n[views.main.picker]\n",
+    )
+    .unwrap();
     let output = launcher_command()
         .env_remove("TFLOW_SETTINGS")
         .env("XDG_CONFIG_HOME", root.join("xdg"))
@@ -1378,7 +1390,11 @@ fn discovered_settings_resolve_themes_from_the_settings_directory() {
 fn manifest_dispatch_rejects_wrong_types_and_nested_suites() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
-    fs::write(&workflow, "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    fs::write(
+        &workflow,
+        "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main]\nengine = 'picker'\n[views.main.picker]\n",
+    )
+    .unwrap();
     let suite = root.join("suite.toml");
     fs::write(&suite, "[suite]\napi = 1\nname = 'Suite'\nentrypoint = 'tool:main'\n[workflows]\ntool = { file = 'tool.toml' }\n").unwrap();
     for (flag, path, tip) in [
@@ -1410,7 +1426,11 @@ fn default_launch_uses_only_manifest_members() {
     let root = temporary_root();
     let config_dir = root.join("tflow");
     fs::create_dir_all(config_dir.join("workflows")).unwrap();
-    fs::write(config_dir.join("workflows/tool.toml"), "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main.engine]\ntype = 'picker'\n").unwrap();
+    fs::write(
+        config_dir.join("workflows/tool.toml"),
+        "[workflow]\napi = 1\nname = 'Tool'\nentrypoint = 'main'\n[views.main]\nengine = 'picker'\n[views.main.picker]\n",
+    )
+    .unwrap();
     // Invalid unmounted files must not affect an explicitly mounted session.
     fs::write(
         config_dir.join("workflows/unmounted.toml"),
@@ -1442,7 +1462,7 @@ fn default_launch_uses_only_manifest_members() {
 fn suite_alias_cannot_redirect_a_member_shorthand() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
-    fs::write(&workflow, "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[views.other.engine]\ntype='picker'\n").unwrap();
+    fs::write(&workflow, "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\n[views.main.picker]\n[views.other]\nengine='picker'\n[views.other.picker]\n").unwrap();
     let suite = root.join("suite.toml");
     fs::write(&suite, "[suite]\napi=1\nname='Suite'\nentrypoint='tool:main'\n[workflows]\ntool={file='tool.toml'}\n[aliases]\ntool='tool:other'\nz='tool'\n").unwrap();
     let output = launcher_command()
@@ -1567,8 +1587,7 @@ fn explicit_settings_environment_path_must_exist() {
 fn atomic_workflows_reject_dependency_and_global_alias_declarations() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
-    let base =
-        "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n";
+    let base = "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\n[views.main.picker]\n";
     for extra in [
         "\n[dependencies]\nother='other.toml'\n",
         "\n[imports]\nother='other.toml'\n",
@@ -1584,7 +1603,7 @@ fn atomic_workflows_reject_dependency_and_global_alias_declarations() {
         assert!(!output.status.success(), "accepted {extra}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported fields"));
     }
-    fs::write(&workflow, format!("{base}\n[views.main]\nalias='global'\n")).unwrap();
+    fs::write(&workflow, "[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\nalias='global'\n[views.main.picker]\n").unwrap();
     let output = launcher_command()
         .args(["--check", "--workflow"])
         .arg(&workflow)
@@ -1600,7 +1619,7 @@ fn standalone_workflow_defers_sibling_navigation_until_runtime() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
     for kind in ["navigate", "call"] {
-        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main.engine]\ntype='picker'\n[commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
+        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\n[views.main.picker]\n[commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
         let output = launcher_command()
             .args(["--workflow"])
             .arg(&workflow)

@@ -55,6 +55,7 @@ A workflow defines one or more Views referenced as `<workflow-id>:<name>`.
 
 ```toml
 [views.main]
+engine = "picker"
 binding_mode = "view"
 
 [views.main.query]
@@ -64,7 +65,8 @@ mode = { type = "enum", options = ["normal", "compact"], default = "normal" }
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `engine` | table | `{ type = "picker" }` | Defines the View's UI engine and its engine-specific configuration. |
+| `engine` | string | **Required** | Engine identifier: `"picker"`, `"capture"`, `"form"`, or `"embedded"`. |
+| `picker` / `capture` / `form` / `embedded` | table | `{}` | Named engine configuration table matching `engine` (mutually exclusive). |
 | `query` | table | `{}` | Parameter schema defining the view's expected launch parameters. Validated before mounting. |
 | `bindings` | table | `{}` | Key-centric bindings: the physical key maps to a workflow command or an explicit `@engine:<engine>.<action>` engine action. |
 | `unbind` | table | `{ keys = [], commands = [], layers = [] }` | Per-View unbinding: physical keys, command addresses, and priority layers. |
@@ -143,22 +145,22 @@ For Picker views, the following presentation options can be configured directly 
 
 ---
 
-## Engine Configuration (`[views.<name>.engine]`)
+## Engine Configuration (`[views.<name>.<engine>]`)
 
-Every View is powered by one of four built-in engines: `picker`, `capture`, `form`, or `embedded`.
+Every View requires an explicit `engine = "picker" | "capture" | "form" | "embedded"`, paired with its corresponding named configuration table.
 
-### 1. Picker Engine (`type = "picker"`)
+### 1. Picker Engine (`[views.<name>.picker]`)
 
 The Picker engine renders a query-driven candidate list with an optional preview pane. Query input is dispatched to the items producer; filtering and ranking are handled by producer scripts.
 
-#### Items Configuration (`[views.<name>.engine.config.items]`)
+#### Items Configuration (`[views.<name>.picker.items]`)
 
 ##### Option A: Static Item Array
 ```toml
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config]
+[views.main.picker]
 items = [
   { display = "Show date", value = "date", metadata = {} },
   { display = "System info", value = "info", metadata = {} },
@@ -167,37 +169,29 @@ items = [
 
 ##### Option B: Dynamic Script Producer
 ```toml
-[views.main.engine.config.items]
-producer = "script"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config.items.handler]
-file = "scripts/items.sh"
+[views.main.picker.items]
+file = "scripts/items.sh"      # or `script = "..."` for inline script
 ```
 
-##### Option C: Declared Producer
-```toml
-[views.main.engine.config.items]
-producer = "declared"
+#### Preview Pane Configuration (`[views.<name>.picker.preview]`)
 
-[views.main.engine.config.items.handler]
-items = [
-  { display = "Show date", value = "date" },
-]
-```
-
-#### Preview Pane Configuration (`[views.<name>.preview]`)
-
-Picker preview panes are configured directly under the View table using `[views.<name>.preview]`:
+Picker preview panes are configured under the Picker engine table using `[views.<name>.picker.preview]`:
 
 ```toml
-[views.main.preview]
+[views.main]
+engine = "picker"
+
+[views.main.picker.preview]
 file = "scripts/preview.py"      # Script file path (or `script = "..."` for inline script)
 width = "35%"                   # Sizing: percentage string or float ratio 0.0..=1.0 (default: 0.35)
 min_width = 24                  # Minimum column width required (default: 24)
 open = true                     # Open pane at activation (default: false)
 ```
 
-##### Supported Fields (`[views.<name>.preview]`)
+##### Supported Fields (`[views.<name>.picker.preview]`)
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -211,18 +205,15 @@ When neither `file` nor `script` is configured, the Picker displays built-in ite
 
 ---
 
-### 2. Capture Engine (`type = "capture"`)
+### 2. Capture Engine (`[views.<name>.capture]`)
 
 Renders read-only text output or command results.
 
 ```toml
-[views.output.engine]
-type = "capture"
+[views.output]
+engine = "capture"
 
-[views.output.engine.config.output]
-producer = "script"
-
-[views.output.engine.config.output.handler]
+[views.output.capture.output]
 file = "scripts/output.sh"
 ```
 
@@ -230,20 +221,17 @@ The script receives a `capture-output` JSON request and returns `{"version": 1, 
 
 ---
 
-### 3. Form Engine (`type = "form"`)
+### 3. Form Engine (`[views.<name>.form]`)
 
 Renders interactive editable form fields from a `content` producer:
 
 ```toml
-[views.input.engine]
-type = "form"
+[views.input]
+engine = "form"
 
-[views.input.engine.config.content]
-producer = "declared"
-
-[views.input.engine.config.content.handler]
+[views.input.form.content]
 fields = [
-  { id = "name", label = "Name", type = "text", required = true },
+  { name = "name", label = "Name", type = "string", required = true },
 ]
 ```
 
@@ -251,15 +239,15 @@ See [Form Content and State](form.md) for full field schemas and validation rule
 
 ---
 
-### 4. Embedded Engine (`type = "embedded"`)
+### 4. Embedded Engine (`[views.<name>.embedded]`)
 
 Spawns and renders an interactive child terminal (PTY) inside `tflow`:
 
 ```toml
-[views.terminal.engine]
-type = "embedded"
+[views.terminal]
+engine = "embedded"
 
-[views.terminal.engine.config]
+[views.terminal.embedded]
 command = ["btop"]
 ```
 

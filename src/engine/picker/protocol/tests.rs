@@ -706,7 +706,7 @@ fn static_display_options_reach_picker_rendering_and_input() {
         std::fs::write(
                 root.join("workflows/core.toml"),
                 format!(
-                    "[workflow]\napi = 1\nname = \"Display options test\"\nentrypoint = \"default\"\n[views.default.engine]\ntype = \"picker\"\n[views.default.engine.config]\nitems = []\n{fields}\n"
+                    "[workflow]\napi = 1\nname = \"Display options test\"\nentrypoint = \"default\"\n[views.default]\nengine = \"picker\"\n[views.default.picker]\nitems = []\n{fields}\n"
                 ),
             )
             .unwrap();
@@ -974,7 +974,7 @@ mod preview_correlation_tests {
             prefix_backspace: None,
             preview: config
                 .view(page)
-                .and_then(|v| v.preview.as_ref())
+                .and_then(|v| v.selected_preview())
                 .map(crate::workflow::config::toml_to_json)
                 .transpose()
                 .unwrap(),
@@ -1120,7 +1120,7 @@ mod preview_correlation_tests {
                 prefix_backspace: None,
                 preview: config
                     .view(page)
-                    .and_then(|v| v.preview.as_ref())
+                    .and_then(|v| v.selected_preview())
                     .map(crate::workflow::config::toml_to_json)
                     .transpose()
                     .unwrap(),

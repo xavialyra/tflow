@@ -74,7 +74,7 @@ fn first_signal_aborts_a_blocked_final_output_write() {
     fs::create_dir_all(workflow_root.join("scripts")).unwrap();
     fs::write(
         workflow_root.join("workflow.toml"),
-        "[workflow]\napi = 1\nname = \"custom\"\n\n[views.main.engine]\ntype = \"picker\"\n[views.main.engine.config]\nitems = []\n",
+        "[workflow]\napi = 1\nname = \"custom\"\n\n[views.main]\nengine = \"picker\"\n\n[views.main.picker]\nitems = []\n",
     )
     .unwrap();
     write_test_config(
@@ -207,11 +207,9 @@ fn signal_exit_terminates_capture_script_source() {
         api = 1
         name = "custom"
         entrypoint = "main"
-        [views.main.engine]
-        type = "capture"
-        [views.main.engine.config.output]
-        producer = "script"
-        [views.main.engine.config.output.handler]
+        [views.main]
+        engine = "capture"
+        [views.main.capture.output]
         file = "scripts/output.sh"
         "#,
     )
@@ -263,11 +261,9 @@ fn signal_exit_waits_for_items_worker_cleanup() {
         api = 1
         name = "custom"
         entrypoint = "main"
-        [views.main.engine]
-        type = "picker"
-        [views.main.engine.config.items]
-        producer = "script"
-        [views.main.engine.config.items.handler]
+        [views.main]
+        engine = "picker"
+        [views.main.picker.items]
         file = "scripts/items.sh"
         "#,
     )
@@ -1538,7 +1534,7 @@ fn replacing_items_request_cancels_the_previous_script() {
     fs::create_dir_all(&script_root).expect("could not create cancellation script directory");
     fs::write(
         workflow_root.join("workflow.toml"),
-        "[workflow]\napi = 1\nname = \"core\"\n\n[views.placeholder.engine]\ntype = \"picker\"\n[views.placeholder.engine.config]\n",
+        "[workflow]\napi = 1\nname = \"core\"\n\n[views.placeholder]\nengine = \"picker\"\n\n[views.placeholder.picker]\n",
     )
     .expect("could not write cancellation workflow manifest");
     let old_pid_path = root.join("old.pid");
@@ -3133,16 +3129,18 @@ api = 1
 name = "Workflow 1"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
-[views.main.engine.config]
+[views.main]
+engine = "picker"
+
+[views.main.picker]
 items = [{display = "Go to subview", value = "go"}]
 [views.main.bindings]
 enter = "jump_sub"
 
-[views.sub.engine]
-type = "picker"
-[views.sub.engine.config]
+[views.sub]
+engine = "picker"
+
+[views.sub.picker]
 items = [{display = "In Subview", value = "sub"}]
 [views.sub.bindings]
 enter = "jump_back"
@@ -3170,9 +3168,10 @@ api = 1
 name = "Workflow 2"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
-[views.main.engine.config]
+[views.main]
+engine = "picker"
+
+[views.main.picker]
 items = [{display = "Workflow 2 main", value = "wf2"}]
 "#,
     )

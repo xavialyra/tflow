@@ -3,20 +3,16 @@ api = 1
 name = "sys"
 
 [views.main]
+engine = "picker"
 
-[views.main.preview]
+[views.main.picker.items]
+file = "scripts/items.py"
+
+[views.main.picker.preview]
 file = "scripts/preview.py"
 width = "40%"
 min_width = 24
 open = false
-
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
-file = "scripts/items.py"
 
 [views.main.bindings]
 enter = "run"
@@ -29,21 +25,17 @@ producer = "script"
 file = "scripts/command.py"
 
 [views.confirm]
+engine = "picker"
 [views.confirm.query]
 type = "object"
 input = "action"
 action = { type = "string", default = "" }
 
-[views.confirm.engine]
-type = "picker"
-
-[views.confirm.engine.config]
+[views.confirm.picker]
 show_input = false
 show_left_prefix = false
 
-[views.confirm.engine.config.items]
-producer = "script"
-[views.confirm.engine.config.items.handler]
+[views.confirm.picker.items]
 file = "scripts/confirm_items.py"
 
 [views.confirm.bindings]
@@ -56,10 +48,8 @@ producer = "script"
 [commands.confirm_exec.handler]
 file = "scripts/confirm_exec.py"
 
-[views.output.engine]
-type = "capture"
+[views.output]
+engine = "capture"
 
-[views.output.engine.config.output]
-producer = "script"
-[views.output.engine.config.output.handler]
+[views.output.capture.output]
 file = "scripts/run.py"

@@ -25,10 +25,10 @@ You want to present selectable data, filter it as the user types, and optionally
 Declare a Picker View and start with a small literal list:
 
 ```toml
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config]
+[views.main.picker]
 items = [
   { display = "Show date", value = "date", metadata = {} },
   { display = "System information", value = "info", metadata = {} },
@@ -40,7 +40,10 @@ items = [
 Add `input_placeholder` to show a muted hint while the query is empty. It is purely presentational and can be combined with `show_input`, `show_divider`, `show_left_prefix`, and a `[picker] left_prefix` marker:
 
 ```toml
-[views.main.engine.config]
+[views.main]
+engine = "picker"
+
+[views.main.picker]
 input_placeholder = "Type to filter…"
 items = [
   { display = "Show date", value = "date", metadata = {} },
@@ -54,13 +57,10 @@ Style the hint with `[picker.placeholder]` in the theme. The terminal cursor app
 Use an item producer when the complete collection must be computed at request time:
 
 ```toml
-[views.branches.engine]
-type = "picker"
+[views.branches]
+engine = "picker"
 
-[views.branches.engine.config.items]
-producer = "script"
-
-[views.branches.engine.config.items.handler]
+[views.branches.picker.items]
 file = "scripts/get_branches.py"
 ```
 
@@ -102,6 +102,7 @@ An aggregate Picker combines items from multiple member Views dynamically via a 
 
 ```toml
 [views.default]
+engine = "picker"
 binding_mode = "item_merge"
 
 [views.default.query]
@@ -110,12 +111,7 @@ input = "search"
 search = { type = "string", default = "" }
 sources = { type = "array<string>", default = [] }
 
-[views.default.engine]
-type = "picker"
-
-[views.default.engine.config.items]
-producer = "script"
-[views.default.engine.config.items.handler]
+[views.default.picker.items]
 file = "scripts/items.py"
 
 [views.default.bindings]
@@ -139,13 +135,10 @@ Precedence inside one View is **focused item → View base bindings → Engine b
 No script is needed when the list is static:
 
 ```toml
-[views.actions.engine]
-type = "picker"
+[views.actions]
+engine = "picker"
 
-[views.actions.engine.config.items]
-producer = "declared"
-
-[views.actions.engine.config.items.handler]
+[views.actions.picker]
 items = [
   { display = "Show date", value = "date" },
   { display = "System information", value = "info" },
@@ -161,7 +154,7 @@ Press `Ctrl+P` in any Picker to view the selected item's display and value. Ever
 To customize the content, declare a preview provider. The following example sets the preview sizing and uses a script to turn selected-item metadata into a document:
 
 ```toml
-[views.branches.preview]
+[views.branches.picker.preview]
 file = "scripts/preview.py"
 width = "35%"
 min_width = 24
@@ -184,7 +177,7 @@ json.dump({"version": 1, "preview": {
 sys.stdout.write("\n")
 ```
 
-Omit `[views.<name>.preview]` to use built-in details. Sizing is controlled by `width` and `min_width`; the pane starts collapsed unless `open = true`. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for document schemas and nested layouts.
+Omit `[views.<name>.picker.preview]` to use built-in details. Sizing is controlled by `width` and `min_width`; the pane starts collapsed unless `open = true`. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for document schemas and nested layouts.
 
 Run the preview example from the repository root:
 

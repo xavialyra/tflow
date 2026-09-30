@@ -71,10 +71,10 @@ api = 1
 name = "Hello Launcher"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config]
+[views.main.picker]
 items = [
   { display = "Echo Hello", value = "hello", metadata = {} },
   { display = "Current Date", value = "date", metadata = {} },

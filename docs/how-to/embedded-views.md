@@ -24,10 +24,10 @@ You want to run an interactive terminal utility, REPL, shell, or TUI inside the 
 Declare the child command as a static argv array:
 
 ```toml
-[views.terminal.engine]
-type = "embedded"
+[views.terminal]
+engine = "embedded"
 
-[views.terminal.engine.config]
+[views.terminal.embedded]
 command = ["sh", "-lc", "bash"]
 ```
 
@@ -40,10 +40,10 @@ command = ["sh", "-lc", "bash"]
 If the child emits a result when it exits, configure a bounded result descriptor:
 
 ```toml
-[views.query_builder.engine]
-type = "embedded"
+[views.query_builder]
+engine = "embedded"
 
-[views.query_builder.engine.config]
+[views.query_builder.embedded]
 command = ["my-cli-wizard"]
 result = { format = "json", required = true, max_bytes = 1048576 }
 ```

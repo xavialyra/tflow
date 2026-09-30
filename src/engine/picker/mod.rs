@@ -217,6 +217,15 @@ const CONFIG_FIELDS: &[&str] = &[
     "input_placeholder",
 ];
 
+const ALLOWED_PICKER_FIELDS: &[&str] = &[
+    "show_input",
+    "show_divider",
+    "show_left_prefix",
+    "input_placeholder",
+    "items",
+    "preview",
+];
+
 /// Subset of [`CONFIG_FIELDS`] that must deserialize as a boolean.
 const BOOLEAN_FIELDS: &[&str] = &["show_input", "show_divider", "show_left_prefix"];
 
@@ -245,7 +254,7 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
-    validate_fields(name, view, CONFIG_FIELDS)?;
+    validate_fields(name, view, ALLOWED_PICKER_FIELDS)?;
     for field in BOOLEAN_FIELDS {
         if let Some(value) = view.engine_field(field)
             && !matches!(value, toml::Value::Boolean(_))
@@ -260,7 +269,7 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
             bail!("view {:?} picker {} must be a string", name, field);
         }
     }
-    if let Some(preview_val) = &view.preview {
+    if let Some(preview_val) = view.selected_preview() {
         let preview_json = toml_to_json(preview_val)?;
         let preview = self::preview::parse(Some(&preview_json))?;
         if let self::preview::PreviewSource::Script(source) = &preview.source {
@@ -315,6 +324,16 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
         toml::Value::Array(_) => {
             let items = toml_to_json(value)?;
             items::validate_item_array(&items)
+        }
+        toml::Value::Table(fields)
+            if fields.contains_key("file") || fields.contains_key("script") =>
+        {
+            parse_producer_script_handler(value, root)
+                .context("items script handler is invalid")
+                .map(|_| ())
+        }
+        toml::Value::Table(fields) if fields.contains_key("items") => {
+            validate_declared_items_handler(value)
         }
         toml::Value::Table(fields) if fields.contains_key("producer") => {
             let provider: ItemsProducerConfig = value
@@ -384,36 +403,38 @@ name = "Preview browser"
 entrypoint = "main"
 
 [views.main]
+engine = "picker"
+
 [views.main.query]
 type = "object"
 input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "browser" }
-[views.main.preview]
+[views.main.picker]
+items = [
+  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
+  { display = "Empty preview", value = "empty", metadata = {} },
+]
+[views.main.picker.preview]
 file = "scripts/preview.py"
 width = "35%"
 min_width = 24
-[views.main.engine]
-type = "picker"
-[views.main.engine.config]
+
+[views.override]
+engine = "picker"
+
+[views.override.picker]
 items = [
   { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
   { display = "Empty preview", value = "empty", metadata = {} },
 ]
-
-[views.override.preview]
+[views.override.picker.preview]
 file = "scripts/preview.py"
-[views.override.engine]
-type = "picker"
-[views.override.engine.config]
-items = [
-  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
-  { display = "Empty preview", value = "empty", metadata = {} },
-]
 
-[views.declared.engine]
-type = "picker"
-[views.declared.engine.config]
+[views.declared]
+engine = "picker"
+
+[views.declared.picker]
 items = [{ display = "Static document" }]
 "#,
     )
@@ -427,20 +448,20 @@ name = "Preview library"
 entrypoint = "main"
 
 [views.main]
+engine = "picker"
+
 [views.main.query]
 type = "object"
 input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "library" }
-[views.main.preview]
-file = "scripts/preview.py"
-[views.main.engine]
-type = "picker"
-[views.main.engine.config]
+[views.main.picker]
 items = [
   { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
   { display = "Empty preview", value = "empty", metadata = {} },
 ]
+[views.main.picker.preview]
+file = "scripts/preview.py"
 [views.main.bindings]
 "ctrl+p" = "toggle_preview"
 "alt+k" = "preview_scroll_up"
@@ -505,7 +526,7 @@ mod tests {
         for field in STRING_FIELDS {
             for value in ["true", "0", "[]", "{}"] {
                 let view: View = toml::from_str(&format!(
-                    "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = {value}\n"
+                    "engine = \"picker\"\n[picker]\n{field} = {value}\n"
                 ))
                 .unwrap();
                 let result = validate_config(EngineValidationContext {
@@ -522,7 +543,7 @@ mod tests {
             }
 
             let view: View = toml::from_str(&format!(
-                "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = \"Search\"\n"
+                "engine = \"picker\"\n[picker]\n{field} = \"Search\"\n"
             ))
             .unwrap();
             validate_config(EngineValidationContext {
@@ -539,7 +560,7 @@ mod tests {
         for field in BOOLEAN_FIELDS {
             for value in ["true", "false", "\"false\"", "0", "[]", "{}"] {
                 let view: View = toml::from_str(&format!(
-                    "[engine]\ntype = \"picker\"\n[engine.config]\n{field} = {value}\n"
+                    "engine = \"picker\"\n[picker]\n{field} = {value}\n"
                 ))
                 .unwrap();
                 let result = validate_config(EngineValidationContext {
@@ -565,9 +586,8 @@ mod tests {
     fn static_item_shapes_are_validated_during_engine_validation() {
         let valid: View = toml::from_str(
             r#"
-            [engine]
-            type = "picker"
-            [engine.config]
+            engine = "picker"
+            [picker]
             items = [{ display = "Example item", value = "example-value" }]
             "#,
         )
@@ -581,9 +601,8 @@ mod tests {
 
         let invalid: View = toml::from_str(
             r#"
-            [engine]
-            type = "picker"
-            [engine.config]
+            engine = "picker"
+            [picker]
             items = [{ value = "missing-display" }]
             "#,
         )

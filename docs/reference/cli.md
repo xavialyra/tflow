@@ -90,8 +90,10 @@ api = 1
 name = "quick-picker"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
+
+[views.main.picker]
 ...
 ```
 

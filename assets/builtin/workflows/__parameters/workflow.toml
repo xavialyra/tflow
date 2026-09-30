@@ -3,14 +3,10 @@ api = 1
 name = "Parameter Editor"
 
 [views.main]
+engine = "form"
 chrome_commands_show = ["enter"]
 
-[views.main.engine]
-type = "form"
-
-[views.main.engine.config.content]
-producer = "script"
-[views.main.engine.config.content.handler]
+[views.main.form.content]
 script = '''#!/usr/bin/env python3
 import json
 import sys

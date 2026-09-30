@@ -14,16 +14,13 @@ The `form` Engine renders editable fields with Ratatui. View query parameters re
 
 ## Configuration
 
-`engine.config.content` is required and accepts a producer with exactly `producer` and `handler`. Form rejects Picker items, other Engine configuration fields, and a View `bindings`. View and Host commands retain their normal binding precedence.
+`[views.<name>.form.content]` is required and accepts either a dynamic script or static fields:
 
 ```toml
-[views.edit.engine]
-type = "form"
+[views.edit]
+engine = "form"
 
-[views.edit.engine.config.content]
-producer = "declared"
-
-[views.edit.engine.config.content.handler]
+[views.edit.form.content]
 fields = [
   { name = "name", label = "Project name", type = "string", required = true },
   { name = "environment", label = "Environment", type = "enum", options = ["dev", "staging", "prod"], value = "dev" },
@@ -33,12 +30,14 @@ fields = [
 ]
 ```
 
-A script producer uses the standard script handler:
+A script producer uses `file` or inline `script`:
 
 ```toml
-[views.edit.engine.config.content]
-producer = "script"
-handler = { file = "scripts/content.py" }
+[views.edit]
+engine = "form"
+
+[views.edit.form.content]
+file = "scripts/content.py"
 ```
 
 The request is:

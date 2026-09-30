@@ -414,9 +414,12 @@ struct DeclaredItemsHandler {
 }
 
 fn is_producer_value(value: &Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|fields| fields.contains_key("producer"))
+    value.as_object().is_some_and(|fields| {
+        fields.contains_key("producer")
+            || fields.contains_key("file")
+            || fields.contains_key("script")
+            || fields.contains_key("items")
+    })
 }
 
 fn run_items_provider(
@@ -426,6 +429,57 @@ fn run_items_provider(
     engine_state: &Value,
     cancellation: &CancellationToken,
 ) -> ItemsScriptOutcome {
+    let source_label = format!("[views.{}.items]", definition.view_ref);
+    if let Some(obj) = value.as_object() {
+        if obj.contains_key("file") || obj.contains_key("script") {
+            let handler = match toml::Value::try_from(value.clone())
+                .context("items script handler could not be converted to TOML")
+            {
+                Ok(h) => h,
+                Err(error) => {
+                    return ItemsScriptOutcome {
+                        result: Err(error),
+                        managed_child_reaped: false,
+                    };
+                }
+            };
+            let source = match parse_producer_script_handler(&handler, definition.workflow_root()) {
+                Ok(source) => source,
+                Err(error) => {
+                    return ItemsScriptOutcome {
+                        result: Err(error),
+                        managed_child_reaped: false,
+                    };
+                }
+            };
+            let request = crate::protocol::items_request(
+                page_parameters.values(),
+                definition.input_value(),
+                "picker",
+                engine_state,
+            );
+            let outcome = crate::protocol::run_script_items_response(
+                &definition.view_ref,
+                &source_label,
+                definition.workflow_root(),
+                &source,
+                &request,
+                cancellation,
+            );
+            return ItemsScriptOutcome {
+                result: outcome
+                    .result
+                    .and_then(|val| validate_items_value(&source_label, val)),
+                managed_child_reaped: outcome.managed_child_reaped,
+            };
+        } else if let Some(items_arr) = obj.get("items").and_then(|i| i.as_array()) {
+            return ItemsScriptOutcome {
+                result: validate_items_value(&source_label, Value::Array(items_arr.clone())),
+                managed_child_reaped: false,
+            };
+        }
+    }
+
     let provider: Result<ItemsProducer> = serde_json::from_value(value.clone())
         .context("items producer must define producer and handler");
     let provider = match provider {
@@ -517,6 +571,29 @@ pub(crate) fn run_items_producer_raw(
     let source_label = format!("[views.{}.items]", view_ref);
     if json_val.is_array() {
         return validate_items_value(&source_label, json_val);
+    }
+    if let Some(obj) = json_val.as_object() {
+        if obj.contains_key("file") || obj.contains_key("script") {
+            let source = parse_producer_script_handler(producer_value, script_root)?;
+            let engine_state = serde_json::json!({
+                "input": raw_input,
+            });
+            let request =
+                crate::protocol::items_request(parameters, &Value::Null, "picker", &engine_state);
+            let outcome = crate::protocol::run_script_items_response(
+                view_ref,
+                &source_label,
+                script_root,
+                &source,
+                &request,
+                cancellation,
+            );
+            return outcome
+                .result
+                .and_then(|value| validate_items_value(&source_label, value));
+        } else if let Some(items_arr) = obj.get("items").and_then(|i| i.as_array()) {
+            return validate_items_value(&source_label, Value::Array(items_arr.clone()));
+        }
     }
     let provider: ItemsProducer = serde_json::from_value(json_val)
         .context("items producer must define producer and handler")?;

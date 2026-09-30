@@ -4,13 +4,9 @@ name = "calculator"
 entrypoint = "main"
 
 [views.main]
+engine = "picker"
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/items.py"
 
 [views.main.bindings]

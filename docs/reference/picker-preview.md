@@ -11,16 +11,16 @@ description: "Configuration, ownership, version-1 script protocol, document sche
 
 # Picker Preview Documents and Producers
 
-Every Picker has a preview pane, initially collapsed. `Ctrl+P` toggles it by default, and `open = true` under `[views.<name>.preview]` can open it at activation. The outer pane is sized automatically from `width` and `min_width`. While collapsed, the host does not prepare preview content, execute preview scripts, or load preview images.
+Every Picker has a preview pane, initially collapsed. `Ctrl+P` toggles it by default, and `open = true` under `[views.<name>.picker.preview]` can open it at activation. The outer pane is sized automatically from `width` and `min_width`. While collapsed, the host does not prepare preview content, execute preview scripts, or load preview images.
 
 A Picker preview has two independent parts: a data source and a host-rendered document. Without a custom preview script (`file` or `script`), the host displays built-in item details. A document may contain its own internal layouts.
 
 ## Source Configuration
 
-Preview configuration is declared directly under the View using `[views.<name>.preview]`:
+Preview configuration is declared under the Picker engine table using `[views.<name>.picker.preview]`:
 
 ```toml
-[views.main.preview]
+[views.main.picker.preview]
 file = "scripts/preview.py"  # or script = "..."
 width = "35%"                # float (0.0..=1.0) or percentage string ("0%"..="100%")
 min_width = 24               # unsigned 16-bit integer

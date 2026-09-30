@@ -41,18 +41,18 @@ api = 1
 name = "Native form command selector"
 entrypoint = "commands"
 
+[views.commands]
+engine = "picker"
+
 [views.commands.query]
 type = "object"
 commands = { type = "array<object>", default = [] }
 revision = { type = "integer", default = 0 }
 
-[views.commands.engine]
-type = "picker"
-[views.commands.engine.config]
+[views.commands.picker]
 show_input = false
-[views.commands.engine.config.items]
-producer = "script"
-[views.commands.engine.config.items.handler]
+
+[views.commands.picker.items]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
@@ -119,30 +119,28 @@ name = "Native form fixture"
 entrypoint = "main"
 
 [views.main]
-[views.main.engine]
-type = "form"
-[views.main.engine.config.content]
-producer = "declared"
-[views.main.engine.config.content.handler]
-fields = [
+engine = "form"
+
+[views.main.form]
+content = { fields = [
     { name = "name", label = "Project name", required = true },
     { name = "count", label = "Count", type = "integer", value = 2 },
     { name = "enabled", label = "Enabled", type = "boolean", value = false },
     { name = "options", label = "Options", type = "json", value = { tags = [] } },
-]
+] }
 [views.main.bindings]
 enter = "submit"
 "ctrl+l" = "details"
 "ctrl+t" = "string_form"
 
+[views.dynamic]
+engine = "form"
+
 [views.dynamic.query]
 type = "object"
 spec = { type = "object", default = { fields = [{ name = "message", label = "Dynamic message", value = "From query", required = true }, { name = "data", type = "json", value = { count = 1 } }] } }
-[views.dynamic.engine]
-type = "form"
-[views.dynamic.engine.config.content]
-producer = "script"
-handler = { file = "scripts/content.py" }
+[views.dynamic.form.content]
+file = "scripts/content.py"
 [views.dynamic.bindings]
 enter = "submit"
 
@@ -172,21 +170,20 @@ type = "return"
 producer = "script"
 handler = { file = "scripts/returned.py" }
 
+[views.string]
+engine = "form"
+
 [views.string.query]
 type = "string"
-[views.string.engine]
-type = "form"
-[views.string.engine.config.content]
-producer = "script"
-handler = { file = "scripts/string-content.py" }
+[views.string.form.content]
+file = "scripts/string-content.py"
 [views.string.bindings]
 "" = "submit"
 
-[views.failed.engine]
-type = "form"
-[views.failed.engine.config.content]
-producer = "script"
-[views.failed.engine.config.content.handler]
+[views.failed]
+engine = "form"
+
+[views.failed.form.content]
 script = '''#!/bin/sh
 printf '%s' '{"version":2,"content":{"fields":[]}}'
 '''
@@ -497,11 +494,8 @@ fn view_command_precedes_workflow_command_and_editor_even_when_form_is_invalid()
         producer = "declared"
         handler = { value = "SESSION_COMMAND_WON" }
 
-        [workflows.example.views.form.engine]
-        type = "form"
-        [workflows.example.views.form.engine.config.content]
-        producer = "declared"
-        handler = { fields = [{ name = "name", label = "Required name", required = true }] }
+        [workflows.example.views.form.form]
+        content = { fields = [{ name = "name", label = "Required name", required = true }] }
 
         [workflows.example.views.form.commands.cancel]
         key = "ctrl+u"

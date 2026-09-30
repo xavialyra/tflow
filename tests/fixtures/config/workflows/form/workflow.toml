@@ -4,11 +4,9 @@ name = "Native form example"
 entrypoint = "input"
 
 [views.main]
+engine = "picker"
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
+[views.main.picker]
 show_input = false
 items = [{ display = "Collect parameters", value = "create" }]
 
@@ -16,6 +14,7 @@ items = [{ display = "Collect parameters", value = "create" }]
 enter = "open"
 
 [views.input]
+engine = "form"
 cancel_exit_code = 1
 
 [views.input.query]
@@ -25,12 +24,8 @@ environment = { type = "enum", options = ["dev", "prod"], default = "dev" }
 enabled = { type = "boolean", default = true }
 spec = { type = "object", default = { fields = [{ name = "name", required = true }, { name = "environment", label = "Environment", type = "enum", options = ["dev", "prod"], value = "dev" }, { name = "enabled", label = "Enabled (true/false)", type = "boolean", value = true }] } }
 
-[views.input.engine]
-type = "form"
-
-[views.input.engine.config.content]
-producer = "script"
-handler = { file = "scripts/content.py" }
+[views.input.form.content]
+file = "scripts/content.py"
 
 [views.input.bindings]
 enter = "submit"
@@ -58,15 +53,12 @@ type = "return"
 producer = "script"
 handler = { file = "scripts/submit.py" }
 
+[views.result]
+engine = "capture"
+
 [views.result.query]
 type = "object"
 result = { type = "object" }
 
-[views.result.engine]
-type = "capture"
-
-[views.result.engine.config.output]
-producer = "script"
-
-[views.result.engine.config.output.handler]
+[views.result.capture.output]
 file = "scripts/received.py"

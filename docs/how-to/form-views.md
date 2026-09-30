@@ -37,16 +37,15 @@ The runnable files are in [the form fixture](../../tests/fixtures/config/workflo
 Declare an object parameter and a script content producer:
 
 ```toml
+[views.edit]
+engine = "form"
+
 [views.edit.query]
 type = "object"
 spec = { type = "object" }
 
-[views.edit.engine]
-type = "form"
-
-[views.edit.engine.config.content]
-producer = "script"
-handler = { file = "scripts/content.py" }
+[views.edit.form.content]
+file = "scripts/content.py"
 ```
 
 In a directory workflow, create `scripts/content.py`:

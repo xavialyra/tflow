@@ -66,6 +66,7 @@ impl EngineRegistry {
         view: &View,
         script_root: Option<&Path>,
     ) -> Result<()> {
+        view.validate_engine_shape(name)?;
         let context = EngineValidationContext {
             view_ref: name,
             view,
@@ -156,21 +157,31 @@ mod tests {
         }
 
         let registry = EngineRegistry::new();
-        let embedded = view("[engine]\ntype = 'embedded'\n[engine.config]\ncommand = 'sh'");
+        let missing_engine = view("[embedded]\ncommand = ['sh']");
+        let error = registry
+            .validate_config("missing-engine", &missing_engine)
+            .expect_err("view must declare engine");
+        assert!(
+            error
+                .to_string()
+                .contains("is missing required field \"engine\"")
+        );
+
+        let embedded = view("engine = 'embedded'\n[embedded]\ncommand = 'sh'");
         assert!(registry.validate_config("bad-embedded", &embedded).is_err());
 
         let bound_embedded = view(
-            "[engine]\ntype = 'embedded'\n[engine.config]\ncommand = ['sh']\n[bindings]\n\"ctrl+b\" = \"cancel\"",
+            "engine = 'embedded'\n[embedded]\ncommand = ['sh']\n[bindings]\n\"ctrl+b\" = \"cancel\"",
         );
         registry
             .validate_config("bound-embedded", &bound_embedded)
             .expect("embedded View bindings should be accepted");
 
-        let capture = view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 1");
+        let capture = view("engine = 'capture'\n[capture]\noutput = 1");
         assert!(registry.validate_config("bad-capture", &capture).is_err());
 
         let capture_with_title =
-            view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 'ok'\ntitle = 'ignored'");
+            view("engine = 'capture'\n[capture]\noutput = 'ok'\ntitle = 'ignored'");
         assert!(
             registry
                 .validate_config("capture-with-title", &capture_with_title)
@@ -178,18 +189,28 @@ mod tests {
             "Capture must not accept an Engine-controlled title"
         );
 
-        let capture_with_items =
-            view("[engine]\ntype = 'capture'\n[engine.config]\noutput = 'ok'\nitems = []");
+        let capture_with_items = view("engine = 'capture'\n[capture]\noutput = 'ok'\nitems = []");
         let error = registry
             .validate_config("capture-with-items", &capture_with_items)
             .expect_err("non-picker engines must reject picker data-source fields");
-        assert!(error.to_string().contains("cannot provide picker items"));
-
-        let image = view("[engine]\ntype = 'image'\n[engine.config]\npath = 'cover.png'");
         assert!(
-            registry
-                .validate_config("bad-image-engine", &image)
-                .is_err()
+            error
+                .to_string()
+                .contains("has unsupported field \"items\"")
         );
+
+        let mismatch_engine = view("engine = 'picker'\n[capture]\noutput = 'ok'");
+        let error = registry
+            .validate_config("mismatch-engine", &mismatch_engine)
+            .expect_err("mismatched engine table must be rejected");
+        assert!(error.to_string().contains(
+            "declares engine = \"picker\", but configures [views.mismatch-engine.capture]"
+        ));
+
+        let legacy_engine = view("[engine]\ntype = 'picker'");
+        let error = registry
+            .validate_config("legacy-engine", &legacy_engine)
+            .expect_err("legacy [engine] table must be rejected");
+        assert!(error.to_string().contains("uses legacy"));
     }
 }

@@ -3,18 +3,14 @@ api = 1
 name = "Command Palette"
 
 [views.main]
+engine = "picker"
 chrome_commands_show = ["enter"]
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
+[views.main.picker]
 show_input = false
 show_divider = false
 
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 script = '''#!/usr/bin/env python3
 import json
 import sys

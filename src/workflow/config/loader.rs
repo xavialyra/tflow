@@ -173,6 +173,7 @@ pub(crate) fn parse_atomic_workflow_package(
         .with_context(|| format!("invalid [views] in workflow manifest {source_name}"))?;
 
     for (view_name, view) in &views {
+        view.validate_engine_shape(view_name)?;
         if let Some(alias) = &view.alias {
             bail!(
                 "view {:?} in workflow {:?} cannot declare alias {:?}; ADR 0005 centralizes aliases in suite manifests ([aliases])",
@@ -949,7 +950,9 @@ mod tests {
             name = "demo"
 
             [views.main]
-            engine = { type = "picker" }
+            engine = "picker"
+
+            [views.main.picker]
         "#;
         let (header, workflow) = parse_atomic_workflow_package(toml_src, "test", "demo").unwrap();
         assert_eq!(header.entrypoint, "main");
@@ -966,7 +969,9 @@ mod tests {
             entrypoint = "search"
 
             [views.search]
-            engine = { type = "picker" }
+            engine = "picker"
+
+            [views.search.picker]
         "#;
         let (header, workflow) = parse_atomic_workflow_package(toml_src, "test", "demo").unwrap();
         assert_eq!(header.entrypoint, "search");
@@ -982,7 +987,9 @@ mod tests {
             name = "demo"
 
             [views.custom]
-            engine = { type = "picker" }
+            engine = "picker"
+
+            [views.custom.picker]
         "#;
         let err = parse_atomic_workflow_package(toml_src, "test", "demo")
             .expect_err("omitted entrypoint requires [views.main]");

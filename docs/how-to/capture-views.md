@@ -24,10 +24,10 @@ You want to show fixed text or generate output with a script while keeping the l
 Declare a Capture View with a literal `output` value:
 
 ```toml
-[views.output.engine]
-type = "capture"
+[views.output]
+engine = "capture"
 
-[views.output.engine.config]
+[views.output.capture]
 output = "System information is ready."
 ```
 
@@ -35,16 +35,13 @@ The value is literal configuration and is validated when the workflow is loaded.
 
 ### 2. Produce Output with a Script
 
-Use the producer envelope when output depends on launch-time data:
+Use an output table when output depends on launch-time data:
 
 ```toml
-[views.output.engine]
-type = "capture"
+[views.output]
+engine = "capture"
 
-[views.output.engine.config.output]
-producer = "script"
-
-[views.output.engine.config.output.handler]
+[views.output.capture.output]
 file = "scripts/output.py"
 ```
 

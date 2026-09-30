@@ -3,10 +3,6 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-fn default_engine_type() -> String {
-    super::ENGINE_PICKER.to_string()
-}
-
 fn default_workflow_api() -> u32 {
     1
 }
@@ -110,24 +106,6 @@ pub enum BindingMode {
 /// The View's own `[views.<name>.bindings]` bindings, keyed by physical key.
 pub type ViewBindings = BTreeMap<String, toml::Value>;
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EngineSpec {
-    #[serde(rename = "type", default = "default_engine_type")]
-    pub engine_type: String,
-    #[serde(default)]
-    pub config: EngineOptions,
-}
-
-impl Default for EngineSpec {
-    fn default() -> Self {
-        Self {
-            engine_type: default_engine_type(),
-            config: EngineOptions::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedScriptTarget {
     File(String),
@@ -195,14 +173,6 @@ impl ResolvedScriptSource {
             Ok(())
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
-pub struct EngineOptions {
-    #[serde(default)]
-    pub items: Option<toml::Value>,
-    #[serde(flatten)]
-    pub fields: toml::Table,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -452,11 +422,11 @@ pub struct Unbind {
     pub layers: Vec<String>,
 }
 
+static EMPTY_TABLE: std::sync::LazyLock<toml::Table> = std::sync::LazyLock::new(toml::Table::new);
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
-    #[serde(default)]
-    pub engine: EngineSpec,
     #[serde(default)]
     pub alias: Option<String>,
     #[serde(default)]
@@ -471,21 +441,114 @@ pub struct View {
     pub unbind: Unbind,
     #[serde(default)]
     pub chrome_commands_show: Option<Vec<String>>,
+
+    #[serde(default)]
+    pub picker: Option<toml::Table>,
+    #[serde(default)]
+    pub capture: Option<toml::Table>,
+    #[serde(default)]
+    pub form: Option<toml::Table>,
+    #[serde(default)]
+    pub embedded: Option<toml::Table>,
+
+    #[serde(default)]
+    pub engine: Option<toml::Value>,
     #[serde(default)]
     pub preview: Option<toml::Value>,
 }
 
 impl View {
+    pub fn engine_name(&self) -> Option<&str> {
+        self.engine.as_ref().and_then(|v| v.as_str())
+    }
+
+    pub fn validate_engine_shape(&self, view_name: &str) -> Result<()> {
+        let Some(engine_val) = &self.engine else {
+            bail!(
+                "view {:?} is missing required field \"engine\" (expected \"picker\", \"capture\", \"form\", or \"embedded\")",
+                view_name
+            );
+        };
+
+        if engine_val.is_table() {
+            bail!(
+                "view {:?} uses legacy [views.{}.engine]; set `engine = \"...\"` and use named engine table instead (e.g. [views.{}.picker], [views.{}.capture], [views.{}.form], [views.{}.embedded])",
+                view_name,
+                view_name,
+                view_name,
+                view_name,
+                view_name,
+                view_name
+            );
+        }
+
+        let Some(engine_str) = engine_val.as_str() else {
+            bail!(
+                "view {:?} field \"engine\" must be a string (expected \"picker\", \"capture\", \"form\", or \"embedded\")",
+                view_name
+            );
+        };
+
+        const VALID_ENGINES: &[&str] = &["picker", "capture", "form", "embedded"];
+        if !VALID_ENGINES.contains(&engine_str) {
+            bail!(
+                "view {:?} has unknown engine {:?} (expected \"picker\", \"capture\", \"form\", or \"embedded\")",
+                view_name,
+                engine_str
+            );
+        }
+
+        if self.preview.is_some() {
+            bail!(
+                "view {:?} defines [views.{}.preview] at view level; preview belongs to the picker engine, configure [views.{}.picker.preview] instead",
+                view_name,
+                view_name,
+                view_name
+            );
+        }
+
+        let declared = [
+            ("picker", self.picker.is_some()),
+            ("capture", self.capture.is_some()),
+            ("form", self.form.is_some()),
+            ("embedded", self.embedded.is_some()),
+        ];
+
+        for (table_name, is_present) in declared {
+            if is_present && table_name != engine_str {
+                bail!(
+                    "view {:?} declares engine = {:?}, but configures [views.{}.{}]",
+                    view_name,
+                    engine_str,
+                    view_name,
+                    table_name
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn selected_engine_type(&self) -> &str {
-        &self.engine.engine_type
+        self.engine_name().unwrap_or("picker")
     }
 
     pub(crate) fn selected_engine_config(&self) -> &toml::Table {
-        &self.engine.config.fields
+        match self.selected_engine_type() {
+            "picker" => self.picker.as_ref().unwrap_or(&EMPTY_TABLE),
+            "capture" => self.capture.as_ref().unwrap_or(&EMPTY_TABLE),
+            "form" => self.form.as_ref().unwrap_or(&EMPTY_TABLE),
+            "embedded" => self.embedded.as_ref().unwrap_or(&EMPTY_TABLE),
+            _ => &EMPTY_TABLE,
+        }
     }
 
     pub(crate) fn selected_items(&self) -> Option<&toml::Value> {
-        self.engine.config.items.as_ref()
+        self.picker.as_ref().and_then(|t| t.get("items"))
+    }
+
+    pub(crate) fn selected_preview(&self) -> Option<&toml::Value> {
+        self.picker.as_ref().and_then(|t| t.get("preview"))
     }
 
     pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {

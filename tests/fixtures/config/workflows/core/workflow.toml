@@ -4,6 +4,7 @@ name = "core"
 entrypoint = "default"
 
 [views.default]
+engine = "picker"
 binding_mode = "item_merge"
 
 [views.default.query]
@@ -12,15 +13,10 @@ input = "search"
 search = { type = "string", default = "" }
 sources = { type = "array<string>", default = [] }
 
-[views.default.engine]
-type = "picker"
-
-[views.default.engine.config]
+[views.default.picker]
 input_placeholder = "Type a route or search"
 
-[views.default.engine.config.items]
-producer = "script"
-[views.default.engine.config.items.handler]
+[views.default.picker.items]
 file = "scripts/items.py"
 
 [views.default.bindings]
@@ -30,21 +26,17 @@ space = "route_separator"
 # Route completion is no longer an engine feature. The core workflow declares
 # its own Tab command, which opens this popup and applies the chosen route.
 [views.completion]
+engine = "picker"
 
 [views.completion.query]
 type = "object"
 input = "filter"
 filter = { type = "string", default = "" }
 
-[views.completion.engine]
-type = "picker"
-
-[views.completion.engine.config]
+[views.completion.picker]
 show_left_prefix = false
 
-[views.completion.engine.config.items]
-producer = "script"
-[views.completion.engine.config.items.handler]
+[views.completion.picker.items]
 file = "scripts/completion.py"
 
 [views.completion.bindings]

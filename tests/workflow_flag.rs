@@ -19,8 +19,10 @@ fn check_validates_isolated_single_file_workflow() {
         name = "Standalone Calc"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -56,8 +58,10 @@ fn check_validates_isolated_single_file_workflow_with_omitted_entrypoint() {
         api = 1
         name = "Omitted Entrypoint Workflow"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -96,8 +100,10 @@ fn check_validates_isolated_workflow_directory() {
         name = "Directory Workflow"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -135,9 +141,9 @@ fn inspect_isolated_workflow_inspects_main_view() {
         entrypoint = "main"
 
         [views.main]
+        engine = "picker"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -171,8 +177,10 @@ fn isolated_workflow_works_without_global_config() {
         name = "Demo"
         entrypoint = "main"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main]
+        engine = "picker"
+
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -216,9 +224,9 @@ fn suite_inspect_resolves_alias_main() {
         entrypoint = "entry"
 
         [views.entry]
+        engine = "picker"
 
-        [views.entry.engine]
-        type = "picker"
+        [views.entry.picker]
         "#,
     )
     .unwrap();
@@ -256,11 +264,9 @@ fn isolated_workflow_runs_interactively_through_pty() {
         entrypoint = "main"
 
         [views.main]
+        engine = "picker"
 
-        [views.main.engine]
-        type = "picker"
-
-        [views.main.engine.config]
+        [views.main.picker]
         items = [
             { display = "First Option", value = "first", metadata = {} }
         ]
@@ -304,8 +310,10 @@ fn isolated_workflow_without_main_alias_fails_with_available_views_hint() {
         name = "No Main"
         entrypoint = "main"
 
-        [views.custom.engine]
-        type = "picker"
+        [views.custom]
+        engine = "picker"
+
+        [views.custom.picker]
         "#,
     )
     .unwrap();
@@ -343,9 +351,9 @@ fn isolated_multi_workflow_directory_requires_a_manifest() {
         entrypoint = "main"
 
         [views.index]
+        engine = "picker"
 
-        [views.index.engine]
-        type = "picker"
+        [views.index.picker]
         "#,
     )
     .unwrap();
@@ -363,10 +371,10 @@ fn isolated_multi_workflow_directory_requires_a_manifest() {
         entrypoint = "main"
 
         [views.main]
+        engine = "picker"
         alias = "bar"
 
-        [views.main.engine]
-        type = "picker"
+        [views.main.picker]
         "#,
     )
     .unwrap();
@@ -460,9 +468,9 @@ fn streamed_workflow_uses_tty_input_and_returns_clean_stdout() {
 api = 1
 name = "Streamed picker"
 entrypoint = "choose"
-[views.choose.engine]
-type = "picker"
-[views.choose.engine.config]
+[views.choose]
+engine = "picker"
+[views.choose.picker]
 items = [{ display = "Streamed choice", value = "chosen" }]
 [views.choose.bindings]
 enter = "accept"

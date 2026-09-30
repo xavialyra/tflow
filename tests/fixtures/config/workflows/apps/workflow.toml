@@ -4,23 +4,19 @@ name = "applications"
 entrypoint = "main"
 
 [views.main]
+engine = "picker"
 
-[views.main.engine]
-type = "picker"
+[views.main.picker]
+input_placeholder = "Search applications"
 
-[views.main.preview]
+[views.main.picker.items]
+file = "scripts/items.sh"
+
+[views.main.picker.preview]
 file = "scripts/preview.py"
 width = "35%"
 min_width = 24
 open = false
-
-[views.main.engine.config]
-input_placeholder = "Search applications"
-
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
-file = "scripts/items.sh"
 
 [views.main.bindings]
 enter = "open"
@@ -28,17 +24,13 @@ enter = "open"
 "ctrl+w" = "weight"
 
 [views.weight]
+engine = "form"
 [views.weight.query]
 type = "object"
 input = "app"
 app = { type = "string", default = "" }
 
-[views.weight.engine]
-type = "form"
-
-[views.weight.engine.config.content]
-producer = "script"
-[views.weight.engine.config.content.handler]
+[views.weight.form.content]
 file = "scripts/weight-content.sh"
 
 [views.weight.bindings]

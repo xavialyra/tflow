@@ -4,11 +4,9 @@ name = "recipe"
 entrypoint = "recipe"
 
 [views.recipe]
+engine = "picker"
 
-[views.recipe.engine]
-type = "picker"
-
-[views.recipe.engine.config]
+[views.recipe.picker]
 items = [
     { display = "Recipe: Show Working Directory", value = "pwd" },
     { display = "Recipe: Say Hello", value = "hello" },

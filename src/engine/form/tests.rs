@@ -411,14 +411,14 @@ fn registry_accepts_form_and_rejects_picker_sources_or_custom_bindings() {
             .runtime,
         &["content"]
     );
-    let valid = "[engine]\ntype = 'form'\n[engine.config.content]\nproducer = 'declared'\nhandler = { fields = [{ name = 'title' }] }\n";
+    let valid = "engine = 'form'\n[form.content]\nfields = [{ name = 'title' }]\n";
     registry
         .validate_config("form", &toml::from_str(valid).unwrap())
         .unwrap();
-    let extra = "[engine.config]\nitems = []";
+    let extra = "engine = 'form'\n[form]\nitems = []\ncontent = { fields = [{ name = 'title' }] }";
     assert!(
         registry
-            .validate_config("form", &toml::from_str(&format!("{valid}{extra}")).unwrap())
+            .validate_config("form", &toml::from_str(extra).unwrap())
             .is_err()
     );
 }

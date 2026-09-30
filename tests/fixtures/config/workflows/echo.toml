@@ -4,20 +4,13 @@ name = "echo"
 entrypoint = "main"
 
 [views.main]
+engine = "capture"
 
 [views.main.query]
 type = "object"
 message = { type = "string", default = "Hello from single-file workflow!" }
 
-[views.main.engine]
-type = "capture"
-
-[views.main.engine.config]
-
-[views.main.engine.config.output]
-producer = "script"
-
-[views.main.engine.config.output.handler]
+[views.main.capture.output]
 script = '''#!/usr/bin/env python3
 import json
 import sys

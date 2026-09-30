@@ -14,6 +14,7 @@ bold = true
 foreground = "scheme:muted"
 
 [views.main]
+engine = "picker"
 
 [views.main.query]
 type = "object"
@@ -21,15 +22,10 @@ input = "search"
 search = { type = "string", default = "" }
 selected = { type = "array<string>", default = ["calculator", "apps", "sys"] }
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
+[views.main.picker]
 input_placeholder = "Search components"
 
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 script = '''#!/usr/bin/env python3
 import atexit
 import json
@@ -243,7 +239,7 @@ if __name__ == "__main__":
     main()
 '''
 
-[views.main.preview]
+[views.main.picker.preview]
 width = "52%"
 min_width = 36
 open = true

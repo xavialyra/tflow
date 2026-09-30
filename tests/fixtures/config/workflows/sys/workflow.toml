@@ -4,14 +4,9 @@ name = "system"
 entrypoint = "main"
 
 [views.main]
+engine = "picker"
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/items.sh"
 
 [views.main.bindings]
@@ -32,12 +27,8 @@ producer = "script"
 [commands.info.handler]
 file = "scripts/command.sh"
 
-[views.output.engine]
-type = "capture"
+[views.output]
+engine = "capture"
 
-[views.output.engine.config]
-
-[views.output.engine.config.output]
-producer = "script"
-[views.output.engine.config.output.handler]
+[views.output.capture.output]
 file = "scripts/run.sh"

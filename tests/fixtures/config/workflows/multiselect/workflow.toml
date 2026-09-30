@@ -19,6 +19,7 @@ foreground = "scheme:accent"
 bold = true
 
 [views.main]
+engine = "picker"
 
 [views.main.query]
 type = "object"
@@ -26,19 +27,14 @@ input = "search"
 search = { type = "string", default = "" }
 selected = { type = "array<string>", default = [] }
 
-[views.main.preview]
+[views.main.picker.items]
+file = "scripts/items.py"
+
+[views.main.picker.preview]
 file = "scripts/preview.py"
 width = "40%"
 min_width = 24
 open = true
-
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
-file = "scripts/items.py"
 
 [views.main.bindings]
 tab = "toggle"

@@ -4,11 +4,9 @@ name = "shell"
 entrypoint = "menu"
 
 [views.menu]
+engine = "picker"
 
-[views.menu.engine]
-type = "picker"
-
-[views.menu.engine.config]
+[views.menu.picker]
 items = [{ display = "Open shell" }]
 
 [views.menu.bindings]
@@ -22,8 +20,8 @@ producer = "declared"
 [commands.open.handler]
 target = "shell:main"
 
-[views.main.engine]
-type = "embedded"
+[views.main]
+engine = "embedded"
 
-[views.main.engine.config]
+[views.main.embedded]
 command = ["sh"]

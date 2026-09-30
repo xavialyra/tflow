@@ -475,14 +475,54 @@ fn materialize_test_workflow(
                         promoted_commands.push((cmd_id.clone(), promoted));
                     }
                 }
-                if let Some(engine) = view_tbl
-                    .get_mut("engine")
-                    .and_then(toml::Value::as_table_mut)
-                    && let Some(config) =
-                        engine.get_mut("config").and_then(toml::Value::as_table_mut)
-                {
-                    config.remove("feeds");
-                    config.remove("source_badge");
+                if let Some(mut engine_val) = view_tbl.remove("engine") {
+                    if let Some(engine_tbl) = engine_val.as_table_mut() {
+                        let engine_type = engine_tbl
+                            .remove("type")
+                            .and_then(|v| match v {
+                                toml::Value::String(s) => Some(s),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "picker".to_string());
+                        let mut config_tbl = engine_tbl
+                            .remove("config")
+                            .and_then(|v| match v {
+                                toml::Value::Table(t) => Some(t),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        config_tbl.remove("feeds");
+                        config_tbl.remove("source_badge");
+                        view_tbl.insert(
+                            "engine".to_string(),
+                            toml::Value::String(engine_type.clone()),
+                        );
+                        view_tbl.insert(engine_type, toml::Value::Table(config_tbl));
+                    } else {
+                        view_tbl.insert("engine".to_string(), engine_val);
+                    }
+                } else {
+                    let inferred = if view_tbl.contains_key("capture") {
+                        "capture"
+                    } else if view_tbl.contains_key("form") {
+                        "form"
+                    } else if view_tbl.contains_key("embedded") {
+                        "embedded"
+                    } else {
+                        "picker"
+                    };
+                    view_tbl.insert(
+                        "engine".to_string(),
+                        toml::Value::String(inferred.to_string()),
+                    );
+                }
+                if let Some(preview_val) = view_tbl.remove("preview") {
+                    let picker_tbl = view_tbl
+                        .entry("picker".to_string())
+                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                        .as_table_mut()
+                        .unwrap();
+                    picker_tbl.insert("preview".to_string(), preview_val);
                 }
                 if let Some(alias_val) = view_tbl.remove("alias")
                     && let Some(alias_str) = alias_val.as_str()

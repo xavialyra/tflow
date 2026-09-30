@@ -48,9 +48,9 @@ fn reject_picker_sources(name: &str, view: &View) -> Result<()> {
             view.selected_engine_type()
         );
     }
-    if view.preview.is_some() {
+    if view.selected_preview().is_some() {
         bail!(
-            "view {:?} using engine {:?} cannot define [preview]",
+            "view {:?} using engine {:?} cannot define preview",
             name,
             view.selected_engine_type()
         );
@@ -67,20 +67,29 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
     let output = view
         .engine_field("output")
         .expect("required capture output was checked");
-    if output
-        .as_table()
-        .is_some_and(|fields| fields.contains_key("producer"))
-    {
-        let provider: OutputProducerConfig = output
-            .clone()
-            .try_into()
-            .context("capture output producer must define producer and handler")?;
-        match provider.producer {
-            ProducerKind::Declared => validate_declared_output(&provider.handler)?,
-            ProducerKind::Script => {
-                parse_producer_script_handler(&provider.handler, context.script_root)
-                    .context("capture output script handler is invalid")?;
+    if let toml::Value::Table(fields) = output {
+        if fields.contains_key("file") || fields.contains_key("script") {
+            parse_producer_script_handler(output, context.script_root)
+                .context("capture output script handler is invalid")?;
+        } else if fields.contains_key("output") {
+            validate_declared_output(output)?;
+        } else if fields.contains_key("producer") {
+            let provider: OutputProducerConfig = output
+                .clone()
+                .try_into()
+                .context("capture output producer must define producer and handler")?;
+            match provider.producer {
+                ProducerKind::Declared => validate_declared_output(&provider.handler)?,
+                ProducerKind::Script => {
+                    parse_producer_script_handler(&provider.handler, context.script_root)
+                        .context("capture output script handler is invalid")?;
+                }
             }
+        } else {
+            bail!(
+                "view {:?} capture output table must define file, script, or output",
+                name
+            );
         }
     } else if !output.is_str() {
         bail!(
@@ -202,28 +211,40 @@ fn prepare_output(
     let output = config
         .field("output")
         .context("capture engine requires an output field")?;
-    if output
-        .as_object()
-        .is_some_and(|fields| fields.contains_key("producer"))
-    {
-        let provider: ProjectedOutputProducer = serde_json::from_value(output.clone())
-            .context("capture output producer must define producer and handler")?;
-        return match provider.producer {
-            ProducerKind::Declared => {
-                let handler: DeclaredOutputHandler = serde_json::from_value(provider.handler)
-                    .context("declared capture output handler must define output")?;
-                Ok(PreparedCaptureOutput::Text(handler.output))
-            }
-            ProducerKind::Script => {
-                let handler = toml::Value::try_from(provider.handler)
-                    .context("capture output script handler could not be converted to TOML")?;
-                let source = parse_producer_script_handler(&handler, workflow_root)?;
-                Ok(PreparedCaptureOutput::Script {
-                    root: workflow_root.map(Path::to_path_buf),
-                    source,
-                })
-            }
-        };
+    if let Some(fields) = output.as_object() {
+        if fields.contains_key("file") || fields.contains_key("script") {
+            let handler = toml::Value::try_from(output.clone())
+                .context("capture output script handler could not be converted to TOML")?;
+            let source = parse_producer_script_handler(&handler, workflow_root)?;
+            return Ok(PreparedCaptureOutput::Script {
+                root: workflow_root.map(Path::to_path_buf),
+                source,
+            });
+        }
+        if let Some(text) = fields.get("output").and_then(|t| t.as_str()) {
+            return Ok(PreparedCaptureOutput::Text(text.to_string()));
+        }
+        if fields.contains_key("producer") {
+            let provider: ProjectedOutputProducer = serde_json::from_value(output.clone())
+                .context("capture output producer must define producer and handler")?;
+            return match provider.producer {
+                ProducerKind::Declared => {
+                    let handler: DeclaredOutputHandler =
+                        serde_json::from_value(provider.handler)
+                            .context("declared capture output handler must define output")?;
+                    Ok(PreparedCaptureOutput::Text(handler.output))
+                }
+                ProducerKind::Script => {
+                    let handler = toml::Value::try_from(provider.handler)
+                        .context("capture output script handler could not be converted to TOML")?;
+                    let source = parse_producer_script_handler(&handler, workflow_root)?;
+                    Ok(PreparedCaptureOutput::Script {
+                        root: workflow_root.map(Path::to_path_buf),
+                        source,
+                    })
+                }
+            };
+        }
     }
     output
         .as_str()

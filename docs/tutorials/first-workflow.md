@@ -31,10 +31,10 @@ api = 1
 name = "Notes Manager"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config]
+[views.main.picker]
 items = [
   { display = "Project Ideas", value = "ideas.txt", metadata = {} },
   { display = "Meeting Notes", value = "meeting.txt", metadata = {} },
@@ -156,13 +156,10 @@ api = 1
 name = "Notes Manager"
 entrypoint = "main"
 
-[views.main.engine]
-type = "picker"
+[views.main]
+engine = "picker"
 
-[views.main.engine.config.items]
-producer = "script"
-
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/list_notes.py"
 
 [views.main.bindings]

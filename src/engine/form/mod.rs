@@ -105,6 +105,17 @@ enum PreparedContent {
 }
 
 fn prepare(value: Value, root: Option<&std::path::Path>) -> Result<PreparedContent> {
+    if let Some(obj) = value.as_object() {
+        if obj.contains_key("file") || obj.contains_key("script") {
+            let handler = toml::Value::try_from(value)?;
+            return Ok(PreparedContent::Script(parse_producer_script_handler(
+                &handler, root,
+            )?));
+        }
+        if obj.contains_key("fields") {
+            return Ok(PreparedContent::Declared(parse_content(value)?));
+        }
+    }
     let producer: Producer =
         serde_json::from_value(value).context("form content must define producer and handler")?;
     match producer.producer {
@@ -134,7 +145,10 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         view.selected_items().is_none(),
         "form views cannot provide picker items"
     );
-    ensure!(view.preview.is_none(), "form views cannot define [preview]");
+    ensure!(
+        view.selected_preview().is_none(),
+        "form views cannot define preview"
+    );
     crate::engine::validate_fields(context.view_ref, view, &["content"])?;
     crate::engine::require_field(context.view_ref, view, "content")?;
     prepare(

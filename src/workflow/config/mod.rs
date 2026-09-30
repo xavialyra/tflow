@@ -579,9 +579,8 @@ mod tests {
             let compiled = config(&format!(
                 r#"
                 [workflows.core.views.default]
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
+                engine = "picker"
+                [workflows.core.views.default.picker]
                 items = []
                 [workflows.core.views.default.bindings]
                 {bind}
@@ -601,9 +600,8 @@ mod tests {
         let bad = config(
             r#"
             [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
+            engine = "picker"
+            [workflows.core.views.default.picker]
             items = []
             [workflows.core.views.default.bindings]
             "escape" = "@workflow:missing"
@@ -620,9 +618,8 @@ mod tests {
         let ok = config(
             r#"
             [workflows.core.views.default]
-            [workflows.core.views.default.engine]
-            type = "picker"
-            [workflows.core.views.default.engine.config]
+            engine = "picker"
+            [workflows.core.views.default.picker]
             items = []
             [workflows.core.views.default.unbind]
             keys = ["ctrl+u"]
@@ -652,9 +649,8 @@ mod tests {
             let bad = config(&format!(
                 r#"
                 [workflows.core.views.default]
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
+                engine = "picker"
+                [workflows.core.views.default.picker]
                 items = []
                 [workflows.core.views.default.unbind]
                 {unbind}
@@ -676,11 +672,10 @@ mod tests {
             let bad = config(&format!(
                 r#"
                 [workflows.core.views.default]
+                engine = "picker"
                 [workflows.core.views.default.bindings]
                 "escape" = {value}
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
+                [workflows.core.views.default.picker]
                 items = []
             "#
             ));
@@ -710,9 +705,8 @@ mod tests {
             let bad = config(&format!(
                 r#"
                 [workflows.{engine}.views.main]
-                [workflows.{engine}.views.main.engine]
-                type = "picker"
-                [workflows.{engine}.views.main.engine.config]
+                engine = "picker"
+                [workflows.{engine}.views.main.picker]
                 items = []
                 [workflows.{engine}.commands.{action}]
                 label = "Collides"
@@ -737,9 +731,8 @@ mod tests {
         let ok = config(
             r#"
             [workflows.form.views.main]
-            [workflows.form.views.main.engine]
-            type = "picker"
-            [workflows.form.views.main.engine.config]
+            engine = "picker"
+            [workflows.form.views.main.picker]
             items = []
             [workflows.form.commands.open]
             label = "Open"
@@ -811,9 +804,9 @@ mod tests {
         let source: toml::Value = toml::from_str(
             r#"
             [workflows.demo]
-            [workflows.demo.views.main.engine]
-            type = "picker"
-            [workflows.demo.views.main.engine.config]
+            [workflows.demo.views.main]
+            engine = "picker"
+            [workflows.demo.views.main.picker]
             items = { producer = "declared", handler = { items = [{ display = "Example item" }] } }
             "#,
         )
@@ -842,10 +835,10 @@ mod tests {
             handler = { target = "core:default" }
 
             [workflows.core.views.default]
+            engine = "picker"
             binding_mode = "item_merge"
 
-            [workflows.core.views.default.engine]
-            type = "picker"
+            [workflows.core.views.default.picker]
 
             [workflows.core.views.default.bindings]
             tab = "complete"
@@ -869,10 +862,10 @@ mod tests {
         let compiled = config(
             r#"
             [workflows.core.views.default]
+            engine = "picker"
             binding_mode = "item_merge"
 
-            [workflows.core.views.default.engine]
-            type = "picker"
+            [workflows.core.views.default.picker]
 
             [workflows.core.views.default.bindings]
             tab = "missing"
@@ -905,8 +898,9 @@ mod tests {
             producer = "declared"
             handler = { value = "custom" }
 
-            [workflows.core.views.main.engine]
-            type = "picker"
+            [workflows.core.views.main]
+            engine = "picker"
+            [workflows.core.views.main.picker]
             "#,
         );
         compiled
@@ -925,13 +919,12 @@ mod tests {
         let compiled = config(
             r#"
             [workflows.dynamic.views.main]
+            engine = "picker"
             [workflows.dynamic.views.main.query]
             type = "object"
             required_name = { type = "string" }
             count = { type = "integer", default = 1 }
-            [workflows.dynamic.views.main.engine]
-            type = "picker"
-            [workflows.dynamic.views.main.engine.config]
+            [workflows.dynamic.views.main.picker]
             items = []
             "#,
         );

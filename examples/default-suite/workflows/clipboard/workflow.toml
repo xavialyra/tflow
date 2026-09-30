@@ -11,12 +11,7 @@ foreground = "scheme:accent"
 bold = true
 
 [views.main]
-
-[views.main.preview]
-file = "scripts/preview.py"
-width = "35%"
-min_width = 24
-open = true
+engine = "picker"
 
 [views.main.query]
 type = "object"
@@ -24,17 +19,17 @@ input = "search"
 search = { type = "string", default = "" }
 content_type = { type = "enum", options = ["all", "text", "image", "binary"], default = "all" }
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
+[views.main.picker]
 input_placeholder = "Search clipboard history"
 
-[views.main.engine.config.items]
-producer = "script"
-
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/items.py"
+
+[views.main.picker.preview]
+file = "scripts/preview.py"
+width = "35%"
+min_width = 24
+open = true
 
 [views.main.bindings]
 tab = "next_type"

@@ -3,6 +3,7 @@ api = 1
 name = "core"
 
 [views.main]
+engine = "picker"
 binding_mode = "item_merge"
 
 [views.main.query]
@@ -11,15 +12,10 @@ input = "search"
 search = { type = "string", default = "" }
 sources = { type = "array<string>", default = [] }
 
-[views.main.engine]
-type = "picker"
-
-[views.main.engine.config]
+[views.main.picker]
 input_placeholder = "Type a route or search"
 
-[views.main.engine.config.items]
-producer = "script"
-[views.main.engine.config.items.handler]
+[views.main.picker.items]
 file = "scripts/items.py"
 
 # The aggregate View is item-driven: each aggregated item carries the bindings
@@ -29,22 +25,18 @@ file = "scripts/items.py"
 tab = "complete"
 space = "separate_route"
 
+[views.completion]
+engine = "picker"
+
 [views.completion.query]
 type = "object"
 input = "filter"
 filter = { type = "string", default = "" }
 
-[views.completion.engine]
-type = "picker"
-
-# The popup shows no route marker of its own, even when
-# `[picker] left_prefix` renders one for other non-root Views.
-[views.completion.engine.config]
+[views.completion.picker]
 show_left_prefix = false
 
-[views.completion.engine.config.items]
-producer = "script"
-[views.completion.engine.config.items.handler]
+[views.completion.picker.items]
 file = "scripts/completion.py"
 
 [views.completion.bindings]
