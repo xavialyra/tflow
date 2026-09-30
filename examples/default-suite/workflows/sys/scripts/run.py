@@ -129,14 +129,6 @@ def get_system_info() -> str:
         lines.append(f"  {color('90', f'Unable to read storage metrics: {e}')}")
 
     lines.append("")
-    lines.append(color("1;33", "━" * 50))
-    lines.append(color("1;37", " ❖ KEYBOARD SHORTCUTS"))
-    lines.append(color("1;33", "━" * 50))
-    lines.append(f"  {color('1;32', '↑ / k / Ctrl+u')}:  Scroll up / Page up")
-    lines.append(f"  {color('1;32', '↓ / j / Ctrl+d')}:  Scroll down / Page down")
-    lines.append(f"  {color('1;32', 'Enter')}:           Copy plain text (stripped ANSI) to clipboard")
-    lines.append(f"  {color('1;32', 'Esc')}:             Back to system menu")
-    lines.append("")
 
     return "\n".join(lines)
 
