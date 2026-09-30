@@ -122,12 +122,10 @@ api = 1
 name = "Disk Usage"
 entrypoint = "main"
 
-[views.main.engine]
-type = "capture"
+[views.main]
+engine = "capture"
 
-[views.main.engine.config.output]
-producer = "script"
-[views.main.engine.config.output.handler]
+[views.main.capture.output]
 script = '''#!/usr/bin/env bash
 printf '{"version": 1, "output": "%s"}\n' "$(df -h)"
 '''
