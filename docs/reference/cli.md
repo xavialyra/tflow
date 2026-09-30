@@ -72,7 +72,7 @@ The `-w, --workflow <PATH>` option allows executing an isolated workflow directl
 ### Entry Point Resolution in Workflow Mode
 
 An explicit view selector overrides `[workflow].entrypoint`. Without a selector,
-the required workflow-local `entrypoint` names the initial view. Workflow views
+the workflow-local `entrypoint` (which defaults to `"main"` when omitted) names the initial view. Workflow views
 cannot declare aliases; suites own `[aliases]` and member shorthand routes.
 
 `-w` rejects suite manifests and `-s` rejects atomic workflows, with a corrective

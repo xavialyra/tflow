@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "dmenu"
-entrypoint = "main"
 
 [views.main]
 cancel_exit_code = 1

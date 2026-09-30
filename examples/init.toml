@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "Setup Wizard"
-entrypoint = "main"
 
 [styles.checked]
 foreground = "scheme:accent"

@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "Command Palette"
-entrypoint = "main"
 
 [views.main]
 chrome_commands_show = ["enter"]

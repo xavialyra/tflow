@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "shell"
-entrypoint = "main"
 
 [views.main]
 

@@ -81,6 +81,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[chrome]` | `error` | Global error notification banner. |
 | `[chrome]` | `backdrop` | Style applied to non-focus background cells (base views, covered popups, footer) when a modal popup is active. Defaults to `foreground = "scheme:muted"`, `dim = true`. |
 | `[chrome]` | `dim_backdrop` | Boolean (`true` by default). Master switch controlling whether the `chrome.backdrop` style is applied to non-focus background cells. |
+| `[chrome]` | `border_type` | Popup dialog border glyph style. Accepts `"rounded"` (default), `"plain"`, `"double"`, `"thick"`, `"quadrant-inside"`, and `"quadrant-outside"`. |
 | `[capture]` | `text` | Captured subprocess output text. |
 | `[form]` | `label`, `input`, `focused`, `border`, `focused_border`, `error` | Field labels, normal and focused editors, field borders, and validation errors. |
 
@@ -108,6 +109,17 @@ dim = false
 ```
 
 Choose a foreground suited to the terminal background; ANSI palette colors and faint intensity depend on the terminal. This is a style overlay, not alpha blending. `chrome.dim_backdrop = false` disables the entire overlay. Workflow presentation tables do not configure it.
+
+## Popup Border Type
+
+`[chrome].border_type` configures the glyphs used when drawing popup dialog borders.
+
+```toml
+[chrome]
+border_type = "rounded" # "rounded" (default), "plain", "double", "thick", "quadrant-inside", "quadrant-outside"
+```
+
+The setting defaults to `"rounded"`. Child/nested popups and inactive modal popups inherit this border style.
 
 ## Workflow Custom Slots
 

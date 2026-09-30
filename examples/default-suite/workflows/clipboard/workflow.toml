@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "Clipboard History"
-entrypoint = "main"
 
 [styles.history_icon]
 foreground = "scheme:accent"

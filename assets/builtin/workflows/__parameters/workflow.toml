@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "Parameter Editor"
-entrypoint = "main"
 
 [views.main]
 chrome_commands_show = ["enter"]

@@ -2,6 +2,11 @@
 
 This log records notable changes to the documentation and product during development. It is a concise engineering record rather than a release changelog.
 
+## 2026-09-30
+
+- Added configurable `chrome.border_type` in themes: themes may declare `[chrome].border_type = "rounded"` (default), `"plain"`, `"double"`, `"thick"`, `"quadrant-inside"`, or `"quadrant-outside"` to control popup dialog border glyphs. Documented in `docs/reference/theme-toml.md` and `docs/how-to/custom-themes.md`.
+- Made `[workflow].entrypoint` optional, defaulting to `"main"` when omitted. Streamlined built-in workflows (`__commands`, `__parameters`), `examples/init.toml`, and `examples/default-suite` workflows, and updated `docs/reference/cli.md` and `docs/reference/workflow-toml.md` to reflect this zero-boilerplate behavior.
+
 ## 2026-09-28
 
 - Streamlined `ActionBindings`: replaced `from_values(defaults, view)` and `validate_values(defaults, view)` with `from_defaults(defaults)` and `validate_defaults(defaults)`. In ADR 0008 all four engines only read root defaults (`[picker.bindings]`, etc.), so the legacy `view` parameter was vestigial. Removed 6 obsolete unit tests that tested dead-path `view` merging or duplicate entry resolution.

@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "core"
-entrypoint = "main"
 
 [views.main]
 binding_mode = "item_merge"

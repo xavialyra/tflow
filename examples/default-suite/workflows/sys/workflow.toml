@@ -1,7 +1,6 @@
 [workflow]
 api = 1
 name = "sys"
-entrypoint = "main"
 
 [views.main]
 
