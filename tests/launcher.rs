@@ -92,8 +92,6 @@ fn first_signal_aborts_a_blocked_final_output_write() {
         key = "enter"
         label = "Accept"
         type = "return"
-        producer = "script"
-        [workflows.custom.views.main.commands.accept.handler]
         file = "scripts/large.sh"
         "#,
     )
@@ -308,8 +306,7 @@ fn command_failure_reports_error_and_keeps_launcher_usable() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/fail.sh\"" ] }
+        argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/fail.sh\"" ]
         "#,
     )
     .unwrap();
@@ -359,8 +356,8 @@ fn command_timeout_reports_error_and_keeps_launcher_usable() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "sleep 30" ], timeout_ms = 200 }
+        argv = ["sh", "-c", "sleep 30" ]
+        timeout_ms = 200
         "#,
     )
     .unwrap();
@@ -409,8 +406,7 @@ fn stopped_command_terminates_and_resumes_the_launcher() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/sleep.sh\"" ] }
+        argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/sleep.sh\"" ]
         "#,
     )
     .unwrap();
@@ -460,8 +456,8 @@ fn command_cancellation_reaps_descendant() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/child.sh\""], exit = true }
+        argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/child.sh\""]
+        exit = true
         "#,
     )
     .unwrap();
@@ -615,8 +611,8 @@ fn runtime_log_warning_reaches_stderr_on_immediate_exit() {
         key = "enter"
         label = "Exit"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/exit.sh\""], exit = true }
+        argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/exit.sh\""]
+        exit = true
         "#,
     )
     .unwrap();
@@ -641,7 +637,10 @@ fn external_copy_feedback_requires_success_and_is_logged_on_exit() {
     for (code, exit) in [(0, false), (0, true), (7, false)] {
         let root = temporary_root();
         let config = root.join("config.toml");
-        write_test_config(&config, &format!(r#"
+        write_test_config(
+            &config,
+            &format!(
+                r#"
             default_view = "core:default"
             log_file = "runtime.jsonl"
             [workflows.core.views.default.engine]
@@ -651,9 +650,13 @@ fn external_copy_feedback_requires_success_and_is_logged_on_exit() {
             [workflows.core.views.default.commands.copy]
             key = "enter"
             type = "run"
-            producer = "declared"
-            handler = {{argv = ["sh", "-c", "exit {code}"], exit = {exit}, success_message = "Copied to clipboard"}}
-        "#)).unwrap();
+            argv = ["sh", "-c", "exit {code}"]
+            exit = {exit}
+            success_message = "Copied to clipboard"
+        "#
+            ),
+        )
+        .unwrap();
         let mut process = spawn_launcher(&config);
         wait_for_ready(&process.master);
         process.master.write_all(b"\r").unwrap();
@@ -706,8 +709,8 @@ fn loads_items_and_runs_a_view_command() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'command-marker:value\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'command-marker:value\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write items command config");
@@ -766,8 +769,8 @@ fn application_launch_detaches_started_process_from_launcher_group() {
         key = "enter"
         label = "Open"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"], exit = true }
+        argv = ["sh", "-c", "exec sh \"$TFLOW_WORKFLOW_DIR/scripts/open.sh\" fixture.desktop"]
+        exit = true
         "#,
     )
     .unwrap();
@@ -848,8 +851,8 @@ fn loads_items_from_a_native_toml_array() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'static-marker:static-value\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'static-marker:static-value\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write static items config");
@@ -1058,8 +1061,8 @@ fn waits_for_items_before_running_enter_command() {
         type = "run"
 
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'picker-marker:value\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'picker-marker:value\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write launcher integration config");
@@ -1111,8 +1114,8 @@ fn view_commands_accept_unreserved_control_bindings() {
         type = "run"
 
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'ctrl-command:value\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'ctrl-command:value\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write control command config");
@@ -1168,16 +1171,16 @@ fn view_command_overrides_printable_picker_binding() {
         label = "HiddenSpace"
         type = "run"
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'hidden-space-command\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'hidden-space-command\\n'"]
+        exit = true
 
         [workflows.core.views.default.commands.accept]
         key = "enter"
         label = "Accept"
         type = "run"
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'space-selection:first\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'space-selection:first\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write printable bindings config");
@@ -1239,8 +1242,8 @@ fn unbinding_a_key_releases_it_to_raw_input() {
         [workflows.core.views.default.commands.marker]
         label = "Marker"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'marker-ran\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'marker-ran\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write the unbind fixture");
@@ -1322,8 +1325,8 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         label = "Inspect"
         type = "run"
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'toggle-query::end\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'toggle-query::end\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write default preview config");
@@ -1374,8 +1377,8 @@ fn uppercase_printable_binding_matches_input() {
         label = "Accept"
         type = "run"
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'uppercase-selection:second\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'uppercase-selection:second\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write uppercase bindings config");
@@ -1421,8 +1424,6 @@ fn unbound_uppercase_printable_input_reaches_the_editor() {
         key = "enter"
         label = "Accept"
         type = "run"
-        producer = "script"
-        [workflows.core.views.default.commands.accept.handler]
         file = "scripts/uppercase-input.sh"
         "#,
     )
@@ -1482,8 +1483,8 @@ fn explicit_default_view_command_overrides_builtin_tab_completion() {
         label = "Run"
         type = "run"
 
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'tab-command\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'tab-command\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write Tab command config");
@@ -1563,10 +1564,7 @@ fi
         [workflows.core.views.default]
         [workflows.core.views.default.engine]
         type = "picker"
-        [workflows.core.views.default.engine.config]
         [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
         file = "scripts/items.sh"
 "#,
     )
@@ -1636,8 +1634,7 @@ fn picker_left_prefix_marks_views_pushed_on_a_parent() {
         key = "enter"
         label = "Open app"
         type = "navigate"
-        producer = "declared"
-        handler = { target = "apps:main" }
+        target = "apps:main"
 
         [workflows.apps.views.main]
         [workflows.apps.views.main.engine]
@@ -1719,8 +1716,7 @@ fn picker_left_prefix_route_mode_uses_the_alias() {
         key = "enter"
         label = "Open app"
         type = "navigate"
-        producer = "declared"
-        handler = { target = "apps:main" }
+        target = "apps:main"
 
         [workflows.apps.views.main]
         [workflows.apps.views.main.engine]
@@ -1776,8 +1772,7 @@ const BACKSPACE_CHAIN_CONFIG: &str = r#"
     key = "enter"
     label = "Open mid"
     type = "navigate"
-    producer = "declared"
-    handler = { target = "demo:mid" }
+    target = "demo:mid"
 
     [workflows.demo.views.mid]
     [workflows.demo.views.mid.engine]
@@ -1788,8 +1783,7 @@ const BACKSPACE_CHAIN_CONFIG: &str = r#"
     key = "enter"
     label = "Open leaf"
     type = "navigate"
-    producer = "declared"
-    handler = { target = "demo:leaf" }
+    target = "demo:leaf"
 
     [workflows.demo.views.leaf]
     [workflows.demo.views.leaf.engine]
@@ -1968,8 +1962,8 @@ fn aggregate_view_commands_remain_in_footer_and_dispatch_directly() {
         key = "enter"
         label = "Aggregate command"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'aggregate-view-command\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'aggregate-view-command\\n'"]
+        exit = true
         "#,
     )
     .expect("could not write aggregate View command config");
@@ -2046,8 +2040,6 @@ fn items_errors_are_logged_and_do_not_block_exit() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
         script = "printf 'not-json\\n'"
 "#,
     )
@@ -2095,8 +2087,8 @@ fn view_bindings_dispatches_workflow_command_with_selected_item() {
         [workflows.core.commands.page]
         label = "Page"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'page-command\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'page-command\\n'"]
+        exit = true
 
         [workflows.core.views.default]
         [workflows.core.views.default.bindings]
@@ -2137,8 +2129,8 @@ fn item_bindings_dispatch_and_display_in_footer() {
         [workflows.core.commands.open]
         label = "Selection"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'item-selection-command:row\\n'"]
+        exit = true
 
         [workflows.core.views.default]
         binding_mode = "item_merge"
@@ -2192,8 +2184,7 @@ fn navigation_without_query_uses_the_target_view_default() {
         key = "enter"
         label = "Open"
         type = "navigate"
-        producer = "declared"
-        handler = { target = "core:capture" }
+        target = "core:capture"
 
         [workflows.core.views.capture]
         [workflows.core.views.capture.engine]
@@ -2260,8 +2251,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         type = "navigate"
-        producer = "declared"
-        handler = { target = "core:capture" }
+        target = "core:capture"
 
         [workflows.core.views.capture]
         alias = "cap"
@@ -2358,8 +2348,7 @@ fn capture_keeps_workflow_commands_available() {
         key = "ctrl+k"
         label = "Details"
         type = "call"
-        producer = "declared"
-        handler = { target = "core:details" }
+        target = "core:details"
 
         [workflows.core.views.default.engine]
         type = "capture"
@@ -2418,8 +2407,7 @@ fn embedded_command_returns_to_launcher_and_restores_input() {
         key = "enter"
         label = "Run"
         type = "navigate"
-        producer = "declared"
-        handler = { target = "core:embedded" }
+        target = "core:embedded"
 
         [workflows.core.views.embedded]
         alias = "emb"
@@ -2574,8 +2562,6 @@ fn script_command_producer_receives_stdin_and_runs_its_operation() {
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "script"
-        [workflows.core.views.default.commands.run.handler]
         file = "scripts/command.sh"
         "#,
     )
@@ -2636,8 +2622,6 @@ fn picker_items_producer_receives_the_current_request_input() {
         [workflows.core.views.default.engine]
         type = "picker"
         [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
         file = "scripts/items.sh"
         "#,
     )
@@ -2695,8 +2679,6 @@ fn capture_output_producer_runs_after_the_view_is_mounted() {
         [workflows.core.views.main.engine]
         type = "capture"
         [workflows.core.views.main.engine.config.output]
-        producer = "script"
-        [workflows.core.views.main.engine.config.output.handler]
         file = "scripts/output.sh"
         "#,
     )
@@ -2760,13 +2742,9 @@ fn return_processor_runs_after_restoring_the_caller() {
         key = "enter"
         label = "Open child"
         type = "call"
-        producer = "declared"
-        [workflows.core.views.caller.commands.open.handler]
         target = "core:child"
         [workflows.core.views.caller.commands.open.return_processor]
         type = "navigate"
-        producer = "script"
-        [workflows.core.views.caller.commands.open.return_processor.handler]
         file = "scripts/process.sh"
 
         [workflows.core.views.child]
@@ -2779,8 +2757,6 @@ fn return_processor_runs_after_restoring_the_caller() {
         key = "enter"
         label = "Return"
         type = "return"
-        producer = "declared"
-        [workflows.core.views.child.commands.accept.handler]
         value = { kind = "child", value = 7 }
 
         [workflows.core.views.processed.engine]
@@ -2965,9 +2941,6 @@ fn script_command_producer_returns_structured_error_feedback() {
             [workflows.core.views.default.commands.warn]
             key = "enter"
             type = "run"
-            producer = "script"
-
-            [workflows.core.views.default.commands.warn.handler]
             file = "scripts/warn.sh"
         "#,
     )
@@ -3009,8 +2982,7 @@ items = [{display = "Still usable", value = "ok"}]
 [workflows.tool.views.main.commands.sibling]
 key = "ctrl+o"
 type = "navigate"
-producer = "declared"
-handler = {target = "missing:main"}
+target = "missing:main"
 "#,
     )
     .unwrap();
@@ -3036,8 +3008,8 @@ fn aggregate_view_footer_commands_survive_a_slow_refresh() {
         [workflows.slow.commands.open]
         label = "Open"
         type = "run"
-        producer = "declared"
-        handler = { argv = ["sh", "-c", "printf 'opened\\n'"], exit = true }
+        argv = ["sh", "-c", "printf 'opened\\n'"]
+        exit = true
 
         [workflows.slow.views.main]
         binding_mode = "item_merge"
@@ -3045,8 +3017,6 @@ fn aggregate_view_footer_commands_survive_a_slow_refresh() {
         [workflows.slow.views.main.engine]
         type = "picker"
         [workflows.slow.views.main.engine.config.items]
-        producer = "script"
-        [workflows.slow.views.main.engine.config.items.handler]
         file = "scripts/items.sh"
         "#,
     )

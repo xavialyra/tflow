@@ -432,22 +432,17 @@ fn check_validates_static_producer_sources_without_running_them() {
         &config,
         r#"
         default_view = "core:default"
-        [workflows.core.views.default.preview]
-        file = "scripts/preview.sh"
 
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker.preview]
+        file = "scripts/preview.sh"
+        [workflows.core.views.default.picker.items]
         file = "scripts/items.sh"
 
-        [workflows.core.views.capture.engine]
-        type = "capture"
-        [workflows.core.views.capture.engine.config]
-        [workflows.core.views.capture.engine.config.output]
-        producer = "script"
-        [workflows.core.views.capture.engine.config.output.handler]
+        [workflows.core.views.capture]
+        engine = "capture"
+        [workflows.core.views.capture.capture.output]
         file = "scripts/output.sh"
         "#,
     )
@@ -503,15 +498,14 @@ fn check_treats_file_backed_run_handlers_as_opaque_scripts() {
         r#"
         default_view = "core:default"
 
-        [workflows.core.views.default.engine]
-        type = "picker"
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker]
 
         [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "script"
-        [workflows.core.views.default.commands.run.handler]
         file = "scripts/run.sh"
         "#,
     )
@@ -538,15 +532,14 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
         r#"
         default_view = "core:default"
 
-        [workflows.core.views.default.engine]
-        type = "picker"
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker]
 
         [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "script"
-        [workflows.core.views.default.commands.run.handler]
         script = """
         printf 'ok\\n'
         """
@@ -622,14 +615,14 @@ fn check_rejects_unknown_run_command_args() {
         &config,
         r#"
         default_view = "core:default"
-        [workflows.core.views.default.engine]
-        type = "picker"
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker]
         [workflows.core.views.default.commands.run]
         key = "enter"
         label = "Run"
         type = "run"
-        producer = "script"
-        handler = { script = "printf ok" }
+        script = "printf ok"
         args = ["literal"]
         "#,
     )
@@ -654,16 +647,15 @@ fn check_validates_static_return_handler_targets() {
         &config,
         r#"
         default_view = "core:default"
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker]
         items = []
         [workflows.core.views.default.commands.done]
         key = "enter"
         label = "Done"
         type = "return"
-        producer = "script"
-        handler = { file = "scripts/missing.sh" }
+        file = "scripts/missing.sh"
         "#,
     )
     .unwrap();
@@ -746,7 +738,7 @@ fn check_validates_items_shape_before_runtime() {
         );
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("items must be an array or a producer object"),
+                .contains("items must be an array or a table with file/script/items"),
             "items {source:?} reported unexpected stderr: {:?}",
             output.stderr
         );
@@ -760,21 +752,17 @@ fn check_rejects_unknown_producer_fields() {
         (
             "picker",
             r#"
-            [workflows.core.views.default.engine.config.items]
-            producer = "script"
-            extra = true
-            [workflows.core.views.default.engine.config.items.handler]
+            [workflows.core.views.default.picker.items]
             file = "scripts/items.sh"
+            extra = true
             "#,
         ),
         (
             "capture",
             r#"
-            [workflows.core.views.default.engine.config.output]
-            producer = "declared"
-            extra = true
-            [workflows.core.views.default.engine.config.output.handler]
+            [workflows.core.views.default.capture.output]
             output = "output"
+            extra = true
             "#,
         ),
     ] {
@@ -785,9 +773,8 @@ fn check_rejects_unknown_producer_fields() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [workflows.core.views.default.engine]
-                type = "{engine}"
-                [workflows.core.views.default.engine.config]
+                [workflows.core.views.default]
+                engine = "{engine}"
                 {source}
                 "#
             ),
@@ -824,11 +811,9 @@ fn check_accepts_inline_script_handlers() {
         &config,
         r#"
         default_view = "core:default"
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker.items]
         script = "printf '[]\\n'"
         "#,
     )
@@ -846,20 +831,13 @@ fn check_accepts_inline_script_handlers() {
 #[test]
 fn check_rejects_invalid_items_producers() {
     for (source, expected) in [
+        ("file = \"scripts/missing.sh\"", "could not read script"),
         (
-            "producer = \"script\"\nhandler = { file = \"scripts/missing.sh\" }",
-            "could not read script",
-        ),
-        (
-            "producer = \"command\"\nhandler = { file = \"scripts/items.sh\" }",
-            "unknown variant `command`",
-        ),
-        (
-            "producer = \"script\"\nhandler = { file = \"scripts/items.sh\", script = \"printf ok\" }",
+            "file = \"scripts/items.sh\"\nscript = \"printf ok\"",
             "must define exactly one of file or script",
         ),
         (
-            "producer = \"script\"\nhandler = { file = \"scripts/items.sh\", unknown = true }",
+            "file = \"scripts/items.sh\"\nunknown = true",
             "unknown field `unknown`",
         ),
     ] {
@@ -870,9 +848,9 @@ fn check_rejects_invalid_items_producers() {
             &format!(
                 r#"
                 default_view = "core:default"
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config.items]
+                [workflows.core.views.default]
+                engine = "picker"
+                [workflows.core.views.default.picker.items]
                 {source}
                 "#
             ),
@@ -1738,11 +1716,9 @@ fn items_query_mode_producer_script_failure_exit_1() {
         &config,
         r#"
         default_view = "core:default"
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config.items]
-        producer = "script"
-        [workflows.core.views.default.engine.config.items.handler]
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker.items]
         script = "echo 'not-json-array'; exit 1"
         "#,
     )

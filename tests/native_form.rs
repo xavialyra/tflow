@@ -481,8 +481,7 @@ fn view_command_precedes_workflow_command_and_editor_even_when_form_is_invalid()
         key = "ctrl+u"
         label = "Session cancel"
         type = "return"
-        producer = "declared"
-        handler = { value = "SESSION_COMMAND_WON" }
+        value = "SESSION_COMMAND_WON"
 
         [workflows.example.views.form.form]
         content = { fields = [{ name = "name", label = "Required name", required = true }] }
@@ -491,8 +490,7 @@ fn view_command_precedes_workflow_command_and_editor_even_when_form_is_invalid()
         key = "ctrl+u"
         label = "View cancel"
         type = "return"
-        producer = "declared"
-        handler = { value = "VIEW_COMMAND_WON" }
+        value = "VIEW_COMMAND_WON"
     "#,
     )
     .unwrap();

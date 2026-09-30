@@ -210,7 +210,11 @@ mod tests {
         let legacy_engine = view("[engine]\ntype = 'picker'");
         let error = registry
             .validate_config("legacy-engine", &legacy_engine)
-            .expect_err("legacy [engine] table must be rejected");
-        assert!(error.to_string().contains("uses legacy"));
+            .expect_err("table-shaped engine field must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("field \"engine\" must be a string, found table")
+        );
     }
 }

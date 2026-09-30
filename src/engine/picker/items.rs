@@ -1,9 +1,7 @@
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
 use crate::terminal::sanitize_text;
-use crate::workflow::config::{
-    PickerItemsProjection, ProducerKind, parse_producer_script_handler, toml_to_json,
-};
+use crate::workflow::config::{PickerItemsProjection, parse_producer_script_handler, toml_to_json};
 use crate::workflow::parameter::ParameterSnapshot;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -400,25 +398,9 @@ struct ItemsScriptOutcome {
     managed_child_reaped: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ItemsProducer {
-    producer: ProducerKind,
-    handler: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeclaredItemsHandler {
-    items: Value,
-}
-
 fn is_producer_value(value: &Value) -> bool {
     value.as_object().is_some_and(|fields| {
-        fields.contains_key("producer")
-            || fields.contains_key("file")
-            || fields.contains_key("script")
-            || fields.contains_key("items")
+        fields.contains_key("file") || fields.contains_key("script") || fields.contains_key("items")
     })
 }
 
@@ -480,82 +462,12 @@ fn run_items_provider(
         }
     }
 
-    let provider: Result<ItemsProducer> = serde_json::from_value(value.clone())
-        .context("items producer must define producer and handler");
-    let provider = match provider {
-        Ok(provider) => provider,
-        Err(error) => {
-            return ItemsScriptOutcome {
-                result: Err(error),
-                managed_child_reaped: false,
-            };
-        }
-    };
-    let source_label = format!("[views.{}.items]", definition.view_ref);
-    match provider.producer {
-        ProducerKind::Declared => {
-            let handler: Result<DeclaredItemsHandler> = serde_json::from_value(provider.handler)
-                .context("declared items handler must define an items array");
-            match handler {
-                Ok(handler) if handler.items.is_array() => ItemsScriptOutcome {
-                    result: validate_items_value(&source_label, handler.items),
-                    managed_child_reaped: false,
-                },
-                Ok(_) => ItemsScriptOutcome {
-                    result: Err(anyhow::anyhow!(
-                        "{} declared items handler must define an items array",
-                        source_label
-                    )),
-                    managed_child_reaped: false,
-                },
-                Err(error) => ItemsScriptOutcome {
-                    result: Err(error),
-                    managed_child_reaped: false,
-                },
-            }
-        }
-        ProducerKind::Script => {
-            let handler = match toml::Value::try_from(provider.handler)
-                .context("items script handler could not be converted to TOML")
-            {
-                Ok(handler) => handler,
-                Err(error) => {
-                    return ItemsScriptOutcome {
-                        result: Err(error),
-                        managed_child_reaped: false,
-                    };
-                }
-            };
-            let source = match parse_producer_script_handler(&handler, definition.workflow_root()) {
-                Ok(source) => source,
-                Err(error) => {
-                    return ItemsScriptOutcome {
-                        result: Err(error),
-                        managed_child_reaped: false,
-                    };
-                }
-            };
-            let request = crate::protocol::items_request(
-                page_parameters.values(),
-                definition.input_value(),
-                "picker",
-                engine_state,
-            );
-            let outcome = crate::protocol::run_script_items_response(
-                &definition.view_ref,
-                &source_label,
-                definition.workflow_root(),
-                &source,
-                &request,
-                cancellation,
-            );
-            ItemsScriptOutcome {
-                result: outcome
-                    .result
-                    .and_then(|value| validate_items_value(&source_label, value)),
-                managed_child_reaped: outcome.managed_child_reaped,
-            }
-        }
+    ItemsScriptOutcome {
+        result: Err(anyhow::anyhow!(
+            "{} items must define file, script, or an items array",
+            source_label
+        )),
+        managed_child_reaped: false,
     }
 }
 
@@ -595,36 +507,10 @@ pub(crate) fn run_items_producer_raw(
             return validate_items_value(&source_label, Value::Array(items_arr.clone()));
         }
     }
-    let provider: ItemsProducer = serde_json::from_value(json_val)
-        .context("items producer must define producer and handler")?;
-    match provider.producer {
-        ProducerKind::Declared => {
-            let handler: DeclaredItemsHandler = serde_json::from_value(provider.handler)
-                .context("declared items handler must define an items array")?;
-            validate_items_value(&source_label, handler.items)
-        }
-        ProducerKind::Script => {
-            let handler = toml::Value::try_from(provider.handler)
-                .context("items script handler could not be converted to TOML")?;
-            let source = parse_producer_script_handler(&handler, script_root)?;
-            let engine_state = serde_json::json!({
-                "input": raw_input,
-            });
-            let request =
-                crate::protocol::items_request(parameters, &Value::Null, "picker", &engine_state);
-            let outcome = crate::protocol::run_script_items_response(
-                view_ref,
-                &source_label,
-                script_root,
-                &source,
-                &request,
-                cancellation,
-            );
-            outcome
-                .result
-                .and_then(|value| validate_items_value(&source_label, value))
-        }
-    }
+    bail!(
+        "{} items must be an array or define file, script, or items",
+        source_label
+    )
 }
 
 fn validate_items_value(source_label: &str, value: Value) -> Result<Value> {

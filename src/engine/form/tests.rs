@@ -26,10 +26,7 @@ fn request() -> NavigationRequest {
 
 fn declared(fields: Value) -> FormView {
     let mut form = FormView::new(
-        config(
-            json!({"producer":"declared", "handler":{"fields":fields}}),
-            TaskRuntime::new(),
-        ),
+        config(json!({"fields":fields}), TaskRuntime::new()),
         &request(),
         ViewInstanceId(1),
     )
@@ -294,7 +291,7 @@ fn form_column_uses_the_compact_default_maximum_width() {
 #[test]
 fn async_content_starts_on_activation_and_accepts_only_its_task() {
     let tasks = TaskRuntime::new();
-    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"ok\"}]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    let mut form = FormView::new(config(json!({"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"ok\"}]}}'"}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
     assert!(form.task.is_none());
     assert!(!form.publication.ready);
     form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
@@ -351,10 +348,7 @@ fn failed_content_never_publishes_a_ready_or_valid_form() {
         let tasks = TaskRuntime::new();
         let script = format!("#!/bin/sh\nprintf '%s' '{response}'");
         let mut form = FormView::new(
-            config(
-                json!({"producer":"script","handler":{"script":script}}),
-                tasks.clone(),
-            ),
+            config(json!({"script":script}), tasks.clone()),
             &request(),
             ViewInstanceId(1),
         )
@@ -379,7 +373,7 @@ fn failed_content_never_publishes_a_ready_or_valid_form() {
 #[test]
 fn closing_cancels_content_work_and_rejects_late_completions() {
     let tasks = TaskRuntime::new();
-    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nsleep 30\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    let mut form = FormView::new(config(json!({"script":"#!/bin/sh\nsleep 30\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[]}}'"}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
     form.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context())
         .unwrap();
     form.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context())
@@ -460,7 +454,7 @@ fn closing_rollback_restores_drafts_and_only_closed_is_final() {
 #[test]
 fn closing_rollback_restarts_incomplete_content_with_new_task_generation() {
     let tasks = TaskRuntime::new();
-    let mut form = FormView::new(config(json!({"producer":"script","handler":{"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"restored\"}]}}'"}}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
+    let mut form = FormView::new(config(json!({"script":"#!/bin/sh\nprintf '%s' '{\"version\":1,\"content\":{\"fields\":[{\"name\":\"loaded\",\"value\":\"restored\"}]}}'"}), tasks.clone()), &request(), ViewInstanceId(1)).unwrap();
     assert_eq!(
         form.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context())
             .unwrap(),
@@ -622,10 +616,7 @@ fn form_discrete_navigation_and_exit_commands() {
 
 #[test]
 fn form_engine_table_uses_root_defaults_and_tombstones() {
-    let mut config = config(
-        json!({"producer":"declared", "handler":{"fields":[{"name": "a"}]}}),
-        TaskRuntime::new(),
-    );
+    let mut config = config(json!({"fields":[{"name": "a"}]}), TaskRuntime::new());
     config.bindings = ProjectedBindingConfig {
         defaults: Some(json!({
             "ctrl+n": "focus_next",

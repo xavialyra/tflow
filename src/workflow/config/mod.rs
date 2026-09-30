@@ -799,7 +799,7 @@ mod tests {
             [workflows.demo.views.main]
             engine = "picker"
             [workflows.demo.views.main.picker]
-            items = { producer = "declared", handler = { items = [{ display = "Example item" }] } }
+            items = [{ display = "Example item" }]
             "#,
         )
         .unwrap();
@@ -811,7 +811,7 @@ mod tests {
             .selected_items()
             .unwrap();
         assert_eq!(
-            items["handler"]["items"][0]["display"],
+            items[0]["display"],
             toml::Value::String("Example item".to_string())
         );
     }

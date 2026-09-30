@@ -22,10 +22,9 @@ use crate::view::{
     ViewCommandSnapshot, ViewContext, ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::config::{
-    Defaults, ProducerKind, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
+    Defaults, ResolvedScriptSource, parse_producer_script_handler, toml_to_json,
 };
-use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,13 +91,6 @@ pub(super) fn definition() -> EngineDefinition {
     })
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Producer {
-    producer: ProducerKind,
-    handler: Value,
-}
-
 enum PreparedContent {
     Declared(Vec<Draft>),
     Script(ResolvedScriptSource),
@@ -116,17 +108,7 @@ fn prepare(value: Value, root: Option<&std::path::Path>) -> Result<PreparedConte
             return Ok(PreparedContent::Declared(parse_content(value)?));
         }
     }
-    let producer: Producer =
-        serde_json::from_value(value).context("form content must define producer and handler")?;
-    match producer.producer {
-        ProducerKind::Declared => Ok(PreparedContent::Declared(parse_content(producer.handler)?)),
-        ProducerKind::Script => {
-            let handler = toml::Value::try_from(producer.handler)?;
-            Ok(PreparedContent::Script(parse_producer_script_handler(
-                &handler, root,
-            )?))
-        }
-    }
+    bail!("form content must define fields or file/script");
 }
 
 pub(super) fn validate_defaults(defaults: &Defaults) -> Result<()> {

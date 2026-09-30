@@ -23,7 +23,7 @@ use self::tasks::PickerItemsScheduler;
 use super::{EngineValidationContext, RendererFactoryContext, validate_fields};
 use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{
-    CompiledConfig, Defaults, ProducerKind, View, parse_producer_script_handler, toml_to_json,
+    CompiledConfig, Defaults, View, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -312,13 +312,6 @@ pub(super) fn create_renderer(
     Ok(Box::new(PickerRenderer::new()))
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ItemsProducerConfig {
-    producer: ProducerKind,
-    handler: toml::Value,
-}
-
 fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Result<()> {
     match value {
         toml::Value::Array(_) => {
@@ -335,19 +328,7 @@ fn validate_items_source_config(value: &toml::Value, root: Option<&Path>) -> Res
         toml::Value::Table(fields) if fields.contains_key("items") => {
             validate_declared_items_handler(value)
         }
-        toml::Value::Table(fields) if fields.contains_key("producer") => {
-            let provider: ItemsProducerConfig = value
-                .clone()
-                .try_into()
-                .context("items producer must define producer and handler")?;
-            match provider.producer {
-                ProducerKind::Declared => validate_declared_items_handler(&provider.handler),
-                ProducerKind::Script => parse_producer_script_handler(&provider.handler, root)
-                    .context("items script handler is invalid")
-                    .map(|_| ()),
-            }
-        }
-        _ => bail!("items must be an array or a producer object"),
+        _ => bail!("items must be an array or a table with file/script/items"),
     }
 }
 

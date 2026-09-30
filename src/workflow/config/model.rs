@@ -472,12 +472,7 @@ impl View {
 
         if engine_val.is_table() {
             bail!(
-                "view {:?} uses legacy [views.{}.engine]; set `engine = \"...\"` and use named engine table instead (e.g. [views.{}.picker], [views.{}.capture], [views.{}.form], [views.{}.embedded])",
-                view_name,
-                view_name,
-                view_name,
-                view_name,
-                view_name,
+                "view {:?} field \"engine\" must be a string, found table",
                 view_name
             );
         }
@@ -581,10 +576,11 @@ impl<'de> Deserialize<'de> for ReturnProcessor {
             toml::Value::Table(table) => table,
             _ => return Err(serde::de::Error::custom("return_processor must be a table")),
         };
-        if fields.contains_key("producer") || fields.contains_key("handler") {
-            return Err(serde::de::Error::custom(
-                "legacy 'producer' and 'handler' fields are not supported on return_processor; configure 'file' / 'script' or operation fields directly",
-            ));
+        if fields.contains_key("producer") {
+            return Err(serde::de::Error::custom("unknown field `producer`"));
+        }
+        if fields.contains_key("handler") {
+            return Err(serde::de::Error::custom("unknown field `handler`"));
         }
         let operation = match fields.remove("type") {
             Some(toml::Value::String(s)) => Some(s),
@@ -671,10 +667,11 @@ impl<'de> Deserialize<'de> for Command {
             toml::Value::Table(table) => table,
             _ => return Err(serde::de::Error::custom("command must be a table")),
         };
-        if fields.contains_key("producer") || fields.contains_key("handler") {
-            return Err(serde::de::Error::custom(
-                "legacy 'producer' and 'handler' fields are not supported; configure 'file' / 'script' or operation fields directly on the command",
-            ));
+        if fields.contains_key("producer") {
+            return Err(serde::de::Error::custom("unknown field `producer`"));
+        }
+        if fields.contains_key("handler") {
+            return Err(serde::de::Error::custom("unknown field `handler`"));
         }
         let label = match fields.remove("label") {
             Some(toml::Value::String(s)) => s,
@@ -1027,7 +1024,7 @@ args = []
             "#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("legacy 'producer' and 'handler'"));
+        assert!(err.to_string().contains("unknown field `producer`"));
     }
 
     #[test]

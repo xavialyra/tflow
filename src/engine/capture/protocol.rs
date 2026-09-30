@@ -675,8 +675,7 @@ mod tests {
 
         let tasks = TaskRuntime::new();
         let output = serde_json::json!({
-            "producer": "script",
-            "handler": {"file": "capture.sh"}
+            "file": "capture.sh"
         });
         let mut capture_config = config_with_tasks(output.clone(), tasks.clone());
         capture_config.engine.workflow_root = Some(root.clone());
@@ -809,8 +808,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let output = serde_json::json!({
-            "producer": "script",
-            "handler": {"file": "fail.sh"}
+            "file": "fail.sh"
         });
         let mut cfg = config(output);
         cfg.engine.workflow_root = Some(root.clone());

@@ -15,7 +15,7 @@ use super::{
     validate_fields,
 };
 use crate::workflow::config::{
-    Defaults, ProducerKind, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
+    Defaults, ResolvedScriptSource, View, parse_producer_script_handler, toml_to_json,
 };
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -31,13 +31,6 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
             crate::engine::ActionSpec::unit("capture.copy"),
             crate::engine::ActionSpec::unit("capture.back"),
         ])
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OutputProducerConfig {
-    producer: ProducerKind,
-    handler: toml::Value,
 }
 
 fn reject_picker_sources(name: &str, view: &View) -> Result<()> {
@@ -73,18 +66,6 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
                 .context("capture output script handler is invalid")?;
         } else if fields.contains_key("output") {
             validate_declared_output(output)?;
-        } else if fields.contains_key("producer") {
-            let provider: OutputProducerConfig = output
-                .clone()
-                .try_into()
-                .context("capture output producer must define producer and handler")?;
-            match provider.producer {
-                ProducerKind::Declared => validate_declared_output(&provider.handler)?,
-                ProducerKind::Script => {
-                    parse_producer_script_handler(&provider.handler, context.script_root)
-                        .context("capture output script handler is invalid")?;
-                }
-            }
         } else {
             bail!(
                 "view {:?} capture output table must define file, script, or output",
@@ -131,19 +112,6 @@ fn validate_declared_output(value: &toml::Value) -> Result<()> {
         .context("declared capture output handler must define output")?;
     let _ = handler.output;
     Ok(())
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeclaredOutputHandler {
-    output: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectedOutputProducer {
-    producer: ProducerKind,
-    handler: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -223,27 +191,6 @@ fn prepare_output(
         }
         if let Some(text) = fields.get("output").and_then(|t| t.as_str()) {
             return Ok(PreparedCaptureOutput::Text(text.to_string()));
-        }
-        if fields.contains_key("producer") {
-            let provider: ProjectedOutputProducer = serde_json::from_value(output.clone())
-                .context("capture output producer must define producer and handler")?;
-            return match provider.producer {
-                ProducerKind::Declared => {
-                    let handler: DeclaredOutputHandler =
-                        serde_json::from_value(provider.handler)
-                            .context("declared capture output handler must define output")?;
-                    Ok(PreparedCaptureOutput::Text(handler.output))
-                }
-                ProducerKind::Script => {
-                    let handler = toml::Value::try_from(provider.handler)
-                        .context("capture output script handler could not be converted to TOML")?;
-                    let source = parse_producer_script_handler(&handler, workflow_root)?;
-                    Ok(PreparedCaptureOutput::Script {
-                        root: workflow_root.map(Path::to_path_buf),
-                        source,
-                    })
-                }
-            };
         }
     }
     output
@@ -505,8 +452,7 @@ mod tests {
                 fields: [(
                     "output".to_string(),
                     serde_json::json!({
-                        "producer": "script",
-                        "handler": {"file": "capture.sh"}
+                        "file": "capture.sh"
                     }),
                 )]
                 .into_iter()
