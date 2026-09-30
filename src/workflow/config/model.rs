@@ -119,6 +119,15 @@ pub struct EngineSpec {
     pub config: EngineOptions,
 }
 
+impl Default for EngineSpec {
+    fn default() -> Self {
+        Self {
+            engine_type: default_engine_type(),
+            config: EngineOptions::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedScriptTarget {
     File(String),
@@ -446,6 +455,7 @@ pub struct Unbind {
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
+    #[serde(default)]
     pub engine: EngineSpec,
     #[serde(default)]
     pub alias: Option<String>,
@@ -461,6 +471,8 @@ pub struct View {
     pub unbind: Unbind,
     #[serde(default)]
     pub chrome_commands_show: Option<Vec<String>>,
+    #[serde(default)]
+    pub preview: Option<toml::Value>,
 }
 
 impl View {

@@ -25,9 +25,6 @@ selected = { type = "array<string>", default = ["calculator", "apps", "sys"] }
 type = "picker"
 
 [views.main.engine.config]
-preview_ratio = 0.52
-preview_min_width = 36
-preview_default_open = true
 input_placeholder = "Search components"
 
 [views.main.engine.config.items]
@@ -246,9 +243,10 @@ if __name__ == "__main__":
     main()
 '''
 
-[views.main.engine.config.preview]
-producer = "script"
-[views.main.engine.config.preview.handler]
+[views.main.preview]
+width = "52%"
+min_width = 36
+open = true
 script = '''#!/usr/bin/env python3
 import json
 import os

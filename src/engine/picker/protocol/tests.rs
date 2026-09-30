@@ -31,6 +31,7 @@ fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> Picker
         theme: ResolvedTheme::terminal(),
         left_prefix: None,
         prefix_backspace: None,
+        preview: None,
         runtime_snapshot: serde_json::json!({"view": {}}),
         tasks,
     }
@@ -878,14 +879,26 @@ fn picker_preview_declared_image_renders_after_decode_and_encoding() {
     let services =
         crate::engine::picker::PickerRuntimeServices::new(fixture, starter, "core:default")
             .view_services();
+    let preview_script = temp_dir.join("preview.py");
+    std::fs::write(
+        &preview_script,
+        format!(
+            "#!/usr/bin/env python3\nimport json, sys\njson.dump({{\"version\": 1, \"preview\": {{\"type\": \"image\", \"path\": {:?}}}}}, sys.stdout)\n",
+            image_path.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&preview_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     let mut picker_config = config_with_tasks(services, tasks.clone());
-    picker_config.engine.fields.insert(
-        "preview".to_string(),
-        serde_json::json!({
-            "producer": "declared",
-            "document": {"type": "image", "path": image_path.to_string_lossy()}
-        }),
-    );
+    picker_config.preview = Some(serde_json::json!({
+        "file": preview_script.to_string_lossy(),
+        "open": true,
+    }));
     let mut view =
         create_protocol_view(picker_config, &request("core:default"), ViewInstanceId(1)).unwrap();
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
@@ -896,7 +909,6 @@ fn picker_preview_declared_image_renders_after_decode_and_encoding() {
     view.event(ViewEvent::Resize(size), &context).unwrap();
     view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
         .unwrap();
-    key(view.as_mut(), Key::Ctrl('p'), &context);
     let render_context =
         RenderContext::new(size, Some(crate::terminal::ImagePicker::test_halfblocks()));
     let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
@@ -960,6 +972,12 @@ mod preview_correlation_tests {
             theme: ResolvedTheme::terminal(),
             left_prefix: None,
             prefix_backspace: None,
+            preview: config
+                .view(page)
+                .and_then(|v| v.preview.as_ref())
+                .map(crate::workflow::config::toml_to_json)
+                .transpose()
+                .unwrap(),
             runtime_snapshot: serde_json::json!({"view":{}}),
             tasks: tasks.clone(),
         };
@@ -1100,6 +1118,12 @@ mod preview_correlation_tests {
                 theme: ResolvedTheme::terminal(),
                 left_prefix: None,
                 prefix_backspace: None,
+                preview: config
+                    .view(page)
+                    .and_then(|v| v.preview.as_ref())
+                    .map(crate::workflow::config::toml_to_json)
+                    .transpose()
+                    .unwrap(),
                 runtime_snapshot: serde_json::json!({"view":{}}),
                 tasks: tasks.clone(),
             }

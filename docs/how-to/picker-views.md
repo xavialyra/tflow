@@ -158,17 +158,13 @@ The plain `items = [...]` array is also supported as a declared shorthand.
 
 Press `Ctrl+P` in any Picker to view the selected item's display and value. Every Picker starts with its preview collapsed; no preview configuration is needed for these built-in details. Metadata remains available to custom preview providers.
 
-To customize the content, declare a preview provider. The following example sets the automatic preview sizing and uses a script to turn selected-item metadata into a document:
+To customize the content, declare a preview provider. The following example sets the preview sizing and uses a script to turn selected-item metadata into a document:
 
 ```toml
-[views.branches.engine.config]
-preview_ratio = 0.35
-preview_min_width = 24
-
-[views.branches.engine.config.preview]
-producer = "script"
-[views.branches.engine.config.preview.handler]
+[views.branches.preview]
 file = "scripts/preview.py"
+width = "35%"
+min_width = 24
 ```
 
 Create `scripts/preview.py`:
@@ -188,9 +184,7 @@ json.dump({"version": 1, "preview": {
 sys.stdout.write("\n")
 ```
 
-For fixed content, replace the preview source with `preview = { producer = "declared", document = "About this list" }` under `engine.config`.
-
-For an aggregate page, omit its `preview` field to use the selected feed's provider, falling back to built-in details when the feed has no provider. Preview sizing is controlled by `preview_ratio` and `preview_min_width`; the pane starts collapsed unless `preview_default_open = true`. Add an explicit page provider to override the content. For scripts and declared documents, the selected provider's workflow supplies its parameters, relative script/image paths, and custom styles. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for declared documents and nested layouts.
+Omit `[views.<name>.preview]` to use built-in details. Sizing is controlled by `width` and `min_width`; the pane starts collapsed unless `open = true`. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for document schemas and nested layouts.
 
 Run the preview example from the repository root:
 

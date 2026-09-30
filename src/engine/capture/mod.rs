@@ -48,6 +48,13 @@ fn reject_picker_sources(name: &str, view: &View) -> Result<()> {
             view.selected_engine_type()
         );
     }
+    if view.preview.is_some() {
+        bail!(
+            "view {:?} using engine {:?} cannot define [preview]",
+            name,
+            view.selected_engine_type()
+        );
+    }
     Ok(())
 }
 

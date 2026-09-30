@@ -856,15 +856,11 @@ fn preview_decode_starts_only_during_prepared_auxiliary_work_start() {
         "core:default",
     )
     .view_services();
-    let preview = super::super::preview::parse(
-        0.35,
-        24,
-        Some(serde_json::json!({
-            "producer": "declared", "document": {"type": "image", "path": "/missing.png"}
-        })),
-    )
-    .unwrap();
+    let preview = super::super::preview::parse(None).unwrap();
     let mut picker = PickerView::new_with_preview("core:default", services, preview);
+    picker.preview.install_test_document(serde_json::json!({
+        "type": "image", "path": "/missing.png"
+    }));
     picker.frame.selection.replace(vec![Item {
         text: "item".to_string(),
         display: crate::engine::picker::ItemDisplayInput::Plain("item".to_string()).into(),
@@ -887,6 +883,9 @@ fn preview_decode_starts_only_during_prepared_auxiliary_work_start() {
     picker
         .dispatch_action(crate::engine::ActionId::new("picker.toggle_preview"), None)
         .unwrap();
+    picker.preview.install_test_document(serde_json::json!({
+        "type": "image", "path": "/missing.png"
+    }));
     assert!(!picker.preview.has_pending_task());
     picker.start_prepared_auxiliary_work(&starter);
     assert!(picker.preview.has_pending_task());
@@ -1016,17 +1015,15 @@ mod preview_provider_tests {
             None,
         )
         .unwrap();
-        let preview_config = crate::engine::picker::preview::parse(
-            0.35,
-            24,
-            Some(
-                crate::workflow::config::toml_to_json(
-                    config.view(page).unwrap().engine_field("preview").unwrap(),
-                )
-                .unwrap(),
-            ),
-        )
-        .unwrap();
+        let preview_json = config
+            .view(page)
+            .unwrap()
+            .preview
+            .as_ref()
+            .map(crate::workflow::config::toml_to_json)
+            .transpose()
+            .unwrap();
+        let preview_config = crate::engine::picker::preview::parse(preview_json.as_ref()).unwrap();
         let mut picker = PickerView::new_with_preview(page, services, preview_config);
         picker
             .dispatch_action(ActionId::new("picker.toggle_preview"), None)

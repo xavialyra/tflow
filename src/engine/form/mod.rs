@@ -134,6 +134,7 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         view.selected_items().is_none(),
         "form views cannot provide picker items"
     );
+    ensure!(view.preview.is_none(), "form views cannot define [preview]");
     crate::engine::validate_fields(context.view_ref, view, &["content"])?;
     crate::engine::require_field(context.view_ref, view, "content")?;
     prepare(

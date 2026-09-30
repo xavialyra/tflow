@@ -54,7 +54,6 @@ pub(crate) struct PickerViewServices {
     /// empty envelope until the first registry update.
     registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
     workflow_roots: BTreeMap<String, PathBuf>,
-    preview_sources: BTreeMap<String, preview::PreviewSource>,
     /// Session-scoped cache shared by every Picker instance mounted by one
     /// factory, so a remount with the same request identity does not flash.
     preview_cache: PreviewDocumentCache,
@@ -82,16 +81,6 @@ impl PickerViewServices {
 impl PickerViewServices {
     pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
         let mut services = Self::default();
-
-        if let Some(value) = config
-            .view(root_view_ref)
-            .and_then(|view| view.engine_field("preview"))
-        {
-            services.preview_sources.insert(
-                root_view_ref.to_string(),
-                preview::parse_source(toml_to_json(value)?, config.workflow_root(root_view_ref))?,
-            );
-        }
         if let Some(root) = config.workflow_root(root_view_ref) {
             let package = root_view_ref
                 .split_once(':')
@@ -222,10 +211,6 @@ pub(crate) use items::Item;
 /// Engine config fields the Picker accepts. Shared by the factory plan and
 /// validation so the two cannot drift apart.
 const CONFIG_FIELDS: &[&str] = &[
-    "preview_ratio",
-    "preview_min_width",
-    "preview_default_open",
-    "preview",
     "show_input",
     "show_divider",
     "show_left_prefix",
@@ -257,53 +242,6 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
         ])
 }
 
-/// Default preview share of the split and its minimum pane width.
-const DEFAULT_PREVIEW_RATIO: f64 = 0.35;
-const DEFAULT_PREVIEW_MIN_WIDTH: u16 = 24;
-
-pub(super) fn preview_options(
-    preview_ratio: Option<&Value>,
-    preview_min_width: Option<&Value>,
-    preview_default_open: Option<&Value>,
-) -> Result<(f64, u16, bool)> {
-    let ratio = preview_ratio
-        .map(|value| {
-            value
-                .as_f64()
-                .context("picker preview_ratio must be a number")
-        })
-        .transpose()?
-        .unwrap_or(DEFAULT_PREVIEW_RATIO);
-    anyhow::ensure!(
-        ratio.is_finite() && (0.0..=1.0).contains(&ratio),
-        "picker preview_ratio must be between 0 and 1"
-    );
-
-    let min_width = preview_min_width
-        .map(|value| {
-            value
-                .as_u64()
-                .context("picker preview_min_width must be an unsigned 16-bit integer")
-        })
-        .transpose()?
-        .unwrap_or(u64::from(DEFAULT_PREVIEW_MIN_WIDTH));
-    anyhow::ensure!(
-        min_width <= u16::MAX as u64,
-        "picker preview_min_width must be an unsigned 16-bit integer"
-    );
-
-    let default_open = preview_default_open
-        .map(|value| {
-            value
-                .as_bool()
-                .context("picker preview_default_open must be a boolean")
-        })
-        .transpose()?
-        .unwrap_or(false);
-
-    Ok((ratio, min_width as u16, default_open))
-}
-
 pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()> {
     let name = context.view_ref;
     let view = context.view;
@@ -322,27 +260,12 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
             bail!("view {:?} picker {} must be a string", name, field);
         }
     }
-    let preview_ratio = view
-        .engine_field("preview_ratio")
-        .map(toml_to_json)
-        .transpose()?;
-    let preview_min_width = view
-        .engine_field("preview_min_width")
-        .map(toml_to_json)
-        .transpose()?;
-    let preview_default_open = view
-        .engine_field("preview_default_open")
-        .map(toml_to_json)
-        .transpose()?;
-    let (preview_ratio, preview_min_width, _) = preview_options(
-        preview_ratio.as_ref(),
-        preview_min_width.as_ref(),
-        preview_default_open.as_ref(),
-    )?;
-    let preview = view.engine_field("preview").map(toml_to_json).transpose()?;
-    let preview = self::preview::parse(preview_ratio, preview_min_width, preview)?;
-    if let self::preview::PreviewSource::Script(source) = &preview.source {
-        source.validate_target(context.script_root)?;
+    if let Some(preview_val) = &view.preview {
+        let preview_json = toml_to_json(preview_val)?;
+        let preview = self::preview::parse(Some(&preview_json))?;
+        if let self::preview::PreviewSource::Script(source) = &preview.source {
+            source.validate_target(context.script_root)?;
+        }
     }
     if let Some(items) = view.selected_items() {
         validate_items_source_config(items, context.script_root)
@@ -466,6 +389,10 @@ type = "object"
 input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "browser" }
+[views.main.preview]
+file = "scripts/preview.py"
+width = "35%"
+min_width = 24
 [views.main.engine]
 type = "picker"
 [views.main.engine.config]
@@ -473,13 +400,9 @@ items = [
   { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
   { display = "Empty preview", value = "empty", metadata = {} },
 ]
-preview_ratio = 0.35
-preview_min_width = 24
-[views.main.engine.config.preview]
-producer = "script"
-[views.main.engine.config.preview.handler]
-file = "scripts/preview.py"
 
+[views.override.preview]
+file = "scripts/preview.py"
 [views.override.engine]
 type = "picker"
 [views.override.engine.config]
@@ -487,18 +410,11 @@ items = [
   { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
   { display = "Empty preview", value = "empty", metadata = {} },
 ]
-[views.override.engine.config.preview]
-producer = "script"
-[views.override.engine.config.preview.handler]
-file = "scripts/preview.py"
 
 [views.declared.engine]
 type = "picker"
 [views.declared.engine.config]
 items = [{ display = "Static document" }]
-[views.declared.engine.config.preview]
-producer = "declared"
-document = { type = "paragraph", text = "This document is declared in TOML.", border = true, title = "About" }
 "#,
     )
     .unwrap();
@@ -516,6 +432,8 @@ type = "object"
 input = "search"
 search = { type = "string", default = "" }
 owner = { type = "string", default = "library" }
+[views.main.preview]
+file = "scripts/preview.py"
 [views.main.engine]
 type = "picker"
 [views.main.engine.config]
@@ -523,10 +441,6 @@ items = [
   { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
   { display = "Empty preview", value = "empty", metadata = {} },
 ]
-[views.main.engine.config.preview]
-producer = "script"
-[views.main.engine.config.preview.handler]
-file = "scripts/preview.py"
 [views.main.bindings]
 "ctrl+p" = "toggle_preview"
 "alt+k" = "preview_scroll_up"

@@ -185,14 +185,29 @@ items = [
 ]
 ```
 
-#### Preview Pane Configuration
+#### Preview Pane Configuration (`[views.<name>.preview]`)
 
-| Option | Type | Default | Description |
+Picker preview panes are configured directly under the View table using `[views.<name>.preview]`:
+
+```toml
+[views.main.preview]
+file = "scripts/preview.py"      # Script file path (or `script = "..."` for inline script)
+width = "35%"                   # Sizing: percentage string or float ratio 0.0..=1.0 (default: 0.35)
+min_width = 24                  # Minimum column width required (default: 24)
+open = true                     # Open pane at activation (default: false)
+```
+
+##### Supported Fields (`[views.<name>.preview]`)
+
+| Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `preview` | table | `{ inherit = true }` | Preview producer definition (`script`, `declared`, or `{ inherit = true }`). |
-| `preview_default_open` | boolean | `false` | When `true`, the preview pane starts open instead of collapsed. |
-| `preview_ratio` | float | `0.5` | Ratio of the terminal allocated to preview (when visible). |
-| `preview_min_width` | integer | `30` | Minimum column width required to display the preview pane. |
+| `file` | string | Unset | Path to external preview script file. Mutually exclusive with `script`. |
+| `script` | string | Unset | Inline script content. Mutually exclusive with `file`. |
+| `open` | boolean | `false` | When `true`, the preview pane starts open instead of collapsed. |
+| `width` | number / string | `0.35` | Preview ratio (e.g. `0.35` or `"35%"`). |
+| `min_width` | integer | `24` | Minimum column width required to display the preview pane. |
+
+When neither `file` nor `script` is configured, the Picker displays built-in item details. Unknown fields fail validation.
 
 ---
 

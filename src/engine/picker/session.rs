@@ -227,12 +227,7 @@ impl PickerView {
         Self::new_with_preview(
             view,
             services,
-            super::preview::parse(
-                super::DEFAULT_PREVIEW_RATIO,
-                super::DEFAULT_PREVIEW_MIN_WIDTH,
-                None,
-            )
-            .expect("default picker preview is valid"),
+            super::preview::parse(None).expect("default picker preview is valid"),
         )
     }
 
@@ -242,6 +237,7 @@ impl PickerView {
         preview: PickerPreviewConfig,
     ) -> Self {
         let preview_cache = services.preview_cache.clone();
+        let preview_visible = preview.open;
         Self {
             state: PickerState {
                 frame: PickerFrame::new(view),
@@ -251,7 +247,7 @@ impl PickerView {
                 active: true,
                 started: false,
                 items_task_state: ItemsTaskState::Idle,
-                preview_visible: false,
+                preview_visible,
                 items_published: false,
                 initial_focus: None,
             },
@@ -275,6 +271,7 @@ impl PickerView {
         self.preview_visible
     }
 
+    #[cfg(test)]
     pub(crate) fn set_preview_visible(&mut self, visible: bool) {
         self.preview_visible = visible;
         self.preview.set_visible(visible);
@@ -341,17 +338,8 @@ impl PickerView {
             })
             .flatten();
         let request = item.map(|item| {
-            let configured = self.preview.source();
-            let (owner, source) = match configured {
-                super::preview::PreviewSource::Inherit => (
-                    item.source_view.clone(),
-                    self.services.preview_sources.get(&item.source_view)
-                        .filter(|source| !matches!(source, super::preview::PreviewSource::Inherit))
-                        .cloned()
-                        .unwrap_or(super::preview::PreviewSource::Details),
-                ),
-                source => (self.frame.view.clone(), source.clone()),
-            };
+            let source = self.preview.source().clone();
+            let owner = self.frame.view.clone();
             let parameters = self
                 .parameter_snapshot
                 .as_ref()
@@ -359,7 +347,7 @@ impl PickerView {
                 .unwrap_or(Value::Null);
             let state = serde_json::json!({"input": self.requested_input(), "item": super::preview::item_value(&item)});
             let request = crate::protocol::preview_request(&parameters, &self.services.launch_input, &state);
-            let identity = serde_json::json!({"owner": owner, "source_view": item.source_view, "request": request}).to_string();
+            let identity = serde_json::json!({"owner": owner, "item": item.value, "request": request}).to_string();
             let root = self.services.workflow_root(&owner).map(std::path::Path::to_path_buf);
             super::preview::PreviewRequest { identity, owner, request, root, source }
         });

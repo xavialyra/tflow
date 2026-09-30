@@ -63,6 +63,7 @@ pub(crate) struct PickerProtocolConfig {
     /// Backspace behavior on an empty, prefixed input line. `None` leaves
     /// Backspace inert.
     pub(crate) prefix_backspace: Option<super::PrefixBackspace>,
+    pub(crate) preview: Option<Value>,
     pub(crate) runtime_snapshot: Value,
     pub(crate) tasks: TaskRuntime,
 }
@@ -104,21 +105,11 @@ pub(crate) fn create_protocol_view(
             .filter(|placeholder| !placeholder.is_empty())
             .map(str::to_string),
     };
-    let (preview_ratio, preview_min_width, preview_visible) = super::preview_options(
-        config.engine.field("preview_ratio"),
-        config.engine.field("preview_min_width"),
-        config.engine.field("preview_default_open"),
-    )?;
-    let preview = super::preview::parse(
-        preview_ratio,
-        preview_min_width,
-        config.engine.field("preview").cloned(),
-    )?;
+    let preview = super::preview::parse(config.preview.as_ref())?;
     let mut runtime_services = config.services.clone();
     runtime_services.launch_input = config.engine.launch_input.clone();
     let mut runtime =
         PickerView::new_with_preview(&config.identity.view_ref, runtime_services, preview);
-    runtime.set_preview_visible(preview_visible);
     if let Some(focus) = &request.focus {
         runtime.set_initial_focus(Some(focus.clone()));
     }

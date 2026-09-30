@@ -167,6 +167,12 @@ impl ViewFactory for ProtocolViewFactory {
                     ),
                     Some(literal) => Some(literal.to_string()),
                 };
+                let preview = self
+                    .config
+                    .view(target)
+                    .and_then(|view| view.preview.as_ref())
+                    .map(crate::workflow::config::toml_to_json)
+                    .transpose()?;
                 let config = PickerProtocolConfig {
                     identity: crate::engine::ViewIdentity::new(
                         target,
@@ -192,6 +198,7 @@ impl ViewFactory for ProtocolViewFactory {
                             }
                         }
                     }),
+                    preview,
                     runtime_snapshot,
                     tasks: services
                         .host

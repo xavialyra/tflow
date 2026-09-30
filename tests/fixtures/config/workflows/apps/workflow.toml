@@ -8,21 +8,19 @@ entrypoint = "main"
 [views.main.engine]
 type = "picker"
 
+[views.main.preview]
+file = "scripts/preview.py"
+width = "35%"
+min_width = 24
+open = false
+
 [views.main.engine.config]
-preview_ratio = 0.35
-preview_min_width = 24
-preview_default_open = false
 input_placeholder = "Search applications"
 
 [views.main.engine.config.items]
 producer = "script"
 [views.main.engine.config.items.handler]
 file = "scripts/items.sh"
-
-[views.main.engine.config.preview]
-producer = "script"
-[views.main.engine.config.preview.handler]
-file = "scripts/preview.py"
 
 [views.main.bindings]
 enter = "open"

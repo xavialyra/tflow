@@ -10,11 +10,9 @@ fn runtime() -> (TaskRuntime, MountTaskStarter) {
     (tasks, starter)
 }
 fn source(script: &str) -> PreviewSource {
-    parse_source(
-        json!({"producer":"script","handler":{"script":script}}),
-        None,
-    )
-    .unwrap()
+    PreviewSource::Script(crate::workflow::config::ResolvedScriptSource {
+        target: crate::workflow::config::ResolvedScriptTarget::Inline(script.to_string()),
+    })
 }
 fn request(source: PreviewSource, metadata: Value) -> PreviewRequest {
     let item = Item {
@@ -43,7 +41,7 @@ fn preview() -> PickerPreview {
 }
 
 fn preview_with_cache(cache: &PreviewDocumentCache) -> PickerPreview {
-    let mut preview = PickerPreview::new(parse(0.35, 24, None).unwrap(), cache.clone());
+    let mut preview = PickerPreview::new(parse(None).unwrap(), cache.clone());
     preview.set_visible(true);
     preview
 }
@@ -208,10 +206,11 @@ fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
         .save(root.join("art.png"))
         .unwrap();
     let doc = document::parse(json!({"type":"layout","direction":"vertical","children":["caption",{"type":"image","path":"art.png"}]})).unwrap();
-    let mut request = request(PreviewSource::Declared(doc), json!({}));
+    let mut request = request(PreviewSource::Details, json!({}));
     request.root = Some(root.clone());
     let mut preview = preview();
-    preview.prepare(Some(request));
+    preview.prepared = Some(request);
+    preview.install_document_inner(doc, false);
     assert!(preview.task.is_none());
     preview.start(&starter);
     assert!(preview.task.is_some());
@@ -270,11 +269,11 @@ sys.stdout.write("\n")
         )
         .unwrap();
     }
-    let source = parse_source(
-        json!({"producer":"script","handler":{"file":"scripts/preview.py"}}),
-        Some(&root),
-    )
-    .unwrap();
+    let source = PreviewSource::Script(crate::workflow::config::ResolvedScriptSource {
+        target: crate::workflow::config::ResolvedScriptTarget::File(
+            "scripts/preview.py".to_string(),
+        ),
+    });
     let mut request = request(
         source,
         json!({"summary":"Fixture roundtrip", "image":"art.png"}),
@@ -309,7 +308,7 @@ sys.stdout.write("\n")
 
 #[test]
 fn preview_scroll_up_responds_immediately_after_repeated_scroll_down_and_resize() {
-    let (tasks, starter) = runtime();
+    let (tasks, _starter) = runtime();
     let mut preview = preview();
     let document = document::parse(json!(
         (0..10)
@@ -318,8 +317,8 @@ fn preview_scroll_up_responds_immediately_after_repeated_scroll_down_and_resize(
             .join("\n")
     ))
     .unwrap();
-    preview.prepare(Some(request(PreviewSource::Declared(document), json!({}))));
-    preview.start(&starter);
+    preview.prepared = Some(request(PreviewSource::Details, json!({})));
+    preview.install_document(document);
     preview.set_content_size(Some((40, 3)));
     for _ in 0..100 {
         preview.scroll(3);
@@ -357,12 +356,14 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         "path": img_path.to_string_lossy()
     }))
     .unwrap();
-    let req1 = request(PreviewSource::Declared(doc.clone()), json!({"id": 1}));
-    let req2 = request(PreviewSource::Declared(doc), json!({"id": 2}));
+    let mut req1 = request(PreviewSource::Details, json!({"id": 1}));
+    req1.root = Some(root.clone());
+    let mut req2 = request(PreviewSource::Details, json!({"id": 2}));
+    req2.root = Some(root.clone());
 
     // 1. First selection loads and decodes image
-    preview.prepare(Some(req1));
-    ready(&mut preview);
+    preview.prepared = Some(req1);
+    preview.install_document_inner(doc.clone(), false);
     preview.start(&starter);
     for _ in 0..100 {
         preview.start(&starter);
@@ -427,8 +428,8 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
     );
 
     // 2. Switch to second item (same image path)
-    preview.prepare(Some(req2));
-    ready(&mut preview);
+    preview.prepared = Some(req2);
+    preview.install_document_inner(doc, false);
     preview.start(&starter);
 
     // Image should be immediately present from decode_cache without starting a new async task!
@@ -513,7 +514,7 @@ fn cached_document_defers_image_decode_until_start_has_authority() {
         .save(root.join("art.png"))
         .unwrap();
     let doc = document::parse(json!({"type":"image","path":"art.png"})).unwrap();
-    let mut prepared = request(PreviewSource::Declared(doc.clone()), json!({}));
+    let mut prepared = request(PreviewSource::Details, json!({}));
     prepared.root = Some(root.clone());
 
     let mut preview = preview();

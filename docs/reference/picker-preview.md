@@ -11,40 +11,41 @@ description: "Configuration, ownership, version-1 script protocol, document sche
 
 # Picker Preview Documents and Producers
 
-Every Picker has a preview pane, initially collapsed. `Ctrl+P` toggles it by default, and `preview_default_open = true` can open it at activation. The outer pane is sized automatically from `preview_ratio` and `preview_min_width`; providers and documents cannot define that split. While collapsed, the host does not prepare preview content, execute preview scripts, or load preview images.
+Every Picker has a preview pane, initially collapsed. `Ctrl+P` toggles it by default, and `open = true` under `[views.<name>.preview]` can open it at activation. The outer pane is sized automatically from `width` and `min_width`. While collapsed, the host does not prepare preview content, execute preview scripts, or load preview images.
 
-A Picker preview has two independent parts: a data source and a host-rendered document. Without a custom provider, the host displays built-in item details. A document may contain its own internal layouts.
+A Picker preview has two independent parts: a data source and a host-rendered document. Without a custom preview script (`file` or `script`), the host displays built-in item details. A document may contain its own internal layouts.
 
 ## Source Configuration
 
-The following source forms are mutually exclusive. Unknown and incompatible fields fail validation.
+Preview configuration is declared directly under the View using `[views.<name>.preview]`:
 
-| Form | Fields under `engine.config.preview` |
-| :--- | :--- |
-| Script | `producer = "script"`, `handler = { file = "scripts/preview.py" }` or `handler = { script = "..." }` |
-| Declared document | `producer = "declared"`, `document = "text"` or a document table |
-| Inherited feed provider | `inherit = true` |
+```toml
+[views.main.preview]
+file = "scripts/preview.py"  # or script = "..."
+width = "35%"                # float (0.0..=1.0) or percentage string ("0%"..="100%")
+min_width = 24               # unsigned 16-bit integer
+open = true                  # default open on activation
+```
+
+The supported fields are:
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `file` | string | Unset | Path to external preview script file. Mutually exclusive with `script`. |
+| `script` | string | Unset | Inline script content. Mutually exclusive with `file`. |
+| `open` | boolean | `false` | When `true`, the preview pane starts open instead of collapsed. |
+| `width` | number / string | `0.35` | Preview ratio (e.g. `0.35` or `"35%"`). |
+| `min_width` | integer | `24` | Minimum column width required to display the preview pane. |
 
 Script handlers use the shared file/inline-script convention. Relative script files must stay within the provider workflow directory. `--check` validates the handler and path without running the producer.
 
-Omitting `preview` is equivalent to `inherit = true`. On an aggregate page, the host uses the selected item's source feed provider when one is configured. If the feed has no provider or itself specifies inheritance, the host displays built-in item details. On a non-aggregate page, omission or explicit inheritance displays built-in item details.
+Omitting `file` and `script` displays built-in item details. Built-in details display the item's plain-text display as a title and its value when present. Metadata is not shown by the built-in renderer; workflow preview providers can display it when needed. Built-in text uses the standard paragraph sanitizer and is truncated at a UTF-8 boundary to fit the 256 KiB text limit, with a truncation notice. No selection displays the empty state.
 
-An explicit page script or declared document overrides feed providers and built-in details. Preview provider ownership never changes the page's automatic outer pane sizing.
-
-Built-in details display the item's plain-text display as a title and its value when present. Metadata is not shown by the built-in renderer; workflow preview providers can display it when needed. Built-in text uses the standard paragraph sanitizer and is truncated at a UTF-8 boundary to fit the 256 KiB text limit, with a truncation notice. No selection displays the empty state.
-
-For an inherited provider, bound parameters, script files, image paths, and custom style slots belong to the source feed's workflow. For an explicit page script or declared document, they belong to the page workflow. Launch input is shared with the mounted Picker. Relative image paths resolve from the provider's workflow directory; absolute paths and `~/` paths are also supported. The process retains the caller's working directory and receives `TFLOW_WORKFLOW_DIR` for directory workflows.
+For an explicit page script, parameters, script files, image paths, and custom style slots belong to the page workflow. Launch input is shared with the mounted Picker. Relative image paths resolve from the provider's workflow directory; absolute paths and `~/` paths are also supported. The process retains the caller's working directory and receives `TFLOW_WORKFLOW_DIR` for directory workflows.
 
 ## Outer Pane Sizing
 
-```toml
-[views.main.engine.config]
-preview_ratio = 0.35
-preview_min_width = 24
-preview_default_open = false
-```
-
-`preview_ratio` is a number from 0 through 1 and controls the preview share of the horizontal body. `preview_min_width` is an unsigned 16-bit minimum width for the preview pane. `preview_default_open` is a boolean and defaults to false. The host always places the items pane first and uses a one-column gap. The query and divider rows are deducted before sizing the body. If the body is empty or the minimum width cannot fit, the preview is hidden and its pending work is cancelled.
+`width` is a number from 0 through 1 (or a percentage string from `"0%"` through `"100%"`) and controls the preview share of the horizontal body. `min_width` is an unsigned 16-bit minimum width for the preview pane. `open` is a boolean and defaults to false. The host always places the items pane first and uses a one-column gap. The query and divider rows are deducted before sizing the body. If the body is empty or the minimum width cannot fit, the preview is hidden and its pending work is cancelled.
 
 ## Script Protocol
 

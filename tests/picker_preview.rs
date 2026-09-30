@@ -51,12 +51,12 @@ fn send(process: &mut support::LauncherProcess, keys: &[u8]) {
 #[test]
 fn default_preview_is_collapsed_and_resolves_page_and_item_details() {
     let items = r#"items = [{ display = "Selected item", value = "selected-value", metadata = { summary = "DETAILS_MARKER" } }]"#;
-    let page_preview = r#"preview = { producer = "declared", document = "PAGE_MARKER" }"#;
-    for (page_config, expected) in [
-        ("", "DETAILS_MARKER"),
-        ("preview = { inherit = true }", "DETAILS_MARKER"),
-        (page_preview, "PAGE_MARKER"),
-    ] {
+    let page_preview = r#"[workflows.sample.views.main.preview]
+script = '''#!/usr/bin/env python3
+import json, sys
+json.dump({"version": 1, "preview": {"type": "paragraph", "text": "PAGE_MARKER"}}, sys.stdout)
+'''"#;
+    for (page_config, expected) in [("", "DETAILS_MARKER"), (page_preview, "PAGE_MARKER")] {
         let root = temporary_root();
         let config = root.join("config.toml");
         write_test_config(
@@ -118,14 +118,13 @@ fn slow_preview_keeps_items_responsive_and_selection_hide_and_exit_reap_children
         &config,
         r#"
         default_view = "sample:main"
+        [workflows.sample.views.main.preview]
+        file = "scripts/preview.py"
         [workflows.sample.views.main.engine]
         type = "picker"
         [workflows.sample.views.main.engine.config.items]
         producer = "script"
         handler = { file = "scripts/items.py" }
-        [workflows.sample.views.main.engine.config.preview]
-        producer = "script"
-        handler = { file = "scripts/preview.py" }
         [workflows.sample.views.main.bindings]
         "ctrl+p" = "@engine:picker.toggle_preview"
         "alt+k" = "@engine:picker.preview_scroll_up"
@@ -243,5 +242,53 @@ json.dump({'version': 1, 'preview': {'type': 'paragraph', 'text': text}}, sys.st
             "cancelled preview {pid} completed its stale response"
         );
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn preview_co_located_syntax_configures_and_renders_preview() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        [workflows.sample.views.main.engine]
+        type = "picker"
+        [workflows.sample.views.main.engine.config]
+        items = [{ display = "Item 1", value = "val1" }]
+
+        [workflows.sample.views.main.preview]
+        file = "scripts/preview.py"
+        width = "40%"
+        min_width = 20
+        open = true
+        "#,
+    )
+    .unwrap();
+
+    let scripts = root.join("workflows/sample/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(
+        scripts.join("preview.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = request["context"]["engine"]["state"]["item"]["value"]
+json.dump({"version": 1, "preview": {"type": "paragraph", "text": f"PREVIEW_FOR_{item}"}}, sys.stdout)
+"#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("PREVIEW_FOR_val1")
+    });
+    let screen_str = String::from_utf8_lossy(&screen);
+    assert!(screen_str.contains("PREVIEW_FOR_val1"), "{screen_str}");
+
+    send(&mut process, b"\x04");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }

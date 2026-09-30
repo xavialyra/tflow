@@ -20,6 +20,21 @@ use std::sync::Arc;
 pub(crate) struct PickerPreviewConfig {
     layout: PickerLayout,
     pub(super) source: PreviewSource,
+    pub(super) open: bool,
+}
+
+pub(crate) const DEFAULT_PREVIEW_RATIO: f64 = 0.35;
+pub(crate) const DEFAULT_PREVIEW_MIN_WIDTH: u16 = 24;
+
+impl Default for PickerPreviewConfig {
+    fn default() -> Self {
+        Self {
+            layout: default_layout(DEFAULT_PREVIEW_RATIO, DEFAULT_PREVIEW_MIN_WIDTH)
+                .expect("default layout is valid"),
+            source: PreviewSource::Details,
+            open: false,
+        }
+    }
 }
 
 const DEBOUNCE_DURATION: std::time::Duration = std::time::Duration::from_millis(80);
@@ -121,9 +136,7 @@ pub(crate) struct PaneConfig {
 
 #[derive(Clone)]
 pub(super) enum PreviewSource {
-    Inherit,
     Details,
-    Declared(Option<document::Document>),
     Script(crate::workflow::config::ResolvedScriptSource),
 }
 
@@ -131,41 +144,116 @@ pub(super) enum PreviewSource {
 #[serde(deny_unknown_fields)]
 struct PreviewSpec {
     #[serde(default)]
-    producer: Option<crate::workflow::config::ProducerKind>,
+    open: Option<bool>,
     #[serde(default)]
-    inherit: bool,
+    width: Option<Value>,
     #[serde(default)]
-    handler: Option<Value>,
+    min_width: Option<u16>,
     #[serde(default)]
-    document: Option<Value>,
+    file: Option<String>,
+    #[serde(default)]
+    script: Option<String>,
 }
 
-pub(super) fn parse_source(value: Value, root: Option<&std::path::Path>) -> Result<PreviewSource> {
-    let source = parse_source_shape(value)?;
-    if let PreviewSource::Script(script) = &source {
-        script.validate_target(root)?;
-    }
-    Ok(source)
+pub(super) fn parse(value: Option<&Value>) -> Result<PickerPreviewConfig> {
+    let Some(value) = value else {
+        return Ok(PickerPreviewConfig::default());
+    };
+    let spec: PreviewSpec =
+        serde_json::from_value(value.clone()).context("picker preview is invalid")?;
+    let open = spec.open.unwrap_or(false);
+    let min_width = spec.min_width.unwrap_or(DEFAULT_PREVIEW_MIN_WIDTH);
+    let ratio = match spec.width {
+        Some(width_val) => parse_width(&width_val)?,
+        None => DEFAULT_PREVIEW_RATIO,
+    };
+    let source = match (spec.file, spec.script) {
+        (Some(file), None) => {
+            anyhow::ensure!(
+                !file.trim().is_empty(),
+                "picker preview file cannot be empty"
+            );
+            PreviewSource::Script(crate::workflow::config::ResolvedScriptSource {
+                target: crate::workflow::config::ResolvedScriptTarget::File(file),
+            })
+        }
+        (None, Some(script)) => {
+            anyhow::ensure!(
+                !script.trim().is_empty(),
+                "picker preview script cannot be empty"
+            );
+            PreviewSource::Script(crate::workflow::config::ResolvedScriptSource {
+                target: crate::workflow::config::ResolvedScriptTarget::Inline(script),
+            })
+        }
+        (Some(_), Some(_)) => anyhow::bail!("picker preview cannot define both file and script"),
+        (None, None) => PreviewSource::Details,
+    };
+    let layout = default_layout(ratio, min_width)?;
+    Ok(PickerPreviewConfig {
+        layout,
+        source,
+        open,
+    })
 }
 
-fn parse_source_shape(value: Value) -> Result<PreviewSource> {
-    let spec: PreviewSpec = serde_json::from_value(value).context("picker preview is invalid")?;
-    use crate::workflow::config::ProducerKind;
-    match (spec.producer, spec.inherit, spec.handler, spec.document) {
-        (None, true, None, None) => Ok(PreviewSource::Inherit),
-        (Some(ProducerKind::Declared), false, None, Some(value)) => {
-            Ok(PreviewSource::Declared(document::parse(value)?))
+fn parse_width(value: &Value) -> Result<f64> {
+    match value {
+        Value::Number(num) => {
+            let ratio = num
+                .as_f64()
+                .context("picker preview width must be a number")?;
+            anyhow::ensure!(
+                ratio.is_finite() && (0.0..=1.0).contains(&ratio),
+                "picker preview width must be between 0 and 1"
+            );
+            Ok(ratio)
         }
-        (Some(ProducerKind::Script), false, Some(handler), None) => {
-            let handler = toml::Value::try_from(&handler)?;
-            Ok(PreviewSource::Script(
-                crate::workflow::config::parse_producer_script_handler_shape(&handler)?,
-            ))
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if let Some(pct_str) = trimmed.strip_suffix('%') {
+                let pct: f64 = pct_str
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("picker preview width percentage {s:?} is invalid"))?;
+                anyhow::ensure!(
+                    pct.is_finite() && (0.0..=100.0).contains(&pct),
+                    "picker preview width percentage must be between 0% and 100%"
+                );
+                Ok(pct / 100.0)
+            } else {
+                let num: f64 = trimmed.parse().with_context(|| {
+                    format!(
+                        "picker preview width {s:?} must be a number between 0 and 1 or a percentage string like \"35%\""
+                    )
+                })?;
+                anyhow::ensure!(
+                    num.is_finite() && (0.0..=1.0).contains(&num),
+                    "picker preview width must be between 0 and 1"
+                );
+                Ok(num)
+            }
         }
-        _ => bail!(
-            "preview requires inherit=true, producer='declared' with document, or producer='script' with handler"
-        ),
+        _ => anyhow::bail!("picker preview width must be a number or percentage string"),
     }
+}
+
+fn default_layout(ratio: f64, min_width: u16) -> Result<PickerLayout> {
+    anyhow::ensure!(
+        (0.0..=1.0).contains(&ratio),
+        "picker preview width must be between 0 and 1"
+    );
+    let layout = serde_json::json!({
+        "gap": 1,
+        "panes": [
+            {"slot": "items", "grow": (((1.0 - ratio) * 100.0).round() as u16).max(1)},
+            {"slot": "preview", "grow": ((ratio * 100.0).round() as u16).max(1), "min": min_width}
+        ]
+    });
+    let layout: PickerLayout =
+        serde_json::from_value(layout).context("picker layout is invalid")?;
+    validate_layout(&layout)?;
+    Ok(layout)
 }
 
 #[derive(Clone)]
@@ -179,28 +267,6 @@ pub(super) struct PreviewRequest {
 
 fn default_direction() -> Direction {
     Direction::Horizontal
-}
-
-pub(super) fn parse(
-    preview_ratio: f64,
-    preview_min_width: u16,
-    preview: Option<Value>,
-) -> Result<PickerPreviewConfig> {
-    anyhow::ensure!(
-        (0.0..=1.0).contains(&preview_ratio),
-        "picker preview_ratio must be between 0 and 1"
-    );
-    let layout = serde_json::json!({"gap": 1, "panes": [
-        {"slot": "items", "grow": (((1.0 - preview_ratio) * 100.0).round() as u16).max(1)},
-        {"slot": "preview", "grow": ((preview_ratio * 100.0).round() as u16).max(1), "min": preview_min_width}]});
-    let layout: PickerLayout =
-        serde_json::from_value(layout).context("picker layout is invalid")?;
-    validate_layout(&layout)?;
-    let source = match preview {
-        Some(value) => parse_source_shape(value)?,
-        None => PreviewSource::Inherit,
-    };
-    Ok(PickerPreviewConfig { layout, source })
 }
 
 fn validate_layout(layout: &PickerLayout) -> Result<()> {
@@ -374,9 +440,10 @@ impl PickerPreviewRenderState {
 
 impl PickerPreview {
     pub(super) fn new(config: PickerPreviewConfig, preview_cache: PreviewDocumentCache) -> Self {
+        let visible = config.open;
         Self {
             config,
-            visible: false,
+            visible,
             revision: 0,
             selection: None,
             images: Vec::new(),
@@ -656,14 +723,7 @@ impl PickerPreview {
                 );
                 Some(generation)
             }
-            PreviewSource::Declared(document) => {
-                if self.due.take().is_some() {
-                    let document = document.clone();
-                    self.install_document(document);
-                }
-                None
-            }
-            PreviewSource::Inherit | PreviewSource::Details => {
+            PreviewSource::Details => {
                 if self.due.take().is_some() {
                     let item = &request.request["context"]["engine"]["state"]["item"];
                     self.install_document(Some(document::item_details(item)));
@@ -678,6 +738,11 @@ impl PickerPreview {
             return;
         };
         self.preview_cache.insert(owner, document.cloned());
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_test_document(&mut self, value: Value) {
+        self.install_document_inner(document::parse(value).unwrap(), false);
     }
 
     fn install_document(&mut self, document: Option<document::Document>) {
@@ -924,8 +989,8 @@ pub(super) fn item_value(item: &Item) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageProtocolCache, Item, PickerPreview, PreviewDocumentCache, PreviewImageState,
-        PreviewSource, item_value, parse,
+        ImageProtocolCache, Item, PickerPreview, PreviewDocumentCache, PreviewImageState, document,
+        item_value, parse,
     };
     use crate::ui::theme::Theme;
     use ratatui::Terminal as RatatuiTerminal;
@@ -936,12 +1001,7 @@ mod tests {
 
     #[test]
     fn preview_ratio_and_min_width_define_outer_panes() {
-        let config = parse(
-            0.25,
-            24,
-            Some(json!({"producer": "declared", "document": "summary"})),
-        )
-        .unwrap();
+        let config = parse(Some(&json!({"width": 0.25, "min_width": 24}))).unwrap();
         let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.set_visible(true);
 
@@ -975,23 +1035,14 @@ mod tests {
 
     #[test]
     fn deactivation_releases_loaded_preview_state() {
-        let config = parse(
-            0.35,
-            24,
-            Some(json!({"producer":"declared", "document":{
-                "type":"layout", "direction":"vertical", "children":[
-                    "loaded", {"type":"image", "path":"image.png"}
-                ]
-            }})),
-        )
-        .unwrap();
+        let config = parse(None).unwrap();
         let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.selection = Some("selected".to_string());
-        let PreviewSource::Declared(document) = preview.source().clone() else {
-            unreachable!()
-        };
-        preview.install_document(document);
-        preview.images[0].image = Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2)));
+        preview.install_document(Some(document::Document::Text("loaded".to_string())));
+        preview.images = vec![PreviewImageState {
+            image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
+            error: None,
+        }];
         let revision = preview.revision;
 
         preview.deactivate();
@@ -1008,22 +1059,11 @@ mod tests {
 
     #[test]
     fn preview_errors_use_the_preview_error_binding() {
-        let config = parse(
-            0.35,
-            24,
-            Some(json!({"producer":"declared", "document":{"type":"image", "path":"image.png"}})),
-        )
-        .unwrap();
+        let config = parse(None).unwrap();
         let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.set_visible(true);
-        let PreviewSource::Declared(document) = preview.source().clone() else {
-            unreachable!()
-        };
-        preview.document = document;
-        preview.images = vec![PreviewImageState {
-            image: None,
-            error: Some("image failed".to_string()),
-        }];
+        preview.status = Some("image failed".to_string());
+        preview.error = true;
         let mut theme = Theme::terminal();
         theme.picker.preview.error.fg = Some(Color::Magenta);
         theme.picker.preview.error.bg = Some(Color::Green);
