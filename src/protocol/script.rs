@@ -439,7 +439,7 @@ pub(crate) fn run_script_capture_response(
     source: &ResolvedScriptSource,
     request: &Value,
     cancellation: &dyn CancellationStatus,
-) -> ScriptResponseOutcome<String> {
+) -> ScriptResponseOutcome<Value> {
     let output = run_script_output(
         source_view,
         source_label,
@@ -577,7 +577,7 @@ struct RawItemsResponse {
 #[serde(deny_unknown_fields)]
 struct RawCaptureResponse {
     version: u64,
-    output: String,
+    output: Value,
 }
 
 struct ScriptOutputOutcome {

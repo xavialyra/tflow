@@ -526,14 +526,19 @@ impl View for CaptureProtocolView {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _: &RenderContext) -> Result<RenderResult> {
+    fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        context: &RenderContext,
+    ) -> Result<RenderResult> {
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
-        let context = crate::engine::RenderContext {
+        let render_ctx = crate::engine::RenderContext {
             theme: self.theme.clone(),
-            image_picker: None,
+            image_picker: context.image_picker,
         };
-        self.renderer.render(&model, &context, frame, area);
+        self.renderer.render(&model, &render_ctx, frame, area);
         let chrome = self.renderer.chrome(&model);
         Ok(RenderResult {
             cursor: Some(RelativeCursor {
@@ -914,5 +919,139 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("green world"));
+    }
+
+    #[test]
+    fn static_document_renders_and_copies() {
+        let doc_json = serde_json::json!({
+            "content": {
+                "type": "layout",
+                "direction": "vertical",
+                "children": [
+                    {
+                        "type": "paragraph",
+                        "text": "Header Section",
+                        "slot": "accent"
+                    },
+                    {
+                        "type": "separator"
+                    },
+                    {
+                        "type": "paragraph",
+                        "text": "Body Section"
+                    }
+                ]
+            }
+        });
+        let mut view =
+            create_protocol_view(config(doc_json), &request(), ViewInstanceId(1)).unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
+
+        assert!(matches!(
+            view.on_command(CMD_COPY, &context).unwrap(),
+            ViewDecision::Effect(EffectRequest::CopyToClipboard(value))
+                if value.contains("Header Section") && value.contains("Body Section")
+        ));
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(
+                    frame,
+                    frame.area(),
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 40,
+                        height: 5,
+                    }),
+                )
+                .unwrap();
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Header Section"));
+        assert!(text.contains("Body Section"));
+    }
+
+    #[test]
+    fn dynamic_script_document_renders_and_decodes_image() {
+        let root =
+            std::env::temp_dir().join(format!("tflow-capture-doc-img-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Create a 2x2 red png image
+        let image_path = root.join("pixel.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0])))
+            .save(&image_path)
+            .unwrap();
+
+        let script = root.join("run.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '{{\"version\":1,\"output\":{{\"type\":\"layout\",\"direction\":\"vertical\",\"children\":[{{\"type\":\"paragraph\",\"text\":\"Loaded doc\"}},{{\"type\":\"image\",\"path\":{:?}}}]}}}}\\n'\n",
+                image_path.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output = serde_json::json!({
+            "file": "run.sh"
+        });
+        let mut cfg = config(output);
+        cfg.engine.workflow_root = Some(root.clone());
+        let mut view = create_protocol_view(cfg, &request(), ViewInstanceId(1)).unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+
+        for _ in 0..200 {
+            view.event(ViewEvent::Tick, &context).unwrap();
+            if view.command_snapshot().revision > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        assert!(view.command_snapshot().revision > 0);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(
+                    frame,
+                    frame.area(),
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 40,
+                        height: 6,
+                    }),
+                )
+                .unwrap();
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Loaded doc"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

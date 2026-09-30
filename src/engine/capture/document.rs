@@ -1,9 +1,8 @@
-//! Bounded data-only preview documents. The host owns the outer pane and scrolling.
-use super::super::display::{
+//! Bounded data-only documents. The host owns the outer pane and scrolling.
+use super::image_protocol::{ImageProtocolCache, ImageProtocolKey};
+use crate::engine::picker::display::{
     ConstraintInput, ItemDisplayInput, NormalizedItemDisplay, SlotToken, SpanInput,
 };
-use super::image_protocol::ImageProtocolKey;
-use super::{Direction, ImageProtocolCache, PreviewImageState};
 use anyhow::{Result, ensure};
 use ratatui::{
     Frame,
@@ -14,16 +13,40 @@ use ratatui::{
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Direction {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DocumentImageState {
+    pub(crate) image: Option<std::sync::Arc<image::DynamicImage>>,
+    pub(crate) error: Option<String>,
+}
+
+pub(crate) type PreviewImageState = DocumentImageState;
+
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
-pub(in crate::engine::picker) enum Document {
+pub(crate) enum Document {
     Text(String),
     Node(Node),
 }
 
+impl Document {
+    pub(crate) fn plain_text(&self) -> String {
+        match self {
+            Document::Text(s) => s.clone(),
+            Document::Node(node) => node.plain_text(),
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub(in crate::engine::picker) enum Node {
+pub(crate) enum Node {
     Display {
         display: ItemDisplayInput,
         #[serde(default)]
@@ -64,12 +87,46 @@ pub(in crate::engine::picker) enum Node {
         title: Option<String>,
     },
 }
+
+impl Node {
+    pub(crate) fn plain_text(&self) -> String {
+        match self {
+            Node::Display { display, .. } => {
+                NormalizedItemDisplay::from(display.clone()).plain_text()
+            }
+            Node::Paragraph { text, spans, .. } => {
+                if let Some(t) = text {
+                    t.clone()
+                } else if let Some(spans) = spans {
+                    spans
+                        .iter()
+                        .map(|s| match s {
+                            SpanInput::Plain(text) => text.as_str(),
+                            SpanInput::Detailed { text, .. } => text.as_str(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                } else {
+                    String::new()
+                }
+            }
+            Node::Image { path, .. } => format!("[Image: {path}]"),
+            Node::Separator {} => "---".to_string(),
+            Node::Layout { children, .. } => children
+                .iter()
+                .map(|c| c.plain_text())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
 fn yes() -> bool {
     true
 }
 
 /// Generic item details use literal text; metadata never selects a renderer or loads files.
-pub(super) fn item_details(item: &Value) -> Document {
+pub(crate) fn item_details(item: &Value) -> Document {
     fn value_text(value: &Value) -> String {
         match value {
             Value::String(text) => text.clone(),
@@ -95,7 +152,7 @@ pub(super) fn item_details(item: &Value) -> Document {
     Document::Text(text)
 }
 
-pub(super) fn parse(value: Value) -> Result<Option<Document>> {
+pub(crate) fn parse(value: Value) -> Result<Option<Document>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -192,7 +249,7 @@ impl Document {
         }
         Ok(())
     }
-    pub(super) fn images(&self, paths: &mut Vec<String>) {
+    pub(crate) fn images(&self, paths: &mut Vec<String>) {
         match self {
             Self::Node(Node::Image { path, .. }) => paths.push(path.clone()),
             Self::Node(Node::Layout { children, .. }) => {
@@ -347,12 +404,12 @@ impl Document {
         };
         height.saturating_add(extra).min(16384)
     }
-    pub(super) fn scroll_limit(&self, area: Rect) -> u16 {
+    pub(crate) fn scroll_limit(&self, area: Rect) -> u16 {
         self.height(area.width).saturating_sub(area.height)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn render(
+    pub(crate) fn render(
         &self,
         frame: &mut Frame,
         area: Rect,

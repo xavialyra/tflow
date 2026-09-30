@@ -63,7 +63,7 @@ struct SharedPool {
     decoder: Arc<Decoder>,
 }
 
-pub(super) struct ImageDecodePool {
+pub(crate) struct ImageDecodePool {
     shared: Arc<SharedPool>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -105,7 +105,7 @@ impl ImageDecodePool {
         Ok(Self { shared, workers })
     }
 
-    pub(super) fn submit(&self, revision: u64, images: Vec<(usize, PathBuf)>) -> ImageDecodeHandle {
+    pub(crate) fn submit(&self, revision: u64, images: Vec<(usize, PathBuf)>) -> ImageDecodeHandle {
         let cancellation = Arc::new(AtomicBool::new(false));
         let (completion, receiver) = sync_channel(1);
         let job = ImageDecodeJob {
@@ -196,7 +196,7 @@ fn image_worker(shared: Arc<SharedPool>) {
     }
 }
 
-pub(super) fn new_default_pool() -> std::result::Result<Arc<ImageDecodePool>, String> {
+pub(crate) fn new_default_pool() -> std::result::Result<Arc<ImageDecodePool>, String> {
     ImageDecodePool::new(MAX_CONCURRENT_IMAGE_DECODES, Arc::new(decode_image))
         .map(Arc::new)
         .map_err(|error| format!("could not start bounded image decode workers: {error}"))

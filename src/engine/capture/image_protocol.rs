@@ -19,7 +19,7 @@ type EncodeResult = std::result::Result<StatefulProtocol, String>;
 type Encoder = dyn Fn(Arc<DynamicImage>, ImagePicker, Size) -> EncodeResult + Send + Sync + 'static;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ImageProtocolKey {
+pub(crate) struct ImageProtocolKey {
     block: usize,
     image: usize,
     area: Size,
@@ -27,7 +27,7 @@ pub(super) struct ImageProtocolKey {
 }
 
 impl ImageProtocolKey {
-    pub(super) fn new(
+    pub(crate) fn new(
         block: usize,
         image: &Arc<DynamicImage>,
         area: Size,
@@ -42,10 +42,10 @@ impl ImageProtocolKey {
     }
 }
 
-pub(super) struct DesiredImageProtocol {
-    pub(super) key: ImageProtocolKey,
-    pub(super) image: Arc<DynamicImage>,
-    pub(super) picker: ImagePicker,
+pub(crate) struct DesiredImageProtocol {
+    pub(crate) key: ImageProtocolKey,
+    pub(crate) image: Arc<DynamicImage>,
+    pub(crate) picker: ImagePicker,
 }
 
 enum CachedProtocol {
@@ -260,7 +260,7 @@ impl ImageProtocolCache {
         }
     }
 
-    pub(super) fn update(&mut self, desired: Vec<DesiredImageProtocol>) {
+    pub(crate) fn update(&mut self, desired: Vec<DesiredImageProtocol>) {
         // Keep completed encodings for reuse, but stop work for images that are
         // no longer visible before accepting any queued completions.
         self.entries.retain(|key, state| {
@@ -338,7 +338,7 @@ impl ImageProtocolCache {
         }
     }
 
-    pub(super) fn protocol(&mut self, key: ImageProtocolKey) -> Option<&mut StatefulProtocol> {
+    pub(crate) fn protocol(&mut self, key: ImageProtocolKey) -> Option<&mut StatefulProtocol> {
         self.collect();
         match self.entries.get_mut(&key) {
             Some(CachedProtocol::Ready(protocol)) => {
@@ -352,7 +352,7 @@ impl ImageProtocolCache {
         }
     }
 
-    pub(super) fn error(&self, key: ImageProtocolKey) -> Option<&str> {
+    pub(crate) fn error(&self, key: ImageProtocolKey) -> Option<&str> {
         match self.entries.get(&key) {
             Some(CachedProtocol::Failed(error)) => Some(error.as_str()),
             _ => None,

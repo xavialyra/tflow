@@ -1,24 +1,69 @@
+use super::document::{Document, DocumentImageState};
 use ansi_to_tui::IntoText;
 use ratatui::text::{Line, Text};
 use std::sync::Arc;
 
 #[derive(Clone)]
+pub(crate) enum CaptureBody {
+    Text {
+        lines: Arc<[Line<'static>]>,
+    },
+    Document {
+        document: Document,
+        images: Vec<DocumentImageState>,
+    },
+}
+
+#[derive(Clone)]
 pub(crate) struct CaptureSession {
     clean_output: String,
-    lines: Arc<[Line<'static>]>,
+    body: CaptureBody,
     scroll_offset: usize,
+    viewport_width: usize,
     viewport_height: usize,
 }
 
 impl CaptureSession {
+    #[allow(dead_code)]
     pub(crate) fn new(output: &str) -> Self {
+        Self::from_text(output)
+    }
+
+    pub(crate) fn from_text(output: &str) -> Self {
         let lines = capture_lines(output);
         let clean_output = strip_ansi_multiline(output);
         Self {
             clean_output,
-            lines: lines.into(),
+            body: CaptureBody::Text {
+                lines: lines.into(),
+            },
             scroll_offset: 0,
+            viewport_width: 80,
             viewport_height: 1,
+        }
+    }
+
+    pub(crate) fn from_document(document: Document) -> Self {
+        let clean_output = document.plain_text();
+        Self {
+            clean_output,
+            body: CaptureBody::Document {
+                document,
+                images: Vec::new(),
+            },
+            scroll_offset: 0,
+            viewport_width: 80,
+            viewport_height: 1,
+        }
+    }
+
+    pub(crate) fn body(&self) -> &CaptureBody {
+        &self.body
+    }
+
+    pub(crate) fn set_images(&mut self, new_images: Vec<DocumentImageState>) {
+        if let CaptureBody::Document { images, .. } = &mut self.body {
+            *images = new_images;
         }
     }
 
@@ -27,7 +72,10 @@ impl CaptureSession {
     }
 
     pub(crate) fn shared_lines(&self) -> Arc<[Line<'static>]> {
-        Arc::clone(&self.lines)
+        match &self.body {
+            CaptureBody::Text { lines } => Arc::clone(lines),
+            CaptureBody::Document { .. } => Arc::new([]),
+        }
     }
 
     pub(crate) fn scroll_offset(&self) -> usize {
@@ -38,9 +86,30 @@ impl CaptureSession {
         self.viewport_height
     }
 
+    pub(crate) fn set_viewport_size(&mut self, width: usize, height: usize) {
+        self.viewport_width = width.max(1);
+        self.viewport_height = height.max(1);
+        self.clamp_scroll();
+    }
+
     pub(crate) fn set_viewport_height(&mut self, height: usize) {
         self.viewport_height = height.max(1);
         self.clamp_scroll();
+    }
+
+    pub(crate) fn total_height(&self) -> usize {
+        match &self.body {
+            CaptureBody::Text { lines } => lines.len(),
+            CaptureBody::Document { document, .. } => {
+                document.scroll_limit(ratatui::layout::Rect::new(
+                    0,
+                    0,
+                    self.viewport_width as u16,
+                    self.viewport_height as u16,
+                )) as usize
+                    + self.viewport_height
+            }
+        }
     }
 
     pub(crate) fn scroll_up(&mut self, amount: usize) {
@@ -53,7 +122,7 @@ impl CaptureSession {
     }
 
     fn clamp_scroll(&mut self) {
-        let max_offset = self.lines.len().saturating_sub(self.viewport_height);
+        let max_offset = self.total_height().saturating_sub(self.viewport_height);
         if self.scroll_offset > max_offset {
             self.scroll_offset = max_offset;
         }

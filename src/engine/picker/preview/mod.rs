@@ -1,7 +1,4 @@
-mod document;
-mod image_decode;
-mod image_path;
-mod image_protocol;
+pub(crate) use crate::engine::capture::{document, image_decode, image_path, image_protocol};
 
 use self::image_decode::ImageDecodeHandle;
 pub(super) use self::image_protocol::ImageProtocolCache;
@@ -373,11 +370,7 @@ pub(super) struct PickerPreview {
     preview_cache: PreviewDocumentCache,
 }
 
-#[derive(Clone, Default)]
-struct PreviewImageState {
-    image: Option<Arc<DynamicImage>>,
-    error: Option<String>,
-}
+type PreviewImageState = crate::engine::capture::document::DocumentImageState;
 
 struct ImageTask {
     handle: ImageDecodeHandle,

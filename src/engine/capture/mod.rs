@@ -1,4 +1,8 @@
 mod bindings;
+pub(crate) mod document;
+pub(crate) mod image_decode;
+pub(crate) mod image_path;
+pub(crate) mod image_protocol;
 mod protocol;
 mod render;
 mod session;
@@ -105,17 +109,24 @@ fn validate_declared_content(value: &toml::Value) -> Result<()> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct StaticContent {
-        content: Option<String>,
-        output: Option<String>,
+        content: Option<toml::Value>,
+        output: Option<toml::Value>,
     }
     let parsed: StaticContent = value
         .clone()
         .try_into()
-        .context("declared capture output must define content or output as a string")?;
-    if parsed.content.is_none() && parsed.output.is_none() {
-        bail!("declared capture output table must define content or output as a string");
+        .context("declared capture output table contains unknown fields")?;
+    if let Some(content) = parsed.content.or(parsed.output) {
+        if content.is_str() {
+            return Ok(());
+        }
+        if let Ok(json_val) = toml_to_json(&content)
+            && document::parse(json_val).is_ok()
+        {
+            return Ok(());
+        }
     }
-    Ok(())
+    bail!("declared capture output table must define content or output as a string or document");
 }
 
 #[derive(Clone)]
@@ -129,6 +140,7 @@ struct PendingCaptureScript {
 
 enum PreparedCaptureOutput {
     Text(String),
+    Document(self::document::Document),
     Script {
         root: Option<PathBuf>,
         source: ResolvedScriptSource,
@@ -139,12 +151,29 @@ pub(super) fn create_view(
     context: RuntimeFactoryContext,
 ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
     let prepared = prepare_output(&context.config, context.config.workflow_root.as_deref());
-    let (output, status, success, pending_script) = match prepared {
-        Ok(PreparedCaptureOutput::Text(output)) => (output, String::new(), true, None),
+    let workflow_root = context.config.workflow_root.clone();
+    let (session, status, success, pending_script, initial_doc) = match prepared {
+        Ok(PreparedCaptureOutput::Text(output)) => (
+            CaptureSession::from_text(&output),
+            String::new(),
+            true,
+            None,
+            None,
+        ),
+        Ok(PreparedCaptureOutput::Document(doc)) => {
+            let doc_clone = doc.clone();
+            (
+                CaptureSession::from_document(doc),
+                String::new(),
+                true,
+                None,
+                Some(doc_clone),
+            )
+        }
         Ok(PreparedCaptureOutput::Script { root, source }) => {
             let view_ref = context.identity.view_ref.clone();
             (
-                String::new(),
+                CaptureSession::from_text(""),
                 "starting".to_string(),
                 false,
                 Some(PendingCaptureScript {
@@ -154,26 +183,40 @@ pub(super) fn create_view(
                     parameters: context.parameters.values().clone(),
                     launch_input: context.config.launch_input.clone(),
                 }),
+                None,
             )
         }
-        Err(error) => (error.to_string(), "failed".to_string(), false, None),
+        Err(error) => (
+            CaptureSession::from_text(&error.to_string()),
+            "failed".to_string(),
+            false,
+            None,
+            None,
+        ),
     };
-    Ok(Box::new(CaptureView {
+    let mut view = CaptureView {
         view_ref: context.identity.view_ref,
-        session: CaptureSession::new(&output),
+        session,
         status,
         success,
         reported: false,
         pending_script,
         script_task: None,
         script_completion: None,
-    }))
+        image_pool: None,
+        image_task: None,
+        workflow_root,
+    };
+    if let Some(doc) = initial_doc {
+        view.start_document_images(&doc);
+    }
+    Ok(Box::new(view))
 }
 
 pub(super) fn create_renderer(
     _context: RendererFactoryContext,
 ) -> Result<Box<dyn crate::engine::ViewRenderer>> {
-    Ok(Box::new(CaptureRenderer))
+    Ok(Box::new(CaptureRenderer::new()))
 }
 
 fn prepare_output(
@@ -186,20 +229,26 @@ fn prepare_output(
     if let Some(text) = capture.static_text() {
         return Ok(PreparedCaptureOutput::Text(text.to_string()));
     }
-    if let Some(fields) = capture.output.as_table()
-        && (fields.contains_key("file") || fields.contains_key("script"))
-    {
-        let source = parse_script_source(&capture.output, workflow_root)?;
-        return Ok(PreparedCaptureOutput::Script {
-            root: workflow_root.map(Path::to_path_buf),
-            source,
-        });
+    if let Some(fields) = capture.output.as_table() {
+        if fields.contains_key("file") || fields.contains_key("script") {
+            let source = parse_script_source(&capture.output, workflow_root)?;
+            return Ok(PreparedCaptureOutput::Script {
+                root: workflow_root.map(Path::to_path_buf),
+                source,
+            });
+        }
+        if let Some(val) = fields.get("content").or_else(|| fields.get("output")) {
+            let json_val = toml_to_json(val)?;
+            if let Some(doc) = document::parse(json_val)? {
+                return Ok(PreparedCaptureOutput::Document(doc));
+            }
+        }
     }
-    bail!("capture output must be a string or script object")
+    bail!("capture output must be a string, document, or script object")
 }
 
 struct CaptureScriptOutcome {
-    result: Result<String>,
+    result: Result<Value>,
     managed_child_reaped: bool,
 }
 
@@ -229,7 +278,7 @@ fn run_capture_script(
 
 #[derive(Clone)]
 enum CaptureCompletion {
-    Completed(String),
+    Completed(Value),
     Failed(String),
     Cancelled,
 }
@@ -241,18 +290,65 @@ struct CaptureView {
     success: bool,
     reported: bool,
     pending_script: Option<PendingCaptureScript>,
-    script_task: Option<crate::task::TaskHandle<String>>,
+    script_task: Option<crate::task::TaskHandle<Value>>,
     script_completion: Option<CaptureCompletion>,
+    image_pool: Option<std::sync::Arc<image_decode::ImageDecodePool>>,
+    image_task: Option<image_decode::ImageDecodeHandle>,
+    workflow_root: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+pub(super) enum CaptureRenderContent {
+    Text(std::sync::Arc<[ratatui::text::Line<'static>]>),
+    Document {
+        document: self::document::Document,
+        images: Vec<self::document::DocumentImageState>,
+    },
+}
+
+#[derive(Clone)]
 struct CaptureRenderModel {
+    content: CaptureRenderContent,
+    #[cfg_attr(not(test), allow(dead_code))]
     lines: std::sync::Arc<[ratatui::text::Line<'static>]>,
     scroll_offset: usize,
+    total_height: usize,
     status: String,
 }
 
 impl CaptureView {
+    fn start_document_images(&mut self, doc: &document::Document) {
+        let mut paths = Vec::new();
+        doc.images(&mut paths);
+        if paths.is_empty() {
+            self.image_task = None;
+            return;
+        }
+        let resolved = paths
+            .iter()
+            .map(|p| image_path::resolve(self.workflow_root.as_deref(), p))
+            .collect::<Vec<_>>();
+        let initial_states = vec![document::DocumentImageState::default(); resolved.len()];
+        self.session.set_images(initial_states);
+
+        let pool = match &self.image_pool {
+            Some(p) => std::sync::Arc::clone(p),
+            None => match image_decode::new_default_pool() {
+                Ok(p) => {
+                    self.image_pool = Some(std::sync::Arc::clone(&p));
+                    p
+                }
+                Err(_) => {
+                    self.image_task = None;
+                    return;
+                }
+            },
+        };
+        let requests = resolved.into_iter().enumerate().collect();
+        let handle = pool.submit(1, requests);
+        self.image_task = Some(handle);
+    }
+
     fn receive_completion(&mut self) -> Result<Option<CaptureCompletion>> {
         if let Some(completion) = self.script_completion.take() {
             return Ok(Some(completion));
@@ -278,16 +374,30 @@ impl CaptureView {
         &mut self,
         completion: CaptureCompletion,
     ) -> (EngineNotice, ViewContextPublication) {
-        let (output, status, success) = match completion {
-            CaptureCompletion::Completed(output) => (output, String::new(), true),
-            CaptureCompletion::Failed(error) => (error, "failed".to_string(), false),
+        let (output_val, status, success) = match completion {
+            CaptureCompletion::Completed(val) => (val, String::new(), true),
+            CaptureCompletion::Failed(error) => (Value::String(error), "failed".to_string(), false),
             CaptureCompletion::Cancelled => (
-                "capture script was cancelled".to_string(),
+                Value::String("capture script was cancelled".to_string()),
                 "failed".to_string(),
                 false,
             ),
         };
-        self.session = CaptureSession::new(&output);
+        if success {
+            if let Some(text) = output_val.as_str() {
+                self.session = CaptureSession::from_text(text);
+                self.image_task = None;
+            } else if let Ok(Some(doc)) = document::parse(output_val.clone()) {
+                self.session = CaptureSession::from_document(doc.clone());
+                self.start_document_images(&doc);
+            } else {
+                self.session = CaptureSession::from_text(&output_val.to_string());
+                self.image_task = None;
+            }
+        } else {
+            self.session = CaptureSession::from_text(output_val.as_str().unwrap_or("failed"));
+            self.image_task = None;
+        }
         self.status = status.clone();
         self.success = success;
         self.reported = true;
@@ -349,16 +459,57 @@ impl EngineRuntime for CaptureView {
     }
 
     fn tick(&mut self, tick: crate::engine::EngineTick) -> Result<EngineEmission> {
-        if tick.content_size.1 > 0 {
+        if tick.content_size.0 > 0 && tick.content_size.1 > 0 {
+            self.session
+                .set_viewport_size(tick.content_size.0 as usize, tick.content_size.1 as usize);
+        } else if tick.content_size.1 > 0 {
             self.session
                 .set_viewport_height(tick.content_size.1 as usize);
         }
+
+        let mut image_invalidated = false;
+        if let Some(task) = &self.image_task {
+            match task.try_recv() {
+                Ok(batch) => {
+                    if let session::CaptureBody::Document { images, .. } = self.session.body() {
+                        let mut updated = images.clone();
+                        for decoded in batch.images {
+                            if decoded.block < updated.len() {
+                                match decoded.result {
+                                    Ok(img) => {
+                                        updated[decoded.block].image =
+                                            Some(std::sync::Arc::new(img));
+                                        updated[decoded.block].error = None;
+                                    }
+                                    Err(err) => {
+                                        updated[decoded.block].error = Some(err);
+                                    }
+                                }
+                            }
+                        }
+                        self.session.set_images(updated);
+                        image_invalidated = true;
+                    }
+                    self.image_task = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.image_task = None;
+                }
+            }
+        }
+
         if self.pending_script.is_some()
             || self.script_task.is_some()
             || self.script_completion.is_some()
             || self.reported
         {
-            return Ok(EngineEmission::decision(EngineDecision::Continue));
+            let decision = if image_invalidated {
+                EngineDecision::Invalidate
+            } else {
+                EngineDecision::Continue
+            };
+            return Ok(EngineEmission::decision(decision));
         }
         self.reported = true;
         let current = if self.success {
@@ -430,11 +581,22 @@ impl EngineRuntime for CaptureView {
     }
 
     fn render_model(&self) -> RenderModel {
+        let content = match self.session.body() {
+            session::CaptureBody::Text { lines } => {
+                CaptureRenderContent::Text(std::sync::Arc::clone(lines))
+            }
+            session::CaptureBody::Document { document, images } => CaptureRenderContent::Document {
+                document: document.clone(),
+                images: images.clone(),
+            },
+        };
         RenderModel::new(
             "capture",
             CaptureRenderModel {
+                content,
                 lines: self.session.shared_lines(),
                 scroll_offset: self.session.scroll_offset(),
+                total_height: self.session.total_height(),
                 status: self.status.clone(),
             },
         )

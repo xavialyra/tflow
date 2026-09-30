@@ -92,7 +92,103 @@ fn scrollbar_thumb_top(start: usize, total: usize, visible: usize) -> usize {
     start.saturating_mul(track_height) / scroll_range
 }
 
-pub(crate) struct CaptureRenderer;
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_capture_document(
+    frame: &mut Frame,
+    area: Rect,
+    document: &super::document::Document,
+    images: &[super::document::DocumentImageState],
+    scroll_offset: usize,
+    total_height: usize,
+    theme: &Theme,
+    image_picker: Option<crate::terminal::ImagePicker>,
+    image_protocols: &mut super::image_protocol::ImageProtocolCache,
+) {
+    let width = area.width as usize;
+    let height = area.height as usize;
+    if height == 0 || width == 0 {
+        return;
+    }
+
+    let visible = height;
+    let start = scroll_offset;
+    let reserves_scrollbar = total_height > visible;
+    let show_scrollbar = scrollbar_visible(total_height, visible, start);
+    let thumb_top = scrollbar_thumb_top(start, total_height, visible);
+    let thumb_height = SCROLLBAR_THUMB_HEIGHT.min(visible);
+
+    let scrollbar_color = if let Some(bg) = theme.picker.scrollbar.bg {
+        if Some(bg) != theme.capture.text.bg {
+            bg
+        } else {
+            theme.picker.scrollbar.fg.unwrap_or(bg)
+        }
+    } else {
+        theme
+            .picker
+            .scrollbar
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    };
+    let scrollbar_style = ratatui::style::Style::default().bg(scrollbar_color);
+
+    let content_width = if reserves_scrollbar {
+        area.width.saturating_sub(1)
+    } else {
+        area.width
+    };
+
+    let content_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: content_width,
+        height: area.height,
+    };
+
+    document.render(
+        frame,
+        content_area,
+        theme,
+        "capture",
+        scroll_offset as u16,
+        0,
+        images,
+        image_picker,
+        image_protocols,
+    );
+
+    if show_scrollbar {
+        let scrollbar_area = Rect {
+            x: area.x + area.width.saturating_sub(1),
+            y: area.y + thumb_top as u16,
+            width: 1,
+            height: thumb_height as u16,
+        };
+        frame.render_widget(ratatui::widgets::Clear, scrollbar_area);
+        frame.render_widget(
+            ratatui::widgets::Block::default().style(scrollbar_style),
+            scrollbar_area,
+        );
+    }
+}
+
+pub(crate) struct CaptureRenderer {
+    image_protocols: std::sync::Mutex<super::image_protocol::ImageProtocolCache>,
+}
+
+impl Default for CaptureRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CaptureRenderer {
+    pub(crate) fn new() -> Self {
+        Self {
+            image_protocols: std::sync::Mutex::new(super::image_protocol::ImageProtocolCache::new()),
+        }
+    }
+}
 
 impl crate::engine::ViewRenderer for CaptureRenderer {
     fn validate_model(&self, model: &crate::engine::RenderModel) -> anyhow::Result<()> {
@@ -128,13 +224,34 @@ impl crate::engine::ViewRenderer for CaptureRenderer {
         let Some(model) = model.downcast_ref::<super::CaptureRenderModel>() else {
             return;
         };
-        render_capture(
-            frame,
-            area,
-            model.lines.as_ref(),
-            model.scroll_offset,
-            &context.theme,
-        );
+        match &model.content {
+            super::CaptureRenderContent::Text(lines) => {
+                render_capture(
+                    frame,
+                    area,
+                    lines.as_ref(),
+                    model.scroll_offset,
+                    &context.theme,
+                );
+            }
+            super::CaptureRenderContent::Document { document, images } => {
+                let mut image_protocols = self
+                    .image_protocols
+                    .lock()
+                    .expect("capture image protocol cache poisoned");
+                render_capture_document(
+                    frame,
+                    area,
+                    document,
+                    images,
+                    model.scroll_offset,
+                    model.total_height,
+                    &context.theme,
+                    context.image_picker,
+                    &mut image_protocols,
+                );
+            }
+        }
     }
 }
 

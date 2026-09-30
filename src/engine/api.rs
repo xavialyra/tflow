@@ -71,7 +71,11 @@ impl CaptureConfig {
     }
 
     pub(crate) fn is_async(&self) -> bool {
-        self.static_text().is_none()
+        if let Some(t) = self.output.as_table() {
+            t.contains_key("file") || t.contains_key("script")
+        } else {
+            false
+        }
     }
 }
 
