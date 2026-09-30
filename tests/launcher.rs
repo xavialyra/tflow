@@ -3148,14 +3148,12 @@ enter = "jump_back"
 [commands.jump_sub]
 label = "Jump Sub"
 type = "navigate"
-producer = "declared"
-handler = {target = "sub"}
+target = "sub"
 
 [commands.jump_back]
 label = "Jump Back"
 type = "navigate"
-producer = "declared"
-handler = {target = "main"}
+target = "main"
 "#,
     )
     .unwrap();

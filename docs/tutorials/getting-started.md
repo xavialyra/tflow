@@ -86,9 +86,6 @@ enter = "execute"
 [commands.execute]
 label = "Run"
 type = "run"
-producer = "script"
-
-[commands.execute.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

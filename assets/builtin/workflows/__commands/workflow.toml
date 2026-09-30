@@ -80,8 +80,6 @@ layers = ["host"]
 [commands.accept]
 label = "Select"
 type = "return"
-producer = "script"
-[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -102,8 +100,6 @@ sys.stdout.write("\n")
 [commands.palette]
 label = "Commands"
 type = "call"
-producer = "script"
-[commands.palette.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -133,8 +129,6 @@ json.dump({
 sys.stdout.write("\n")
 '''
 [commands.palette.return_processor]
-producer = "script"
-[commands.palette.return_processor.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

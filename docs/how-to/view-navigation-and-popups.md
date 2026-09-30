@@ -31,9 +31,6 @@ For a fixed target, use a declared call handler:
 [commands.select_action]
 label = "Actions"
 type = "call"
-producer = "declared"
-
-[commands.select_action.handler]
 target = "selectors:actions"
 presentation = { mode = "popup", anchor = "top", offset_y = 2, width = "80%", max_width = 100, height = 18 }
 ```
@@ -51,9 +48,6 @@ enter = "open"
 [commands.open]
 label = "Open selected item"
 type = "call"
-producer = "script"
-
-[commands.open.handler]
 file = "scripts/open-selected.py"
 ```
 
@@ -94,13 +88,10 @@ enter = "confirm"
 [commands.confirm]
 label = "Confirm"
 type = "return"
-producer = "declared"
-
-[commands.confirm.handler]
 value = "confirmed"
 ```
 
-A return handler must contain an explicit `value`; omitting it is invalid. A script response may contain `"value": null`, which is a successful null result, not a close/cancel decision. Use `type = "return"` with `producer = "declared"` or `producer = "script"`; the response type from a script must match the command type.
+A return command must contain an explicit `value`; omitting it is invalid. A script response may contain `"value": null`, which is a successful null result, not a close/cancel decision.
 
 To close without a result, bind the Engine's `back`/close action or a command that produces the host close behavior. A close does not run a return processor.
 
@@ -111,9 +102,6 @@ A call can declare a post-commit return processor:
 ```toml
 [commands.select_action.return_processor]
 type = "navigate"
-producer = "script"
-
-[commands.select_action.return_processor.handler]
 file = "scripts/process-action.py"
 ```
 
@@ -146,9 +134,6 @@ enter = "next"
 
 [commands.next]
 type = "navigate"
-producer = "declared"
-
-[commands.next.handler]
 target = "workflow:step2"
 replace = true
 ```
@@ -166,9 +151,6 @@ A `replace` re-mounts the target, so a Picker starts on its first row again. Car
 [commands.refresh]
 label = "Refresh"
 type = "navigate"
-producer = "script"
-
-[commands.refresh.handler]
 file = "scripts/refresh.py"
 ```
 

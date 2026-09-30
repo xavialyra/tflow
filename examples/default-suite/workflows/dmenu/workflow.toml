@@ -27,13 +27,9 @@ enter = "accept"
 [commands.accept]
 label = "Accept"
 type = "return"
-producer = "script"
-[commands.accept.handler]
 file = "scripts/result.sh"
 
 [commands.copy]
 label = "Copy selection"
 type = "return"
-producer = "script"
-[commands.copy.handler]
 file = "scripts/result.sh"

@@ -33,25 +33,18 @@ enter = "submit"
 [commands.open]
 label = "Open form"
 type = "call"
-producer = "declared"
-
-[commands.open.handler]
 target = "form:input"
 query = { name = "demo", environment = "dev", enabled = true }
 presentation = { mode = "popup", width = 72, height = 20 }
 
 [commands.open.return_processor]
 type = "navigate"
-producer = "script"
-
-[commands.open.return_processor.handler]
 file = "scripts/received.py"
 
 [commands.submit]
 label = "Submit"
 type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+file = "scripts/submit.py"
 
 [views.result]
 engine = "capture"

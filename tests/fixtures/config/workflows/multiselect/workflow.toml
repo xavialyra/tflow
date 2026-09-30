@@ -45,27 +45,19 @@ enter = "submit"
 [commands.toggle]
 label = "Toggle select"
 type = "navigate"
-producer = "script"
-[commands.toggle.handler]
 file = "scripts/toggle.py"
 
 [commands.select_all]
 label = "Select all"
 type = "navigate"
-producer = "script"
-[commands.select_all.handler]
 file = "scripts/select_all.py"
 
 [commands.clear_all]
 label = "Clear all"
 type = "navigate"
-producer = "script"
-[commands.clear_all.handler]
 file = "scripts/clear.py"
 
 [commands.submit]
 label = "Confirm selection"
 type = "run"
-producer = "script"
-[commands.submit.handler]
 file = "scripts/submit.py"

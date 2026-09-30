@@ -587,8 +587,6 @@ mod tests {
                 [workflows.core.commands.other]
                 label = "Other"
                 type = "run"
-                producer = "declared"
-                [workflows.core.commands.other.handler]
                 argv = ["true"]
             "#
             ));
@@ -628,8 +626,6 @@ mod tests {
             [workflows.core.commands.other]
             label = "Other"
             type = "run"
-            producer = "declared"
-            [workflows.core.commands.other.handler]
             argv = ["true"]
         "#,
         );
@@ -711,8 +707,6 @@ mod tests {
                 [workflows.{engine}.commands.{action}]
                 label = "Collides"
                 type = "run"
-                producer = "declared"
-                [workflows.{engine}.commands.{action}.handler]
                 argv = ["true"]
             "#
             ));
@@ -737,8 +731,6 @@ mod tests {
             [workflows.form.commands.open]
             label = "Open"
             type = "run"
-            producer = "declared"
-            [workflows.form.commands.open.handler]
             argv = ["true"]
         "#,
         );
@@ -831,8 +823,7 @@ mod tests {
             [workflows.core.commands.complete]
             label = "Complete"
             type = "navigate"
-            producer = "declared"
-            handler = { target = "core:default" }
+            target = "core:default"
 
             [workflows.core.views.default]
             engine = "picker"
@@ -895,8 +886,7 @@ mod tests {
             [workflows.core.commands.custom]
             label = "Custom"
             type = "return"
-            producer = "declared"
-            handler = { value = "custom" }
+            value = "custom"
 
             [workflows.core.views.main]
             engine = "picker"

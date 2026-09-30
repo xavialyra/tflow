@@ -407,6 +407,22 @@ pub fn write_test_config(path: &Path, source: &str) -> io::Result<()> {
     fs::write(path, config_source)
 }
 
+fn desugar_test_command(cmd_val: &mut toml::Value) {
+    if let Some(cmd_tbl) = cmd_val.as_table_mut() {
+        cmd_tbl.remove("producer");
+        if let Some(handler_val) = cmd_tbl.remove("handler")
+            && let Some(handler_tbl) = handler_val.as_table()
+        {
+            for (k, v) in handler_tbl {
+                cmd_tbl.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        if let Some(rp) = cmd_tbl.get_mut("return_processor") {
+            desugar_test_command(rp);
+        }
+    }
+}
+
 fn materialize_test_workflow(
     config_root: &Path,
     workflow_id: &str,
@@ -548,7 +564,8 @@ fn materialize_test_workflow(
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
             .as_table_mut()
             .unwrap();
-        for (cmd_id, cmd_val) in promoted_commands {
+        for (cmd_id, mut cmd_val) in promoted_commands {
+            desugar_test_command(&mut cmd_val);
             wf_cmds.insert(cmd_id, cmd_val);
         }
     }
@@ -566,6 +583,7 @@ fn materialize_test_workflow(
         .and_then(toml::Value::as_table_mut)
     {
         for (command_id, command) in commands.iter_mut() {
+            desugar_test_command(command);
             if let Some(key) = command
                 .as_table_mut()
                 .and_then(|table| table.remove("key"))

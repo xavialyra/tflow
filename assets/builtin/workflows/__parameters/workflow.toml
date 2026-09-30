@@ -75,8 +75,6 @@ layers = ["host"]
 [commands.accept]
 label = "Apply"
 type = "return"
-producer = "script"
-[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -121,8 +119,6 @@ sys.stdout.write("\n")
 [commands.edit]
 label = "Edit Query"
 type = "call"
-producer = "script"
-[commands.edit.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -165,8 +161,6 @@ json.dump({
 sys.stdout.write("\n")
 '''
 [commands.edit.return_processor]
-producer = "script"
-[commands.edit.return_processor.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

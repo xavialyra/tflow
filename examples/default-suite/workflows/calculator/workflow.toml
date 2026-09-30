@@ -20,7 +20,4 @@ enter = "copy"
 [commands.copy]
 label = "Copy result"
 type = "run"
-producer = "script"
-
-[commands.copy.handler]
 file = "scripts/copy.py"

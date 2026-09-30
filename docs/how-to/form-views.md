@@ -87,8 +87,7 @@ enter = "submit"
 [commands.submit]
 label = "Submit"
 type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+file = "scripts/submit.py"
 ```
 
 Create `scripts/submit.py`:

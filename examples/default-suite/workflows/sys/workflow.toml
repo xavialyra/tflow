@@ -20,8 +20,6 @@ enter = "run"
 [commands.run]
 label = "Run"
 type = "navigate"
-producer = "script"
-[commands.run.handler]
 file = "scripts/command.py"
 
 [views.confirm]
@@ -44,8 +42,6 @@ enter = "confirm_exec"
 [commands.confirm_exec]
 label = "Confirm"
 type = "navigate"
-producer = "script"
-[commands.confirm_exec.handler]
 file = "scripts/confirm_exec.py"
 
 [views.output]

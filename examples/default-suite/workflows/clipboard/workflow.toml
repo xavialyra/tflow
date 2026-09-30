@@ -39,20 +39,14 @@ enter = "copy"
 [commands.previous_type]
 label = "Previous content type"
 type = "navigate"
-producer = "script"
-[commands.previous_type.handler]
 file = "scripts/cycle-type.py"
 
 [commands.next_type]
 label = "Next content type"
 type = "navigate"
-producer = "script"
-[commands.next_type.handler]
 file = "scripts/cycle-type.py"
 
 [commands.copy]
 label = "Copy"
 type = "run"
-producer = "script"
-[commands.copy.handler]
 file = "scripts/restore.py"

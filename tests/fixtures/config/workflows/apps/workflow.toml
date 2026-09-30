@@ -39,27 +39,19 @@ enter = "save"
 [commands.open]
 label = "Open"
 type = "run"
-producer = "script"
-[commands.open.handler]
 file = "scripts/open.sh"
 
 [commands.openx]
 label = "Opend"
 type = "run"
-producer = "script"
-[commands.openx.handler]
 file = "scripts/open.sh"
 
 [commands.weight]
 label = "Set weight"
 type = "call"
-producer = "script"
-[commands.weight.handler]
 file = "scripts/weight-popup.sh"
 
 [commands.save]
 label = "Save"
 type = "return"
-producer = "script"
-[commands.save.handler]
 file = "scripts/set-weight.sh"

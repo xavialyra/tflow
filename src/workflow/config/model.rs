@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -564,18 +564,51 @@ pub(crate) enum ProducerKind {
     Script,
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct ReturnProcessor {
-    #[serde(rename = "type")]
-    #[serde(default)]
     pub(crate) operation: Option<String>,
-    #[serde(default)]
     pub(crate) producer: ProducerKind,
     pub(crate) handler: toml::Value,
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
+impl<'de> Deserialize<'de> for ReturnProcessor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        let mut fields = match value {
+            toml::Value::Table(table) => table,
+            _ => return Err(serde::de::Error::custom("return_processor must be a table")),
+        };
+        if fields.contains_key("producer") || fields.contains_key("handler") {
+            return Err(serde::de::Error::custom(
+                "legacy 'producer' and 'handler' fields are not supported on return_processor; configure 'file' / 'script' or operation fields directly",
+            ));
+        }
+        let operation = match fields.remove("type") {
+            Some(toml::Value::String(s)) => Some(s),
+            Some(_) => {
+                return Err(serde::de::Error::custom(
+                    "return_processor 'type' must be a string",
+                ));
+            }
+            None => None,
+        };
+        let (producer, handler) = if fields.contains_key("file") || fields.contains_key("script") {
+            (ProducerKind::Script, toml::Value::Table(fields))
+        } else {
+            (ProducerKind::Declared, toml::Value::Table(fields))
+        };
+        Ok(ReturnProcessor {
+            operation,
+            producer,
+            handler,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
     Run {
@@ -622,12 +655,81 @@ impl CommandAction {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Command {
-    #[serde(default)]
     pub label: String,
-    #[serde(flatten)]
     pub action: CommandAction,
+}
+
+impl<'de> Deserialize<'de> for Command {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        let mut fields = match value {
+            toml::Value::Table(table) => table,
+            _ => return Err(serde::de::Error::custom("command must be a table")),
+        };
+        if fields.contains_key("producer") || fields.contains_key("handler") {
+            return Err(serde::de::Error::custom(
+                "legacy 'producer' and 'handler' fields are not supported; configure 'file' / 'script' or operation fields directly on the command",
+            ));
+        }
+        let label = match fields.remove("label") {
+            Some(toml::Value::String(s)) => s,
+            Some(_) => return Err(serde::de::Error::custom("command 'label' must be a string")),
+            None => String::new(),
+        };
+        let type_val = match fields.remove("type") {
+            Some(toml::Value::String(s)) => s,
+            Some(_) => return Err(serde::de::Error::custom("command 'type' must be a string")),
+            None => {
+                return Err(serde::de::Error::custom(
+                    "command requires 'type' equal to \"run\", \"navigate\", \"call\", or \"return\"",
+                ));
+            }
+        };
+        let return_processor = match fields.remove("return_processor") {
+            Some(rp_val) => {
+                let rp: ReturnProcessor =
+                    ReturnProcessor::deserialize(rp_val).map_err(serde::de::Error::custom)?;
+                Some(rp)
+            }
+            None => None,
+        };
+        if return_processor.is_some() && type_val != "call" {
+            return Err(serde::de::Error::custom(
+                "'return_processor' is only supported on 'call' commands",
+            ));
+        }
+
+        let is_script = fields.contains_key("file") || fields.contains_key("script");
+        let (producer, handler) = if is_script {
+            (ProducerKind::Script, toml::Value::Table(fields))
+        } else {
+            (ProducerKind::Declared, toml::Value::Table(fields))
+        };
+
+        let action = match type_val.as_str() {
+            "run" => CommandAction::Run { producer, handler },
+            "navigate" => CommandAction::Navigate { producer, handler },
+            "call" => CommandAction::Call {
+                producer,
+                handler,
+                return_processor,
+            },
+            "return" => CommandAction::Return { producer, handler },
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown command type {:?}; expected \"run\", \"navigate\", \"call\", or \"return\"",
+                    other
+                )));
+            }
+        };
+
+        Ok(Command { label, action })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -900,8 +1002,6 @@ args = []
             r#"
             [commands.open]
             type = "call"
-            producer = "declared"
-            [commands.open.handler]
             target = "other:view"
             "#,
         )
@@ -914,6 +1014,20 @@ args = []
         };
         assert_eq!(*producer, ProducerKind::Declared);
         assert_eq!(handler["target"].as_str(), Some("other:view"));
+    }
+
+    #[test]
+    fn command_rejects_legacy_producer_and_handler() {
+        let err = toml::from_str::<Workflow>(
+            r#"
+            [commands.open]
+            type = "call"
+            producer = "declared"
+            handler = { target = "other:view" }
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("legacy 'producer' and 'handler'"));
     }
 
     #[test]

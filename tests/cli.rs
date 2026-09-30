@@ -565,14 +565,14 @@ fn check_treats_inline_run_script_bodies_as_opaque() {
 
 #[test]
 fn check_rejects_invalid_run_handler_sources() {
-    for (handler, expected) in [
+    for (fields, expected) in [
         (
-            r#"{ file = "scripts/run.sh", script = "printf ok" }"#,
+            "file = \"scripts/run.sh\"\nscript = \"printf ok\"",
             "must define exactly one of file or script",
         ),
-        (r#""scripts/run.sh""#, "must be a table with file or script"),
+        ("file = \"\"", "file must be non-empty"),
         (
-            r#"{ file = "../run.sh" }"#,
+            "file = \"../run.sh\"",
             "script path \"../run.sh\" must stay below",
         ),
     ] {
@@ -584,15 +584,16 @@ fn check_rejects_invalid_run_handler_sources() {
                 r#"
                 default_view = "core:default"
 
-                [workflows.core.views.default.engine]
-                type = "picker"
+                [workflows.core.views.default]
+                engine = "picker"
+
+                [workflows.core.views.default.picker]
 
                 [workflows.core.views.default.commands.run]
                 key = "enter"
                 label = "Run"
                 type = "run"
-                producer = "script"
-                handler = {handler}
+                {fields}
                 "#
             ),
         )
@@ -606,7 +607,7 @@ fn check_rejects_invalid_run_handler_sources() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !output.status.success(),
-            "accepted handler {handler}: {stderr}"
+            "accepted fields {fields}: {stderr}"
         );
         assert!(stderr.contains(expected), "stderr: {stderr}");
         std::fs::remove_dir_all(root).unwrap();
@@ -1147,8 +1148,6 @@ fn single_file_workflow_accepts_one_line_script_body_that_looks_like_a_filename(
         [views.main.picker]
         [commands.run]
         type = "run"
-        producer = "script"
-        [commands.run.handler]
         script = "foo.sh"
         "#,
     )
@@ -1523,8 +1522,7 @@ entrypoint="main"
 [commands.accept]
 label="Shared accept"
 type="return"
-producer="declared"
-handler={value="shared"}
+value="shared"
 [views.main.engine]
 type="picker"
 [views.other.engine]
@@ -1532,8 +1530,7 @@ type="picker"
 [views.other.commands.accept]
 label="Local accept"
 type="return"
-producer="declared"
-handler={value="local"}
+value="local"
 "#,
     )
     .unwrap();
@@ -1554,7 +1551,11 @@ handler={value="local"}
 fn settings_cannot_register_business_commands() {
     let root = temporary_root();
     let settings = root.join("settings.toml");
-    fs::write(&settings, "[commands.bindings.open]\nkey='f1'\ntype='navigate'\nproducer='declared'\nhandler={target='external:main'}\n").unwrap();
+    fs::write(
+        &settings,
+        "[commands.bindings.open]\nkey='f1'\ntype='navigate'\ntarget='external:main'\n",
+    )
+    .unwrap();
     let output = launcher_command()
         .args(["-w"])
         .arg(support::quick_picker_fixture())
@@ -1619,7 +1620,7 @@ fn standalone_workflow_defers_sibling_navigation_until_runtime() {
     let root = temporary_root();
     let workflow = root.join("tool.toml");
     for kind in ["navigate", "call"] {
-        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\n[views.main.picker]\n[commands.open]\ntype='{kind}'\nproducer='declared'\nhandler={{target='sibling:main'}}\n")).unwrap();
+        fs::write(&workflow, format!("[workflow]\napi=1\nname='Tool'\nentrypoint='main'\n[views.main]\nengine='picker'\n[views.main.picker]\n[commands.open]\ntype='{kind}'\ntarget='sibling:main'\n")).unwrap();
         let output = launcher_command()
             .args(["--workflow"])
             .arg(&workflow)

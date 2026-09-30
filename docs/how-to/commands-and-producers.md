@@ -30,13 +30,10 @@ enter = "open"
 [commands.open]
 label = "Open selected item"
 type = "navigate"
-producer = "script"
-
-[commands.open.handler]
 file = "scripts/open.py"
 ```
 
-Declared handlers use the same operation schema without starting a script. Use `producer = "script"` when the operation must be computed at runtime. Because the command belongs to the workflow, the same command can be bound by several Views. There is no per-command `key`: a View that declares no bindings of its own still offers every command of its workflow as a keyless candidate (searchable, with no physical shortcut).
+Declared commands define their operation directly on `[commands.<id>]` without starting a script. Use `file = "..."` or inline `script = "..."` when the operation must be computed dynamically at runtime. Because the command belongs to the workflow, the same command can be bound by several Views. There is no per-command `key`: a View that declares no bindings of its own still offers every command of its workflow as a keyless candidate (searchable, with no physical shortcut).
 
 ### 2. Read the Shared Context
 
@@ -93,9 +90,6 @@ An aggregate Picker does not project commands out of the Views it aggregates. Ea
 [commands.open]
 label = "Open application"
 type = "run"
-producer = "script"
-
-[commands.open.handler]
 file = "scripts/open.py"
 ```
 

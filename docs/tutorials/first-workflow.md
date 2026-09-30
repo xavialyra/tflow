@@ -47,9 +47,6 @@ enter = "open"
 [commands.open]
 label = "Edit note"
 type = "run"
-producer = "script"
-
-[commands.open.handler]
 script = '''#!/usr/bin/env python3
 import json
 import os
@@ -168,9 +165,6 @@ enter = "open"
 [commands.open]
 label = "Edit note"
 type = "run"
-producer = "script"
-
-[commands.open.handler]
 file = "scripts/open_note.py"
 ```
 

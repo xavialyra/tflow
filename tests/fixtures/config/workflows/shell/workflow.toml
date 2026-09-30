@@ -15,9 +15,6 @@ enter = "open"
 [commands.open]
 label = "Open shell"
 type = "navigate"
-producer = "declared"
-
-[commands.open.handler]
 target = "shell:main"
 
 [views.main]

@@ -60,9 +60,6 @@ enter = "open"
 [commands.open]
 label = "Open selected item"
 type = "navigate"
-producer = "script"
-
-[commands.open.handler]
 file = "scripts/open.sh"
 ```
 

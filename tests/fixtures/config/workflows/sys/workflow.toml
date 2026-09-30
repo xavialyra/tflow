@@ -16,15 +16,11 @@ enter = "run"
 [commands.run]
 label = "Run"
 type = "navigate"
-producer = "script"
-[commands.run.handler]
 file = "scripts/command.sh"
 
 [commands.info]
 label = "Info"
 type = "navigate"
-producer = "script"
-[commands.info.handler]
 file = "scripts/command.sh"
 
 [views.output]

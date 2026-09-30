@@ -19,9 +19,6 @@ enter = "execute"
 [commands.execute]
 label = "Execute Recipe"
 type = "return"
-producer = "script"
-
-[commands.execute.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -44,9 +41,6 @@ sys.stdout.write("\n")
 [commands.run_inline]
 label = "Run Inline Script"
 type = "run"
-producer = "script"
-
-[commands.run_inline.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

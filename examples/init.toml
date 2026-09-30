@@ -358,8 +358,6 @@ escape = "cancel"
 [commands.toggle]
 label = "Toggle"
 type = "navigate"
-producer = "script"
-[commands.toggle.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -419,8 +417,6 @@ if __name__ == "__main__":
 [commands.select_all]
 label = "Select All"
 type = "navigate"
-producer = "script"
-[commands.select_all.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -464,8 +460,6 @@ if __name__ == "__main__":
 [commands.clear_all]
 label = "Clear All"
 type = "navigate"
-producer = "script"
-[commands.clear_all.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -507,8 +501,6 @@ if __name__ == "__main__":
 [commands.test_drive]
 label = "Sandbox Try"
 type = "run"
-producer = "script"
-[commands.test_drive.handler]
 script = '''#!/usr/bin/env python3
 import json
 import os
@@ -606,8 +598,6 @@ if __name__ == "__main__":
 [commands.install]
 label = "Install"
 type = "run"
-producer = "script"
-[commands.install.handler]
 script = '''#!/usr/bin/env python3
 import atexit
 import json
@@ -972,8 +962,6 @@ if __name__ == "__main__":
 [commands.cancel]
 label = "Cancel"
 type = "run"
-producer = "script"
-[commands.cancel.handler]
 script = '''#!/usr/bin/env python3
 import json
 import os

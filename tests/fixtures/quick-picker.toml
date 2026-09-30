@@ -23,7 +23,4 @@ enter = "run"
 [commands.run]
 label = "Run"
 type = "return"
-producer = "declared"
-
-[commands.run.handler]
 value = "selected_option"

@@ -39,8 +39,7 @@ enter = "submit"
 [commands.submit]
 label = "Submit"
 type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+file = "scripts/submit.py"
 ```
 
 The query schema supplies typed defaults, and the form engine supplies the interactive fields. The submit command reads `context.engine.state.values`; those values are typed JSON, so a boolean field returns `true` or `false` rather than text. A failed validation keeps the form open and displays the field error.
@@ -73,15 +72,11 @@ enter = "open"
 [commands.open]
 label = "Open form"
 type = "call"
-producer = "declared"
-[commands.open.handler]
 target = "form:input"
 query = { name = "demo", environment = "dev", enabled = true }
 
 [commands.open.return_processor]
 type = "navigate"
-producer = "script"
-[commands.open.return_processor.handler]
 file = "scripts/received.py"
 ```
 

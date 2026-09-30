@@ -820,8 +820,7 @@ mod tests {
             [commands.open]
             label = "Open"
             type = "return"
-            producer = "declared"
-            handler = { value = "open" }
+            value = "open"
             "#,
         )
         .unwrap();
@@ -830,8 +829,7 @@ mod tests {
             [commands.palette]
             label = "Commands"
             type = "return"
-            producer = "declared"
-            handler = { value = "palette" }
+            value = "palette"
             "#,
         )
         .unwrap();

@@ -277,8 +277,6 @@ fn isolated_workflow_runs_interactively_through_pty() {
         [commands.run]
         label = "Run"
         type = "return"
-        producer = "script"
-        [commands.run.handler]
         script = '''#!/bin/sh
         printf '{"version":1,"operation":{"type":"return","value":{"result":"ran_standalone"}}}\n'
         '''
@@ -476,8 +474,6 @@ items = [{ display = "Streamed choice", value = "chosen" }]
 enter = "accept"
 [commands.accept]
 type = "return"
-producer = "script"
-[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)

@@ -269,9 +269,6 @@ The command index is the set of FQIDs, and every FQID must name exactly one comm
 [commands.open]
 label = "Open Selected"
 type = "run"
-producer = "declared"
-
-[commands.open.handler]
 argv = ["xdg-open"]
 exit = true
 ```
@@ -280,17 +277,19 @@ exit = true
 
 | Field | Type | Required / Default | Description |
 | :--- | :--- | :--- | :--- |
-| `label` | string | **Required** | Display name shown in command palettes and UI chrome. |
+| `label` | string | Optional (`""`) | Display name shown in command palettes and UI chrome. |
 | `type` | string | **Required** | Operation type: `"navigate"`, `"call"`, `"return"`, or `"run"`. |
-| `producer` | string | **Required** | Producer kind: `"declared"` (static payload) or `"script"` (dynamic output). |
-| `handler` | table | **Required** | Handler payload corresponding to `producer` and `type`. |
-| `return_processor`| table | Optional | Handler invoked after a `call` operation returns to this caller. |
+| `file` | string | Optional | Path to dynamic producer script file (mutually exclusive with `script`). |
+| `script` | string | Optional | Inline dynamic producer script body (mutually exclusive with `file`). |
+| `return_processor`| table | Optional | Processor invoked after a `call` operation returns to this caller. |
+
+When `file` or `script` is specified, the command is **script-driven**: it executes an external script that produces a version-1 JSON protocol operation. When omitted, the command is **declarative**: the operation parameters are declared directly under `[commands.<id>]`.
 
 ---
 
-## Operation Payloads
+## Declarative Operation Payloads
 
-Declared handlers provide the operation payload directly in TOML. Script handlers return this payload as JSON in `operation`:
+When declaring static commands without scripts, specify operation parameters directly on `[commands.<id>]`:
 
 ### 1. `navigate`
 Transitions the session to another View:
@@ -351,20 +350,24 @@ Executes an external system command:
 
 ---
 
-## Producer Handlers (`handler`)
+## Dynamic Script Commands
 
-A producer handler specifies how dynamic data is generated:
+Specify `file` or inline `script` directly under `[commands.<id>]`:
 
-### File Handler
+### File Script
 ```toml
-[commands.open.handler]
+[commands.open]
+label = "Open dynamic"
+type = "run"
 file = "scripts/open.sh"
 ```
 *Note: In directory workflows, `file` paths are relative to the workflow root. In single-file workflows, external relative paths are forbidden.*
 
-### Inline Script Handler
+### Inline Script
 ```toml
-[commands.open.handler]
+[commands.open]
+label = "Notify"
+type = "run"
 script = '''#!/usr/bin/env python3
 import json, sys
 req = json.load(sys.stdin)
@@ -388,9 +391,6 @@ When a `call` operation finishes, the parent view can execute a return processor
 ```toml
 [commands.choose.return_processor]
 type = "navigate"
-producer = "script"
-
-[commands.choose.return_processor.handler]
 file = "scripts/process-result.sh"
 ```
 

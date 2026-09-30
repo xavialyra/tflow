@@ -39,35 +39,25 @@ enter = "save"
 [commands.open]
 label = "Open"
 type = "run"
-producer = "script"
-[commands.open.handler]
 file = "scripts/open.py"
 
 # Same launcher as `open`, without waiting for the activation call to return.
 [commands.open_detached]
 label = "Open detached"
 type = "run"
-producer = "script"
-[commands.open_detached.handler]
 file = "scripts/open.py"
 
 [commands.weight]
 label = "Set weight"
 type = "call"
-producer = "script"
-[commands.weight.handler]
 file = "scripts/weight-popup.py"
 
 [commands.copy_path]
 label = "Copy path"
 type = "run"
-producer = "script"
-[commands.copy_path.handler]
 file = "scripts/copy-path.py"
 
 [commands.save]
 label = "Save"
 type = "return"
-producer = "script"
-[commands.save.handler]
 file = "scripts/set-weight.py"

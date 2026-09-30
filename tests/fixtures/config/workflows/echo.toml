@@ -33,17 +33,11 @@ enter = "copy"
 [commands.copy]
 label = "Copy & Exit"
 type = "return"
-producer = "declared"
-
-[commands.copy.handler]
 value = ""
 
 [commands.inline_multiline]
 label = "Run Multi-line Script"
 type = "run"
-producer = "script"
-
-[commands.inline_multiline.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -65,9 +59,6 @@ sys.stdout.write("\n")
 [commands.inline_single]
 label = "Run Single-line Script"
 type = "run"
-producer = "script"
-
-[commands.inline_single.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys
@@ -89,9 +80,6 @@ sys.stdout.write("\n")
 [commands.inline_python]
 label = "Run Python Script"
 type = "run"
-producer = "script"
-
-[commands.inline_python.handler]
 script = '''#!/usr/bin/env python3
 import json
 import sys

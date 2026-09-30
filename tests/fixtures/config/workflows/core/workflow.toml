@@ -45,20 +45,14 @@ enter = "accept"
 [commands.complete]
 label = "Complete route"
 type = "navigate"
-producer = "script"
-[commands.complete.handler]
 file = "scripts/complete.py"
 
 [commands.route_separator]
 label = "Separate route"
 type = "navigate"
-producer = "script"
-[commands.route_separator.handler]
 file = "scripts/route_separator.py"
 
 [commands.accept]
 label = "Open route"
 type = "navigate"
-producer = "script"
-[commands.accept.handler]
 file = "scripts/completion_accept.py"

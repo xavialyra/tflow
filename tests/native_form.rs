@@ -69,8 +69,6 @@ enter = "accept"
 [commands.accept]
 label = "Select"
 type = "return"
-producer = "script"
-[commands.accept.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
@@ -81,8 +79,6 @@ json.dump({"version": 1, "operation": {"type": "return", "value": reference}}, s
 [commands.palette]
 label = "Commands"
 type = "call"
-producer = "script"
-[commands.palette.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 context = json.load(sys.stdin).get("context", {})
@@ -100,8 +96,6 @@ json.dump({
 }, sys.stdout)
 '''
 [commands.palette.return_processor]
-producer = "script"
-[commands.palette.return_processor.handler]
 script = '''#!/usr/bin/env python3
 import json, sys
 result = json.load(sys.stdin).get("context", {}).get("result")
@@ -147,28 +141,24 @@ enter = "submit"
 [commands.submit]
 label = "Submit string values"
 type = "return"
-producer = "script"
-handler = { file = "scripts/submit.py" }
+file = "scripts/submit.py"
 
 [commands.details]
 label = "Edit details"
 type = "call"
-producer = "declared"
-handler = { target = "native-form:dynamic" }
+target = "native-form:dynamic"
 [commands.details.return_processor]
 type = "return"
-producer = "script"
-handler = { file = "scripts/returned.py" }
+file = "scripts/returned.py"
 
 [commands.string_form]
 label = "String form"
 type = "call"
-producer = "declared"
-handler = { target = "native-form:string", query = "a:string:dd,b:number:null" }
+target = "native-form:string"
+query = "a:string:dd,b:number:null"
 [commands.string_form.return_processor]
 type = "return"
-producer = "script"
-handler = { file = "scripts/returned.py" }
+file = "scripts/returned.py"
 
 [views.string]
 engine = "form"
