@@ -7,8 +7,7 @@ mod tests;
 
 use self::content::{Draft, FieldType, parse_content};
 use crate::engine::{
-    EngineDefinition, EngineValidationContext, FactoryFieldPlan, ProjectedBindingConfig,
-    ProjectedEngineConfig,
+    EngineDefinition, EngineValidationContext, ProjectedBindingConfig, ProjectedEngineConfig,
 };
 use crate::input::bindings::{ActionBindings, BindingAction};
 use crate::input::{InputEvent, Key, ViewMountId};
@@ -83,10 +82,7 @@ pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
 }
 
 pub(super) fn definition() -> EngineDefinition {
-    EngineDefinition::new().with_factory_fields(FactoryFieldPlan {
-        runtime: &["content"],
-        binding_defaults: Some(&["form", "bindings"]),
-    })
+    EngineDefinition::new().with_binding_defaults(Some(&["form", "bindings"]))
 }
 
 enum PreparedContent {
@@ -186,16 +182,11 @@ impl FormView {
         request: &NavigationRequest,
         instance: ViewInstanceId,
     ) -> Result<Self> {
-        let content_val = if let Some(typed) = config.engine.as_form() {
-            toml_to_json(&typed.content)?
-        } else {
-            config
-                .engine
-                .field("content")
-                .context("form requires content")?
-                .clone()
-        };
-        let prepared = prepare(content_val, config.engine.workflow_root.as_deref())?;
+        let form = config
+            .engine
+            .as_form()
+            .context("form engine requires form config")?;
+        let prepared = prepare(form.content.clone(), config.engine.workflow_root.as_deref())?;
         let (fields, script) = match prepared {
             PreparedContent::Declared(fields) => (fields, None),
             PreparedContent::Script(source) => (Vec::new(), Some(source)),

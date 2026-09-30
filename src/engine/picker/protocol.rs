@@ -82,34 +82,15 @@ pub(crate) fn create_protocol_view(
     let mount_id = ViewMountId(instance.0);
     let typed_picker = config.engine.as_picker();
     let options = PickerOptions {
-        show_input: typed_picker
-            .and_then(|p| p.show_input)
-            .or_else(|| config.engine.field("show_input").and_then(Value::as_bool))
-            .unwrap_or(true),
-        show_divider: config
-            .engine
-            .field("show_divider")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        show_input: typed_picker.and_then(|p| p.show_input).unwrap_or(true),
+        show_divider: typed_picker.and_then(|p| p.show_divider).unwrap_or(true),
         show_left_prefix: typed_picker
             .and_then(|p| p.show_left_prefix)
-            .or_else(|| {
-                config
-                    .engine
-                    .field("show_left_prefix")
-                    .and_then(Value::as_bool)
-            })
             .unwrap_or(true),
         prefix_backspace: config.prefix_backspace,
         // An empty hint is treated as no hint so it never renders a blank row.
         input_placeholder: typed_picker
             .and_then(|p| p.input_placeholder.as_deref())
-            .or_else(|| {
-                config
-                    .engine
-                    .field("input_placeholder")
-                    .and_then(Value::as_str)
-            })
             .filter(|placeholder| !placeholder.is_empty())
             .map(str::to_string),
     };

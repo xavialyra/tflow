@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const PROTOCOL_VERSION: u64 = 1;
-const MAX_ITEMS_PRODUCER_STDOUT: usize = 64 * 1024 * 1024;
+const MAX_ITEMS_SCRIPT_STDOUT: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ProtocolOperation {
@@ -404,7 +404,7 @@ pub(crate) fn run_script_items_response(
         root,
         source,
         request,
-        Some(MAX_ITEMS_PRODUCER_STDOUT),
+        Some(MAX_ITEMS_SCRIPT_STDOUT),
         cancellation,
     );
     let managed_child_reaped = output.managed_child_reaped;
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_requests_use_one_explicit_context_shape() {
+    fn script_requests_use_one_explicit_context_shape() {
         let parameters = json!({"mode": "normal"});
         let input = json!({
             "stdin": {"path": null, "length": 0, "is_tty": true}

@@ -1,7 +1,6 @@
 use crate::lifecycle::CancellationObserver;
 use crate::workflow::config::View;
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +33,7 @@ impl ViewIdentity {
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub(crate) struct PickerConfig {
     #[serde(default)]
     pub(crate) items: Option<toml::Value>,
@@ -44,6 +43,8 @@ pub(crate) struct PickerConfig {
     pub(crate) input_placeholder: Option<String>,
     #[serde(default)]
     pub(crate) show_input: Option<bool>,
+    #[serde(default)]
+    pub(crate) show_divider: Option<bool>,
     #[serde(default)]
     pub(crate) show_left_prefix: Option<bool>,
 }
@@ -55,11 +56,12 @@ pub(crate) struct CaptureConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub(crate) struct FormConfig {
-    pub(crate) content: toml::Value,
+    pub(crate) content: Value,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub(crate) struct EmbeddedConfig {
+    #[serde(default)]
     pub(crate) command: Vec<String>,
     #[serde(default)]
     pub(crate) result: Option<toml::Value>,
@@ -76,14 +78,38 @@ pub(crate) enum TypedEngineConfig {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectedEngineConfig {
     pub(crate) typed: Option<TypedEngineConfig>,
-    pub(crate) fields: BTreeMap<String, Value>,
     pub(crate) workflow_root: Option<PathBuf>,
     pub(crate) launch_input: Value,
 }
 
 impl ProjectedEngineConfig {
-    pub(crate) fn field(&self, name: &str) -> Option<&Value> {
-        self.fields.get(name)
+    #[cfg(test)]
+    pub(crate) fn from_typed(typed: TypedEngineConfig) -> Self {
+        Self {
+            typed: Some(typed),
+            workflow_root: None,
+            launch_input: Value::Null,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_picker(config: PickerConfig) -> Self {
+        Self::from_typed(TypedEngineConfig::Picker(config))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_capture(config: CaptureConfig) -> Self {
+        Self::from_typed(TypedEngineConfig::Capture(config))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_form(config: FormConfig) -> Self {
+        Self::from_typed(TypedEngineConfig::Form(config))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_embedded(config: EmbeddedConfig) -> Self {
+        Self::from_typed(TypedEngineConfig::Embedded(config))
     }
 
     pub(crate) fn as_picker(&self) -> Option<&PickerConfig> {

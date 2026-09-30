@@ -5,10 +5,7 @@ use serde_json::json;
 
 fn config(content: Value, tasks: TaskRuntime) -> FormProtocolConfig {
     FormProtocolConfig {
-        engine: ProjectedEngineConfig {
-            fields: [("content".into(), content)].into_iter().collect(),
-            ..Default::default()
-        },
+        engine: ProjectedEngineConfig::for_form(crate::engine::FormConfig { content }),
         bindings: ProjectedBindingConfig::default(),
         runtime_snapshot: Value::Null,
         raw_input: "immutable query".into(),
@@ -401,9 +398,8 @@ fn registry_accepts_form_and_rejects_picker_sources_or_custom_bindings() {
         registry
             .definition_for_engine("form")
             .unwrap()
-            .factory_fields
-            .runtime,
-        &["content"]
+            .binding_defaults,
+        Some(&["form", "bindings"][..])
     );
     let valid = "engine = 'form'\n[form.content]\nfields = [{ name = 'title' }]\n";
     registry

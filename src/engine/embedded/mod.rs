@@ -89,10 +89,7 @@ pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
-        .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["command", "result"],
-            binding_defaults: Some(&["embedded", "bindings"]),
-        })
+        .with_binding_defaults(Some(&["embedded", "bindings"]))
         .with_actions([crate::engine::ActionSpec::unit("embedded.cancel")])
 }
 
@@ -152,25 +149,11 @@ pub(super) fn create_view(
     context: RuntimeFactoryContext,
 ) -> Result<Box<dyn crate::engine::EngineRuntime>> {
     let view_ref = context.identity.view_ref.clone();
-    let command = if let Some(typed) = context.config.as_embedded() {
-        typed.command.clone()
-    } else {
-        let command = context
-            .config
-            .field("command")
-            .context("embedded engine requires a command field")?;
-        command
-            .as_array()
-            .context("embedded command must be an argv array")?
-            .iter()
-            .map(|argument| {
-                argument
-                    .as_str()
-                    .map(str::to_string)
-                    .context("embedded command arguments must be strings")
-            })
-            .collect::<Result<Vec<_>>>()?
-    };
+    let embedded = context
+        .config
+        .as_embedded()
+        .context("embedded engine requires embedded config")?;
+    let command = embedded.command.clone();
     if command.is_empty() {
         anyhow::bail!("embedded command must not be empty");
     }
@@ -199,7 +182,12 @@ pub(super) fn create_view(
             root.to_string_lossy().into_owned(),
         ));
     }
-    let result = parse_result_config_value(&view_ref, context.config.field("result").cloned())?;
+    let result_val = embedded
+        .result
+        .as_ref()
+        .map(crate::workflow::config::toml_to_json)
+        .transpose()?;
+    let result = parse_result_config_value(&view_ref, result_val)?;
     let session = EmbeddedSession::new(
         PreparedProcess {
             argv: command,

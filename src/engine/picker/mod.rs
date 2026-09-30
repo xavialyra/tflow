@@ -12,7 +12,7 @@ use self::bindings::PickerBindings;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use self::display::ItemDisplayInput;
 pub(crate) use self::display::SlotToken;
-pub(crate) use self::items::run_items_producer_raw;
+pub(crate) use self::items::run_items_script_raw;
 use self::items::{ItemsRequest, PickerItemsDefinition, PickerItemsLoader};
 pub(crate) use self::preview::PreviewDocumentCache;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
@@ -206,15 +206,6 @@ impl From<PickerRuntimeServices> for PickerViewServices {
 
 pub(crate) use items::Item;
 
-/// Engine config fields the Picker accepts. Shared by the factory plan and
-/// validation so the two cannot drift apart.
-const CONFIG_FIELDS: &[&str] = &[
-    "show_input",
-    "show_divider",
-    "show_left_prefix",
-    "input_placeholder",
-];
-
 const ALLOWED_PICKER_FIELDS: &[&str] = &[
     "show_input",
     "show_divider",
@@ -224,7 +215,7 @@ const ALLOWED_PICKER_FIELDS: &[&str] = &[
     "preview",
 ];
 
-/// Subset of [`CONFIG_FIELDS`] that must deserialize as a boolean.
+/// Subset of [`ALLOWED_PICKER_FIELDS`] that must deserialize as a boolean.
 const BOOLEAN_FIELDS: &[&str] = &["show_input", "show_divider", "show_left_prefix"];
 
 /// Subset of [`CONFIG_FIELDS`] that must deserialize as a string.
@@ -232,10 +223,7 @@ const STRING_FIELDS: &[&str] = &["input_placeholder"];
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
-        .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: CONFIG_FIELDS,
-            binding_defaults: Some(&["picker", "bindings"]),
-        })
+        .with_binding_defaults(Some(&["picker", "bindings"]))
         .with_actions([
             crate::engine::ActionSpec::unit("picker.select_next"),
             crate::engine::ActionSpec::unit("picker.select_previous"),

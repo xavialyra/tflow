@@ -139,10 +139,10 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
     )
     .view_services();
     let mut config = config_with_tasks(services, tasks.clone());
-    config
-        .engine
-        .fields
-        .insert("input_placeholder".into(), Value::String("Search".into()));
+    config.engine = ProjectedEngineConfig::for_picker(crate::engine::PickerConfig {
+        input_placeholder: Some("Search".into()),
+        ..Default::default()
+    });
     let mut view =
         create_protocol_view(config, &request("core:default"), ViewInstanceId(1)).unwrap();
 

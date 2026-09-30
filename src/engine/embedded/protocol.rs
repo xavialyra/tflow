@@ -525,20 +525,10 @@ mod tests {
     fn config(command: &[&str]) -> EmbeddedProtocolConfig {
         EmbeddedProtocolConfig::new(
             "embedded",
-            ProjectedEngineConfig {
-                fields: [(
-                    "command".to_string(),
-                    Value::Array(
-                        command
-                            .iter()
-                            .map(|value| Value::String((*value).into()))
-                            .collect(),
-                    ),
-                )]
-                .into_iter()
-                .collect(),
-                ..ProjectedEngineConfig::default()
-            },
+            ProjectedEngineConfig::for_embedded(crate::engine::EmbeddedConfig {
+                command: command.iter().map(|s| (*s).to_string()).collect(),
+                result: None,
+            }),
             ProjectedBindingConfig::default(),
             crate::lifecycle::CancellationToken::new().observer(),
             serde_json::json!({"view": {"current": {}}}),
@@ -738,10 +728,10 @@ mod tests {
     #[test]
     fn failed_external_completion_closes_recoverably_and_is_acknowledged() {
         let mut cfg = config(&["/bin/sh", "-c", "exit 0"]);
-        cfg.engine.fields.insert(
-            "result".to_string(),
-            serde_json::json!({"format": "text", "required": true}),
-        );
+        cfg.engine = ProjectedEngineConfig::for_embedded(crate::engine::EmbeddedConfig {
+            command: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+            result: Some(toml::toml! { format = "text" required = true }.into()),
+        });
         let (mut view, context) = mounted_view(cfg);
         let mut failed = false;
         for _ in 0..100 {
@@ -857,10 +847,10 @@ mod tests {
         fs::write(&script, "#!/bin/sh\nprintf 'done'; sleep 0.01\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let mut cfg = config(&[script.to_str().unwrap()]);
-        cfg.engine.fields.insert(
-            "result".to_string(),
-            serde_json::json!({"format":"text", "required":false}),
-        );
+        cfg.engine = ProjectedEngineConfig::for_embedded(crate::engine::EmbeddedConfig {
+            command: vec![script.to_str().unwrap().into()],
+            result: Some(toml::toml! { format = "text" required = false }.into()),
+        });
         let (mut view, context) = mounted_view(cfg);
         let mut saw_final_render = false;
         let mut returned = false;

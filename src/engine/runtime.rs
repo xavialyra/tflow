@@ -535,16 +535,10 @@ pub(crate) trait EngineRuntime {
     fn render_model(&self) -> RenderModel;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FactoryFieldPlan {
-    pub(crate) runtime: &'static [&'static str],
-    pub(crate) binding_defaults: Option<&'static [&'static str]>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EngineDefinition {
     pub(crate) actions: Vec<ActionSpec>,
-    pub(crate) factory_fields: FactoryFieldPlan,
+    pub(crate) binding_defaults: Option<&'static [&'static str]>,
 }
 
 impl EngineDefinition {
@@ -552,8 +546,11 @@ impl EngineDefinition {
         Self::default()
     }
 
-    pub(crate) fn with_factory_fields(mut self, factory_fields: FactoryFieldPlan) -> Self {
-        self.factory_fields = factory_fields;
+    pub(crate) fn with_binding_defaults(
+        mut self,
+        binding_defaults: Option<&'static [&'static str]>,
+    ) -> Self {
+        self.binding_defaults = binding_defaults;
         self
     }
 

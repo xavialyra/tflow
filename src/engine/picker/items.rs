@@ -286,7 +286,7 @@ pub(crate) fn load_items_for_definition_with_outcome(
     };
 
     let mut result = ItemsResult::default();
-    let (value, managed_child_reaped) = if is_producer_value(&items_val) {
+    let (value, managed_child_reaped) = if is_script_or_wrapped_value(&items_val) {
         let outcome = run_items_provider(
             definition,
             page_parameters,
@@ -398,7 +398,7 @@ struct ItemsScriptOutcome {
     managed_child_reaped: bool,
 }
 
-fn is_producer_value(value: &Value) -> bool {
+fn is_script_or_wrapped_value(value: &Value) -> bool {
     value.as_object().is_some_and(|fields| {
         fields.contains_key("file") || fields.contains_key("script") || fields.contains_key("items")
     })
@@ -471,22 +471,22 @@ fn run_items_provider(
     }
 }
 
-pub(crate) fn run_items_producer_raw(
+pub(crate) fn run_items_script_raw(
     view_ref: &str,
-    producer_value: &toml::Value,
+    items_value: &toml::Value,
     script_root: Option<&Path>,
     parameters: &Value,
     raw_input: &str,
     cancellation: &CancellationToken,
 ) -> Result<Value> {
-    let json_val = toml_to_json(producer_value)?;
+    let json_val = toml_to_json(items_value)?;
     let source_label = format!("[views.{}.items]", view_ref);
     if json_val.is_array() {
         return validate_items_value(&source_label, json_val);
     }
     if let Some(obj) = json_val.as_object() {
         if obj.contains_key("file") || obj.contains_key("script") {
-            let source = parse_script_source(producer_value, script_root)?;
+            let source = parse_script_source(items_value, script_root)?;
             let engine_state = serde_json::json!({
                 "input": raw_input,
             });
@@ -515,7 +515,7 @@ pub(crate) fn run_items_producer_raw(
 
 fn validate_items_value(source_label: &str, value: Value) -> Result<Value> {
     validate_item_array(&value)
-        .with_context(|| format!("{} producer returned invalid items", source_label))?;
+        .with_context(|| format!("{} script returned invalid items", source_label))?;
     Ok(value)
 }
 

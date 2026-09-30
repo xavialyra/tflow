@@ -488,7 +488,7 @@ fn run_items_query(config: &CompiledConfig, target: &str, view_options: &[String
         eprintln!("error: view {:?} does not use picker engine", view_ref);
         return Ok(1);
     }
-    let Some(items_producer) = view.selected_items() else {
+    let Some(items_source) = view.selected_items() else {
         println!("[]");
         return Ok(0);
     };
@@ -519,9 +519,9 @@ fn run_items_query(config: &CompiledConfig, target: &str, view_options: &[String
     };
     let cancellation = crate::lifecycle::CancellationToken::new();
     let root = config.workflow_root(&view_ref);
-    let output = match crate::engine::run_items_producer_raw(
+    let output = match crate::engine::run_items_script_raw(
         &view_ref,
-        items_producer,
+        items_source,
         root,
         &param_values,
         &raw_input,
@@ -534,7 +534,7 @@ fn run_items_query(config: &CompiledConfig, target: &str, view_options: &[String
         }
     };
     if !output.is_array() {
-        eprintln!("error: items producer output must be a JSON array");
+        eprintln!("error: items script output must be a JSON array");
         return Ok(1);
     }
     println!("{}", serde_json::to_string(&output)?);

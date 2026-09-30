@@ -5,29 +5,11 @@ use super::{
 use crate::workflow::config::{CompiledConfig, toml_to_json};
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::collections::BTreeMap;
-
-fn fields_for_view(
-    config: &CompiledConfig,
-    view_ref: &str,
-    names: &[&str],
-) -> Result<BTreeMap<String, Value>> {
-    let view = config
-        .view(view_ref)
-        .with_context(|| format!("view {:?} disappeared during factory preparation", view_ref))?;
-    names
-        .iter()
-        .filter_map(|name| {
-            view.engine_field(name)
-                .map(|value| toml_to_json(value).map(|value| ((*name).to_string(), value)))
-        })
-        .collect()
-}
 
 pub(crate) fn project_engine_config(
     config: &CompiledConfig,
     view_ref: &str,
-    definition: &EngineDefinition,
+    _definition: &EngineDefinition,
     launch_input: Value,
 ) -> Result<ProjectedEngineConfig> {
     let view = config
@@ -60,7 +42,6 @@ pub(crate) fn project_engine_config(
 
     Ok(ProjectedEngineConfig {
         typed,
-        fields: fields_for_view(config, view_ref, definition.factory_fields.runtime)?,
         workflow_root: config
             .workflow_root(view_ref)
             .map(std::path::Path::to_path_buf),
@@ -72,7 +53,7 @@ pub(crate) fn project_binding_config(
     config: &CompiledConfig,
     definition: &EngineDefinition,
 ) -> Result<ProjectedBindingConfig> {
-    let defaults = match definition.factory_fields.binding_defaults {
+    let defaults = match definition.binding_defaults {
         Some(path) if path == ["picker", "bindings"] => config
             .picker_default_bindings()
             .map(toml_to_json)

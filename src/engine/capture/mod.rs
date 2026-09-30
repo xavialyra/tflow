@@ -23,10 +23,7 @@ use std::path::{Path, PathBuf};
 
 pub(super) fn definition() -> crate::engine::EngineDefinition {
     crate::engine::EngineDefinition::new()
-        .with_factory_fields(crate::engine::FactoryFieldPlan {
-            runtime: &["output"],
-            binding_defaults: Some(&["capture", "bindings"]),
-        })
+        .with_binding_defaults(Some(&["capture", "bindings"]))
         .with_actions([
             crate::engine::ActionSpec::unit("capture.copy"),
             crate::engine::ActionSpec::unit("capture.back"),
@@ -176,32 +173,12 @@ fn prepare_output(
     config: &ProjectedEngineConfig,
     workflow_root: Option<&Path>,
 ) -> Result<PreparedCaptureOutput> {
-    if let Some(typed) = config.as_capture() {
-        if let Some(fields) = typed.output.as_table() {
-            if fields.contains_key("file") || fields.contains_key("script") {
-                let source = parse_script_source(&typed.output, workflow_root)?;
-                return Ok(PreparedCaptureOutput::Script {
-                    root: workflow_root.map(Path::to_path_buf),
-                    source,
-                });
-            }
-            if let Some(text) = fields.get("output").and_then(|t| t.as_str()) {
-                return Ok(PreparedCaptureOutput::Text(text.to_string()));
-            }
-        }
-        if let Some(text) = typed.output.as_str() {
-            return Ok(PreparedCaptureOutput::Text(text.to_string()));
-        }
-    }
-
-    let output = config
-        .field("output")
-        .context("capture engine requires an output field")?;
-    if let Some(fields) = output.as_object() {
+    let capture = config
+        .as_capture()
+        .context("capture engine requires capture config")?;
+    if let Some(fields) = capture.output.as_table() {
         if fields.contains_key("file") || fields.contains_key("script") {
-            let handler = toml::Value::try_from(output.clone())
-                .context("capture output script handler could not be converted to TOML")?;
-            let source = parse_script_source(&handler, workflow_root)?;
+            let source = parse_script_source(&capture.output, workflow_root)?;
             return Ok(PreparedCaptureOutput::Script {
                 root: workflow_root.map(Path::to_path_buf),
                 source,
@@ -211,10 +188,10 @@ fn prepare_output(
             return Ok(PreparedCaptureOutput::Text(text.to_string()));
         }
     }
-    output
-        .as_str()
-        .map(|output| PreparedCaptureOutput::Text(output.to_string()))
-        .context("capture output must be a string or producer object")
+    if let Some(text) = capture.output.as_str() {
+        return Ok(PreparedCaptureOutput::Text(text.to_string()));
+    }
+    bail!("capture output must be a string or script object")
 }
 
 struct CaptureScriptOutcome {
@@ -467,14 +444,11 @@ mod tests {
                 crate::workflow::config::ENGINE_CAPTURE,
             ),
             config: ProjectedEngineConfig {
-                fields: [(
-                    "output".to_string(),
-                    serde_json::json!({
-                        "file": "capture.sh"
-                    }),
-                )]
-                .into_iter()
-                .collect(),
+                typed: Some(crate::engine::TypedEngineConfig::Capture(
+                    crate::engine::CaptureConfig {
+                        output: toml::toml! { file = "capture.sh" }.into(),
+                    },
+                )),
                 workflow_root: Some(root.clone()),
                 ..ProjectedEngineConfig::default()
             },

@@ -102,15 +102,11 @@ fn create_protocol_view_state(
         0,
     );
     let identity = config.identity.clone();
-    let initial_output = config
-        .engine
-        .field("output")
-        .and_then(|output| output.as_str())
+    let capture = config.engine.as_capture();
+    let initial_output = capture
+        .and_then(|c| c.output.as_str())
         .map(|s| s.to_string());
-    let has_async_work = config
-        .engine
-        .field("output")
-        .is_some_and(|output| !output.is_string());
+    let has_async_work = capture.is_some_and(|c| !c.output.is_str());
     let runtime_context = RuntimeFactoryContext {
         identity: identity.clone(),
         config: config.engine,
@@ -596,12 +592,10 @@ mod tests {
     }
 
     fn config_with_tasks(output: Value, tasks: TaskRuntime) -> CaptureProtocolConfig {
+        let toml_out = toml::Value::try_from(output).unwrap();
         CaptureProtocolConfig::new(
             "capture",
-            ProjectedEngineConfig {
-                fields: [("output".to_string(), output)].into_iter().collect(),
-                ..ProjectedEngineConfig::default()
-            },
+            ProjectedEngineConfig::for_capture(crate::engine::CaptureConfig { output: toml_out }),
             ProjectedBindingConfig::default(),
             crate::lifecycle::CancellationToken::new().observer(),
             Value::Null,
