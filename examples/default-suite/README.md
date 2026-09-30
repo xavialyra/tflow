@@ -11,7 +11,7 @@ This directory contains the default suite configuration and member workflows for
 | **`core`** | `core:main` | *(suite entry)* | Unified aggregate hub querying apps, calculator, and system tools with live route completion. |
 | **`apps`** | `apps:main` | `app` | XDG desktop application launcher with icon preview, keyword search, launch frequency ranking, and weight configuration form. |
 | **`calculator`** | `calculator:main` | `calc` | Real-time mathematical expression evaluator with multi-representation preview (decimal, hex, binary, octal) and clipboard copy. |
-| **`sys`** | `sys:main` | `sys` | System session controls (lock, sleep, logout, reboot, poweroff) with safety confirmation prompts for destructive actions. |
+| **`sys`** | `sys:main` | `sys` | System session controls (info, lock, sleep, logout, reboot, poweroff) with ANSI diagnostic viewer and safety confirmation prompts. |
 | **`clipboard`** | `clipboard:main` | `clip` | Searchable clipboard history powered by `cliphist` with image/text previews and cross-platform restoration. |
 | **`shell`** | `shell:main` | `shell` | Embedded terminal running user's default `$SHELL` inside a PTY view. |
 | **`dmenu`** | `dmenu:main` | `dmenu` | Standard dmenu replacement for shell pipelines with index and projection support. |
@@ -43,7 +43,8 @@ This directory contains the default suite configuration and member workflows for
   - `Enter`: Restore the selected history entry to the clipboard.
   - `Tab` / `Shift+Tab`: Switch to the next / previous content type filter (`all`, `text`, `image`, `binary`).
 - **`sys`**:
-  - `Enter`: Execute action (prompts confirmation for Reboot and Shut down).
+  - `Enter`: Execute action or open diagnostic viewer (prompts confirmation for Reboot and Shut down).
+  - In diagnostic viewer (`capture` engine): `↑` / `↓` / `j` / `k` (or `Ctrl+u` / `Ctrl+d`) to scroll; `Enter` to copy clean plain text; `Esc` to return.
 
 ---
 

@@ -10,6 +10,12 @@ import sys
 
 ACTIONS = [
     {
+        "value": "info",
+        "title": "System information",
+        "desc": "Inspect system specs, resource usage, and diagnostics with ANSI colors",
+        "keywords": ["info", "system", "status", "uptime", "diagnostics", "memory", "specs"],
+    },
+    {
         "value": "lock",
         "title": "Lock screen",
         "desc": "Lock the current desktop session",

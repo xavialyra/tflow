@@ -21,7 +21,7 @@ def main():
         raise SystemExit("system command requires a selected item")
 
     value = item.get("value")
-    if value not in {"lock", "suspend", "logout", "reboot", "poweroff"}:
+    if value not in {"info", "lock", "suspend", "logout", "reboot", "poweroff"}:
         raise SystemExit(f"unknown system action: {value}")
 
     # Reboots and shutdowns can discard unsaved work; require confirmation

@@ -1,0 +1,97 @@
+# Example: Native Capture Engine with ANSI Colors & Scrolling
+#
+# Run directly with:
+#   tflow --workflow examples/capture-demo.toml
+
+[workflow]
+api = 1
+name = "Capture ANSI & Scroll Demo"
+entrypoint = "main"
+
+[views.main]
+engine = "capture"
+
+[views.main.capture.output]
+script = '''#!/usr/bin/env python3
+import json
+import sys
+
+def color(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m"
+
+lines = []
+lines.append(color("1;35", "╭──────────────────────────────────────────────────────────╮"))
+lines.append(color("1;35", "│") + color("1;37", "  tflow v0.1.0-alpha.7 - Capture Engine ANSI Showcase     ") + color("1;35", "│"))
+lines.append(color("1;35", "╰──────────────────────────────────────────────────────────╯"))
+lines.append("")
+lines.append(color("1;32", "● Status:") + " Native ANSI escape rendering is enabled with " + color("1;36", "ansi-to-tui"))
+lines.append(color("1;32", "● Scroll:") + " Use " + color("1;33", "↑ / ↓ / j / k / Ctrl+u / Ctrl+d") + " to navigate this document")
+lines.append(color("1;32", "● Copy:  ") + " Press " + color("1;33", "Enter") + " to copy cleanly stripped plain text to clipboard")
+lines.append("")
+
+# Standard 16 ANSI colors
+lines.append(color("1;34", "── 1. Standard 16 ANSI Color Palette ────────────────────────"))
+row_normal = "  Normal:  "
+for c in range(30, 38):
+    row_normal += f"\033[{c}m██ {c}\033[0m "
+lines.append(row_normal)
+
+row_bright = "  Bright:  "
+for c in range(90, 98):
+    row_bright += f"\033[{c}m██ {c}\033[0m "
+lines.append(row_bright)
+lines.append("")
+
+# 256 Color spectrum
+lines.append(color("1;34", "── 2. 256 Color Cube Spectrum ──────────────────────────────"))
+cube_line1 = "  "
+for i in range(16, 52):
+    cube_line1 += f"\033[48;5;{i}m \033[0m"
+lines.append(cube_line1)
+cube_line2 = "  "
+for i in range(52, 88):
+    cube_line2 += f"\033[48;5;{i}m \033[0m"
+lines.append(cube_line2)
+cube_line3 = "  "
+for i in range(88, 124):
+    cube_line3 += f"\033[48;5;{i}m \033[0m"
+lines.append(cube_line3)
+lines.append("")
+
+# Text formatting & modifiers
+lines.append(color("1;34", "── 3. Style & Font Attributes ──────────────────────────────"))
+lines.append(f"  {color('1', 'Bold Text')}  |  {color('3', 'Italic Text')}  |  {color('4', 'Underlined Text')}  |  {color('9', 'Strikethrough')}")
+lines.append(f"  {color('1;31;47', ' Red on White ')}  |  {color('1;30;42', ' Black on Green ')}  |  {color('1;37;44', ' White on Blue ')}")
+lines.append("")
+
+# Simulated task execution logs
+lines.append(color("1;34", "── 4. Build & Task Streaming Logs ──────────────────────────"))
+log_entries = [
+    ("10:00:01", "34", "INFO ", "Parsing workflow configuration files..."),
+    ("10:00:02", "32", "OK   ", "Loaded 7 views and 12 command routes."),
+    ("10:00:03", "34", "INFO ", "Resolving theme tokens and scheme colors..."),
+    ("10:00:04", "33", "WARN ", "Optional dependency 'wl-copy' not found; falling back to osc52."),
+    ("10:00:05", "34", "INFO ", "Compiling embedded scripts and execution tasks..."),
+    ("10:00:06", "32", "OK   ", "Preflight checks passed in 4.2ms."),
+    ("10:00:07", "35", "STAGE", "Launching interactive protocol session..."),
+    ("10:00:08", "32", "DONE ", "Ready for user interactions!"),
+]
+for timestamp, lvl_color, level, msg in log_entries:
+    lines.append(f"  \033[90m[{timestamp}]\033[0m \033[{lvl_color};1m{level}\033[0m {msg}")
+
+lines.append("")
+lines.append(color("1;34", "── 5. Scrolling & Navigation Instructions ───────────────────"))
+lines.append("  Notice the scrollbar appearing on the right when scrolling down.")
+lines.append("  • " + color("1;32", "↑ / k") + "       : Scroll up one line")
+lines.append("  • " + color("1;32", "↓ / j") + "       : Scroll down one line")
+lines.append("  • " + color("1;32", "Ctrl + u") + " : Page up")
+lines.append("  • " + color("1;32", "Ctrl + d") + " : Page down")
+lines.append("  • " + color("1;32", "Enter") + "    : Copy entire report (without ANSI codes) to clipboard")
+lines.append("  • " + color("1;32", "Esc") + "      : Exit this view")
+lines.append("")
+lines.append(color("90", "End of sample output."))
+
+output = "\n".join(lines) + "\n"
+json.dump({"version": 1, "output": output}, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+'''
