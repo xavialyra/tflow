@@ -2285,8 +2285,20 @@ fn inactive_popup_respects_show_title() {
 fn popup_border_type_controls_border_glyphs() {
     for (border_type, tl, tr, bl, br) in [
         (crate::ui::theme::PopupBorderType::Plain, "┌", "┐", "└", "┘"),
-        (crate::ui::theme::PopupBorderType::Rounded, "╭", "╮", "╰", "╯"),
-        (crate::ui::theme::PopupBorderType::Double, "╔", "╗", "╚", "╝"),
+        (
+            crate::ui::theme::PopupBorderType::Rounded,
+            "╭",
+            "╮",
+            "╰",
+            "╯",
+        ),
+        (
+            crate::ui::theme::PopupBorderType::Double,
+            "╔",
+            "╗",
+            "╚",
+            "╝",
+        ),
         (crate::ui::theme::PopupBorderType::Thick, "┏", "┓", "┗", "┛"),
     ] {
         let (mut session, _, _) = session();

@@ -11,7 +11,7 @@
 //! Capture, or another implementation.
 
 use crate::ui::theme::Theme;
-use crate::view::{RenderContext, RenderResult, ViewInstance};
+use crate::view::{RenderResult, ViewInstance};
 use crate::workflow::config::{ViewPresentation, ViewPresentationMode};
 use anyhow::Result;
 use ratatui::Frame;
@@ -444,12 +444,11 @@ impl ContentHost {
         terminal_area: Rect,
         content_area: Rect,
         stack: &[ViewInstance],
-        render_context: &RenderContext,
         theme: &Theme,
         mut render_at: F,
     ) -> Result<(RenderResult, Rect, Option<Rect>)>
     where
-        F: FnMut(usize, &mut Frame, Rect, &RenderContext) -> Result<RenderResult>,
+        F: FnMut(usize, &mut Frame, Rect) -> Result<RenderResult>,
     {
         let active_index = stack
             .len()
@@ -459,7 +458,7 @@ impl ContentHost {
 
         let mut view = None;
         let first_popup = if let Some(base_index) = base_index {
-            view = Some(render_at(base_index, frame, content_area, render_context)?);
+            view = Some(render_at(base_index, frame, content_area)?);
             base_index.saturating_add(1)
         } else {
             0
@@ -476,7 +475,7 @@ impl ContentHost {
             let popup = self.popup_rect(terminal_area, presentation);
             frame.render_widget(Clear, popup);
             let inner_area = self.popup_inner(popup);
-            let rendered = render_at(index, frame, inner_area, render_context)?;
+            let rendered = render_at(index, frame, inner_area)?;
             if index == active_index {
                 active_popup_rect = Some(popup);
                 active_render_area = inner_area;

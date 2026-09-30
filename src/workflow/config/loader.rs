@@ -987,7 +987,8 @@ mod tests {
         let err = parse_atomic_workflow_package(toml_src, "test", "demo")
             .expect_err("omitted entrypoint requires [views.main]");
         assert!(
-            err.to_string().contains("entrypoint \"main\" does not match any declared view"),
+            err.to_string()
+                .contains("entrypoint \"main\" does not match any declared view"),
             "unexpected error message: {err}"
         );
     }

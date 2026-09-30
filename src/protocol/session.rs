@@ -618,9 +618,8 @@ impl ProtocolSession {
             area,
             content_area,
             self.router.stack(),
-            &render_context,
             &self.theme,
-            |index, frame, rect, ctx| self.router.render_at(index, frame, rect, ctx),
+            |index, frame, rect| self.router.render_at(index, frame, rect, &render_context),
         )?;
 
         // While the target is loading, keep the previous frame's pixels. A
