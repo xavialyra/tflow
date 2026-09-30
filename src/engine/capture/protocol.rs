@@ -395,6 +395,10 @@ impl CaptureProtocolView {
 
 pub(super) const CMD_COPY: &str = "capture.copy";
 pub(super) const CMD_BACK: &str = "capture.back";
+pub(super) const CMD_SCROLL_UP: &str = "capture.scroll_up";
+pub(super) const CMD_SCROLL_DOWN: &str = "capture.scroll_down";
+pub(super) const CMD_PAGE_UP: &str = "capture.page_up";
+pub(super) const CMD_PAGE_DOWN: &str = "capture.page_down";
 
 impl View for CaptureProtocolView {
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
@@ -403,6 +407,10 @@ impl View for CaptureProtocolView {
             let id = match action {
                 super::CaptureAction::Copy => CMD_COPY,
                 super::CaptureAction::Back => CMD_BACK,
+                super::CaptureAction::ScrollUp => CMD_SCROLL_UP,
+                super::CaptureAction::ScrollDown => CMD_SCROLL_DOWN,
+                super::CaptureAction::PageUp => CMD_PAGE_UP,
+                super::CaptureAction::PageDown => CMD_PAGE_DOWN,
             };
             entries.push(crate::command::CommandEntry::for_event(
                 id,
@@ -535,6 +543,10 @@ impl View for CaptureProtocolView {
             }
             ViewEvent::Resize(size) => {
                 self.content_size = (size.width, size.height);
+                let _ = self.runtime.tick(EngineTick {
+                    context: self.engine_context.clone(),
+                    content_size: self.content_size,
+                });
                 Ok(ViewDecision::Invalidate)
             }
         }
@@ -742,6 +754,67 @@ mod tests {
         assert!(matches!(
             view.on_command(CMD_BACK, &context).unwrap(),
             ViewDecision::Close
+        ));
+    }
+
+    #[test]
+    fn copy_action_strips_ansi_codes_for_clipboard() {
+        let mut view = create_protocol_view(
+            config(Value::String("hello \x1b[31mred\x1b[0m world".into())),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
+        assert!(matches!(
+            view.on_command(CMD_COPY, &context).unwrap(),
+            ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "hello red world"
+        ));
+    }
+
+    #[test]
+    fn scrolling_actions_return_invalidate() {
+        let text = (0..20)
+            .map(|i| format!("row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut view =
+            create_protocol_view(config(Value::String(text)), &request(), ViewInstanceId(1))
+                .unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(
+            ViewEvent::Resize(crate::view::TerminalSize {
+                width: 20,
+                height: 5,
+            }),
+            &context,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            view.on_command(CMD_SCROLL_DOWN, &context).unwrap(),
+            ViewDecision::Invalidate
+        ));
+        assert!(matches!(
+            view.on_command(CMD_PAGE_DOWN, &context).unwrap(),
+            ViewDecision::Invalidate
+        ));
+        assert!(matches!(
+            view.on_command(CMD_SCROLL_UP, &context).unwrap(),
+            ViewDecision::Invalidate
+        ));
+        assert!(matches!(
+            view.on_command(CMD_PAGE_UP, &context).unwrap(),
+            ViewDecision::Invalidate
         ));
     }
 

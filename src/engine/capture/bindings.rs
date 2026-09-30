@@ -5,10 +5,21 @@ use crate::input::bindings::{ActionBindings, BindingAction};
 pub(super) enum CaptureAction {
     Copy,
     Back,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
 }
 
 impl CaptureAction {
-    const ALL: [Self; 2] = [Self::Copy, Self::Back];
+    const ALL: [Self; 6] = [
+        Self::Copy,
+        Self::Back,
+        Self::ScrollUp,
+        Self::ScrollDown,
+        Self::PageUp,
+        Self::PageDown,
+    ];
 }
 
 impl BindingAction for CaptureAction {
@@ -18,6 +29,10 @@ impl BindingAction for CaptureAction {
         match self {
             Self::Copy => "copy",
             Self::Back => "back",
+            Self::ScrollUp => "scroll_up",
+            Self::ScrollDown => "scroll_down",
+            Self::PageUp => "page_up",
+            Self::PageDown => "page_down",
         }
     }
 
@@ -29,11 +44,24 @@ impl BindingAction for CaptureAction {
         match self {
             Self::Copy => "Copy",
             Self::Back => "Back",
+            Self::ScrollUp => "Scroll Up",
+            Self::ScrollDown => "Scroll Down",
+            Self::PageUp => "Page Up",
+            Self::PageDown => "Page Down",
         }
     }
 
     fn default_bindings() -> &'static [(Key, Self)] {
-        &[(Key::Enter, Self::Copy), (Key::Escape, Self::Back)]
+        &[
+            (Key::Enter, Self::Copy),
+            (Key::Escape, Self::Back),
+            (Key::Up, Self::ScrollUp),
+            (Key::Down, Self::ScrollDown),
+            (Key::Char('k'), Self::ScrollUp),
+            (Key::Char('j'), Self::ScrollDown),
+            (Key::Ctrl('u'), Self::PageUp),
+            (Key::Ctrl('d'), Self::PageDown),
+        ]
     }
 }
 
@@ -49,6 +77,21 @@ mod tests {
         let bindings = CaptureBindings::from_defaults(None).unwrap();
         assert_eq!(bindings.action(Key::Enter), Some(CaptureAction::Copy));
         assert_eq!(bindings.action(Key::Escape), Some(CaptureAction::Back));
+        assert_eq!(bindings.action(Key::Up), Some(CaptureAction::ScrollUp));
+        assert_eq!(bindings.action(Key::Down), Some(CaptureAction::ScrollDown));
+        assert_eq!(bindings.action(Key::Ctrl('u')), Some(CaptureAction::PageUp));
+        assert_eq!(
+            bindings.action(Key::Ctrl('d')),
+            Some(CaptureAction::PageDown)
+        );
+        assert_eq!(
+            bindings.action(Key::Char('k')),
+            Some(CaptureAction::ScrollUp)
+        );
+        assert_eq!(
+            bindings.action(Key::Char('j')),
+            Some(CaptureAction::ScrollDown)
+        );
         assert_eq!(bindings.action(Key::Char('x')), None);
     }
 

@@ -27,6 +27,10 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
         .with_actions([
             crate::engine::ActionSpec::unit("capture.copy"),
             crate::engine::ActionSpec::unit("capture.back"),
+            crate::engine::ActionSpec::unit("capture.scroll_up"),
+            crate::engine::ActionSpec::unit("capture.scroll_down"),
+            crate::engine::ActionSpec::unit("capture.page_up"),
+            crate::engine::ActionSpec::unit("capture.page_down"),
         ])
 }
 
@@ -243,7 +247,8 @@ struct CaptureView {
 
 #[derive(Debug, Clone)]
 struct CaptureRenderModel {
-    lines: std::sync::Arc<[String]>,
+    lines: std::sync::Arc<[ratatui::text::Line<'static>]>,
+    scroll_offset: usize,
     status: String,
 }
 
@@ -320,12 +325,34 @@ impl EngineRuntime for CaptureView {
             ),
             "capture.copy" => EngineDecision::Continue,
             "capture.back" => EngineDecision::Close,
+            "capture.scroll_up" => {
+                self.session.scroll_up(1);
+                EngineDecision::Invalidate
+            }
+            "capture.scroll_down" => {
+                self.session.scroll_down(1);
+                EngineDecision::Invalidate
+            }
+            "capture.page_up" => {
+                let step = self.session.viewport_height().saturating_sub(1).max(1);
+                self.session.scroll_up(step);
+                EngineDecision::Invalidate
+            }
+            "capture.page_down" => {
+                let step = self.session.viewport_height().saturating_sub(1).max(1);
+                self.session.scroll_down(step);
+                EngineDecision::Invalidate
+            }
             action => bail!("unknown capture action {:?}", action),
         };
         Ok(EngineEmission::decision(decision))
     }
 
-    fn tick(&mut self, _tick: crate::engine::EngineTick) -> Result<EngineEmission> {
+    fn tick(&mut self, tick: crate::engine::EngineTick) -> Result<EngineEmission> {
+        if tick.content_size.1 > 0 {
+            self.session
+                .set_viewport_height(tick.content_size.1 as usize);
+        }
         if self.pending_script.is_some()
             || self.script_task.is_some()
             || self.script_completion.is_some()
@@ -407,6 +434,7 @@ impl EngineRuntime for CaptureView {
             "capture",
             CaptureRenderModel {
                 lines: self.session.shared_lines(),
+                scroll_offset: self.session.scroll_offset(),
                 status: self.status.clone(),
             },
         )
@@ -495,7 +523,10 @@ mod tests {
 
         let model = runtime.render_model();
         let model = model.downcast_ref::<CaptureRenderModel>().unwrap();
-        assert_eq!(model.lines.as_ref(), &["captured"]);
+        assert_eq!(
+            model.lines.as_ref(),
+            &[ratatui::text::Line::raw("captured")]
+        );
         assert!(
             tasks
                 .metrics_snapshot()
