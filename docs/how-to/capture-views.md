@@ -21,7 +21,20 @@ You want to show fixed text or generate output with a script while keeping the l
 
 ### 1. Show Static Output
 
-Declare a Capture View with a literal `output` value:
+Declare a Capture View with static text using either `output.content` or a literal `output` string. ANSI escape sequences are parsed natively without spawning a child process:
+
+```toml
+[views.output]
+engine = "capture"
+
+[views.output.capture.output]
+content = """
+\u001b[1;36mSystem Help\u001b[0m
+System information is ready.
+"""
+```
+
+Or use the concise inline string form:
 
 ```toml
 [views.output]

@@ -102,11 +102,7 @@ fn create_protocol_view_state(
         0,
     );
     let identity = config.identity.clone();
-    let capture = config.engine.as_capture();
-    let initial_output = capture
-        .and_then(|c| c.output.as_str())
-        .map(|s| s.to_string());
-    let has_async_work = capture.is_some_and(|c| !c.output.is_str());
+    let has_async_work = config.engine.as_capture().is_some_and(|c| c.is_async());
     let runtime_context = RuntimeFactoryContext {
         identity: identity.clone(),
         config: config.engine,
@@ -126,7 +122,6 @@ fn create_protocol_view_state(
     );
     let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id));
     let input_raw = parameters.raw_input().to_string();
-    let output_text = std::sync::Arc::new(std::sync::RwLock::new(initial_output));
     Ok(CaptureProtocolView {
         runtime,
         renderer,
@@ -149,7 +144,6 @@ fn create_protocol_view_state(
         content_size: (0, 0),
         status: None,
         error: None,
-        output_text,
     })
 }
 
@@ -175,7 +169,6 @@ struct CaptureProtocolView {
     content_size: (u16, u16),
     status: Option<String>,
     error: Option<String>,
-    output_text: std::sync::Arc<std::sync::RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,9 +264,6 @@ impl CaptureProtocolView {
 
     fn apply_publication(&mut self, _: &ViewContext, emission: &EngineEmission) {
         if let Some(publication) = emission.publication() {
-            if let Some(val) = publication.current().get("value").and_then(|v| v.as_str()) {
-                *self.output_text.write().unwrap() = Some(val.to_string());
-            }
             self.publication = Some(ViewPublication::new(
                 publication.current().clone(),
                 publication.ready,
@@ -375,9 +365,6 @@ impl CaptureProtocolView {
             self.apply_notice(&notice);
         }
         if let Some(publication) = publication {
-            if let Some(val) = publication.current.get("value").and_then(|v| v.as_str()) {
-                *self.output_text.write().unwrap() = Some(val.to_string());
-            }
             self.publication = Some(ViewPublication::new(publication.current, publication.ready));
             self.state_revision = self.state_revision.wrapping_add(1);
         }
@@ -423,20 +410,7 @@ impl View for CaptureProtocolView {
     }
 
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
-        match id {
-            CMD_COPY => {
-                let text = self.output_text.read().unwrap().clone();
-                if let Some(text) = text {
-                    Ok(ViewDecision::Effect(
-                        crate::view::EffectRequest::CopyToClipboard(text),
-                    ))
-                } else {
-                    Ok(ViewDecision::Stay)
-                }
-            }
-            CMD_BACK => Ok(ViewDecision::Close),
-            _ => self.action(context, ActionId::new(id)),
-        }
+        self.action(context, ActionId::new(id))
     }
 
     fn publication(&self) -> Option<&ViewPublication> {
@@ -894,5 +868,51 @@ mod tests {
         }
         assert!(view.command_snapshot().revision > 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn static_content_table_renders_and_copies() {
+        let mut view = create_protocol_view(
+            config(serde_json::json!({
+                "content": "hello \x1b[1;32mgreen\x1b[0m world"
+            })),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        let context = context();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Mounted), &context)
+            .unwrap();
+        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
+            .unwrap();
+        view.event(ViewEvent::Tick, &context).unwrap();
+
+        assert!(matches!(
+            view.on_command(CMD_COPY, &context).unwrap(),
+            ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "hello green world"
+        ));
+
+        let mut terminal = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.render(
+                    frame,
+                    frame.area(),
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 30,
+                        height: 3,
+                    }),
+                )
+                .unwrap();
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("green world"));
     }
 }

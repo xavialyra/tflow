@@ -65,17 +65,17 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         if fields.contains_key("file") || fields.contains_key("script") {
             parse_script_source(output, context.script_root)
                 .context("capture output script is invalid")?;
-        } else if fields.contains_key("output") {
-            validate_declared_output(output)?;
+        } else if fields.contains_key("content") || fields.contains_key("output") {
+            validate_declared_content(output)?;
         } else {
             bail!(
-                "view {:?} capture output table must define file, script, or output",
+                "view {:?} capture output table must define file, script, or content",
                 name
             );
         }
     } else if !output.is_str() {
         bail!(
-            "view {:?} capture output must be a string or producer object",
+            "view {:?} capture output must be a string or script object",
             name
         );
     }
@@ -101,17 +101,20 @@ pub(crate) fn engine_action(name: &str) -> Option<(String, &'static str)> {
     crate::input::bindings::binding_action_spec::<self::bindings::CaptureAction>(name)
 }
 
-fn validate_declared_output(value: &toml::Value) -> Result<()> {
+fn validate_declared_content(value: &toml::Value) -> Result<()> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct Handler {
-        output: String,
+    struct StaticContent {
+        content: Option<String>,
+        output: Option<String>,
     }
-    let handler: Handler = value
+    let parsed: StaticContent = value
         .clone()
         .try_into()
-        .context("declared capture output handler must define output")?;
-    let _ = handler.output;
+        .context("declared capture output must define content or output as a string")?;
+    if parsed.content.is_none() && parsed.output.is_none() {
+        bail!("declared capture output table must define content or output as a string");
+    }
     Ok(())
 }
 
@@ -180,20 +183,17 @@ fn prepare_output(
     let capture = config
         .as_capture()
         .context("capture engine requires capture config")?;
-    if let Some(fields) = capture.output.as_table() {
-        if fields.contains_key("file") || fields.contains_key("script") {
-            let source = parse_script_source(&capture.output, workflow_root)?;
-            return Ok(PreparedCaptureOutput::Script {
-                root: workflow_root.map(Path::to_path_buf),
-                source,
-            });
-        }
-        if let Some(text) = fields.get("output").and_then(|t| t.as_str()) {
-            return Ok(PreparedCaptureOutput::Text(text.to_string()));
-        }
-    }
-    if let Some(text) = capture.output.as_str() {
+    if let Some(text) = capture.static_text() {
         return Ok(PreparedCaptureOutput::Text(text.to_string()));
+    }
+    if let Some(fields) = capture.output.as_table()
+        && (fields.contains_key("file") || fields.contains_key("script"))
+    {
+        let source = parse_script_source(&capture.output, workflow_root)?;
+        return Ok(PreparedCaptureOutput::Script {
+            root: workflow_root.map(Path::to_path_buf),
+            source,
+        });
     }
     bail!("capture output must be a string or script object")
 }

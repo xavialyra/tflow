@@ -207,7 +207,19 @@ When neither `file` nor `script` is configured, the Picker displays built-in ite
 
 ### 2. Capture Engine (`[views.<name>.capture]`)
 
-Renders read-only text output or command results.
+Renders read-only text output or command results with native ANSI styling and scrolling.
+
+Static content (zero process overhead):
+
+```toml
+[views.output]
+engine = "capture"
+
+[views.output.capture.output]
+content = "\u001b[1;32mReady\u001b[0m\nStatic capture text."
+```
+
+Dynamic script output:
 
 ```toml
 [views.output]

@@ -2290,7 +2290,7 @@ fn capture_command_returns_to_launcher_and_restores_input() {
         .flush()
         .expect("could not flush capture copy key");
     let copied = wait_for_text(&process.master, "Copied to clipboard");
-    let sequence = b"\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUbWzMxbQrkuJbnlYwbWzBt\x07";
+    let sequence = b"\x1b]52;c;Y2FwdHVyZS1tYXJrZXI6dmFsdWUK5LiW55WM\x07";
     assert!(
         copied
             .windows(sequence.len())

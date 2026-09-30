@@ -54,6 +54,27 @@ pub(crate) struct CaptureConfig {
     pub(crate) output: toml::Value,
 }
 
+impl CaptureConfig {
+    pub(crate) fn static_text(&self) -> Option<&str> {
+        if let Some(s) = self.output.as_str() {
+            return Some(s);
+        }
+        if let Some(t) = self.output.as_table() {
+            if let Some(s) = t.get("content").and_then(|v| v.as_str()) {
+                return Some(s);
+            }
+            if let Some(s) = t.get("output").and_then(|v| v.as_str()) {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn is_async(&self) -> bool {
+        self.static_text().is_none()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub(crate) struct FormConfig {
     pub(crate) content: Value,
