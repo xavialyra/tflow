@@ -4,6 +4,28 @@ All notable changes to `tflow` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.7] - 2026-10-02
+
+### Added
+- **Capture Engine Native ANSI Color & Viewport Scrolling**:
+  - Direct SGR/ANSI escape sequence parsing via `ansi-to-tui`, rendering full-color terminal text inside `capture` views.
+  - Native scrolling key bindings (`Up`/`k`, `Down`/`j`, `Ctrl+u`, `Ctrl+d`, `PageUp`, `PageDown`) and adaptive picker-aligned scrollbar rendering.
+  - Plain-text clipboard sanitization (`capture.copy`) stripping ANSI escapes before placing content into the system clipboard.
+- **Zero-Process Static Capture Content**:
+  - Support for `[views.<name>.capture.output] content = "..."` and inline `output = "..."` for instant, process-free document and report presentation.
+- **Unified Presentation Architecture (Capture as Universal Presenter)**:
+  - Promoted `capture` to handle both ANSI terminal output and Ratatui Document AST with multi-protocol native terminal images (Kitty, Sixel, iTerm2).
+- **Picker Preview Kernel-Level Capture Integration**:
+  - Refactored `picker.preview` to embed `CaptureSession` and `CaptureRenderer`, bringing native ANSI coloring, unified scrollbars, and consolidated image pipelines to preview panes.
+  - Script output protocol supports standard `{"version": 1, "output": "..."}` alongside `preview`.
+
+### Changed (Internal Evolution)
+- **Execution Model Modernization (De-producerization)**:
+  - Replaced legacy `ProducerKind` with strongly typed `ExecutionMode` (`Declared`, `Script`).
+  - Standardized script handling on `parse_script_source` and `script_context`.
+- **Pure Strongly-Typed Engine Configuration**:
+  - Purged `FactoryFieldPlan`, `fields_for_view`, and dynamic `fields` dictionaries across engine projections in favor of compile-time verified structs (`PickerConfig`, `CaptureConfig`, `FormConfig`, `EmbeddedConfig`).
+
 ## [0.1.0-alpha.6] - 2026-10-01
 
 ### Changed (Breaking Changes)
