@@ -1,4 +1,6 @@
-pub(crate) use crate::engine::capture::{document, image_decode, image_path, image_protocol};
+pub(crate) use crate::engine::capture::{
+    CaptureBody, CaptureSession, document, image_decode, image_path, image_protocol,
+};
 
 use self::image_decode::ImageDecodeHandle;
 pub(super) use self::image_protocol::ImageProtocolCache;
@@ -63,7 +65,7 @@ struct PreviewDocumentCacheInner {
 
 #[derive(Clone)]
 struct CachedPreview {
-    document: Option<document::Document>,
+    session: Option<CaptureSession>,
 }
 
 impl PreviewDocumentCache {
@@ -77,7 +79,7 @@ impl PreviewDocumentCache {
         Some(cached)
     }
 
-    fn insert(&self, owner: String, document: Option<document::Document>) {
+    fn insert(&self, owner: String, session: Option<CaptureSession>) {
         let mut inner = self.lock();
         if inner.entries.contains_key(&owner) {
             if let Some(position) = inner.order.iter().position(|key| key == &owner) {
@@ -92,7 +94,7 @@ impl PreviewDocumentCache {
             }
         }
         inner.order.push_back(owner.clone());
-        inner.entries.insert(owner, CachedPreview { document });
+        inner.entries.insert(owner, CachedPreview { session });
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PreviewDocumentCacheInner> {
@@ -338,12 +340,10 @@ pub(crate) struct PickerPreviewRenderState {
     pub(crate) config: PickerPreviewConfig,
     pub(crate) visible: bool,
     pub(crate) revision: u64,
-    images: Vec<PreviewImageState>,
-    document: Option<document::Document>,
+    session: Option<CaptureSession>,
     status: Option<String>,
     error: bool,
     package: String,
-    scroll: u16,
 }
 
 pub(super) struct PickerPreview {
@@ -351,18 +351,16 @@ pub(super) struct PickerPreview {
     visible: bool,
     revision: u64,
     selection: Option<String>,
-    images: Vec<PreviewImageState>,
     task: Option<ImageTask>,
     pending_images: Vec<(usize, std::path::PathBuf)>,
     prepared: Option<PreviewRequest>,
-    script_task: Option<crate::task::TaskHandle<Option<document::Document>>>,
+    script_task: Option<crate::task::TaskHandle<Option<CaptureSession>>>,
     due: Option<std::time::Instant>,
     grace_due: Option<std::time::Instant>,
-    document: Option<document::Document>,
+    session: Option<CaptureSession>,
     status: Option<String>,
     error: bool,
     package: String,
-    scroll: u16,
     pool: Option<Arc<image_decode::ImageDecodePool>>,
     content_size: Option<(u16, u16)>,
     decode_cache: std::collections::HashMap<std::path::PathBuf, Arc<DynamicImage>>,
@@ -377,6 +375,11 @@ struct ImageTask {
 }
 
 impl PickerPreviewRenderState {
+    #[cfg(test)]
+    pub(crate) fn document(&self) -> Option<&document::Document> {
+        self.session.as_ref().and_then(|s| s.document())
+    }
+
     pub(super) fn areas(&self, area: Rect) -> (Rect, Option<Rect>) {
         preview_areas(&self.config, self.visible, area)
     }
@@ -399,15 +402,14 @@ impl PickerPreviewRenderState {
         picker: Option<crate::terminal::ImagePicker>,
         protocols: &mut ImageProtocolCache,
     ) {
-        if let Some(document) = &self.document {
-            document.render(
+        if let Some(session) = &self.session {
+            crate::engine::capture::render_capture_session(
                 frame,
                 area,
-                theme,
+                session,
                 &self.package,
-                self.scroll,
                 self.revision,
-                &self.images,
+                theme,
                 picker,
                 protocols,
             );
@@ -439,18 +441,16 @@ impl PickerPreview {
             visible,
             revision: 0,
             selection: None,
-            images: Vec::new(),
             task: None,
             pending_images: Vec::new(),
             prepared: None,
             script_task: None,
             due: None,
             grace_due: None,
-            document: None,
+            session: None,
             status: None,
             error: false,
             package: String::new(),
-            scroll: 0,
             pool: None,
             content_size: None,
             decode_cache: std::collections::HashMap::new(),
@@ -529,11 +529,9 @@ impl PickerPreview {
         self.script_task = None;
         self.due = None;
         self.grace_due = None;
-        self.document = None;
+        self.session = None;
         self.status = None;
         self.error = false;
-        self.scroll = 0;
-        self.images.clear();
     }
 
     fn cancel_pending(&mut self) {
@@ -554,7 +552,13 @@ impl PickerPreview {
 
     #[cfg(test)]
     pub(super) fn document_scroll_state(&self) -> (bool, u16) {
-        (self.document.is_some(), self.scroll)
+        (
+            self.session.as_ref().is_some_and(|s| s.is_document()),
+            self.session
+                .as_ref()
+                .map(|s| s.scroll_offset() as u16)
+                .unwrap_or(0),
+        )
     }
 
     #[cfg(test)]
@@ -574,7 +578,7 @@ impl PickerPreview {
         self.selection = None;
         self.prepared = None;
         self.grace_due = Some(std::time::Instant::now() + GRACE_PERIOD_DURATION);
-        if self.document.is_none() {
+        if self.session.is_none() {
             self.status = Some("Loading preview…".into());
         }
     }
@@ -583,7 +587,7 @@ impl PickerPreview {
         let Some(request) = request else {
             if self.selection.is_none()
                 && self.prepared.is_none()
-                && self.document.is_none()
+                && self.session.is_none()
                 && self.grace_due.is_none()
             {
                 return;
@@ -601,7 +605,7 @@ impl PickerPreview {
         self.selection = Some(request.identity.clone());
         self.due = Some(now + DEBOUNCE_DURATION);
         self.prepared = Some(request);
-        if self.document.is_none() {
+        if self.session.is_none() {
             self.package = owner.split(':').next().unwrap_or("").to_owned();
             // A script document cached for this provider can render immediately,
             // even though the request identity changed with the parameters that
@@ -612,7 +616,7 @@ impl PickerPreview {
             if let Some(cached) = cached {
                 // Image decoding still waits for `start`, so an input-path call
                 // never starts a task.
-                self.install_document_inner(cached.document, false);
+                self.install_session_inner(cached.session, false);
             } else {
                 self.status = Some("Loading preview…".into());
             }
@@ -623,23 +627,21 @@ impl PickerPreview {
 
     pub(super) fn set_content_size(&mut self, size: Option<(u16, u16)>) {
         self.content_size = size;
-        self.scroll(0);
+        if let (Some((w, h)), Some(session)) = (size, &mut self.session)
+            && let Some(area) = preview_areas(&self.config, self.visible, Rect::new(0, 0, w, h)).1
+        {
+            session.set_viewport_size(area.width as usize, area.height as usize);
+        }
     }
 
     pub(super) fn scroll(&mut self, delta: i16) {
-        let limit = self
-            .content_size
-            .and_then(|(width, height)| {
-                let area =
-                    preview_areas(&self.config, self.visible, Rect::new(0, 0, width, height)).1?;
-                Some(self.document.as_ref()?.scroll_limit(area))
-            })
-            .unwrap_or(0);
-        self.scroll = self
-            .scroll
-            .min(limit)
-            .saturating_add_signed(delta)
-            .min(limit);
+        if let Some(session) = &mut self.session {
+            if delta < 0 {
+                session.scroll_up((-delta) as usize);
+            } else if delta > 0 {
+                session.scroll_down(delta as usize);
+            }
+        }
     }
 
     // Only called with post-commit host authority. Both scripts and image decoding
@@ -649,14 +651,13 @@ impl PickerPreview {
         if let Some(mut task) = self.script_task.take() {
             use crate::task::TaskCompletion;
             match task.try_recv() {
-                Ok(TaskCompletion::Completed(document)) => {
-                    self.cache_document(document.as_ref());
-                    self.install_document(document)
+                Ok(TaskCompletion::Completed(session)) => {
+                    self.cache_session(session.as_ref());
+                    self.install_session(session);
                 }
                 Ok(TaskCompletion::Failed(error)) => {
                     self.grace_due = None;
-                    self.document = None;
-                    self.images.clear();
+                    self.session = None;
                     self.status = Some(error);
                     self.error = true;
                 }
@@ -666,8 +667,7 @@ impl PickerPreview {
                 Err(std::sync::mpsc::TryRecvError::Empty) => self.script_task = Some(task),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.grace_due = None;
-                    self.document = None;
-                    self.images.clear();
+                    self.session = None;
                     self.status = Some("preview worker disconnected".into());
                     self.error = true;
                 }
@@ -707,10 +707,14 @@ impl PickerPreview {
                                 if outcome.managed_child_reaped {
                                     context.mark_process_reaped();
                                 }
-                                outcome
-                                    .result
-                                    .and_then(document::parse)
-                                    .map_err(|error| format!("{error:#}"))
+                                let val = outcome.result.map_err(|error| format!("{error:#}"))?;
+                                if val.is_null() {
+                                    Ok(None)
+                                } else {
+                                    CaptureSession::from_value(val)
+                                        .map(Some)
+                                        .map_err(|error| format!("{error:#}"))
+                                }
                             },
                         ),
                 );
@@ -719,46 +723,90 @@ impl PickerPreview {
             PreviewSource::Details => {
                 if self.due.take().is_some() {
                     let item = &request.request["context"]["engine"]["state"]["item"];
-                    self.install_document(Some(document::item_details(item)));
+                    let doc = document::item_details(item);
+                    let session = CaptureSession::from_document(doc);
+                    self.install_session(Some(session));
                 }
                 None
             }
         }
     }
 
-    fn cache_document(&self, document: Option<&document::Document>) {
+    fn cache_session(&self, session: Option<&CaptureSession>) {
         let Some(owner) = self.prepared.as_ref().map(|r| r.owner.clone()) else {
             return;
         };
-        self.preview_cache.insert(owner, document.cloned());
+        self.preview_cache.insert(owner, session.cloned());
+    }
+
+    #[cfg(test)]
+    pub(super) fn document(&self) -> Option<&document::Document> {
+        self.session.as_ref().and_then(|s| s.document())
+    }
+
+    #[cfg(test)]
+    pub(super) fn images(&self) -> &[PreviewImageState] {
+        self.session
+            .as_ref()
+            .and_then(|s| s.images())
+            .unwrap_or(&[])
+    }
+
+    #[cfg(test)]
+    pub(super) fn scroll_offset(&self) -> usize {
+        self.session
+            .as_ref()
+            .map(|s| s.scroll_offset())
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_document(&mut self, doc: Option<document::Document>) {
+        self.install_document_inner(doc, true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_document_inner(
+        &mut self,
+        doc: Option<document::Document>,
+        decode_images: bool,
+    ) {
+        let session = doc.map(CaptureSession::from_document);
+        self.install_session_inner(session, decode_images);
     }
 
     #[cfg(test)]
     pub(super) fn install_test_document(&mut self, value: Value) {
-        self.install_document_inner(document::parse(value).unwrap(), false);
+        let doc = document::parse(value).unwrap().expect("valid document");
+        let session = CaptureSession::from_document(doc);
+        self.install_session_inner(Some(session), false);
     }
 
-    fn install_document(&mut self, document: Option<document::Document>) {
-        self.install_document_inner(document, true);
+    fn install_session(&mut self, session: Option<CaptureSession>) {
+        self.install_session_inner(session, true);
     }
 
-    /// Install a document, either starting image decoding now (post-commit host
+    /// Install a session, either starting image decoding now (post-commit host
     /// authority) or deferring it to the next `start` call.
-    fn install_document_inner(
-        &mut self,
-        document: Option<document::Document>,
-        decode_images: bool,
-    ) {
+    fn install_session_inner(&mut self, mut session: Option<CaptureSession>, decode_images: bool) {
         self.grace_due = None;
-        self.scroll = 0;
         if let Some(prepared) = &self.prepared {
             self.package = prepared.owner.split(':').next().unwrap_or("").to_owned();
         }
-        self.status = document.is_none().then(|| "(no preview)".into());
+        self.status = session.is_none().then(|| "(no preview)".into());
         self.error = false;
+
+        if let (Some((w, h)), Some(sess)) = (self.content_size, &mut session)
+            && let Some(area) = preview_areas(&self.config, self.visible, Rect::new(0, 0, w, h)).1
+        {
+            sess.set_viewport_size(area.width as usize, area.height as usize);
+        }
+
         let mut paths = Vec::new();
-        if let Some(document) = &document {
-            document.images(&mut paths);
+        if let Some(sess) = &session
+            && let Some(doc) = sess.document()
+        {
+            doc.images(&mut paths);
         }
         let root = self.prepared.as_ref().and_then(|r| r.root.as_deref());
         let resolved = paths
@@ -766,17 +814,20 @@ impl PickerPreview {
             .map(|p| image_path::resolve(root, p))
             .collect::<Vec<_>>();
 
-        self.images = vec![PreviewImageState::default(); resolved.len()];
+        let mut images = vec![PreviewImageState::default(); resolved.len()];
         let mut uncached = Vec::new();
         for (i, path) in resolved.into_iter().enumerate() {
             if let Some(cached) = self.get_cached_image(&path) {
-                self.images[i].image = Some(cached);
-                self.images[i].error = None;
+                images[i].image = Some(cached);
+                images[i].error = None;
             } else {
                 uncached.push((i, path));
             }
         }
-        self.document = document;
+        if let Some(sess) = &mut session {
+            sess.set_images(images);
+        }
+        self.session = session;
         if decode_images {
             self.pending_images.clear();
             self.start_images(uncached);
@@ -797,8 +848,12 @@ impl PickerPreview {
                     pool
                 }
                 Err(message) => {
-                    for state in &mut self.images {
-                        state.error = Some(message.clone());
+                    if let Some(sess) = &mut self.session
+                        && let CaptureBody::Document { images, .. } = sess.body_mut()
+                    {
+                        for state in images {
+                            state.error = Some(message.clone());
+                        }
                     }
                     return;
                 }
@@ -817,21 +872,29 @@ impl PickerPreview {
                 if batch.revision != self.revision {
                     // A cancelled generation must never clear the newer document.
                 } else {
-                    for decoded in batch.images {
-                        match decoded.result {
-                            Ok(decoded_img) => {
-                                let arc_img = Arc::new(decoded_img);
-                                self.cache_decoded_image(decoded.path, Arc::clone(&arc_img));
-                                self.images[decoded.block].image = Some(arc_img);
-                                self.images[decoded.block].error = None;
-                            }
-                            Err(message) => {
-                                self.images[decoded.block].error = Some(format!(
-                                    "could not load {}: {message}",
-                                    decoded.path.display()
-                                ));
+                    let mut cached_to_add = Vec::new();
+                    if let Some(session) = &mut self.session
+                        && let CaptureBody::Document { images, .. } = session.body_mut()
+                    {
+                        for decoded in batch.images {
+                            match decoded.result {
+                                Ok(decoded_img) => {
+                                    let arc_img = Arc::new(decoded_img);
+                                    cached_to_add.push((decoded.path, Arc::clone(&arc_img)));
+                                    images[decoded.block].image = Some(arc_img);
+                                    images[decoded.block].error = None;
+                                }
+                                Err(message) => {
+                                    images[decoded.block].error = Some(format!(
+                                        "could not load {}: {message}",
+                                        decoded.path.display()
+                                    ));
+                                }
                             }
                         }
+                    }
+                    for (path, img) in cached_to_add {
+                        self.cache_decoded_image(path, img);
                     }
                 }
             }
@@ -846,17 +909,16 @@ impl PickerPreview {
         let grace_expired = self
             .grace_due
             .is_some_and(|due| std::time::Instant::now() >= due);
-        let (document, images, status, package) = if grace_expired {
+        let (session, status, package) = if grace_expired {
             let package = self
                 .prepared
                 .as_ref()
                 .map(|r| r.owner.split(':').next().unwrap_or("").to_owned())
                 .unwrap_or_default();
-            (None, Vec::new(), Some("Loading preview…".into()), package)
+            (None, Some("Loading preview…".into()), package)
         } else {
             (
-                self.document.clone(),
-                self.images.clone(),
+                self.session.clone(),
                 self.status
                     .clone()
                     .or_else(|| self.selection.is_none().then(|| "(no preview)".into())),
@@ -867,12 +929,10 @@ impl PickerPreview {
             config: self.config.clone(),
             visible: self.visible,
             revision: self.revision,
-            images,
-            document,
+            session,
             status,
             error: self.error,
             package,
-            scroll: if grace_expired { 0 } else { self.scroll },
         }
     }
 }
@@ -1032,18 +1092,20 @@ mod tests {
         let mut preview = PickerPreview::new(config, PreviewDocumentCache::default());
         preview.selection = Some("selected".to_string());
         preview.install_document(Some(document::Document::Text("loaded".to_string())));
-        preview.images = vec![PreviewImageState {
-            image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
-            error: None,
-        }];
+        if let Some(session) = &mut preview.session {
+            session.set_images(vec![PreviewImageState {
+                image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
+                error: None,
+            }]);
+        }
         let revision = preview.revision;
 
         preview.deactivate();
 
         assert!(preview.selection.is_none());
         assert!(preview.task.is_none());
-        assert!(preview.images.is_empty());
-        assert!(preview.document.is_none());
+        assert!(preview.images().is_empty());
+        assert!(preview.document().is_none());
         assert!(preview.prepared.is_none());
         assert!(preview.script_task.is_none());
         assert!(preview.pool.is_none());

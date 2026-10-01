@@ -10,8 +10,8 @@ mod session;
 pub(crate) use protocol::{CaptureProtocolConfig, create_protocol_view};
 
 use self::bindings::{CaptureAction, CaptureBindings};
-pub(crate) use self::render::CaptureRenderer;
-use self::session::CaptureSession;
+pub(crate) use self::render::{CaptureRenderer, render_capture_session};
+pub(crate) use self::session::{CaptureBody, CaptureSession};
 use super::{
     BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission, EngineNotice,
     EngineRuntime, EngineValidationContext, ProjectedEngineConfig, RenderModel,

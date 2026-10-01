@@ -61,6 +61,43 @@ impl CaptureSession {
         &self.body
     }
 
+    pub(crate) fn body_mut(&mut self) -> &mut CaptureBody {
+        &mut self.body
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_document(&self) -> bool {
+        matches!(self.body, CaptureBody::Document { .. })
+    }
+
+    pub(crate) fn document(&self) -> Option<&Document> {
+        match &self.body {
+            CaptureBody::Document { document, .. } => Some(document),
+            CaptureBody::Text { .. } => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn images(&self) -> Option<&[DocumentImageState]> {
+        match &self.body {
+            CaptureBody::Document { images, .. } => Some(images.as_slice()),
+            CaptureBody::Text { .. } => None,
+        }
+    }
+
+    pub(crate) fn from_value(value: serde_json::Value) -> anyhow::Result<Self> {
+        let parsed_doc = super::document::parse(value.clone())?;
+        if let Some(doc) = parsed_doc {
+            return Ok(Self::from_document(doc));
+        }
+        match value {
+            serde_json::Value::String(text) => Ok(Self::from_text(&text)),
+            other => {
+                anyhow::bail!("expected string or document object in capture output, found {other}")
+            }
+        }
+    }
+
     pub(crate) fn set_images(&mut self, new_images: Vec<DocumentImageState>) {
         if let CaptureBody::Document { images, .. } = &mut self.body {
             *images = new_images;

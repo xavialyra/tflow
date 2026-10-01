@@ -521,20 +521,35 @@ fn parse_form_response(stdout: &[u8]) -> Result<Value> {
 }
 
 pub(crate) fn parse_preview_response(stdout: &[u8]) -> Result<Value> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Response {
-        version: u64,
-        preview: Value,
-    }
-    let response: Response = serde_json::from_slice(stdout)
+    let mut val: serde_json::Value = serde_json::from_slice(stdout)
         .context("picker-preview producer must write exactly one JSON response")?;
+    let map = val
+        .as_object_mut()
+        .context("picker-preview producer must write a JSON object")?;
+    let version = map
+        .remove("version")
+        .context("missing field `version`")?
+        .as_u64()
+        .context("field `version` must be an integer")?;
     anyhow::ensure!(
-        response.version == PROTOCOL_VERSION,
+        version == PROTOCOL_VERSION,
         "unsupported picker-preview protocol version {}; expected 1",
-        response.version
+        version
     );
-    Ok(response.preview)
+    let preview_val = match (map.remove("preview"), map.remove("output")) {
+        (Some(p), None) => p,
+        (None, Some(o)) => o,
+        (Some(_), Some(_)) => bail!("cannot specify both preview and output"),
+        (None, None) => bail!("picker-preview response missing preview or output field"),
+    };
+    if !map.is_empty() {
+        let extra_keys: Vec<_> = map.keys().cloned().collect();
+        bail!(
+            "unknown fields in picker-preview response: {}",
+            extra_keys.join(", ")
+        );
+    }
+    Ok(preview_val)
 }
 
 pub(crate) fn run_script_preview_response(

@@ -69,14 +69,14 @@ fn preview_debounces_and_reloads_same_value_metadata_with_managed_reap() {
     ready(&mut preview);
     let first_generation = preview.start(&starter).unwrap();
     collect(&mut preview, &starter);
-    assert!(matches!(preview.document, Some(document::Document::Text(ref s)) if s == "first"));
+    assert!(matches!(preview.document(), Some(document::Document::Text(s)) if s == "first"));
     preview.prepare(Some(request(source(ECHO), json!({"body":"changed"}))));
     assert!(
-        matches!(preview.render_state().document, Some(document::Document::Text(ref s)) if s == "first")
+        matches!(preview.render_state().document(), Some(document::Document::Text(s)) if s == "first")
     );
     // Verify grace period expiration reveals loading state when exceeding grace window
     preview.grace_due = Some(Instant::now() - Duration::from_millis(1));
-    assert!(preview.render_state().document.is_none());
+    assert!(preview.render_state().document().is_none());
     assert_eq!(
         preview.render_state().status.as_deref(),
         Some("Loading preview…")
@@ -84,7 +84,7 @@ fn preview_debounces_and_reloads_same_value_metadata_with_managed_reap() {
     ready(&mut preview);
     assert_ne!(preview.start(&starter).unwrap(), first_generation);
     collect(&mut preview, &starter);
-    assert!(matches!(preview.document, Some(document::Document::Text(ref s)) if s == "changed"));
+    assert!(matches!(preview.document(), Some(document::Document::Text(s)) if s == "changed"));
     tasks.shutdown_and_wait();
     let metrics = tasks.metrics_snapshot();
     let completed = metrics
@@ -103,28 +103,28 @@ fn preview_debounces_and_reloads_same_value_metadata_with_managed_reap() {
 #[test]
 fn items_refresh_holds_document_until_new_preview_or_grace_expiry() {
     let mut preview = preview();
-    preview.document = Some(document::parse(json!("old preview")).unwrap().unwrap());
+    preview.install_document(document::parse(json!("old preview")).unwrap());
     preview.selection = Some("old-selection".into());
 
     preview.hold_for_items_refresh();
     let grace_due = preview.grace_due;
-    assert!(preview.document.is_some());
+    assert!(preview.document().is_some());
     assert!(preview.prepared.is_none());
     assert!(preview.selection.is_none());
-    assert!(preview.render_state().document.is_some());
+    assert!(preview.render_state().document().is_some());
 
     preview.hold_for_items_refresh();
     assert_eq!(preview.grace_due, grace_due);
 
     preview.grace_due = Some(Instant::now() - Duration::from_millis(1));
-    assert!(preview.render_state().document.is_none());
+    assert!(preview.render_state().document().is_none());
     assert_eq!(
         preview.render_state().status.as_deref(),
         Some("Loading preview…")
     );
 
     preview.prepare(None);
-    assert!(preview.document.is_none());
+    assert!(preview.document().is_none());
     assert!(preview.grace_due.is_none());
 }
 
@@ -141,9 +141,9 @@ fn preview_selection_hidden_reshow_and_deactivation_cancel_and_reject_stale_resu
     ready(&mut preview);
     preview.start(&starter).unwrap();
     collect(&mut preview, &starter);
-    assert!(matches!(preview.document, Some(document::Document::Text(ref s)) if s == "latest"));
+    assert!(matches!(preview.document(), Some(document::Document::Text(s)) if s == "latest"));
     preview.set_visible(false);
-    assert!(preview.document.is_none() && preview.selection.is_none());
+    assert!(preview.document().is_none() && preview.selection.is_none());
     preview.set_visible(true);
     preview.prepare(Some(request(source(ECHO), json!({"body":"latest"}))));
     ready(&mut preview);
@@ -156,7 +156,7 @@ fn preview_selection_hidden_reshow_and_deactivation_cancel_and_reject_stale_resu
     collect(&mut preview, &starter);
     preview.deactivate();
     assert!(
-        preview.document.is_none() && preview.script_task.is_none() && preview.prepared.is_none()
+        preview.document().is_none() && preview.script_task.is_none() && preview.prepared.is_none()
     );
     assert!(preview.start(&starter).is_none());
     tasks.shutdown_and_wait();
@@ -222,7 +222,7 @@ fn declared_document_images_start_only_with_authority_and_resolve_owner_root() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(matches!(
-        preview.images[0],
+        preview.images()[0],
         PreviewImageState {
             image: Some(_),
             error: None
@@ -286,7 +286,7 @@ sys.stdout.write("\n")
     ready(&mut preview);
     preview.start(&starter).unwrap();
     collect(&mut preview, &starter);
-    assert!(preview.document.is_some() && !preview.error);
+    assert!(preview.document().is_some() && !preview.error);
     for _ in 0..100 {
         preview.start(&starter);
         if preview.task.is_none() {
@@ -295,7 +295,7 @@ sys.stdout.write("\n")
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(matches!(
-        preview.images[0],
+        preview.images()[0],
         PreviewImageState {
             image: Some(_),
             error: None
@@ -323,19 +323,19 @@ fn preview_scroll_up_responds_immediately_after_repeated_scroll_down_and_resize(
     for _ in 0..100 {
         preview.scroll(3);
     }
-    assert_eq!(preview.scroll, 7);
+    assert_eq!(preview.scroll_offset(), 7);
     preview.scroll(-3);
-    assert_eq!(preview.scroll, 4);
+    assert_eq!(preview.scroll_offset(), 4);
     preview.set_content_size(Some((40, 8)));
-    assert_eq!(preview.scroll, 2);
+    assert_eq!(preview.scroll_offset(), 2);
     preview.set_content_size(Some((40, 3)));
-    assert_eq!(preview.scroll, 2);
+    assert_eq!(preview.scroll_offset(), 2);
     preview.scroll(3);
-    assert_eq!(preview.scroll, 5);
+    assert_eq!(preview.scroll_offset(), 5);
     preview.set_content_size(Some((40, 8)));
-    assert_eq!(preview.scroll, 2);
+    assert_eq!(preview.scroll_offset(), 2);
     preview.scroll(-3);
-    assert_eq!(preview.scroll, 0);
+    assert_eq!(preview.scroll_offset(), 0);
     preview.deactivate();
     tasks.shutdown_and_wait();
 }
@@ -372,8 +372,8 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert!(preview.images[0].image.is_some());
-    let initial_arc = preview.images[0].image.as_ref().unwrap().clone();
+    assert!(preview.images()[0].image.is_some());
+    let initial_arc = preview.images()[0].image.as_ref().unwrap().clone();
 
     // Render with protocol cache
     let mut protocols = ImageProtocolCache::new();
@@ -438,11 +438,11 @@ fn preview_decode_cache_and_protocol_cache_reuse_images_on_selection_switching()
         "image should hit decode cache and not start a decode task"
     );
     assert!(
-        preview.images[0].image.is_some(),
+        preview.images()[0].image.is_some(),
         "cached image should be immediately loaded"
     );
     assert!(
-        Arc::ptr_eq(preview.images[0].image.as_ref().unwrap(), &initial_arc),
+        Arc::ptr_eq(preview.images()[0].image.as_ref().unwrap(), &initial_arc),
         "should reuse exact same Arc allocation"
     );
 
@@ -479,7 +479,7 @@ fn remount_renders_cached_script_document_without_a_loading_flash() {
     ready(&mut first);
     first.start(&starter).unwrap();
     collect(&mut first, &starter);
-    assert!(matches!(first.document, Some(document::Document::Text(ref s)) if s == "cached body"));
+    assert!(matches!(first.document(), Some(document::Document::Text(s)) if s == "cached body"));
     first.deactivate();
 
     // A self-navigation updates parameters, so the request identity changes
@@ -489,7 +489,7 @@ fn remount_renders_cached_script_document_without_a_loading_flash() {
     second.prepare(Some(request(source(ECHO), json!({"body": "changed"}))));
     let render = second.render_state();
     assert!(
-        matches!(render.document, Some(document::Document::Text(ref s)) if s == "cached body"),
+        matches!(render.document(), Some(document::Document::Text(s)) if s == "cached body"),
         "a parameter-updating remount must render the cached provider document"
     );
     assert_eq!(render.status, None);
@@ -499,7 +499,7 @@ fn remount_renders_cached_script_document_without_a_loading_flash() {
     second.start(&starter).unwrap();
     collect(&mut second, &starter);
     assert!(
-        matches!(second.render_state().document, Some(document::Document::Text(ref s)) if s == "changed")
+        matches!(second.render_state().document(), Some(document::Document::Text(s)) if s == "changed")
     );
     second.deactivate();
     tasks.shutdown_and_wait();
@@ -520,7 +520,7 @@ fn cached_document_defers_image_decode_until_start_has_authority() {
     let mut preview = preview();
     preview.prepared = Some(prepared);
     preview.install_document_inner(doc, false);
-    assert!(preview.document.is_some());
+    assert!(preview.document().is_some());
     assert!(
         preview.task.is_none(),
         "a deferred install must not start an image decode task"
@@ -535,4 +535,63 @@ fn cached_document_defers_image_decode_until_start_has_authority() {
     preview.deactivate();
     tasks.shutdown_and_wait();
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn preview_renders_ansi_text_and_supports_scroll_and_scrollbar() {
+    let (tasks, starter) = runtime();
+    let script = source(
+        "#!/bin/sh\nprintf '%s' '{\"version\":1,\"output\":\"hello \\u001b[1;32mgreen\\u001b[0m world\\nsecond line\\nthird line\\nfourth line\"}'\n",
+    );
+    let mut preview = preview();
+    preview.prepare(Some(request(script, json!({}))));
+    ready(&mut preview);
+    preview.start(&starter).unwrap();
+    collect(&mut preview, &starter);
+
+    let mut protocols = ImageProtocolCache::new();
+    let theme = Theme::terminal();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 2)).unwrap();
+    preview.set_content_size(Some((40, 2)));
+
+    terminal
+        .draw(|frame| {
+            preview
+                .render_state()
+                .render(frame, frame.area(), &theme, None, &mut protocols);
+        })
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("green world"));
+    assert!(text.contains("second line"));
+
+    // Scroll down by 2 lines
+    preview.scroll(2);
+    terminal
+        .draw(|frame| {
+            preview
+                .render_state()
+                .render(frame, frame.area(), &theme, None, &mut protocols);
+        })
+        .unwrap();
+
+    let scrolled_text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(scrolled_text.contains("third line"));
+    assert!(scrolled_text.contains("fourth line"));
+
+    preview.deactivate();
+    tasks.shutdown_and_wait();
 }
