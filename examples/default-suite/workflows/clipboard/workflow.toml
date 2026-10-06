@@ -14,10 +14,6 @@ bold = true
 engine = "picker"
 companion = "preview"
 
-[views.main.companions.preview]
-target = "preview"
-args = { item = "$selection" }
-
 [views.main.query]
 type = "object"
 input = "search"
@@ -41,7 +37,7 @@ item = { type = "object", default = {} }
 file = "scripts/preview.py"
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "preview"
 tab = "next_type"
 "shift+tab" = "previous_type"
 enter = "copy"
@@ -61,6 +57,8 @@ label = "Copy"
 type = "run"
 file = "scripts/restore.py"
 
-[commands.toggle_companion]
+[commands.preview]
 label = "Toggle Companion"
-companion = "preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection" }

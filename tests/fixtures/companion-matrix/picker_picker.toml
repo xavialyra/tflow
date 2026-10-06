@@ -9,10 +9,6 @@ entrypoint = "main"
 engine = "picker"
 companion = "services"
 
-[views.main.companions.services]
-target = "services"
-args = "$selection"
-
 [views.main.picker]
 input_placeholder = "Category -> Enter -> service -> Enter -> variant"
 items = [
@@ -21,7 +17,7 @@ items = [
 ]
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "services"
 enter = "open_services"
 
 [commands.open_services]
@@ -133,6 +129,8 @@ text = "CONFIRMED\nService: " + parameters["service"] + "\nVariant: " + paramete
 json.dump({"version": 1, "output": text}, sys.stdout)
 '''
 
-[commands.toggle_companion]
+[commands.services]
 label = "Toggle Companion"
-companion = "services"
+type = "companion"
+target = "services"
+args = "$selection"

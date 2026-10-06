@@ -7,10 +7,6 @@ entrypoint = "main"
 engine = "picker"
 companion = "preview"
 
-[views.main.companions.preview]
-target = "preview"
-args = { item = "$selection" }
-
 [views.main.picker]
 input_placeholder = "Search applications"
 
@@ -27,7 +23,7 @@ item = { type = "object", default = {} }
 file = "scripts/preview.py"
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "preview"
 enter = "open"
 "ctrl+o" = "openx"
 "ctrl+w" = "weight"
@@ -65,6 +61,8 @@ label = "Save"
 type = "return"
 file = "scripts/set-weight.sh"
 
-[commands.toggle_companion]
-label = "Toggle Companion"
-companion = "preview"
+[commands.preview]
+label = "Toggle Preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection" }

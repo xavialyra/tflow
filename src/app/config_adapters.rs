@@ -45,6 +45,27 @@ impl RouteCatalog for CompiledRouteCatalog {
     fn default_companion_info(&self, target: &str) -> Option<crate::view::DefaultCompanionInfo> {
         let view = self.config.view(target)?;
         let companion_target = view.companion.as_ref()?;
+        let pkg = crate::workflow::config::package_id(target);
+
+        // 1. Check if companion_target refers to a companion command
+        if let Some(cmd) = self.config.find_command(pkg, companion_target)
+            && let crate::workflow::config::CommandAction::Companion { payload, .. } = &cmd.action
+            && let toml::Value::Table(table) = payload
+        {
+            let target_name = table
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or(companion_target);
+            let resolved_target = self.config.resolve_view_scoped(target_name, target).ok()?;
+            let args = table.get("args").or_else(|| table.get("query")).cloned();
+            return Some(crate::view::DefaultCompanionInfo {
+                target: resolved_target,
+                slot: Some(companion_target.clone()),
+                args_template: args,
+            });
+        }
+
+        // 2. Check if companion_target refers to a view companion slot
         if let Some(slot) = view.companions.get(companion_target) {
             let resolved_target = self.config.resolve_view_scoped(&slot.target, target).ok()?;
             Some(crate::view::DefaultCompanionInfo {
@@ -59,8 +80,15 @@ impl RouteCatalog for CompiledRouteCatalog {
                 .ok()?;
             Some(crate::view::DefaultCompanionInfo {
                 target: resolved_target,
-                slot: None,
-                args_template: None,
+                slot: Some(companion_target.clone()),
+                args_template: Some(toml::Value::Table(
+                    [(
+                        "item".to_string(),
+                        toml::Value::String("$selection".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
             })
         }
     }

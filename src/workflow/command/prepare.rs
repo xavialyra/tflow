@@ -394,83 +394,65 @@ fn prepare_protocol_operation(
         } => {
             let caller_view = command_invocation.source_view();
             let view_def = config.view(caller_view);
+            let command_id = command_invocation.id();
 
-            // Match slot first; if no explicit slot but target matches a companion slot name, use it
-            let resolved_slot_name = slot.or_else(|| {
-                target
-                    .as_ref()
-                    .filter(|t| view_def.is_some_and(|v| v.companions.contains_key(*t)))
-                    .cloned()
-            });
-
-            let (target, slot, args_template, query) = if let Some(slot_name) = resolved_slot_name {
-                let slot_def = view_def.and_then(|v| v.companions.get(&slot_name));
-                if let Some(slot_def) = slot_def {
-                    let resolved_target =
-                        config.resolve_view_scoped(&slot_def.target, caller_view)?;
-                    let projected_query = if let Some(args_tmpl) = &slot_def.args {
-                        let json_tmpl = crate::workflow::config::toml_to_json(args_tmpl)?;
-                        Some(crate::workflow::projection::project_value(
-                            &json_tmpl, &proj_ctx,
-                        ))
-                    } else {
-                        query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx))
-                    };
-                    (
-                        resolved_target,
-                        Some(slot_name),
-                        slot_def.args.clone(),
-                        projected_query,
-                    )
+            let (target_name, slot_name, explicit_tmpl) = if let Some(t) = target {
+                let slot_n = slot.unwrap_or_else(|| command_id.to_string());
+                (t, Some(slot_n), None)
+            } else if let Some(s) = slot {
+                if let Some(slot_def) = view_def.and_then(|v| v.companions.get(&s)) {
+                    (slot_def.target.clone(), Some(s), slot_def.args.clone())
                 } else {
-                    anyhow::bail!(
-                        "unknown companion slot {:?} for view {:?}",
-                        slot_name,
-                        caller_view
-                    );
+                    (s.clone(), Some(command_id.to_string()), None)
                 }
-            } else if let Some(t) = target {
-                let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
-                let is_plain_string = config
-                    .view(&resolved_target)
-                    .map(|v| v.query.is_none())
-                    .unwrap_or(true);
-                let default_template = toml::Value::Table(
-                    [(
-                        "item".to_string(),
-                        toml::Value::String("$selection".to_string()),
-                    )]
-                    .into_iter()
-                    .collect(),
-                );
-                let (tmpl, mut projected_query) = if let Some(q) = query {
-                    (
-                        None,
-                        Some(crate::workflow::projection::project_value(&q, &proj_ctx)),
-                    )
-                } else {
-                    let json_tmpl = crate::workflow::config::toml_to_json(&default_template)?;
-                    (
-                        Some(default_template),
-                        Some(crate::workflow::projection::project_value(
-                            &json_tmpl, &proj_ctx,
-                        )),
-                    )
-                };
-                if is_plain_string
-                    && let Some(val @ (Value::Object(_) | Value::Array(_))) = projected_query
-                {
-                    projected_query = Some(Value::String(val.to_string()));
-                }
-                (resolved_target, Some(t), tmpl, projected_query)
             } else {
-                anyhow::bail!("companion operation requires either 'slot' or 'target'");
+                anyhow::bail!("companion operation requires either 'target' or 'slot'");
             };
+
+            let resolved_target = config.resolve_view_scoped(&target_name, caller_view)?;
+            let is_plain_string = config
+                .view(&resolved_target)
+                .map(|v| v.query.is_none())
+                .unwrap_or(true);
+
+            let default_template = toml::Value::Table(
+                [(
+                    "item".to_string(),
+                    toml::Value::String("$selection".to_string()),
+                )]
+                .into_iter()
+                .collect(),
+            );
+
+            let (tmpl, mut projected_query) = if let Some(q) = query {
+                let toml_val = crate::workflow::config::json_to_toml(&q).ok();
+                let projected = crate::workflow::projection::project_value(&q, &proj_ctx);
+                (toml_val, Some(projected))
+            } else if let Some(args_tmpl) = explicit_tmpl {
+                let json_tmpl = crate::workflow::config::toml_to_json(&args_tmpl)?;
+                let projected = crate::workflow::projection::project_value(&json_tmpl, &proj_ctx);
+                (Some(args_tmpl), Some(projected))
+            } else {
+                let json_tmpl = crate::workflow::config::toml_to_json(&default_template)?;
+                (
+                    Some(default_template),
+                    Some(crate::workflow::projection::project_value(
+                        &json_tmpl, &proj_ctx,
+                    )),
+                )
+            };
+
+            if is_plain_string
+                && let Some(val @ (Value::Object(_) | Value::Array(_))) = projected_query
+            {
+                projected_query = Some(Value::String(val.to_string()));
+            }
+
             Ok(PreparedAction::Companion {
-                target,
-                slot,
-                args_template,
-                query,
+                target: resolved_target,
+                slot: slot_name,
+                args_template: tmpl,
+                query: projected_query,
             })
         }
     }

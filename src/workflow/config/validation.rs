@@ -124,18 +124,15 @@ fn validate_operation_target(
             if let Some(target) = target {
                 ("companion", target.as_str(), &*DEFAULT_PRESENTATION)
             } else if let Some(slot_name) = slot {
-                let Some(view) = views.get(view_ref) else {
-                    return Ok(());
-                };
-                let Some(slot) = view.companions.get(slot_name) else {
-                    bail!(
-                        "view {:?} command {:?} references missing companion slot {:?}",
-                        view_ref,
-                        command_id,
-                        slot_name
-                    );
-                };
-                ("companion", slot.target.as_str(), &*DEFAULT_PRESENTATION)
+                let slot_target = views
+                    .get(view_ref)
+                    .and_then(|view| view.companions.get(slot_name))
+                    .map(|s| s.target.as_str());
+                if let Some(st) = slot_target {
+                    ("companion", st, &*DEFAULT_PRESENTATION)
+                } else {
+                    ("companion", slot_name.as_str(), &*DEFAULT_PRESENTATION)
+                }
             } else {
                 bail!(
                     "view {:?} command {:?} requires target or slot",

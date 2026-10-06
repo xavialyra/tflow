@@ -427,3 +427,117 @@ json.dump({"version": 1, "output": f"INSPECTOR: {ident}"}, sys.stdout)
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn companion_defined_purely_as_command_without_view_slot_table() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+
+        [workflows.sample.views.main.picker]
+        items = [
+            { display = "Database Server", value = "db-01" },
+            { display = "Cache Server", value = "redis-01" },
+        ]
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.preview"
+        "ctrl+i" = "sample.inspector"
+
+        [workflows.sample.commands.preview]
+        label = "Toggle Preview"
+        type = "companion"
+        target = "details"
+        args = { title = "$selection.display", code = "$selection.value" }
+
+        [workflows.sample.commands.inspector]
+        label = "Toggle Inspector"
+        type = "companion"
+        target = "inspector"
+        args = { id = "$selection.value" }
+
+        [workflows.sample.views.details]
+        engine = "capture"
+        [workflows.sample.views.details.query]
+        type = "object"
+        title = { type = "string", default = "" }
+        code = { type = "string", default = "" }
+
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+params = request.get("context", {}).get("parameters", {})
+title = params.get("title", "no-title")
+code = params.get("code", "no-code")
+json.dump({"version": 1, "output": f"COMMAND_PREVIEW: {title} [{code}]"}, sys.stdout)
+'''
+
+        [workflows.sample.views.inspector]
+        engine = "capture"
+        [workflows.sample.views.inspector.query]
+        type = "object"
+        id = { type = "string", default = "" }
+
+        [workflows.sample.views.inspector.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+params = request.get("context", {}).get("parameters", {})
+ident = params.get("id", "no-id")
+json.dump({"version": 1, "output": f"COMMAND_INSPECTOR: {ident}"}, sys.stdout)
+'''
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("Database Server"));
+
+    // 1. Press Ctrl-P to toggle companion command
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify projected parameters reached companion script and rendered
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("COMMAND_PREVIEW: Database Server")
+    });
+
+    // 2. Press Down arrow to change active selection
+    process.master.write_all(b"\x1b[B").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify companion dynamically re-evaluates projection on selection change
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("COMMAND_PREVIEW: Cache Server")
+    });
+
+    // 3. Hot-swap to inspector companion command via Ctrl-I (Tab)
+    process.master.write_all(b"\x09").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify second companion command renders correctly with its own projected args
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("COMMAND_INSPECTOR: redis-01") && !screen.contains("COMMAND_PREVIEW:")
+    });
+
+    // 4. Press Ctrl-I again to close companion
+    process.master.write_all(b"\x09").unwrap();
+    process.master.flush().unwrap();
+
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Database Server") && !screen.contains("COMMAND_INSPECTOR:")
+    });
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

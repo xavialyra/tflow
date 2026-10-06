@@ -103,7 +103,7 @@ struct RawCompanionOperation {
     target: Option<String>,
     #[serde(default)]
     slot: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "args")]
     query: Option<Value>,
 }
 
@@ -160,7 +160,7 @@ enum RawOperation {
         target: Option<String>,
         #[serde(default)]
         slot: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "args")]
         query: Option<Value>,
     },
 }

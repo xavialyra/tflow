@@ -8,10 +8,6 @@ entrypoint = "main"
 engine = "picker"
 companion = "details"
 
-[views.main.companions.details]
-target = "details"
-args = { item = "$selection" }
-
 [views.main.picker]
 input_placeholder = "Select a service"
 items = [
@@ -50,8 +46,10 @@ json.dump({"version": 1, "output": "\n".join(lines)}, sys.stdout)
 '''
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "details"
 
-[commands.toggle_companion]
+[commands.details]
 label = "Toggle Companion"
-companion = "details"
+type = "companion"
+target = "details"
+args = { item = "$selection" }

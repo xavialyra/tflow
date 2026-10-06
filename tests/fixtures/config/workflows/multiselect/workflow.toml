@@ -22,10 +22,6 @@ bold = true
 engine = "picker"
 companion = "preview"
 
-[views.main.companions.preview]
-target = "preview"
-args = { item = "$selection", selected = "$query.selected" }
-
 [views.main.query]
 type = "object"
 input = "search"
@@ -46,7 +42,7 @@ selected = { type = "array<string>", default = [] }
 file = "scripts/preview.py"
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "preview"
 tab = "toggle"
 "ctrl+a" = "select_all"
 "ctrl+r" = "clear_all"
@@ -72,6 +68,8 @@ label = "Confirm selection"
 type = "run"
 file = "scripts/submit.py"
 
-[commands.toggle_companion]
-label = "Toggle Companion"
-companion = "preview"
+[commands.preview]
+label = "Toggle Preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection", selected = "$query.selected" }

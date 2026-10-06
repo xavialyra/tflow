@@ -9,10 +9,6 @@ entrypoint = "main"
 engine = "form"
 companion = "summary"
 
-[views.main.companions.summary]
-target = "summary"
-args = "$selection"
-
 [views.main.form.content]
 fields = [
   { name = "name", label = "Name", type = "string", value = "demo", required = true },
@@ -48,8 +44,10 @@ json.dump({"version": 1, "output": "\n".join(lines)}, sys.stdout)
 '''
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "summary"
 
-[commands.toggle_companion]
+[commands.summary]
 label = "Toggle Companion"
-companion = "summary"
+type = "companion"
+target = "summary"
+args = "$selection"

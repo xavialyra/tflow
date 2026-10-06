@@ -17,10 +17,6 @@ foreground = "scheme:muted"
 engine = "picker"
 companion = "preview"
 
-[views.main.companions.preview]
-target = "preview"
-args = { item = "$selection", selected = "$query.selected" }
-
 [views.main.query]
 type = "object"
 input = "search"
@@ -364,7 +360,7 @@ if __name__ == "__main__":
 '''
 
 [views.main.bindings]
-"ctrl+p" = "toggle_companion"
+"ctrl+p" = "preview"
 tab = "toggle"
 "ctrl+a" = "select_all"
 "ctrl+r" = "clear_all"
@@ -1003,6 +999,8 @@ json.dump(
 sys.stdout.write("\n")
 '''
 
-[commands.toggle_companion]
-label = "Toggle Companion"
-companion = "preview"
+[commands.preview]
+label = "Toggle Preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection", selected = "$query.selected" }

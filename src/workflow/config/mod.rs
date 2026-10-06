@@ -475,6 +475,10 @@ pub(crate) fn toml_to_json(value: &toml::Value) -> Result<Value> {
     serde_json::to_value(value).context("could not convert TOML to JSON")
 }
 
+pub(crate) fn json_to_toml(value: &Value) -> Result<toml::Value> {
+    toml::Value::try_from(value.clone()).context("could not convert JSON to TOML")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
