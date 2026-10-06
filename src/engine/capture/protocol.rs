@@ -111,10 +111,7 @@ fn create_protocol_view_state(
     };
     let bindings = CaptureBindings::from_defaults(config.bindings.defaults.clone())?;
     let renderer = create_renderer(RendererFactoryContext)?;
-    let mut runtime = create_view(runtime_context)?;
-    if let Some(data) = &request.companion_data {
-        runtime.update_companion_data(data);
-    }
+    let runtime = create_view(runtime_context)?;
     let engine_context = engine_context(
         instance,
         &identity,
@@ -454,14 +451,14 @@ impl View for CaptureProtocolView {
 
     fn on_companion_data_changed(
         &mut self,
-        data: &crate::view::companion::CompanionData,
+        query: &Value,
         context: &ViewContext,
     ) -> Result<ViewDecision> {
         self.sync_context(context)?;
         if self.has_async_work {
             self.cancel_stale_adapter_task();
             self.starter.cancel_all();
-            self.runtime.update_companion_data(data);
+            self.runtime.update_companion_query(query);
             self.start_prepared_work();
         }
         Ok(ViewDecision::Invalidate)

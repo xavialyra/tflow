@@ -96,10 +96,10 @@ impl View for SyntheticView {
 
     fn on_companion_data_changed(
         &mut self,
-        data: &crate::view::companion::CompanionData,
+        query: &Value,
         _: &ViewContext,
     ) -> Result<ViewDecision> {
-        self.runtime = data.input.clone();
+        self.runtime = query.clone();
         self.revision = self.revision.wrapping_add(1);
         Ok(ViewDecision::Invalidate)
     }
@@ -2477,9 +2477,21 @@ fn companion_input_update_invalidates_a_staying_primary() {
         .router
         .toggle_companion(None, "child", None, None, None)
         .unwrap();
-    session.router.active_companion_mut().unwrap().last_data = None;
+    if let Some(comp) = session.router.active_companion_mut() {
+        comp.args_template = Some(toml::Value::Table(
+            [(
+                "item".to_string(),
+                toml::Value::String("$selection".to_string()),
+            )]
+            .into_iter()
+            .collect(),
+        ));
+        comp.last_query = Some(serde_json::json!({"item": "stale"}));
+    }
 
-    let original_query = session
+    assert_eq!(session.tick().unwrap(), ViewDecision::Invalidate);
+    assert_eq!(session.tick().unwrap(), ViewDecision::Stay);
+    let updated_query = session
         .router
         .active_companion()
         .unwrap()
@@ -2487,19 +2499,7 @@ fn companion_input_update_invalidates_a_staying_primary() {
         .context
         .query
         .clone();
-    assert_eq!(session.tick().unwrap(), ViewDecision::Invalidate);
-    assert_eq!(session.tick().unwrap(), ViewDecision::Stay);
-    assert_eq!(
-        session
-            .router
-            .active_companion()
-            .unwrap()
-            .instance
-            .context
-            .query,
-        original_query,
-        "source updates must not rewrite the validated target query"
-    );
+    assert_eq!(updated_query.values, serde_json::json!({"item": null}));
 }
 
 #[test]

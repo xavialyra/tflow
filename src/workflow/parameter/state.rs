@@ -328,7 +328,10 @@ impl ParameterRegistry {
         }
         let mut values = BTreeMap::new();
         for (name, field) in &schema.fields {
-            let value = object.get(name).unwrap_or(&field.default);
+            let value = object
+                .get(name)
+                .filter(|v| !v.is_null())
+                .unwrap_or(&field.default);
             field
                 .validate(value)
                 .with_context(|| format!("invalid query parameter {:?}", name))?;
@@ -379,6 +382,11 @@ impl ParameterRegistry {
                 .fields
                 .get(name)
                 .expect("unknown query field was checked above");
+            let value = if value.is_null() {
+                &field.default
+            } else {
+                value
+            };
             field
                 .validate(value)
                 .with_context(|| format!("invalid query parameter {:?}", name))?;

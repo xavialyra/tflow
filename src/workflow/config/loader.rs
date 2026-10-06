@@ -168,11 +168,11 @@ pub(crate) fn parse_atomic_workflow_package(
         }
     }
 
-    let views: BTreeMap<String, View> = views_value
+    let mut views: BTreeMap<String, View> = views_value
         .try_into()
         .with_context(|| format!("invalid [views] in workflow manifest {source_name}"))?;
 
-    for (view_name, view) in &views {
+    for (view_name, view) in &mut views {
         view.validate_engine_shape(view_name)?;
         if let Some(alias) = &view.alias {
             bail!(
@@ -180,6 +180,24 @@ pub(crate) fn parse_atomic_workflow_package(
                 view_name,
                 workflow_id,
                 alias
+            );
+        }
+        if let Some(target) = &view.companion
+            && !view.companions.contains_key(target)
+        {
+            view.companions.insert(
+                target.clone(),
+                super::CompanionSlot {
+                    target: target.clone(),
+                    args: Some(toml::Value::Table(
+                        [(
+                            "item".to_string(),
+                            toml::Value::String("$selection".to_string()),
+                        )]
+                        .into_iter()
+                        .collect(),
+                    )),
+                },
             );
         }
     }

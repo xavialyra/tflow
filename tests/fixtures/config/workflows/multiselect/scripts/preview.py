@@ -12,16 +12,18 @@ def main():
         return
 
     context = request.get("context", {})
-    parameters = context.get("parameters", {})
-    selected = parameters.get("selected", [])
+    parameters = context.get("parameters", {}) if isinstance(context, dict) else {}
+    selected = parameters.get("selected") or []
 
-    engine = context.get("engine", {})
-    state = engine.get("state", {}) if isinstance(engine, dict) else {}
-    item = state.get("item")
+    item = parameters.get("item") if isinstance(parameters, dict) else None
     if not isinstance(item, dict) and isinstance(context, dict):
-        inp = context.get("input")
-        if isinstance(inp, dict):
-            item = inp
+        engine = context.get("engine", {})
+        state = engine.get("state", {}) if isinstance(engine, dict) else {}
+        item = state.get("item")
+        if not isinstance(item, dict):
+            inp = context.get("input")
+            if isinstance(inp, dict):
+                item = inp
 
     children = []
 

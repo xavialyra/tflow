@@ -9,6 +9,10 @@ entrypoint = "main"
 engine = "form"
 companion = "summary"
 
+[views.main.companions.summary]
+target = "summary"
+args = "$selection"
+
 [views.main.form.content]
 fields = [
   { name = "name", label = "Name", type = "string", value = "demo", required = true },
@@ -23,8 +27,15 @@ engine = "capture"
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-raw = request["context"]["input"]
-state = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+raw = request.get("context", {}).get("parameters", "")
+if isinstance(raw, str):
+    try:
+        state = json.loads(raw)
+    except Exception:
+        state = {}
+else:
+    state = raw or {}
+state = state if isinstance(state, dict) else {}
 values = state.get("values", {})
 lines = ["LIVE FORM SUMMARY", "",
          "Name: " + str(values.get("name", "")),

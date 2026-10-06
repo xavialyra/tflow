@@ -473,8 +473,8 @@ pub(crate) trait EngineRuntime {
         Ok(EngineEmission::decision(EngineDecision::Continue))
     }
 
-    /// Update the input for this runtime and reset completion state.
-    fn update_companion_data(&mut self, _data: &crate::view::companion::CompanionData) {}
+    /// Update the input query for this runtime and reset completion state.
+    fn update_companion_query(&mut self, _query: &Value) {}
 
     /// Start work that was made ready by the live Engine change. Session
     /// calls this only after publishing the corresponding Host runtime state.

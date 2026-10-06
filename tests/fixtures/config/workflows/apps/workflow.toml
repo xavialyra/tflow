@@ -7,6 +7,10 @@ entrypoint = "main"
 engine = "picker"
 companion = "preview"
 
+[views.main.companions.preview]
+target = "preview"
+args = { item = "$selection" }
+
 [views.main.picker]
 input_placeholder = "Search applications"
 
@@ -15,6 +19,9 @@ file = "scripts/items.sh"
 
 [views.preview]
 engine = "capture"
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
 
 [views.preview.capture.output]
 file = "scripts/preview.py"

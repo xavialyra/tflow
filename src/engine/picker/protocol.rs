@@ -484,20 +484,36 @@ impl View for PickerProtocolView {
 
     fn on_companion_data_changed(
         &mut self,
-        data: &crate::view::companion::CompanionData,
+        query: &Value,
         context: &ViewContext,
     ) -> Result<ViewDecision> {
-        let text = match &data.input {
+        let text = match query {
             Value::String(text) => text.clone(),
-            Value::Null => match &data.parameters {
-                Value::String(text) => text.clone(),
-                Value::Null => String::new(),
-                value => value.to_string(),
-            },
-            value => value.to_string(),
+            _ => self.editor.raw.clone(),
         };
-        let input = crate::input::EditorBuffer::from_raw(text.clone(), text.len()).snapshot();
-        self.on_host_input_changed(&input, context)
+        let text_changed = self.editor.raw != text;
+        self.editor = crate::input::EditorBuffer::from_raw(text.clone(), text.len()).snapshot();
+        self.parameters = ParameterSnapshot::from_parts(
+            query.clone(),
+            self.editor.raw.clone(),
+            InputSourceIdentity {
+                frame: ViewMountId(self.instance.0),
+                generation: self.editor.revision,
+            },
+            self.parameters.revision().wrapping_add(1),
+        );
+        self.rebuild_context(context);
+        let committed = self.runtime.input_committed(self.engine_context.clone())?;
+        let committed = self.map_emission(context, committed)?;
+        let ready = self.runtime.input_ready(self.engine_context.clone())?;
+        let ready = self.map_emission(context, ready)?;
+        self.start_prepared_work();
+        self.defer_work_poll = true;
+        let mut batch = vec![committed, ready];
+        if text_changed {
+            batch.push(ViewDecision::Invalidate);
+        }
+        Ok(ViewDecision::Batch(batch))
     }
 
     fn on_host_input_changed(

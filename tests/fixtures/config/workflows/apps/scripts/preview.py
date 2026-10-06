@@ -169,12 +169,15 @@ def main():
         return
 
     context = request.get("context", {})
-    state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
-    item = state.get("item") if isinstance(state, dict) else None
+    params = context.get("parameters", {}) if isinstance(context, dict) else {}
+    item = params.get("item") if isinstance(params, dict) else None
     if not isinstance(item, dict) and isinstance(context, dict):
-        inp = context.get("input")
-        if isinstance(inp, dict):
-            item = inp
+        state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
+        item = state.get("item") if isinstance(state, dict) else None
+        if not isinstance(item, dict):
+            inp = context.get("input")
+            if isinstance(inp, dict):
+                item = inp
     if not isinstance(item, dict):
         json.dump({"version": 1, "output": None}, sys.stdout)
         sys.stdout.write("\n")

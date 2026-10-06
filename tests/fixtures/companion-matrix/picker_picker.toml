@@ -9,6 +9,10 @@ entrypoint = "main"
 engine = "picker"
 companion = "services"
 
+[views.main.companions.services]
+target = "services"
+args = "$selection"
+
 [views.main.picker]
 input_placeholder = "Category -> Enter -> service -> Enter -> variant"
 items = [
@@ -42,11 +46,21 @@ show_divider = false
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-raw = (request["context"]["engine"]["state"] or {}).get("input", "")
-try:
-    category = json.loads(raw).get("value", "databases")
-except (ValueError, AttributeError):
-    category = "databases"
+ctx = request.get("context", {})
+params = ctx.get("parameters", {})
+if isinstance(params, str):
+    try:
+        params = json.loads(params)
+    except Exception:
+        params = {}
+category = params.get("category") if isinstance(params, dict) else None
+if not category:
+    raw = (ctx.get("engine", {}).get("state", {}) or {}).get("input", "")
+    try:
+        category = json.loads(raw).get("value", "databases")
+    except Exception:
+        category = "databases"
+category = category or "databases"
 catalog = {"databases": [("PostgreSQL", "postgres"), ("SQLite", "sqlite")],
            "queues": [("RabbitMQ", "rabbitmq"), ("Redis Streams", "redis")]}
 items = [{"display": label, "value": value, "metadata": {"category": category}}

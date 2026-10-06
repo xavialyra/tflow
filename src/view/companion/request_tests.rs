@@ -116,10 +116,6 @@ fn companion_mount_and_navigation_share_canonical_validated_defaults() {
         request.execution_class,
         crate::task::TaskExecutionClass::Serial
     );
-    assert!(
-        mount.last_data.is_none(),
-        "explicit query must not inherit source data"
-    );
 }
 
 #[test]

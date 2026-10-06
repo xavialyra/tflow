@@ -1113,42 +1113,29 @@ impl ProtocolSession {
                         query: Some(&snapshot.parameters),
                     };
                     let json_tmpl = crate::workflow::config::toml_to_json(args_tmpl)?;
-                    let new_query =
+                    let mut new_query =
                         crate::workflow::projection::project_value(&json_tmpl, &proj_ctx);
+                    if (matches!(
+                        &new_query,
+                        serde_json::Value::Object(_) | serde_json::Value::Array(_)
+                    )) && self
+                        .router
+                        .validate_query(&companion.target, &new_query)
+                        .is_err()
+                    {
+                        new_query = serde_json::Value::String(new_query.to_string());
+                    }
                     if companion.last_query.as_ref() != Some(&new_query)
                         && let Some(companion_mut) = self.router.active_companion_mut()
                     {
-                        let mut data =
-                            crate::view::companion::CompanionData::from_snapshot(&snapshot);
-                        data.parameters = new_query.clone();
                         companion_mut.last_query = Some(new_query.clone());
-                        companion_mut.instance.context.query.values = new_query;
-                        let decision = companion_mut
-                            .instance
-                            .view
-                            .on_companion_data_changed(&data, &companion_mut.instance.context)?;
+                        companion_mut.instance.context.query.values = new_query.clone();
+                        let decision = companion_mut.instance.view.on_companion_data_changed(
+                            &new_query,
+                            &companion_mut.instance.context,
+                        )?;
                         invalidated = decision != ViewDecision::Stay;
                     }
-                    return Ok(invalidated);
-                }
-
-                if companion.explicit_query {
-                    return Ok(false);
-                }
-                let data = crate::view::companion::CompanionData::from_snapshot(&snapshot);
-                let needs_update = companion.last_data.as_ref() != Some(&data);
-                if needs_update && let Some(companion_mut) = self.router.active_companion_mut() {
-                    let instance = &mut companion_mut.instance;
-                    let decision = instance
-                        .view
-                        .on_companion_data_changed(&data, &instance.context)?;
-                    if instance.input.mode.is_visible() {
-                        let raw = instance.view.command_snapshot().raw_input;
-                        let cursor = raw.len();
-                        instance.input.editor.replace_all(raw, cursor);
-                    }
-                    invalidated = decision != ViewDecision::Stay;
-                    companion_mut.last_data = Some(data);
                 }
             }
         }

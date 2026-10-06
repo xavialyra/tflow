@@ -258,7 +258,6 @@ pub(crate) struct NavigationRequest {
     pub(crate) input: Option<ViewInputSeed>,
     pub(crate) presentation: ViewPresentation,
     pub(crate) focus: Option<String>,
-    pub(crate) companion_data: Option<companion::CompanionData>,
     pub(crate) execution_class: crate::task::TaskExecutionClass,
 }
 
@@ -270,7 +269,6 @@ impl NavigationRequest {
             input: None,
             presentation: ViewPresentation::default(),
             focus: None,
-            companion_data: None,
             execution_class: crate::task::TaskExecutionClass::Serial,
         }
     }
@@ -596,7 +594,7 @@ pub(crate) trait View {
 
     fn on_companion_data_changed(
         &mut self,
-        _data: &companion::CompanionData,
+        _query: &Value,
         _context: &ViewContext,
     ) -> Result<ViewDecision> {
         Ok(ViewDecision::Stay)
@@ -681,6 +679,13 @@ pub(crate) struct QuerySchema {
     pub(crate) id: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DefaultCompanionInfo {
+    pub(crate) target: String,
+    pub(crate) slot: Option<String>,
+    pub(crate) args_template: Option<toml::Value>,
+}
+
 pub(crate) trait RouteCatalog {
     /// Resolve a navigation target selector to the View it names, with the
     /// suite alias (when any) that the footer and route prefixes display.
@@ -692,9 +697,27 @@ pub(crate) trait RouteCatalog {
         None
     }
 
+    /// Return default companion mount info including slot and projection template.
+    fn default_companion_info(&self, target: &str) -> Option<DefaultCompanionInfo> {
+        self.default_companion(target)
+            .map(|t| DefaultCompanionInfo {
+                target: t,
+                slot: None,
+                args_template: None,
+            })
+    }
+
     /// Construct a default, schema-valid ParsedQuery for the given target view.
     fn default_query(&self, target: &str) -> Result<ParsedQuery> {
         Ok(ParsedQuery::new(target, "query", Value::Null))
+    }
+
+    /// Parse and complete a partial or default query for the target view.
+    fn parse_query(&self, target: &str, query: Option<Value>) -> Result<ParsedQuery> {
+        match query {
+            Some(q) => Ok(ParsedQuery::new(target, "query", q)),
+            None => self.default_query(target),
+        }
     }
 
     fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
@@ -786,8 +809,6 @@ pub(crate) struct CompanionMount {
     pub(crate) args_template: Option<toml::Value>,
     pub(crate) instance: Box<ViewInstance>,
     pub(crate) last_query: Option<Value>,
-    pub(crate) last_data: Option<companion::CompanionData>,
-    pub(crate) explicit_query: bool,
 }
 
 pub(crate) struct ViewInstance {
@@ -938,33 +959,7 @@ impl Router {
             .routes
             .resolve(target)
             .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?;
-        let default_query = self.routes.default_query(&location.target)?;
-        anyhow::ensure!(
-            default_query.target == location.target,
-            "companion query target does not match route"
-        );
-        let parsed_query = match query {
-            Some(values) => {
-                let pq = ParsedQuery::new(location.target.clone(), "query", values.clone());
-                if self.routes.validate_query(&pq).is_err() && !values.is_string() {
-                    let str_val = Value::String(values.to_string());
-                    let pq_str = ParsedQuery::new(location.target.clone(), "query", str_val);
-                    if self.routes.validate_query(&pq_str).is_ok() {
-                        pq_str
-                    } else {
-                        self.routes.validate_query(&pq)?;
-                        pq
-                    }
-                } else {
-                    self.routes.validate_query(&pq)?;
-                    pq
-                }
-            }
-            None => {
-                self.routes.validate_query(&default_query)?;
-                default_query
-            }
-        };
+        let parsed_query = self.routes.parse_query(&location.target, query)?;
         let mut request = NavigationRequest::new(location.target, parsed_query.clone());
         let text = match &parsed_query.values {
             Value::String(s) => s.clone(),
@@ -986,7 +981,6 @@ impl Router {
         slot: Option<String>,
         args_template: Option<toml::Value>,
         query: Option<Value>,
-        explicit_query: bool,
     ) -> Result<CompanionMount> {
         let location = self
             .routes
@@ -997,15 +991,6 @@ impl Router {
 
         let mut request = self.companion_navigation_request(target, query.clone())?;
         request.execution_class = crate::task::TaskExecutionClass::Background;
-        if !explicit_query {
-            request.companion_data = self.active().map(|view| {
-                let mut data = companion::CompanionData::from_snapshot(&view.command_snapshot());
-                if let Some(ref q) = query {
-                    data.parameters = q.clone();
-                }
-                data
-            });
-        }
         let services = ViewServices {
             host: &*self.host,
             routes: &*self.routes,
@@ -1033,8 +1018,6 @@ impl Router {
             slot,
             args_template,
             last_query: query,
-            last_data: request.companion_data.clone(),
-            explicit_query,
             instance: Box::new(ViewInstance {
                 id: instance_id,
                 context,
@@ -1062,6 +1045,11 @@ impl Router {
             LifecycleEvent::Closed,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn validate_query(&self, target: &str, query: &Value) -> Result<()> {
+        self.routes
+            .validate_query(&ParsedQuery::new(target, "query", query.clone()))
     }
 
     pub(crate) fn toggle_companion(
@@ -1093,11 +1081,9 @@ impl Router {
                 .expect("companion");
             return self.close_companion_mount(current);
         }
-        let explicit_query = query.is_some() && args_template.is_none();
         // Prepare the replacement before removing the settled companion. Failed
         // query validation, creation, or activation must leave it intact.
-        let mount =
-            self.instantiate_companion(target, slot, args_template, query, explicit_query)?;
+        let mount = self.instantiate_companion(target, slot, args_template, query)?;
         if let Some(current) = self.active_mut().expect("active view").companion.take()
             && let Err(error) = self.close_companion_mount(current)
         {
@@ -1342,13 +1328,72 @@ impl Router {
         // transition as rejected or roll it back.
         self.notify_transition_committed(source_id, instance);
 
-        if let Some(companion_target) = self.routes.default_companion(&canonical_request.target)
-            && let Err(error) =
-                self.toggle_companion(Some(instance), &companion_target, None, None, None)
+        if let Some(info) = self
+            .routes
+            .default_companion_info(&canonical_request.target)
         {
-            // The primary transition is already committed. Report attachment
-            // failure without presenting the primary navigation as rejected.
-            self.record_error(Some(instance), &error);
+            let initial_query = if let Some(args_tmpl) = &info.args_template {
+                let snapshot = self.active().map(|v| v.command_snapshot());
+                if let Some(snapshot) = snapshot {
+                    let current_val = snapshot
+                        .publication
+                        .as_ref()
+                        .map(|p| p.current.clone())
+                        .unwrap_or(serde_json::Value::Null);
+                    let proj_ctx = crate::workflow::projection::ContextSource {
+                        selection: if current_val.is_object() || current_val.is_array() {
+                            if let Some(item) = current_val.get("item") {
+                                Some(item)
+                            } else {
+                                Some(&current_val)
+                            }
+                        } else {
+                            None
+                        },
+                        input: if snapshot.raw_input.is_empty() {
+                            None
+                        } else {
+                            Some(&snapshot.raw_input)
+                        },
+                        query: Some(&snapshot.parameters),
+                    };
+                    let projected =
+                        crate::workflow::config::toml_to_json(args_tmpl)
+                            .ok()
+                            .map(|json_tmpl| {
+                                crate::workflow::projection::project_value(&json_tmpl, &proj_ctx)
+                            });
+                    if let Some(val @ (Value::Object(_) | Value::Array(_))) = projected {
+                        if self
+                            .routes
+                            .validate_query(&ParsedQuery::new(&info.target, "query", val.clone()))
+                            .is_err()
+                        {
+                            Some(Value::String(val.to_string()))
+                        } else {
+                            Some(val)
+                        }
+                    } else {
+                        projected
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Err(error) = self.toggle_companion(
+                Some(instance),
+                &info.target,
+                info.slot,
+                info.args_template,
+                initial_query,
+            ) {
+                eprintln!("TOGGLE ERR: {error:#}");
+                // The primary transition is already committed. Report attachment
+                // failure without presenting the primary navigation as rejected.
+                self.record_error(Some(instance), &error);
+            }
         }
 
         Ok(instance)
@@ -1679,11 +1724,10 @@ impl Router {
             }
             ViewDecision::OpenCompanion => {
                 if let Some(companion) = self.active_companion() {
-                    let mut request = self.companion_navigation_request(
+                    let request = self.companion_navigation_request(
                         &companion.target,
                         companion.last_query.clone(),
                     )?;
-                    request.companion_data = companion.last_data.clone();
                     self.transition_new(request, false, Continuation::None, source)?;
                 }
             }

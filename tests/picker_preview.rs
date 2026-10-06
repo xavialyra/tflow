@@ -156,10 +156,20 @@ import json, os, pathlib, sys, time
 request = json.load(sys.stdin)
 assert request['version'] == 1
 context = request.get('context', {})
-engine_state = context.get('engine', {}).get('state', {}) if isinstance(context.get('engine'), dict) else {}
-item = engine_state.get('item') if isinstance(engine_state, dict) else None
-if not isinstance(item, dict) and isinstance(context.get('input'), dict):
-    item = context.get('input')
+raw_params = context.get('parameters')
+if isinstance(raw_params, str):
+    try: params = json.loads(raw_params)
+    except: params = {}
+elif isinstance(raw_params, dict):
+    params = raw_params
+else:
+    params = {}
+item = params.get('item')
+if not isinstance(item, dict):
+    engine_state = context.get('engine', {}).get('state', {}) if isinstance(context.get('engine'), dict) else {}
+    item = engine_state.get('item') if isinstance(engine_state, dict) else None
+    if not isinstance(item, dict) and isinstance(context.get('input'), dict):
+        item = context.get('input')
 if not isinstance(item, dict):
     item = {'value': 'slow', 'metadata': {'query': ''}}
 metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
@@ -295,7 +305,17 @@ fn named_capture_companion_renders_selected_item_details() {
 import json, sys
 request = json.load(sys.stdin)
 context = request.get("context", {})
-item = context.get("engine", {}).get("state", {}).get("item", {})
+raw_params = context.get("parameters")
+if isinstance(raw_params, str):
+    try: params = json.loads(raw_params)
+    except: params = {}
+elif isinstance(raw_params, dict):
+    params = raw_params
+else:
+    params = {}
+item = params.get("item")
+if not isinstance(item, dict):
+    item = context.get("engine", {}).get("state", {}).get("item", {})
 val = item.get("value") or context.get("input", {}).get("value", "")
 json.dump({"version": 1, "output": {"type": "paragraph", "text": f"PREVIEW_FOR_{val}"}}, sys.stdout)
 "#,
@@ -358,9 +378,19 @@ import json, sys
 request = json.load(sys.stdin)
 context = request.get("context") if isinstance(request, dict) else {}
 if not isinstance(context, dict): context = {}
-engine = context.get("engine") if isinstance(context.get("engine"), dict) else {}
-state = engine.get("state") if isinstance(engine.get("state"), dict) else {}
-item = state.get("item") or context.get("input") or {}
+raw_params = context.get("parameters")
+if isinstance(raw_params, str):
+    try: params = json.loads(raw_params)
+    except: params = {}
+elif isinstance(raw_params, dict):
+    params = raw_params
+else:
+    params = {}
+item = params.get("item") if isinstance(params, dict) else None
+if not isinstance(item, dict):
+    engine = context.get("engine") if isinstance(context.get("engine"), dict) else {}
+    state = engine.get("state") if isinstance(engine.get("state"), dict) else {}
+    item = state.get("item") or context.get("input") or {}
 val = item.get("value") if isinstance(item, dict) else ""
 json.dump({"version": 1, "output": {"type": "paragraph", "text": f"DETAILS_FOR_{val}"}}, sys.stdout)
 sys.stdout.write("\n")
@@ -459,7 +489,18 @@ fn companion_persists_when_opening_popup() {
         r#"#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-item = request.get("context", {}).get("engine", {}).get("state", {}).get("item") or {}
+ctx = request.get("context", {})
+raw_params = ctx.get("parameters")
+if isinstance(raw_params, str):
+    try: params = json.loads(raw_params)
+    except: params = {}
+elif isinstance(raw_params, dict):
+    params = raw_params
+else:
+    params = {}
+item = params.get("item") if isinstance(params, dict) else None
+if not isinstance(item, dict):
+    item = ctx.get("engine", {}).get("state", {}).get("item") or {}
 value = item.get("value", "EMPTY")
 json.dump({"version": 1, "output": {"type": "layout", "direction": "vertical",
     "constraints": [{"Length": 1}, {"Length": 4}],

@@ -431,9 +431,38 @@ fn prepare_protocol_operation(
                 }
             } else if let Some(t) = target {
                 let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
-                let projected_query =
-                    query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx));
-                (resolved_target, None, None, projected_query)
+                let is_plain_string = config
+                    .view(&resolved_target)
+                    .map(|v| v.query.is_none())
+                    .unwrap_or(true);
+                let default_template = toml::Value::Table(
+                    [(
+                        "item".to_string(),
+                        toml::Value::String("$selection".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                );
+                let (tmpl, mut projected_query) = if let Some(q) = query {
+                    (
+                        None,
+                        Some(crate::workflow::projection::project_value(&q, &proj_ctx)),
+                    )
+                } else {
+                    let json_tmpl = crate::workflow::config::toml_to_json(&default_template)?;
+                    (
+                        Some(default_template),
+                        Some(crate::workflow::projection::project_value(
+                            &json_tmpl, &proj_ctx,
+                        )),
+                    )
+                };
+                if is_plain_string
+                    && let Some(val @ (Value::Object(_) | Value::Array(_))) = projected_query
+                {
+                    projected_query = Some(Value::String(val.to_string()));
+                }
+                (resolved_target, Some(t), tmpl, projected_query)
             } else {
                 anyhow::bail!("companion operation requires either 'slot' or 'target'");
             };

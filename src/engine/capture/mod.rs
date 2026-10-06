@@ -129,7 +129,6 @@ struct PendingCaptureScript {
     source: ResolvedScriptSource,
     parameters: serde_json::Value,
     launch_input: serde_json::Value,
-    companion_data: Option<crate::view::companion::CompanionData>,
 }
 
 enum PreparedCaptureOutput {
@@ -181,7 +180,6 @@ pub(super) fn create_view(
                     source,
                     parameters: context.parameters.values().clone(),
                     launch_input,
-                    companion_data: None,
                 }),
                 None,
             )
@@ -251,15 +249,11 @@ struct CaptureScriptOutcome {
 }
 
 fn capture_script_request(plan: &PendingCaptureScript) -> Value {
-    let (parameters, input, state) = match &plan.companion_data {
-        Some(data) => (&data.parameters, &data.input, &data.engine_state),
-        None => (&plan.parameters, &plan.launch_input, &Value::Null),
-    };
     crate::protocol::capture_request(
-        parameters,
-        input,
+        &plan.parameters,
+        &plan.launch_input,
         crate::workflow::config::ENGINE_CAPTURE,
-        state,
+        &Value::Null,
     )
 }
 
@@ -479,9 +473,9 @@ impl EngineRuntime for CaptureView {
             .with_publication(ViewContextPublication::new(current).with_ready(true)))
     }
 
-    fn update_companion_data(&mut self, data: &crate::view::companion::CompanionData) {
+    fn update_companion_query(&mut self, query: &Value) {
         if let Some(ref mut plan) = self.pending_script {
-            plan.companion_data = Some(data.clone());
+            plan.parameters = query.clone();
         }
         self.script_task = None;
         self.script_completion = None;
@@ -576,7 +570,6 @@ mod tests {
             .unwrap(),
             parameters: serde_json::json!({"target": "original"}),
             launch_input: input,
-            companion_data: None,
         }
     }
 
@@ -594,18 +587,13 @@ mod tests {
     }
 
     #[test]
-    fn companion_capture_uses_explicit_source_without_removing_business_fields() {
+    fn companion_capture_updates_parameters_and_resets_script() {
         let mut plan = request_plan(Value::Null);
-        let data = crate::view::companion::CompanionData {
-            parameters: serde_json::json!({"source": true}),
-            input: serde_json::json!({"parameters": "business data", "text": "not an item"}),
-            engine_state: serde_json::json!({"values": {"name": "demo"}}),
-        };
-        plan.companion_data = Some(data.clone());
+        let new_params = serde_json::json!({"item": {"text": "hello"}});
+        plan.parameters = new_params.clone();
         let request = capture_script_request(&plan);
-        assert_eq!(request["context"]["input"], data.input);
-        assert_eq!(request["context"]["parameters"], data.parameters);
-        assert_eq!(request["context"]["engine"]["state"], data.engine_state);
+        assert_eq!(request["context"]["parameters"], new_params);
+        assert_eq!(request["context"]["engine"]["state"], Value::Null);
     }
 
     #[test]

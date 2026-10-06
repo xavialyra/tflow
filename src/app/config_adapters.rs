@@ -42,6 +42,60 @@ impl RouteCatalog for CompiledRouteCatalog {
             .ok()
     }
 
+    fn default_companion_info(&self, target: &str) -> Option<crate::view::DefaultCompanionInfo> {
+        let view = self.config.view(target)?;
+        let companion_target = view.companion.as_ref()?;
+        if let Some(slot) = view.companions.get(companion_target) {
+            let resolved_target = self.config.resolve_view_scoped(&slot.target, target).ok()?;
+            Some(crate::view::DefaultCompanionInfo {
+                target: resolved_target,
+                slot: Some(companion_target.clone()),
+                args_template: slot.args.clone(),
+            })
+        } else {
+            let resolved_target = self
+                .config
+                .resolve_view_scoped(companion_target, target)
+                .ok()?;
+            Some(crate::view::DefaultCompanionInfo {
+                target: resolved_target,
+                slot: None,
+                args_template: None,
+            })
+        }
+    }
+
+    fn parse_query(&self, target: &str, query: Option<serde_json::Value>) -> Result<ParsedQuery> {
+        let mut state = self.config.instantiate_parameters(target)?;
+        if let Some(ref q) = query
+            && !q.is_null()
+        {
+            if q.is_string() {
+                self.config
+                    .update_sanitized_initial_parameter_values(&mut state, q)?;
+            } else if let Some(_obj) = q.as_object() {
+                let is_plain = self
+                    .config
+                    .query_definition(target)
+                    .map(|d| d.get("type").and_then(|t| t.as_str()) == Some("string"))
+                    .unwrap_or(true);
+                if is_plain {
+                    let str_val = serde_json::Value::String(q.to_string());
+                    self.config
+                        .update_sanitized_initial_parameter_values(&mut state, &str_val)?;
+                } else {
+                    self.config
+                        .update_sanitized_initial_parameter_values(&mut state, q)?;
+                }
+            } else {
+                self.config
+                    .update_sanitized_initial_parameter_values(&mut state, q)?;
+            }
+        }
+        let values = self.config.parameter_values(&state)?;
+        Ok(ParsedQuery::new(target, "query", values))
+    }
+
     fn default_query(&self, target: &str) -> Result<ParsedQuery> {
         let state = self.config.instantiate_parameters(target)?;
         let values = self.config.parameter_values(&state)?;
