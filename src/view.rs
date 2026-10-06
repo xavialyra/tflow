@@ -967,8 +967,14 @@ impl Router {
         let mut request = NavigationRequest::new(location.target, parsed_query.clone());
         let text = match &parsed_query.values {
             Value::String(s) => s.clone(),
-            Value::Null => String::new(),
-            other => other.to_string(),
+            Value::Object(map) => map
+                .get("search")
+                .or_else(|| map.get("input"))
+                .or_else(|| map.get("query"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            _ => String::new(),
         };
         if !text.is_empty() {
             let cursor = text.len();

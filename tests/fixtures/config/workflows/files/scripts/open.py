@@ -21,10 +21,12 @@ def main():
     selection = context.get("selection") or {}
     metadata = selection.get("metadata") or {}
 
-    is_dir = metadata.get("is_dir", False)
-    target_path = metadata.get("target_dir") or metadata.get("path") or selection.get("value")
+    path = metadata.get("path") or selection.get("value") or ""
+    is_dir = metadata.get("is_dir")
+    if is_dir is None and path:
+        is_dir = os.path.isdir(path)
 
-    if is_dir and target_path:
+    if is_dir and path:
         response = {
             "version": 1,
             "operation": {
@@ -32,18 +34,18 @@ def main():
                 "target": "main",
                 "clear_input": True,
                 "query": {
-                    "dir": target_path,
+                    "dir": path,
                     "search": "",
                 },
             },
         }
-    elif target_path:
+    elif path:
         editor = os.environ.get("EDITOR") or "xdg-open"
         response = {
             "version": 1,
             "operation": {
                 "type": "run",
-                "argv": [editor, target_path],
+                "argv": [editor, path],
             },
         }
     else:

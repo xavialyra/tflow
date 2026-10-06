@@ -63,10 +63,24 @@ def main():
         except Exception:
             parameters = {}
 
-    current_dir = parameters.get("dir")
-    if not current_dir or not isinstance(current_dir, str):
+    dir_param = parameters.get("dir")
+    if dir_param == "":
+        response = {"version": 1, "items": []}
+        json.dump(response, sys.stdout)
+        sys.stdout.write("\n")
+        return
+
+    if dir_param is None:
         current_dir = os.getcwd()
+    else:
+        current_dir = str(dir_param)
     current_dir = os.path.abspath(os.path.expanduser(current_dir))
+
+    if not os.path.isdir(current_dir):
+        response = {"version": 1, "items": []}
+        json.dump(response, sys.stdout)
+        sys.stdout.write("\n")
+        return
 
     search_query = parameters.get("search", "")
     if not isinstance(search_query, str):
@@ -74,47 +88,6 @@ def main():
     search_query = search_query.strip().lower()
 
     items = []
-
-    if os.path.isfile(current_dir):
-        try:
-            stat = os.stat(current_dir)
-            size_str = human_size(stat.st_size)
-            mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
-            name = os.path.basename(current_dir)
-            ext = os.path.splitext(name)[1].lower()
-            icon = EXTENSION_ICONS.get(ext, "📄")
-            items.append({
-                "display": f"{icon} {name} ({size_str}) - {mtime}",
-                "value": current_dir,
-                "metadata": {
-                    "name": name,
-                    "path": current_dir,
-                    "is_dir": False,
-                    "size": stat.st_size,
-                    "size_str": size_str,
-                    "mtime": mtime,
-                },
-            })
-        except OSError:
-            pass
-        response = {"version": 1, "items": items}
-        json.dump(response, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    parent_dir = os.path.dirname(current_dir)
-    if parent_dir != current_dir and not search_query:
-        items.append({
-            "display": "📁 .. (parent directory)",
-            "value": parent_dir,
-            "metadata": {
-                "name": "..",
-                "path": parent_dir,
-                "is_dir": True,
-                "is_parent": True,
-                "target_dir": parent_dir,
-            },
-        })
 
     try:
         entries = os.scandir(current_dir)
@@ -140,8 +113,7 @@ def main():
                 "name": name,
                 "path": entry.path,
                 "is_dir": is_dir,
-                "is_parent": False,
-                "target_dir": entry.path if is_dir else current_dir,
+                "target_dir": entry.path if is_dir else "",
                 "size": size,
                 "size_str": human_size(size) if not is_dir else "dir",
                 "mtime": mtime,
