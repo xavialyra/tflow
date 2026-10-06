@@ -178,12 +178,13 @@ file = "scripts/items.sh"      # or `script = "..."` for inline script
 
 #### Companion Views (`companion` - ADR 0010)
 
-Any view can declare an attached default companion view (rendered side-by-side in split panes) via pure reference syntax:
+Any view can declare an attached default companion view (rendered side-by-side or stacked in adaptive split panes) via pure reference syntax:
 
 ```toml
 [views.main]
 engine = "picker"
 companion = "details"          # Target named view; opens by default
+companion_size = ["40%", 12]  # [width, height] dimension constraint
 
 [views.details]
 engine = "capture"
@@ -193,6 +194,23 @@ file = "scripts/preview.py"
 ```
 
 Declaring `companion` on a view mounts it automatically upon entering the view. Primary view selection and publication state are synchronized to the companion view's query.
+
+##### Layout & Dimension Constraints (`companion_size`)
+
+The `companion_size` field controls the dimension allocated to the companion pane.
+
+- **Two-dimensional Pair (`[width, height]`)**:
+  - `width`: Constraint applied when split horizontally (side-by-side).
+  - `height`: Constraint applied when split vertically (stacked).
+  - Supports percentages (`"40%"`) and fixed cells (`12`).
+  - Example: `companion_size = ["45%", 10]` or `companion_size = ["50%", "35%"]`.
+- **Single Value Shorthand**:
+  - Sets identical constraints across both horizontal and vertical layouts.
+  - Example: `companion_size = "40%"` or `companion_size = 30`.
+- **Adaptive Auto Layout**:
+  - **Horizontal Split**: Terminal width >= 60 and terminal width >= 2 * height. The companion renders on the right with a vertical separator `│`.
+  - **Vertical Split**: Triggered on narrow or stacked viewports when height >= 3. The companion renders at the bottom with a horizontal separator `─`.
+  - Defaults to `50%` / `50%` split when omitted.
 
 ##### Command Operations (`companion`)
 

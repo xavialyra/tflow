@@ -1,12 +1,21 @@
 # Development Log
 
+> **Note:** This log records only concise summaries of notable architectural, configuration, and documentation changes. For detailed design rationale and implementation history, refer to the [Architecture Decision Records](adr/index.md) and commit history.
+
+## 2026-10-06: Companion adaptive layout, sizing, and contract convergence (v0.1.0-alpha.10)
+
+- Implemented adaptive multi-direction layout: automatic horizontal split with vertical divider on wide terminals (`width >= 60 && width >= height * 2`) and vertical split with horizontal divider on narrow or stacked terminals.
+- Added view-level `companion_size` configuration supporting 2D pairs `[width, height]` (e.g. `["40%", 12]`) as well as 1D shorthand (e.g. `"40%"` or `50`), with seamless default fallback to 50%/50%.
+- Tuned default workflow ergonomics and companion aspect ratios across `init.toml`, `apps`, `calculator`, `clipboard`, and `sys`.
+- Promoted companion attachments into first-class `type = "companion"` commands, removing intermediate companion slot tables in favor of pure dynamic context projections.
+- Fixed structured query deserialization when switching into companion views by adding newline-preserving parameter sanitization (`sanitize_parameter_text`).
+- Isolated view command exposure to strictly declared bindings, preventing global workflow command leaks in palette and chrome.
+
 ## 2026-10-06: Alpha.8 release alignment
 
 - Aligned the alpha.8 changelog and Companion guide with the implemented passive attachment model: ordinary stack navigation, explicit source payloads, Picker/Capture live updates, and Form/Embedded mount snapshots.
 - Marked the obsolete pane-focus, promotion/demotion, and Escape-ladder proposal as historical rather than runtime behavior.
 - Documented display-sized Capture image caching, resize reloads, request coalescing, popup-layer handling, and tmux protocol limitations.
-
-> **Note:** This log records only concise summaries of notable architectural, configuration, and documentation changes. For detailed design rationale and implementation history, refer to the [Architecture Decision Records](adr/index.md) and commit history.
 
 ## 2026-10-05: Companion data and scheduling boundaries
 

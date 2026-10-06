@@ -22,6 +22,7 @@ Declare `companion = "<target>"` on any primary view definition. The companion m
 [views.main]
 engine = "picker"
 companion = "details"
+companion_size = ["45%", "35%"] # [width, height] constraint
 
 [views.details]
 engine = "capture"
@@ -29,6 +30,13 @@ engine = "capture"
 [views.details.capture.output]
 file = "scripts/details.py"
 ```
+
+### Adaptive Split & Sizing
+
+The Host evaluates viewport aspect ratios automatically (`auto` layout):
+- **Wide Viewport**: Automatically splits horizontally (side-by-side) with a vertical divider `│`. The companion takes `companion_size.width` (e.g. `"45%"`).
+- **Narrow / Tall Viewport**: Automatically splits vertically (stacked) with a horizontal divider `─`. The companion takes `companion_size.height` (e.g. `"35%"` or `12` rows).
+- Dimension constraints accept both percentage strings (`"50%"`) and absolute integer rows/columns (`15`). When `companion_size` is omitted, it defaults to `50%` / `50%`.
 
 ## 2. Toggle Companion Visibility
 

@@ -4,6 +4,22 @@ All notable changes to `tflow` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.10] - 2026-10-06
+
+### Added
+- **Adaptive Multi-direction Companion Layout**:
+  - Host dynamically chooses between horizontal split (with vertical divider `│`) on wide viewports and vertical split (with horizontal divider `─`) on narrow or stacked viewports.
+- **View-Level Companion Sizing (`companion_size`)**:
+  - Views can declare companion dimension constraints using 2D pairs `[width, height]` (e.g. `["45%", 12]`) or 1D shorthand (`"40%"`), supporting percentages and absolute integer units.
+- **Structured Parameter Sanitization (`sanitize_parameter_text`)**:
+  - Added dedicated parameter text sanitizer preserving newlines, carriage returns, and tabs while stripping ANSI codes, preventing structured query validation failures when switching into companion views.
+
+### Changed
+- **Tuned Workflow Ergonomics**:
+  - Calibrated default suite companion sizing across `init.toml`, `apps`, `calculator`, `clipboard`, and `sys` for enhanced information density and balanced visual hierarchy.
+- **Strict View Command Isolation**:
+  - Restored strict view command scoping: views now expose only explicitly declared bindings, eliminating command leakage from the parent workflow into the command palette.
+
 ## [0.1.0-alpha.9] - 2026-10-02
 
 ### Added
