@@ -1148,7 +1148,6 @@ impl ProtocolSession {
                         instance.input.editor.replace_all(raw, cursor);
                     }
                     invalidated = decision != ViewDecision::Stay;
-                    companion_mut.last_query = data.query_seed();
                     companion_mut.last_data = Some(data);
                 }
             }

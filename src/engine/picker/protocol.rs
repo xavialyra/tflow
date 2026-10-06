@@ -487,10 +487,13 @@ impl View for PickerProtocolView {
         data: &crate::view::companion::CompanionData,
         context: &ViewContext,
     ) -> Result<ViewDecision> {
-        let value = data.query_seed().unwrap_or(Value::Null);
-        let text = match value {
-            Value::String(text) => text,
-            Value::Null => String::new(),
+        let text = match &data.input {
+            Value::String(text) => text.clone(),
+            Value::Null => match &data.parameters {
+                Value::String(text) => text.clone(),
+                Value::Null => String::new(),
+                value => value.to_string(),
+            },
             value => value.to_string(),
         };
         let input = crate::input::EditorBuffer::from_raw(text.clone(), text.len()).snapshot();

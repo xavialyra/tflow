@@ -23,24 +23,6 @@ impl CompanionData {
             engine_state: state,
         }
     }
-
-    /// Compatibility seed for targets whose query represents the source snapshot.
-    /// The typed source payload itself is never flattened or parsed from this seed.
-    pub(crate) fn query_seed(&self) -> Option<Value> {
-        if !self.input.is_null() {
-            let Some(mut obj) = self.input.as_object().cloned() else {
-                return Some(self.input.clone());
-            };
-            if !self.parameters.is_null() {
-                obj.insert("parameters".into(), self.parameters.clone());
-            }
-            Some(Value::Object(obj))
-        } else if !self.parameters.is_null() {
-            Some(self.parameters.clone())
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]

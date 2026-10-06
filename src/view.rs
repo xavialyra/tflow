@@ -1094,9 +1094,6 @@ impl Router {
             return self.close_companion_mount(current);
         }
         let explicit_query = query.is_some() && args_template.is_none();
-        let query = query.or_else(|| {
-            companion::CompanionData::from_snapshot(&self.active()?.command_snapshot()).query_seed()
-        });
         // Prepare the replacement before removing the settled companion. Failed
         // query validation, creation, or activation must leave it intact.
         let mount =
