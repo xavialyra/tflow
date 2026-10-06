@@ -5,7 +5,7 @@ name = "files"
 [views.main]
 engine = "picker"
 companion = "preview"
-companion_size = ["55%", "40%"]
+companion_size = ["50%", "45%"]
 
 [views.main.query]
 type = "object"
@@ -18,16 +18,6 @@ input_placeholder = "Search files & directories"
 
 [views.main.picker.items]
 file = "scripts/items.py"
-
-[views.preview]
-engine = "capture"
-
-[views.preview.query]
-type = "object"
-item = { type = "object", default = {} }
-
-[views.preview.capture.output]
-file = "scripts/preview.py"
 
 [views.main.bindings]
 "ctrl+p" = "preview"
@@ -51,7 +41,7 @@ type = "run"
 file = "scripts/copy_path.py"
 
 [commands.preview]
-label = "Toggle Preview"
+label = "Toggle Preview Column"
 type = "companion"
-target = "preview"
-args = { item = "$selection" }
+target = "main"
+args = { dir = "$selection.metadata.target_dir", search = "" }

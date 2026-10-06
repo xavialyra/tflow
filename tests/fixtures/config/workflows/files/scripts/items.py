@@ -75,6 +75,33 @@ def main():
 
     items = []
 
+    if os.path.isfile(current_dir):
+        try:
+            stat = os.stat(current_dir)
+            size_str = human_size(stat.st_size)
+            mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+            name = os.path.basename(current_dir)
+            ext = os.path.splitext(name)[1].lower()
+            icon = EXTENSION_ICONS.get(ext, "📄")
+            items.append({
+                "display": f"{icon} {name} ({size_str}) - {mtime}",
+                "value": current_dir,
+                "metadata": {
+                    "name": name,
+                    "path": current_dir,
+                    "is_dir": False,
+                    "size": stat.st_size,
+                    "size_str": size_str,
+                    "mtime": mtime,
+                },
+            })
+        except OSError:
+            pass
+        response = {"version": 1, "items": items}
+        json.dump(response, sys.stdout)
+        sys.stdout.write("\n")
+        return
+
     parent_dir = os.path.dirname(current_dir)
     if parent_dir != current_dir and not search_query:
         items.append({

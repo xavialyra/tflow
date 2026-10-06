@@ -331,26 +331,22 @@ impl CompiledConfig {
                 if target.trim().is_empty() {
                     bail!("view {:?} companion target cannot be empty", view_ref);
                 }
-                let resolved = self
-                    .resolve_view_scoped(target, view_ref)
+                let target_view = if let Some(cmd) = self.find_command(wf_id, target)
+                    && let crate::workflow::config::CommandAction::Companion { payload, .. } = &cmd.action
+                    && let toml::Value::Table(table) = payload
+                {
+                    table.get("target").and_then(|v| v.as_str()).unwrap_or(target)
+                } else {
+                    target.as_str()
+                };
+                let _resolved = self
+                    .resolve_view_scoped(target_view, view_ref)
                     .with_context(|| {
                         format!(
                             "view {:?} companion references unknown view {:?}",
-                            view_ref, target
+                            view_ref, target_view
                         )
                     })?;
-                if resolved == *view_ref {
-                    bail!("view {:?} cannot set itself as companion", view_ref);
-                }
-                if let Some(companion_view) = self.views.get(&resolved)
-                    && companion_view.companion.is_some()
-                {
-                    bail!(
-                        "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",
-                        view_ref,
-                        resolved
-                    );
-                }
             }
             self.validate_unbind(&view.unbind, view_ref, view)?;
             if let Some(bindings) = &view.bindings {

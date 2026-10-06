@@ -37,6 +37,17 @@ impl RouteCatalog for CompiledRouteCatalog {
     fn default_companion(&self, target: &str) -> Option<String> {
         let view = self.config.view(target)?;
         let companion_target = view.companion.as_ref()?;
+        let pkg = crate::workflow::config::package_id(target);
+        if let Some(cmd) = self.config.find_command(pkg, companion_target)
+            && let crate::workflow::config::CommandAction::Companion { payload, .. } = &cmd.action
+            && let toml::Value::Table(table) = payload
+        {
+            let target_name = table
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or(companion_target);
+            return self.config.resolve_view_scoped(target_name, target).ok();
+        }
         self.config
             .resolve_view_scoped(companion_target, target)
             .ok()
