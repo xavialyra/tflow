@@ -67,25 +67,7 @@ impl ViewCommandProvider for StaticViewCommandProvider {
         _snapshot: &ViewCommandSnapshot,
     ) -> Result<Vec<crate::command::CommandEntry>> {
         let source = ViewCommandSource::new(&self.config, &self.target, &self.member_id);
-        let declared = self
-            .config
-            .view(&self.target)
-            .and_then(|view| view.bindings.as_ref())
-            .is_some_and(|bindings| !bindings.is_empty());
-
-        if declared {
-            return Ok(source.declared_entries());
-        }
-
-        // Without a bindings table every workflow command of the View's own
-        // workflow is a candidate without a physical shortcut.
-        let mut entries = Vec::new();
-        for (fqid, _cmd) in self.config.workflow_commands(&self.member_id) {
-            if let Some(entry) = source.entry(&fqid, None) {
-                entries.push(entry);
-            }
-        }
-        Ok(entries)
+        Ok(source.declared_entries())
     }
 }
 

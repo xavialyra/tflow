@@ -2,7 +2,7 @@ use super::schema::{
     ParameterSchema, ViewParameterSchema, compile_parameter_schema, validate_required,
 };
 use crate::input::InputSourceIdentity;
-use crate::terminal::sanitize_terminal_text;
+use crate::terminal::sanitize_parameter_text;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -453,7 +453,7 @@ impl ParameterRegistry {
 
 fn sanitize_parameter_value(value: &Value) -> Value {
     match value {
-        Value::String(value) => Value::String(sanitize_terminal_text(value)),
+        Value::String(value) => Value::String(sanitize_parameter_text(value)),
         Value::Array(values) => Value::Array(values.iter().map(sanitize_parameter_value).collect()),
         Value::Object(values) => Value::Object(
             values

@@ -137,10 +137,30 @@ impl RouteCatalog for CompiledRouteCatalog {
             .parameter_binding(&query.target)?
             .validate_instance(&state)?;
         let values = self.config.parameter_values(&state)?;
-        anyhow::ensure!(
-            values == query.values,
-            "parsed query values do not match target schema"
-        );
+        if values != query.values {
+            if let (Some(obj_vals), Some(obj_query)) =
+                (values.as_object(), query.values.as_object())
+            {
+                for (k, v) in obj_query {
+                    if v.is_null() {
+                        continue;
+                    }
+                    anyhow::ensure!(
+                        obj_vals.get(k) == Some(v),
+                        "parsed query values do not match target schema (field {:?}: expected {:?}, got {:?})",
+                        k,
+                        obj_vals.get(k),
+                        v
+                    );
+                }
+            } else {
+                anyhow::bail!(
+                    "parsed query values do not match target schema (values={:?}, query.values={:?})",
+                    values,
+                    query.values
+                );
+            }
+        }
         Ok(())
     }
 }

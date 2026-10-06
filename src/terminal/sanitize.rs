@@ -54,6 +54,55 @@ pub(crate) fn sanitize_terminal_text(text: &str) -> String {
     output
 }
 
+pub(crate) fn sanitize_parameter_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut escape = false;
+    let mut csi = false;
+    let mut osc = false;
+    let mut osc_escape = false;
+
+    for character in text.chars() {
+        if osc {
+            if osc_escape {
+                osc_escape = false;
+                if character == '\\' {
+                    osc = false;
+                }
+            } else if character == '\u{7}' {
+                osc = false;
+            } else if character == '\u{1b}' {
+                osc_escape = true;
+            }
+            continue;
+        }
+        if csi {
+            if ('@'..='~').contains(&character) {
+                csi = false;
+            }
+            continue;
+        }
+        if escape {
+            escape = false;
+            match character {
+                '[' => csi = true,
+                ']' => osc = true,
+                _ => {}
+            }
+            continue;
+        }
+        if character == '\u{1b}' {
+            escape = true;
+            continue;
+        }
+        if character.is_control() && character != '\n' && character != '\r' && character != '\t' {
+            continue;
+        }
+        output.push(character);
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

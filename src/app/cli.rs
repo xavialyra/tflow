@@ -557,34 +557,25 @@ fn view_contract(
     // is the View's declared binding for the command, if any; `bindings` below
     // repeats the declared table with every address resolved to a command FQID.
     // A View binding always names a command, so there is nothing else to keep.
-    let mut declared_keys: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
+    let mut commands_json: Vec<serde_json::Value> = Vec::new();
     if let Some(bindings) = &view.bindings {
         for (key, val) in bindings {
             let Some(address) = val.as_str() else {
                 continue;
             };
-            // Engine actions are not workflow commands, so they never match an
-            // entry of the `commands` list below.
-            if let Some(crate::workflow::config::ResolvedAddress::Command { fqid, .. }) =
+            if let Some(crate::workflow::config::ResolvedAddress::Command { fqid, label }) =
                 config.resolve_address(member_id, address)
+                && !commands_json.iter().any(|c| c["id"] == fqid)
             {
-                declared_keys.entry(fqid).or_insert_with(|| key.clone());
+                commands_json.push(serde_json::json!({
+                    "id": fqid,
+                    "label": label,
+                    "key": Some(key),
+                    "layer": "view",
+                }));
             }
         }
     }
-    let commands_json: Vec<serde_json::Value> = config
-        .workflow_commands(member_id)
-        .into_iter()
-        .map(|(fqid, cmd)| {
-            serde_json::json!({
-                "id": fqid,
-                "label": cmd.label,
-                "key": declared_keys.get(&fqid),
-                "layer": "view",
-            })
-        })
-        .collect();
 
     let mut bindings_json = serde_json::Map::new();
     if let Some(bindings) = &view.bindings {

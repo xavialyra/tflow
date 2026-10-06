@@ -302,17 +302,6 @@ impl CompiledConfig {
         Some(ResolvedAddress::Command { fqid, label })
     }
 
-    pub(crate) fn workflow_commands(&self, workflow_id: &str) -> BTreeMap<String, Command> {
-        let prefix = format!("{workflow_id}.");
-        let mut map = BTreeMap::new();
-        for (k, v) in &self.all_commands {
-            if k.starts_with(&prefix) {
-                map.insert(k.clone(), v.clone());
-            }
-        }
-        map
-    }
-
     pub(crate) fn iter_public_views(&self) -> impl Iterator<Item = (&ViewRef, &View)> {
         self.views
             .iter()

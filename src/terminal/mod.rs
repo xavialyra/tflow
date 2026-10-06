@@ -3,7 +3,7 @@ mod sanitize;
 
 use cursor_backend::CursorBackend;
 
-pub(crate) use sanitize::{sanitize_terminal_text, sanitize_text};
+pub(crate) use sanitize::{sanitize_parameter_text, sanitize_terminal_text, sanitize_text};
 
 use crate::identity::PRODUCT;
 use crate::lifecycle::CancellationToken;
