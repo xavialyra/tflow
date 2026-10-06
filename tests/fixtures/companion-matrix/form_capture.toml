@@ -1,0 +1,44 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/form_capture.toml
+# Form drafts are published state: use $item, not immutable launch $input.
+[workflow]
+api = 1
+name = "Form + Capture: Live Draft Summary"
+entrypoint = "main"
+
+[views.main]
+engine = "form"
+companion = "summary"
+
+[views.main.form.content]
+fields = [
+  { name = "name", label = "Name", type = "string", value = "demo", required = true },
+  { name = "environment", label = "Environment", type = "enum", options = ["dev", "staging", "prod"], value = "dev" },
+  { name = "enabled", label = "Enabled", type = "boolean", value = true },
+]
+
+[views.summary]
+engine = "capture"
+
+[views.summary.capture.output]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+raw = request["context"]["input"]
+state = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+values = state.get("values", {})
+lines = ["LIVE FORM SUMMARY", "",
+         "Name: " + str(values.get("name", "")),
+         "Environment: " + str(values.get("environment", "")),
+         "Enabled: " + str(values.get("enabled", False)).lower(),
+         "Valid: " + str(state.get("valid", False)).lower(),
+         "Dirty: " + str(state.get("dirty", False)).lower(),
+         "", "Edit fields on the left.", "Tab: next field", "Esc: back/close"]
+json.dump({"version": 1, "output": "\n".join(lines)}, sys.stdout)
+'''
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "summary"

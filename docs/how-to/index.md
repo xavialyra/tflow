@@ -5,7 +5,7 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 ## Engine Guides
 
 - **[Picker Views](picker-views.md)**
-  Configure static items, script item producers, dynamic aggregation, and declared, script-produced, or inherited preview documents.
+  Configure static items, script item producers, dynamic aggregation, and named Companion detail Views.
 
 - **[Capture Views](capture-views.md)**
   Configure static or script-produced Capture output and lifecycle behavior.
@@ -21,7 +21,10 @@ How-to guides provide recipes and solutions for specific, task-focused challenge
 
 ## Cross-Cutting Guides
 
-- **[Commands and Producer Scripts](commands-and-producers.md)**
+- **[Companion Views](companion-views.md)**
+  Configure side-by-side companion views across engines with automatic state synchronization.
+
+- **[Commands and Producer Scripts](commands-and-producers.md)****
   Configure commands and read the shared version-1 producer context.
 
 - **[View Navigation & Popups](view-navigation-and-popups.md)**

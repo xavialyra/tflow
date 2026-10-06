@@ -4,9 +4,12 @@ import sys
 
 
 def main():
-    request = json.load(sys.stdin)
-    if request.get("entrypoint") != "picker-preview":
-        raise ValueError("expected a picker-preview producer request")
+    try:
+        request = json.load(sys.stdin)
+    except Exception:
+        json.dump({"version": 1, "output": None}, sys.stdout)
+        sys.stdout.write("\n")
+        return
 
     context = request.get("context", {})
     parameters = context.get("parameters", {})
@@ -15,6 +18,10 @@ def main():
     engine = context.get("engine", {})
     state = engine.get("state", {}) if isinstance(engine, dict) else {}
     item = state.get("item")
+    if not isinstance(item, dict) and isinstance(context, dict):
+        inp = context.get("input")
+        if isinstance(inp, dict):
+            item = inp
 
     children = []
 
@@ -66,7 +73,7 @@ def main():
 
     doc = {
         "version": 1,
-        "preview": {
+        "output": {
             "type": "layout",
             "direction": "vertical",
             "constraints": [{"Length": 6}, {"Fill": 1}],

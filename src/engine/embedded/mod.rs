@@ -101,13 +101,6 @@ fn reject_picker_sources(name: &str, view: &crate::workflow::config::View) -> Re
             view.selected_engine_type()
         );
     }
-    if view.selected_preview().is_some() {
-        anyhow::bail!(
-            "view {:?} using engine {:?} cannot define preview",
-            name,
-            view.selected_engine_type()
-        );
-    }
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::ProjectedBindingConfig;
+use crate::ui::chrome::input::format_visible_omnibar as visible_editor_query;
 use crate::view::ViewContext;
 use anyhow::bail;
 use ratatui::{Terminal, backend::TestBackend};
@@ -15,8 +16,53 @@ fn request(target: &str) -> NavigationRequest {
     )
 }
 
+fn apply_edit(view: &mut dyn View, decision: ViewDecision, context: &ViewContext) -> ViewDecision {
+    if let ViewDecision::EditInput(edit) = decision {
+        let mut input = crate::ui::chrome::HostInputState::for_view(view);
+        if input.edit(edit) {
+            view.on_host_input_changed(&input.editor.snapshot(), context)
+                .unwrap()
+        } else {
+            ViewDecision::Stay
+        }
+    } else {
+        decision
+    }
+}
+
 fn key(view: &mut dyn View, key: Key, context: &ViewContext) -> ViewDecision {
-    crate::view::dispatch_test_key(view, key, &[], context).unwrap()
+    let decision = crate::view::dispatch_test_key(view, key, &[], context).unwrap();
+    apply_edit(view, decision, context)
+}
+
+fn render_hosted(
+    view: &dyn View,
+    frame: &mut Frame,
+    area: Rect,
+    context: &RenderContext,
+) -> RenderResult {
+    let input = crate::ui::chrome::HostInputState::for_view(view);
+    let layout = crate::ui::chrome::PaneLayout::new(
+        area,
+        input.mode.is_visible(),
+        view.input_divider(),
+        false,
+    );
+    if let Some(omnibar) = layout.omnibar {
+        crate::ui::chrome::render_omnibar_widget(
+            frame,
+            omnibar,
+            &input,
+            &ResolvedTheme::terminal(),
+        );
+    }
+    if let Some(divider) = layout.divider {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new("─".repeat(divider.width as usize)),
+            divider,
+        );
+    }
+    view.render(frame, layout.primary, context).unwrap()
 }
 
 fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> PickerProtocolConfig {
@@ -31,7 +77,6 @@ fn config_with_tasks(services: PickerViewServices, tasks: TaskRuntime) -> Picker
         theme: ResolvedTheme::terminal(),
         left_prefix: None,
         prefix_backspace: None,
-        preview: None,
         runtime_snapshot: serde_json::json!({"view": {}}),
         tasks,
     }
@@ -158,7 +203,7 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
     let render = |view: &dyn View, terminal: &mut Terminal<TestBackend>| {
         terminal
             .draw(|frame| {
-                view.render(frame, frame.area(), &render_context).unwrap();
+                render_hosted(view, frame, frame.area(), &render_context);
             })
             .unwrap();
     };
@@ -192,7 +237,7 @@ fn input_placeholder_renders_in_the_query_row_without_touching_the_buffer() {
 }
 
 #[test]
-fn picker_retained_content_area_keeps_only_the_item_and_preview_body() {
+fn picker_retained_content_area_keeps_only_the_item_body() {
     let tasks = TaskRuntime::new();
     let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
     let services = crate::engine::picker::PickerRuntimeServices::new(
@@ -212,8 +257,8 @@ fn picker_retained_content_area_keeps_only_the_item_and_preview_body() {
     let area = Rect::new(0, 0, 40, 12);
     assert_eq!(
         view.retained_content_area(area),
-        Some(Rect::new(0, 2, 40, 10)),
-        "the input row and divider must stay on the new instance"
+        Some(area),
+        "Picker renders content only; Host owns the input rows"
     );
     tasks.shutdown_and_wait();
 }
@@ -456,7 +501,7 @@ fn view_with_stale_aware_runtime(
         left_prefix: None,
         theme: ResolvedTheme::terminal(),
         parameter_binding,
-        editor: editor.clone(),
+        editor: editor.snapshot(),
         parameters: parameters.clone(),
         engine_context: engine_context(
             instance,
@@ -478,7 +523,6 @@ fn view_with_stale_aware_runtime(
         activated_once: false,
         closed: false,
         defer_work_poll: false,
-        task_completion_pending: false,
         publication_ready: false,
         diagnostic: None,
         content_size: (1, 1),
@@ -500,7 +544,7 @@ fn backspace_decision(
     view.left_prefix = left_prefix.map(str::to_string);
     view.options.show_left_prefix = show_left_prefix;
     view.options.prefix_backspace = behavior;
-    view.editor.clear();
+    view.editor = EditorBuffer::from_raw("", 0).snapshot();
     let mut context = ViewContext::new(ViewInstanceId(1), "core:default");
     context.has_parent = true;
     let decision = key(&mut view, Key::Backspace, &context);
@@ -547,14 +591,18 @@ fn root_picker_clears_input_on_back_before_closing() {
         invalid_integer_binding(),
         &tasks,
     );
-    view.editor = EditorBuffer::from_raw("query", 5);
+    view.editor = EditorBuffer::from_raw("query", 5).snapshot();
 
     let mut root_context = ViewContext::new(ViewInstanceId(1), "core:default");
     root_context.has_parent = false;
 
     // 1. First back on root view with non-empty input: should clear input and not close
     let decision = view.on_command(CMD_BACK, &root_context).unwrap();
-    assert!(!matches!(decision, ViewDecision::Close));
+    assert!(matches!(
+        decision,
+        ViewDecision::EditInput(InputEdit::Clear)
+    ));
+    apply_edit(&mut view, decision, &root_context);
     assert!(view.editor.raw.is_empty());
 
     // 2. Second back on root view with empty input: should close
@@ -564,7 +612,7 @@ fn root_picker_clears_input_on_back_before_closing() {
     // 3. Child view with non-empty input: should immediately close without clearing
     let mut child_context = ViewContext::new(ViewInstanceId(1), "core:default");
     child_context.has_parent = true;
-    view.editor = EditorBuffer::from_raw("child query", 11);
+    view.editor = EditorBuffer::from_raw("child query", 11).snapshot();
     let decision = view.on_command(CMD_BACK, &child_context).unwrap();
     assert!(matches!(decision, ViewDecision::Close));
     assert_eq!(view.editor.raw, "child query");
@@ -573,70 +621,11 @@ fn root_picker_clears_input_on_back_before_closing() {
 }
 
 #[test]
-#[allow(clippy::type_complexity)]
-fn preview_body_size_tracks_resize_and_committed_starts() {
-    struct SizedRuntime {
-        size: (u16, u16),
-        seen: Arc<std::sync::Mutex<Vec<(&'static str, (u16, u16))>>>,
-    }
-    impl EngineRuntime for SizedRuntime {
-        fn set_auxiliary_content_size(&mut self, size: (u16, u16)) {
-            self.size = size;
-            self.seen.lock().unwrap().push(("size", size));
-        }
-        fn start_prepared_work(&mut self, _: &MountTaskStarter) -> bool {
-            self.seen.lock().unwrap().push(("main", self.size));
-            false
-        }
-        fn start_prepared_auxiliary_work(&mut self, _: &MountTaskStarter) -> Vec<(TaskId, u64)> {
-            self.seen.lock().unwrap().push(("auxiliary", self.size));
-            Vec::new()
-        }
-        fn action(&mut self, _: EngineActionInput) -> Result<EngineEmission> {
-            self.seen.lock().unwrap().push(("action", self.size));
-            Ok(EngineEmission::decision(EngineDecision::Continue))
-        }
-        fn render_model(&self) -> crate::engine::RenderModel {
-            crate::engine::RenderModel::new("picker", ())
-        }
-    }
-    let tasks = TaskRuntime::new();
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let runtime = SizedRuntime {
-        size: (99, 99),
-        seen: seen.clone(),
-    };
-    let mut view =
-        view_with_stale_aware_runtime(Box::new(runtime), invalid_integer_binding(), &tasks);
-    view.options.show_input = true;
-    view.options.show_divider = true;
-    let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    let resize = |height| ViewEvent::Resize(crate::view::TerminalSize { width: 40, height });
-    view.event(resize(8), &context).unwrap();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 6))));
-    view.start_prepared_work();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 6))));
-    view.event(resize(12), &context).unwrap();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
-    key(&mut view, Key::Escape, &context);
-    assert_eq!(seen.lock().unwrap().last(), Some(&("size", (40, 10))));
-    view.action(&context, "picker.toggle_preview").unwrap();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("action", (40, 10))));
-    view.event(resize(1), &context).unwrap();
-    view.start_prepared_work();
-    assert_eq!(seen.lock().unwrap().last(), Some(&("auxiliary", (40, 0))));
-    for height in 0..12 {
-        let body = view.body_layout(Rect::new(0, 0, 40, height))[2];
-        assert_eq!(body.height, height.saturating_sub(2));
-    }
-}
-
-#[test]
 fn tab_no_longer_opens_builtin_completion() {
     let tasks = TaskRuntime::new();
     let binding = invalid_integer_binding();
     let mut view = view_with_stale_aware_runtime(Box::new(ExitOnActionRuntime), binding, &tasks);
-    view.editor = EditorBuffer::from_raw("oth", 3);
+    view.editor = EditorBuffer::from_raw("oth", 3).snapshot();
 
     let context = ViewContext::new(ViewInstanceId(1), "core:default");
     let decision = key(&mut view, Key::Tab, &context);
@@ -751,16 +740,15 @@ fn static_display_options_reach_picker_rendering_and_input() {
         let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
         terminal
             .draw(|frame| {
-                let rendered = view
-                    .render(
-                        frame,
-                        frame.area(),
-                        &RenderContext::for_terminal(crate::view::TerminalSize {
-                            width: 20,
-                            height: 5,
-                        }),
-                    )
-                    .unwrap();
+                let rendered = render_hosted(
+                    view.as_ref(),
+                    frame,
+                    frame.area(),
+                    &RenderContext::for_terminal(crate::view::TerminalSize {
+                        width: 20,
+                        height: 5,
+                    }),
+                );
                 assert!(rendered.cursor.is_none(), "{fields}");
             })
             .unwrap();
@@ -796,7 +784,7 @@ fn static_display_options_reach_picker_rendering_and_input() {
 }
 
 #[test]
-fn covered_picker_hides_cursor_and_restores_on_activation() {
+fn picker_leaves_cursor_rendering_to_host_across_lifecycle() {
     let tasks = TaskRuntime::new();
     let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
     let services = crate::engine::picker::PickerRuntimeServices::new(
@@ -830,11 +818,7 @@ fn covered_picker_hides_cursor_and_restores_on_activation() {
         })
         .unwrap();
     let active_render = rendered.take().unwrap();
-    assert!(active_render.cursor.is_some());
-    let cursor = active_render.cursor.unwrap();
-    assert!(cursor.visible);
-    assert_eq!(cursor.x, 4); // "test" is 4 chars
-    assert_eq!(cursor.y, 0);
+    assert!(active_render.cursor.is_none());
 
     // 2. Covered: a popup opens, covering the picker
     view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
@@ -856,375 +840,7 @@ fn covered_picker_hides_cursor_and_restores_on_activation() {
         })
         .unwrap();
     let restored_render = rendered.take().unwrap();
-    assert!(restored_render.cursor.is_some());
-    let cursor = restored_render.cursor.unwrap();
-    assert!(cursor.visible);
-    assert_eq!(cursor.x, 4);
+    assert!(restored_render.cursor.is_none());
 
     tasks.shutdown_and_wait();
-}
-
-#[test]
-fn picker_preview_declared_image_renders_after_decode_and_encoding() {
-    let temp_dir = std::env::temp_dir().join(format!("test-picker-img-{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir).unwrap();
-    let image_path = temp_dir.join("test.png");
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([255, 0, 0])))
-        .save(&image_path)
-        .unwrap();
-
-    let fixture = Arc::new(crate::workflow::config::load_test_fixture().unwrap());
-    let tasks = TaskRuntime::new();
-    let starter = MountTaskStarter::from_lease(&tasks, MountTaskLease::new(ViewMountId(1)));
-    let services =
-        crate::engine::picker::PickerRuntimeServices::new(fixture, starter, "core:default")
-            .view_services();
-    let preview_script = temp_dir.join("preview.py");
-    std::fs::write(
-        &preview_script,
-        format!(
-            "#!/usr/bin/env python3\nimport json, sys\njson.dump({{\"version\": 1, \"preview\": {{\"type\": \"image\", \"path\": {:?}}}}}, sys.stdout)\n",
-            image_path.to_string_lossy()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&preview_script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    let mut picker_config = config_with_tasks(services, tasks.clone());
-    picker_config.preview = Some(serde_json::json!({
-        "file": preview_script.to_string_lossy(),
-        "open": true,
-    }));
-    let mut view =
-        create_protocol_view(picker_config, &request("core:default"), ViewInstanceId(1)).unwrap();
-    let context = ViewContext::new(ViewInstanceId(1), "core:default");
-    let size = crate::view::TerminalSize {
-        width: 80,
-        height: 24,
-    };
-    view.event(ViewEvent::Resize(size), &context).unwrap();
-    view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
-        .unwrap();
-    let render_context =
-        RenderContext::new(size, Some(crate::terminal::ImagePicker::test_halfblocks()));
-    let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        view.event(ViewEvent::Tick, &context).unwrap();
-        for event in tasks.drain_events() {
-            view.event(ViewEvent::Task(event), &context).unwrap();
-        }
-        terminal
-            .draw(|frame| {
-                view.render(frame, frame.area(), &render_context).unwrap();
-            })
-            .unwrap();
-        // The known red pixels must reach the preview pane through both async pools.
-        if (40..size.width).any(|x| {
-            terminal.backend().buffer()[(x, 2)].bg == ratatui::style::Color::Rgb(255, 0, 0)
-        }) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "declared image was never rendered: {:?}",
-            terminal.backend().buffer()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
-        .unwrap();
-    drop(view);
-    tasks.shutdown_and_wait();
-    std::fs::remove_dir_all(temp_dir).unwrap();
-}
-
-mod preview_correlation_tests {
-    use super::*;
-    #[test]
-    fn preview_events_have_their_own_registry_entry_and_render_after_items_complete() {
-        let temp = std::env::temp_dir().join(format!("tflow-proto-preview-{}", std::process::id()));
-        let config = crate::engine::picker::create_preview_test_suite(&temp);
-        let engines = crate::engine::EngineRegistry::new();
-        let tasks = TaskRuntime::new();
-        let instance = ViewInstanceId(901);
-        let page = "browser:main";
-        let services = crate::engine::picker::mount_data(
-            &config,
-            &Value::Null,
-            page,
-            MountTaskLease::new(ViewMountId(instance.0)),
-            None,
-        )
-        .unwrap();
-        let definition = engines.definition(&config, page).unwrap();
-        let protocol_config = PickerProtocolConfig {
-            identity: ViewIdentity::new(page, "picker"),
-            engine: crate::engine::project_engine_config(&config, page, &definition, Value::Null)
-                .unwrap(),
-            bindings: crate::engine::project_binding_config(&config, &definition).unwrap(),
-            services,
-            parameter_binding: config.parameter_binding(page).unwrap(),
-            theme: ResolvedTheme::terminal(),
-            left_prefix: None,
-            prefix_backspace: None,
-            preview: config
-                .view(page)
-                .and_then(|v| v.selected_preview())
-                .map(crate::workflow::config::toml_to_json)
-                .transpose()
-                .unwrap(),
-            runtime_snapshot: serde_json::json!({"view":{}}),
-            tasks: tasks.clone(),
-        };
-        let request = NavigationRequest::new(
-            page,
-            ParsedQuery::new(
-                page,
-                "query",
-                serde_json::json!({"search":"","owner":"browser"}),
-            ),
-        );
-        let mut view = create_protocol_view(protocol_config, &request, instance).unwrap();
-        let context = ViewContext::new(instance, page);
-        view.event(
-            ViewEvent::Resize(crate::view::TerminalSize {
-                width: 80,
-                height: 24,
-            }),
-            &context,
-        )
-        .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), &context)
-            .unwrap();
-        key(view.as_mut(), Key::Ctrl('p'), &context);
-        let mut events = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            view.event(ViewEvent::Tick, &context).unwrap();
-            for event in tasks.drain_events() {
-                events.push(event.clone());
-                view.event(ViewEvent::Task(event), &context).unwrap();
-            }
-            if events.iter().any(|event| event.task == TaskId(2)) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert!(events.iter().any(|event| event.task == TaskId(1)));
-        let preview_event = events
-            .iter()
-            .find(|event| event.task == TaskId(2))
-            .expect("preview event missing");
-        assert_eq!(preview_event.instance, instance);
-        // Duplicate and stale preview events cannot consume an item completion.
-        assert!(matches!(
-            view.event(ViewEvent::Task(preview_event.clone()), &context)
-                .unwrap(),
-            ViewDecision::Stay
-        ));
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                view.render(
-                    frame,
-                    frame.area(),
-                    &RenderContext::for_terminal(crate::view::TerminalSize {
-                        width: 80,
-                        height: 24,
-                    }),
-                )
-                .unwrap();
-            })
-            .unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(
-            content.contains("Mixed preview") && content.contains("Details"),
-            "{content}"
-        );
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Covered), &context)
-            .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Closing), &context)
-            .unwrap();
-        drop(view);
-        tasks.shutdown_and_wait();
-        std::fs::remove_dir_all(temp).unwrap();
-    }
-
-    #[test]
-    fn a_remount_reuses_the_cached_preview_before_the_script_reruns() {
-        let temp = std::env::temp_dir().join(format!(
-            "tflow-proto-preview-remount-{}",
-            std::process::id()
-        ));
-        let config = crate::engine::picker::create_preview_test_suite(&temp);
-        let engines = crate::engine::EngineRegistry::new();
-        let tasks = TaskRuntime::new();
-        let page = "browser:main";
-        let cache = crate::engine::PreviewDocumentCache::default();
-        let request = NavigationRequest::new(
-            page,
-            ParsedQuery::new(
-                page,
-                "query",
-                serde_json::json!({"search":"","owner":"browser"}),
-            ),
-        );
-        // The remount is a self-navigation that updates a parameter, so the
-        // request identity differs while the preview provider stays the same.
-        let changed_request = NavigationRequest::new(
-            page,
-            ParsedQuery::new(
-                page,
-                "query",
-                serde_json::json!({"search":"changed","owner":"browser"}),
-            ),
-        );
-
-        let build = |instance: ViewInstanceId| {
-            let mut services = crate::engine::picker::mount_data(
-                &config,
-                &Value::Null,
-                page,
-                MountTaskLease::new(ViewMountId(instance.0)),
-                None,
-            )
-            .unwrap();
-            services.set_preview_cache(cache.clone());
-            let definition = engines.definition(&config, page).unwrap();
-            PickerProtocolConfig {
-                identity: ViewIdentity::new(page, "picker"),
-                engine: crate::engine::project_engine_config(
-                    &config,
-                    page,
-                    &definition,
-                    Value::Null,
-                )
-                .unwrap(),
-                bindings: crate::engine::project_binding_config(&config, &definition).unwrap(),
-                services,
-                parameter_binding: config.parameter_binding(page).unwrap(),
-                theme: ResolvedTheme::terminal(),
-                left_prefix: None,
-                prefix_backspace: None,
-                preview: config
-                    .view(page)
-                    .and_then(|v| v.selected_preview())
-                    .map(crate::workflow::config::toml_to_json)
-                    .transpose()
-                    .unwrap(),
-                runtime_snapshot: serde_json::json!({"view":{}}),
-                tasks: tasks.clone(),
-            }
-        };
-
-        // First mount: run items and the preview script to completion so the
-        // shared cache holds the rendered document.
-        let first = ViewInstanceId(911);
-        let mut first_view = create_protocol_view(build(first), &request, first).unwrap();
-        let first_context = ViewContext::new(first, page);
-        open_preview_and_drive(&mut first_view, &tasks, &first_context, true, "Details");
-        first_view
-            .event(
-                ViewEvent::Lifecycle(LifecycleEvent::Closing),
-                &first_context,
-            )
-            .unwrap();
-        drop(first_view);
-
-        // Make the second preview script hang, so only the cache can paint.
-        std::fs::write(
-            temp.join("workflows/browser/scripts/preview.py"),
-            "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
-        )
-        .unwrap();
-
-        let second = ViewInstanceId(912);
-        let mut second_view =
-            create_protocol_view(build(second), &changed_request, second).unwrap();
-        let second_context = ViewContext::new(second, page);
-        let content =
-            open_preview_and_drive(&mut second_view, &tasks, &second_context, false, "Details");
-        assert!(
-            content.contains("Details"),
-            "a parameter-updating remount must render the cached preview: {content}"
-        );
-        second_view
-            .event(
-                ViewEvent::Lifecycle(LifecycleEvent::Closing),
-                &second_context,
-            )
-            .unwrap();
-        drop(second_view);
-        tasks.shutdown_and_wait();
-        std::fs::remove_dir_all(temp).unwrap();
-    }
-
-    fn open_preview_and_drive(
-        view: &mut Box<dyn View>,
-        tasks: &TaskRuntime,
-        context: &ViewContext,
-        deliver_preview: bool,
-        want: &str,
-    ) -> String {
-        view.event(
-            ViewEvent::Resize(crate::view::TerminalSize {
-                width: 80,
-                height: 24,
-            }),
-            context,
-        )
-        .unwrap();
-        view.event(ViewEvent::Lifecycle(LifecycleEvent::Activated), context)
-            .unwrap();
-        key(view.as_mut(), Key::Ctrl('p'), context);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let mut content = String::new();
-        while std::time::Instant::now() < deadline {
-            view.event(ViewEvent::Tick, context).unwrap();
-            for event in tasks.drain_events() {
-                if event.task == TaskId(2) && !deliver_preview {
-                    continue;
-                }
-                view.event(ViewEvent::Task(event), context).unwrap();
-            }
-            terminal
-                .draw(|frame| {
-                    view.render(
-                        frame,
-                        frame.area(),
-                        &RenderContext::for_terminal(crate::view::TerminalSize {
-                            width: 80,
-                            height: 24,
-                        }),
-                    )
-                    .unwrap();
-                })
-                .unwrap();
-            content = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            if content.contains(want) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        content
-    }
 }

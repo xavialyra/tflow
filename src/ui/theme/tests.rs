@@ -20,6 +20,43 @@ fn temporary_root() -> PathBuf {
 }
 
 #[test]
+fn document_theme_defaults_and_overrides_belong_to_capture() {
+    let raw: RawTheme = toml::from_str("").unwrap();
+    let theme = Theme::from_raw(&raw, "test").unwrap();
+    assert_eq!(theme.capture.document.text.fg, Some(Color::Reset));
+    assert_eq!(theme.capture.document.text.bg, Some(Color::Reset));
+    assert_eq!(theme.capture.document.border.fg, Some(Color::Yellow));
+    assert_eq!(theme.capture.document.error.fg, Some(Color::Reset));
+    assert_eq!(theme.capture.document.error.bg, Some(Color::Red));
+
+    let raw: RawTheme = toml::from_str(
+        r##"
+[capture.document.text]
+foreground = "ansi:cyan"
+[capture.document.border]
+foreground = "ansi:green"
+[capture.document.error]
+background = "ansi:magenta"
+"##,
+    )
+    .unwrap();
+    let theme = Theme::from_raw(&raw, "test").unwrap();
+    assert_eq!(theme.capture.document.text.fg, Some(Color::Cyan));
+    assert_eq!(theme.capture.document.border.fg, Some(Color::Green));
+    assert_eq!(theme.capture.document.error.bg, Some(Color::Magenta));
+    assert_eq!(theme.capture.text.fg, Some(Color::Reset));
+}
+
+#[test]
+fn legacy_picker_preview_theme_is_rejected_without_alias() {
+    for component in ["text", "border", "error"] {
+        let source = format!("[picker.preview.{component}]\nforeground = \"ansi:cyan\"\n");
+        let error = toml::from_str::<RawTheme>(&source).unwrap_err();
+        assert!(error.to_string().contains("unknown field `preview`"));
+    }
+}
+
+#[test]
 fn backdrop_style_inherits_and_accepts_explicit_overrides() {
     let raw: RawTheme = toml::from_str("").unwrap();
     let theme = Theme::from_raw(&raw, "test").unwrap();
@@ -357,10 +394,10 @@ fn scheme_and_binding_references_resolve() {
             foreground = "scheme:background"
             background = "scheme:error"
 
-            [picker.preview.text]
+            [capture.document.text]
             foreground = "scheme:muted"
 
-            [picker.preview.error]
+            [capture.document.error]
             foreground = "scheme:background"
             background = "scheme:error"
 
@@ -401,12 +438,12 @@ fn scheme_and_binding_references_resolve() {
     assert_eq!(theme.text.bg, Some(Color::Rgb(242, 233, 225)));
     assert_eq!(theme.chrome.error.fg, Some(Color::Rgb(242, 233, 225)));
     assert_eq!(theme.chrome.error.bg, Some(Color::Red));
-    assert_eq!(theme.picker.preview.text.fg, Some(Color::Rgb(16, 32, 48)));
+    assert_eq!(theme.capture.document.text.fg, Some(Color::Rgb(16, 32, 48)));
     assert_eq!(
-        theme.picker.preview.error.fg,
+        theme.capture.document.error.fg,
         Some(Color::Rgb(242, 233, 225))
     );
-    assert_eq!(theme.picker.preview.error.bg, Some(Color::Red));
+    assert_eq!(theme.capture.document.error.bg, Some(Color::Red));
     assert_eq!(theme.capture.text.fg, Some(Color::Rgb(16, 32, 48)));
 }
 

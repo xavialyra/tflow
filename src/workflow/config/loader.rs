@@ -684,9 +684,10 @@ fn parse_host_binding_target(key: &str, val: &toml::Value) -> Result<Option<Stri
 
 /// Default host-layer bindings, present unless a `[host.bindings]` entry
 /// explicitly disables them.
-const DEFAULT_HOST_BINDING_TARGETS: [(&str, &str); 2] = [
+const DEFAULT_HOST_BINDING_TARGETS: [(&str, &str); 3] = [
     ("ctrl+k", "__commands.palette"),
     ("ctrl+g", "__parameters.edit"),
+    ("ctrl+l", "@host:open_companion"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,19 +755,38 @@ fn resolve_host_bindings(
         let Some(target_cmd) = target else {
             continue;
         };
-        let resolvable = target_cmd
-            .split_once('.')
-            .is_some_and(|(workflow, command)| {
-                workflows
-                    .get(workflow)
-                    .is_some_and(|wf| wf.commands.contains_key(command))
-            });
+        if target_cmd.starts_with("host.") {
+            bail!(
+                "host binding {:?} is invalid: host actions must use '@host:<action>' syntax (e.g. '@host:{}')",
+                target_cmd,
+                target_cmd.strip_prefix("host.").unwrap_or(&target_cmd)
+            );
+        }
+        let (canonical_target, is_host_action) =
+            if let Some(name) = target_cmd.strip_prefix("@host:") {
+                let fqid = format!("host.{name}");
+                let is_host = crate::command::host_action_label(&fqid).is_some();
+                if !is_host {
+                    bail!("unknown host action {:?}", target_cmd);
+                }
+                (fqid, true)
+            } else {
+                (target_cmd.clone(), false)
+            };
+        let resolvable = is_host_action
+            || target_cmd
+                .split_once('.')
+                .is_some_and(|(workflow, command)| {
+                    workflows
+                        .get(workflow)
+                        .is_some_and(|wf| wf.commands.contains_key(command))
+                });
         if !resolvable {
             if policy == HostBindingPolicy::Lenient {
                 continue;
             }
             bail!(
-                "host binding {:?} must target a known workflow.command",
+                "host binding {:?} must target a known workflow.command or @host:<action>",
                 target_cmd
             );
         }
@@ -780,7 +800,7 @@ fn resolve_host_bindings(
                     .with_context(|| format!("invalid host binding key {:?}", raw_key));
             }
         };
-        resolved.insert(canonical_key, target_cmd);
+        resolved.insert(canonical_key, canonical_target);
     }
     Ok(resolved)
 }
@@ -907,6 +927,42 @@ mod tests {
     }
 
     #[test]
+    fn host_binding_rejects_bare_host_prefix_and_requires_host_sigil() {
+        let mut workflows = sample_workflows();
+        inject_builtin_workflows(&mut workflows);
+
+        let host: HostConfig = toml::from_str(
+            r#"
+            [bindings]
+            "ctrl+o" = "host.open_companion"
+            "#,
+        )
+        .unwrap();
+        let targets = merge_host_binding_targets([Some(&host)]).unwrap();
+        let error = resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
+            .expect_err("bare host.open_companion must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("host actions must use '@host:<action>' syntax"),
+            "{error}"
+        );
+
+        let host: HostConfig = toml::from_str(
+            r#"
+            [bindings]
+            "ctrl+o" = "@host:open_companion"
+            "#,
+        )
+        .unwrap();
+        let targets = merge_host_binding_targets([Some(&host)]).unwrap();
+        let resolved =
+            resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
+                .expect("@host:open_companion must resolve");
+        assert_eq!(resolved["ctrl+o"], crate::command::OPEN_COMPANION);
+    }
+
+    #[test]
     fn default_host_bindings_drop_when_their_builtin_is_absent() {
         let resolved = resolve_host_bindings(
             merge_host_binding_targets([]).unwrap(),
@@ -914,8 +970,9 @@ mod tests {
             HostBindingPolicy::Lenient,
         )
         .unwrap();
-        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved.len(), 2);
         assert_eq!(resolved["ctrl+k"], "__commands.palette");
+        assert_eq!(resolved["ctrl+l"], crate::command::OPEN_COMPANION);
         // `__parameters` is absent from the sample, so its default is dropped.
         assert!(!resolved.contains_key("ctrl+g"));
     }

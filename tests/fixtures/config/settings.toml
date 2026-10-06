@@ -12,7 +12,6 @@ left_prefix_backspace = "root"
 [picker.bindings]
 "ctrl+c" = "exit"
 "ctrl+d" = "exit"
-"ctrl+p" = "toggle_preview"
 "escape" = "back"
 "up" = "select_previous"
 "down" = "select_next"

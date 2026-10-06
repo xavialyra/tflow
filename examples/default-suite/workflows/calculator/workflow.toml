@@ -4,20 +4,26 @@ name = "calculator"
 
 [views.main]
 engine = "picker"
+companion = "preview"
 
 [views.main.picker.items]
 file = "scripts/items.py"
 
-[views.main.picker.preview]
+[views.preview]
+engine = "capture"
+
+[views.preview.capture.output]
 file = "scripts/preview.py"
-width = "38%"
-min_width = 24
-open = false
 
 [views.main.bindings]
+"ctrl+p" = "toggle_companion"
 enter = "copy"
 
 [commands.copy]
 label = "Copy result"
 type = "run"
 file = "scripts/copy.py"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "preview"

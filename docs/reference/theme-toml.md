@@ -70,7 +70,7 @@ Selected badge fields are configured only under `[picker.badge.selected]`; the r
 | `[picker]` | `badge` | Normal metadata badge style; `[picker.badge.selected]` configures its selected state. |
 | `[picker]` | `marker` | Selection indicator symbol (`▌`). |
 | `[picker]` | `scrollbar` | Scrollbar thumb indicator. |
-| `[picker.preview]` | `text`, `border`, `error` | Preview panel contents, border, and error state. |
+| `[capture.document]` | `text`, `border`, `error` | Capture document content, border, and error state. |
 | `[chrome]` | `text` | Application frame background style. |
 | `[chrome]` | `divider` | General frame divider lines. |
 | `[chrome]` | `border` | Modal popup dialog borders. |

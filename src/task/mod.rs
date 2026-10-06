@@ -98,8 +98,8 @@ pub(crate) struct TaskRuntimeMetricsSnapshot {
     pub(crate) active_tasks: usize,
     /// Active task on the default serialized worker.
     pub(crate) current_active: Option<TaskActiveSnapshot>,
-    /// Active task on the independently scheduled preview worker.
-    pub(crate) preview_active: Option<TaskActiveSnapshot>,
+    /// Active task on the independently scheduled background worker.
+    pub(crate) background_active: Option<TaskActiveSnapshot>,
     pub(crate) queue_high_water: usize,
     pub(crate) submitted_total: u64,
     pub(crate) started_total: u64,
@@ -160,7 +160,7 @@ struct TaskMetrics {
 }
 
 /// A background runtime with a serialized default worker and an isolated,
-/// bounded preview worker using the same lifecycle and event machinery.
+/// bounded background worker using the same lifecycle and event machinery.
 ///
 /// Task closures must observe `TaskContext::cancellation` at bounded I/O and
 /// computation points. `shutdown_and_wait` cancels queued and active tasks,
@@ -173,7 +173,7 @@ pub(crate) struct TaskRuntime {
 
 struct TaskRuntimeOwner {
     registry: Arc<TaskRegistry>,
-    preview_registry: Arc<TaskRegistry>,
+    background_registry: Arc<TaskRegistry>,
     events: Arc<Mutex<VecDeque<TaskEvent>>>,
     #[cfg(test)]
     publication_gate: Arc<Mutex<Option<Arc<TaskPublicationGate>>>>,
@@ -217,7 +217,7 @@ impl TaskMetrics {
 
     fn queued(&self, class: TaskExecutionClass, depth: usize) {
         let mut state = self.state.lock().expect("task metrics state was poisoned");
-        state.queue_depths[usize::from(matches!(class, TaskExecutionClass::Preview))] = depth;
+        state.queue_depths[usize::from(matches!(class, TaskExecutionClass::Background))] = depth;
         state.queue_high_water = state.queue_high_water.max(state.queue_depths.iter().sum());
     }
 
@@ -338,11 +338,11 @@ impl MountTaskLease {
 /// Host-owned authority created only after the Host state has committed. A
 /// prepared capability job must receive this value before it can affect the
 /// scheduler.
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TaskExecutionClass {
     #[default]
     Serial,
-    Preview,
+    Background,
 }
 
 #[derive(Clone)]
@@ -376,10 +376,14 @@ impl MountTaskStarter {
         starter
     }
 
-    pub(crate) fn for_preview(&self) -> Self {
-        let mut starter = self.clone();
-        starter.execution_class = TaskExecutionClass::Preview;
-        starter
+    pub(crate) fn with_execution_class(mut self, class: TaskExecutionClass) -> Self {
+        self.execution_class = class;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_background(&self) -> Self {
+        self.clone().with_execution_class(TaskExecutionClass::Background)
     }
 
     pub(crate) fn cancel_all(&self) {
@@ -558,7 +562,7 @@ impl TaskRuntime {
                     max_pending: None,
                     execution_class: TaskExecutionClass::Serial,
                 }),
-                preview_registry: Arc::new(TaskRegistry {
+                background_registry: Arc::new(TaskRegistry {
                     state: Mutex::new(RegistryState {
                         active: None,
                         pending: VecDeque::new(),
@@ -571,7 +575,7 @@ impl TaskRuntime {
                     }),
                     metrics,
                     max_pending: Some(1),
-                    execution_class: TaskExecutionClass::Preview,
+                    execution_class: TaskExecutionClass::Background,
                 }),
                 events: Arc::new(Mutex::new(VecDeque::new())),
                 #[cfg(test)]
@@ -790,7 +794,7 @@ impl TaskRuntime {
         );
         let registry = match execution_class {
             TaskExecutionClass::Serial => &self.owner.registry,
-            TaskExecutionClass::Preview => &self.owner.preview_registry,
+            TaskExecutionClass::Background => &self.owner.background_registry,
         };
         registry.submit(
             Job {
@@ -835,19 +839,19 @@ impl TaskRuntime {
                 .as_ref()
                 .map(|active| Arc::clone(&active.record))
         };
-        let preview_active = {
+        let background_active = {
             let state = self
                 .owner
-                .preview_registry
+                .background_registry
                 .state
                 .lock()
-                .expect("preview registry poisoned");
+                .expect("background registry poisoned");
             state
                 .active
                 .as_ref()
                 .map(|active| Arc::clone(&active.record))
         };
-        let active_tasks = usize::from(active.is_some()) + usize::from(preview_active.is_some());
+        let active_tasks = usize::from(active.is_some()) + usize::from(background_active.is_some());
         let snapshot_active = |record: Arc<Mutex<TaskRecord>>| {
             let record = record.lock().expect("task record was poisoned");
             TaskActiveSnapshot {
@@ -859,7 +863,7 @@ impl TaskRuntime {
             }
         };
         let current_active = active.map(snapshot_active);
-        let preview_active = preview_active.map(snapshot_active);
+        let background_active = background_active.map(snapshot_active);
         let state = self
             .owner
             .registry
@@ -872,7 +876,7 @@ impl TaskRuntime {
             queue_depth: state.queue_depths.iter().sum(),
             active_tasks,
             current_active,
-            preview_active,
+            background_active,
             queue_high_water: state.queue_high_water,
             submitted_total: state.submitted_total,
             started_total: state.started_total,
@@ -894,16 +898,16 @@ impl TaskRuntime {
             .state
             .lock()
             .expect("task registry state was poisoned");
-        let preview = self
+        let background = self
             .owner
-            .preview_registry
+            .background_registry
             .state
             .lock()
-            .expect("preview registry poisoned");
+            .expect("background registry poisoned");
         state.active.is_some()
             || !state.pending.is_empty()
-            || preview.active.is_some()
-            || !preview.pending.is_empty()
+            || background.active.is_some()
+            || !background.pending.is_empty()
     }
 
     pub(crate) fn has_pending_events(&self) -> bool {
@@ -918,7 +922,7 @@ impl TaskRuntime {
     #[cfg(test)]
     pub(crate) fn cancel_all(&self) {
         self.owner.registry.cancel_all();
-        self.owner.preview_registry.cancel_all();
+        self.owner.background_registry.cancel_all();
     }
 
     #[cfg(test)]
@@ -932,25 +936,25 @@ impl TaskRuntime {
 
     fn cancel_lane_prefix(&self, prefix: &str) {
         self.owner.registry.cancel_lane_prefix(prefix);
-        self.owner.preview_registry.cancel_lane_prefix(prefix);
+        self.owner.background_registry.cancel_lane_prefix(prefix);
     }
 
     /// Cancel all work and wait for the worker to exit.
     #[cfg(test)]
     pub(crate) fn shutdown_and_wait(&self) {
         self.owner.registry.begin_shutdown();
-        self.owner.preview_registry.begin_shutdown();
+        self.owner.background_registry.begin_shutdown();
         self.owner.registry.shutdown_and_wait();
-        self.owner.preview_registry.shutdown_and_wait();
+        self.owner.background_registry.shutdown_and_wait();
     }
 }
 
 impl Drop for TaskRuntimeOwner {
     fn drop(&mut self) {
         self.registry.begin_shutdown();
-        self.preview_registry.begin_shutdown();
+        self.background_registry.begin_shutdown();
         self.registry.shutdown_and_wait();
-        self.preview_registry.shutdown_and_wait();
+        self.background_registry.shutdown_and_wait();
     }
 }
 
@@ -987,7 +991,7 @@ impl TaskRegistry {
             (job.execute)(
                 job.runtime,
                 job.cancellation,
-                Some("preview task queue is full".into()),
+                Some("background task queue is full".into()),
             );
             return;
         }

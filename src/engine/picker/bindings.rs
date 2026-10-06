@@ -10,13 +10,10 @@ pub(super) enum PickerAction {
     DeleteBackward,
     ClearInput,
     DeleteWord,
-    TogglePreview,
-    PreviewScrollUp,
-    PreviewScrollDown,
 }
 
 impl PickerAction {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 7] = [
         Self::Exit,
         Self::Back,
         Self::SelectPrevious,
@@ -24,9 +21,6 @@ impl PickerAction {
         Self::DeleteBackward,
         Self::ClearInput,
         Self::DeleteWord,
-        Self::TogglePreview,
-        Self::PreviewScrollUp,
-        Self::PreviewScrollDown,
     ];
 }
 
@@ -42,9 +36,6 @@ impl BindingAction for PickerAction {
             Self::DeleteBackward => "delete_backward",
             Self::ClearInput => "clear_input",
             Self::DeleteWord => "delete_word",
-            Self::TogglePreview => "toggle_preview",
-            Self::PreviewScrollUp => "preview_scroll_up",
-            Self::PreviewScrollDown => "preview_scroll_down",
         }
     }
 
@@ -61,9 +52,6 @@ impl BindingAction for PickerAction {
             Self::DeleteBackward => "Delete",
             Self::ClearInput => "Clear Input",
             Self::DeleteWord => "Delete Word",
-            Self::TogglePreview => "Toggle Preview",
-            Self::PreviewScrollUp => "Scroll Preview Up",
-            Self::PreviewScrollDown => "Scroll Preview Down",
         }
     }
 
@@ -77,7 +65,6 @@ impl BindingAction for PickerAction {
             (Key::Backspace, Self::DeleteBackward),
             (Key::Ctrl('u'), Self::ClearInput),
             (Key::Ctrl('w'), Self::DeleteWord),
-            (Key::Ctrl('p'), Self::TogglePreview),
         ]
     }
 }
@@ -97,10 +84,7 @@ mod tests {
             bindings.action(Key::Ctrl('u')),
             Some(PickerAction::ClearInput)
         );
-        assert_eq!(
-            bindings.action(Key::Ctrl('p')),
-            Some(PickerAction::TogglePreview)
-        );
+        assert_eq!(bindings.action(Key::Ctrl('p')), None);
     }
 
     /// One action may be reached by several keys. Both must survive entry
@@ -137,16 +121,6 @@ mod tests {
         assert_eq!(
             bindings.action(Key::Char('A')),
             Some(PickerAction::SelectNext)
-        );
-    }
-
-    #[test]
-    fn toggle_preview_binding_is_recognized() {
-        let bindings =
-            PickerBindings::from_defaults(Some(json!({"ctrl+o": "toggle_preview"}))).unwrap();
-        assert_eq!(
-            bindings.action(Key::Ctrl('o')),
-            Some(PickerAction::TogglePreview)
         );
     }
 

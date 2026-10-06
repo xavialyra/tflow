@@ -1,0 +1,38 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/picker_capture.toml
+[workflow]
+api = 1
+name = "Picker + Capture: Live Item Details"
+entrypoint = "main"
+
+[views.main]
+engine = "picker"
+companion = "details"
+
+[views.main.picker]
+input_placeholder = "Select a service"
+items = [
+  { display = "API server", value = "api", metadata = { port = 8080, owner = "Platform" } },
+  { display = "Worker", value = "worker", metadata = { port = 8081, owner = "Jobs" } },
+]
+
+[views.details]
+engine = "capture"
+
+[views.details.capture.output]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item", {})
+meta = item.get("metadata", {})
+lines = ["SERVICE DETAILS", "", "Service: " + item.get("value", "No selection"),
+         "Port: " + str(meta.get("port", "-")), "Owner: " + meta.get("owner", "-"),
+         "", "Up/Down: choose service", "Ctrl-P: toggle details"]
+json.dump({"version": 1, "output": "\n".join(lines)}, sys.stdout)
+'''
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "details"

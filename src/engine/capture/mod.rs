@@ -10,8 +10,8 @@ mod session;
 pub(crate) use protocol::{CaptureProtocolConfig, create_protocol_view};
 
 use self::bindings::{CaptureAction, CaptureBindings};
-pub(crate) use self::render::{CaptureRenderer, render_capture_session};
-pub(crate) use self::session::{CaptureBody, CaptureSession};
+pub(crate) use self::render::CaptureRenderer;
+pub(crate) use self::session::CaptureSession;
 use super::{
     BackgroundOutcome, EngineActionInput, EngineDecision, EngineEmission, EngineNotice,
     EngineRuntime, EngineValidationContext, ProjectedEngineConfig, RenderModel,
@@ -42,13 +42,6 @@ fn reject_picker_sources(name: &str, view: &View) -> Result<()> {
     if view.selected_items().is_some() {
         bail!(
             "view {:?} using engine {:?} cannot provide picker items",
-            name,
-            view.selected_engine_type()
-        );
-    }
-    if view.selected_preview().is_some() {
-        bail!(
-            "view {:?} using engine {:?} cannot define preview",
             name,
             view.selected_engine_type()
         );
@@ -136,6 +129,7 @@ struct PendingCaptureScript {
     source: ResolvedScriptSource,
     parameters: serde_json::Value,
     launch_input: serde_json::Value,
+    companion_data: Option<crate::view::companion::CompanionData>,
 }
 
 enum PreparedCaptureOutput {
@@ -172,6 +166,11 @@ pub(super) fn create_view(
         }
         Ok(PreparedCaptureOutput::Script { root, source }) => {
             let view_ref = context.identity.view_ref.clone();
+            let launch_input = if !context.parameters.raw_input().is_empty() {
+                Value::String(context.parameters.raw_input().to_string())
+            } else {
+                context.config.launch_input.clone()
+            };
             (
                 CaptureSession::from_text(""),
                 "starting".to_string(),
@@ -181,7 +180,8 @@ pub(super) fn create_view(
                     root,
                     source,
                     parameters: context.parameters.values().clone(),
-                    launch_input: context.config.launch_input.clone(),
+                    launch_input,
+                    companion_data: None,
                 }),
                 None,
             )
@@ -203,8 +203,6 @@ pub(super) fn create_view(
         pending_script,
         script_task: None,
         script_completion: None,
-        image_pool: None,
-        image_task: None,
         workflow_root,
     };
     if let Some(doc) = initial_doc {
@@ -252,16 +250,24 @@ struct CaptureScriptOutcome {
     managed_child_reaped: bool,
 }
 
+fn capture_script_request(plan: &PendingCaptureScript) -> Value {
+    let (parameters, input, state) = match &plan.companion_data {
+        Some(data) => (&data.parameters, &data.input, &data.engine_state),
+        None => (&plan.parameters, &plan.launch_input, &Value::Null),
+    };
+    crate::protocol::capture_request(
+        parameters,
+        input,
+        crate::workflow::config::ENGINE_CAPTURE,
+        state,
+    )
+}
+
 fn run_capture_script(
     plan: &PendingCaptureScript,
     cancellation: &crate::lifecycle::CancellationObserver,
 ) -> CaptureScriptOutcome {
-    let request = crate::protocol::capture_request(
-        &plan.parameters,
-        &plan.launch_input,
-        crate::workflow::config::ENGINE_CAPTURE,
-        &Value::Null,
-    );
+    let request = capture_script_request(plan);
     let response = crate::protocol::run_script_capture_response(
         &plan.view_ref,
         &format!("[views.{}.output]", plan.view_ref),
@@ -292,8 +298,6 @@ struct CaptureView {
     pending_script: Option<PendingCaptureScript>,
     script_task: Option<crate::task::TaskHandle<Value>>,
     script_completion: Option<CaptureCompletion>,
-    image_pool: Option<std::sync::Arc<image_decode::ImageDecodePool>>,
-    image_task: Option<image_decode::ImageDecodeHandle>,
     workflow_root: Option<PathBuf>,
 }
 
@@ -320,33 +324,17 @@ impl CaptureView {
     fn start_document_images(&mut self, doc: &document::Document) {
         let mut paths = Vec::new();
         doc.images(&mut paths);
-        if paths.is_empty() {
-            self.image_task = None;
-            return;
-        }
-        let resolved = paths
-            .iter()
-            .map(|p| image_path::resolve(self.workflow_root.as_deref(), p))
-            .collect::<Vec<_>>();
-        let initial_states = vec![document::DocumentImageState::default(); resolved.len()];
-        self.session.set_images(initial_states);
-
-        let pool = match &self.image_pool {
-            Some(p) => std::sync::Arc::clone(p),
-            None => match image_decode::new_default_pool() {
-                Ok(p) => {
-                    self.image_pool = Some(std::sync::Arc::clone(&p));
-                    p
-                }
-                Err(_) => {
-                    self.image_task = None;
-                    return;
-                }
-            },
-        };
-        let requests = resolved.into_iter().enumerate().collect();
-        let handle = pool.submit(1, requests);
-        self.image_task = Some(handle);
+        self.session.set_images(
+            paths
+                .iter()
+                .map(|path| document::DocumentImageState {
+                    image: Some(std::sync::Arc::new(image_protocol::ImageSource::file(
+                        image_path::resolve(self.workflow_root.as_deref(), path),
+                    ))),
+                    error: None,
+                })
+                .collect(),
+        );
     }
 
     fn receive_completion(&mut self) -> Result<Option<CaptureCompletion>> {
@@ -386,22 +374,18 @@ impl CaptureView {
         if success {
             if let Some(text) = output_val.as_str() {
                 self.session = CaptureSession::from_text(text);
-                self.image_task = None;
             } else if let Ok(Some(doc)) = document::parse(output_val.clone()) {
                 self.session = CaptureSession::from_document(doc.clone());
                 self.start_document_images(&doc);
             } else {
                 self.session = CaptureSession::from_text(&output_val.to_string());
-                self.image_task = None;
             }
         } else {
             self.session = CaptureSession::from_text(output_val.as_str().unwrap_or("failed"));
-            self.image_task = None;
         }
         self.status = status.clone();
         self.success = success;
         self.reported = true;
-        self.pending_script = None;
         self.script_task = None;
         self.script_completion = None;
         let notice = if success {
@@ -467,49 +451,12 @@ impl EngineRuntime for CaptureView {
                 .set_viewport_height(tick.content_size.1 as usize);
         }
 
-        let mut image_invalidated = false;
-        if let Some(task) = &self.image_task {
-            match task.try_recv() {
-                Ok(batch) => {
-                    if let session::CaptureBody::Document { images, .. } = self.session.body() {
-                        let mut updated = images.clone();
-                        for decoded in batch.images {
-                            if decoded.block < updated.len() {
-                                match decoded.result {
-                                    Ok(img) => {
-                                        updated[decoded.block].image =
-                                            Some(std::sync::Arc::new(img));
-                                        updated[decoded.block].error = None;
-                                    }
-                                    Err(err) => {
-                                        updated[decoded.block].error = Some(err);
-                                    }
-                                }
-                            }
-                        }
-                        self.session.set_images(updated);
-                        image_invalidated = true;
-                    }
-                    self.image_task = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.image_task = None;
-                }
-            }
-        }
-
         if self.pending_script.is_some()
             || self.script_task.is_some()
             || self.script_completion.is_some()
             || self.reported
         {
-            let decision = if image_invalidated {
-                EngineDecision::Invalidate
-            } else {
-                EngineDecision::Continue
-            };
-            return Ok(EngineEmission::decision(decision));
+            return Ok(EngineEmission::decision(EngineDecision::Continue));
         }
         self.reported = true;
         let current = if self.success {
@@ -530,6 +477,15 @@ impl EngineRuntime for CaptureView {
         };
         Ok(EngineEmission::decision(decision)
             .with_publication(ViewContextPublication::new(current).with_ready(true)))
+    }
+
+    fn update_companion_data(&mut self, data: &crate::view::companion::CompanionData) {
+        if let Some(ref mut plan) = self.pending_script {
+            plan.companion_data = Some(data.clone());
+        }
+        self.script_task = None;
+        self.script_completion = None;
+        self.reported = false;
     }
 
     fn start_prepared_work(&mut self, starter: &crate::task::MountTaskStarter) -> bool {
@@ -608,6 +564,49 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    fn request_plan(input: Value) -> PendingCaptureScript {
+        PendingCaptureScript {
+            view_ref: "test:capture".into(),
+            root: None,
+            source: crate::workflow::config::parse_script_source(
+                &toml::toml! { script = "printf '{}'" }.into(),
+                None,
+            )
+            .unwrap(),
+            parameters: serde_json::json!({"target": "original"}),
+            launch_input: input,
+            companion_data: None,
+        }
+    }
+
+    #[test]
+    fn ordinary_capture_preserves_json_strings_and_reserved_looking_fields() {
+        let object =
+            serde_json::json!({"parameters": {"business": true}, "text": "hello", "value": 3});
+        for input in [object.clone(), Value::String(object.to_string())] {
+            let plan = request_plan(input.clone());
+            let request = capture_script_request(&plan);
+            assert_eq!(request["context"]["input"], input);
+            assert_eq!(request["context"]["parameters"], plan.parameters);
+            assert_eq!(request["context"]["engine"]["state"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn companion_capture_uses_explicit_source_without_removing_business_fields() {
+        let mut plan = request_plan(Value::Null);
+        let data = crate::view::companion::CompanionData {
+            parameters: serde_json::json!({"source": true}),
+            input: serde_json::json!({"parameters": "business data", "text": "not an item"}),
+            engine_state: serde_json::json!({"values": {"name": "demo"}}),
+        };
+        plan.companion_data = Some(data.clone());
+        let request = capture_script_request(&plan);
+        assert_eq!(request["context"]["input"], data.input);
+        assert_eq!(request["context"]["parameters"], data.parameters);
+        assert_eq!(request["context"]["engine"]["state"], data.engine_state);
+    }
 
     #[test]
     fn script_starts_as_prepared_work_and_restarts_after_reactivation() {

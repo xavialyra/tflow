@@ -4,6 +4,38 @@ All notable changes to `tflow` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.8] - 2026-10-02
+
+### Added
+- **Universal Companion Views ([ADR 0010](docs/adr/0010-companion-views-and-unified-host-layout-architecture.md))**:
+  - Promoted preview mechanisms into first-class named companion views across all engines (`companion = "<target>"`).
+  - Clean view declaration: views declare default-open companions with explicit source payloads; there is no view-level `companion_input` contract.
+  - Unified command operations: companion commands share `query` handling with `navigate`, while omitted-query toggles retain live tracking where supported.
+  - Picker/Capture companions receive live source updates; Form/Embedded companions retain their mount snapshot.
+- **Single-Stack Projection Topology (`[A|B]` vs `[A, B]`)**:
+  - Linear view stack extension that models side-by-side companion panes cleanly without terminal multiplexer complexity.
+  - Ordinary stack-based companion navigation; the previously proposed promotion/demotion operations are not runtime contracts.
+- **Passive Companion Input Model**:
+  - Companions remain side-by-side attachments while the primary retains input ownership; foreground entry uses the ordinary stack and `@host:open_companion`.
+  - The focus handoff, dedicated focus keys, and Escape-ladder proposal are historical and are not runtime contracts.
+- **Decoupled Host Omnibar & Engine Input Policies**:
+  - Extracted logical input buffer into host-level `HostInputState` with presentation modes (`Omnibar`, `BorderTitle`, `FloatingPrompt`).
+  - Active views declare `UnhandledInputBehavior` (`ForwardToOmnibar`, `ConsumeLocally`, `Ignore`).
+  - Rendered top-level Omnibar widget directly in host chrome when active view has visible input presentation mode.
+- **Split Horizontal Pane Rendering**:
+  - Clean split presentation without redundant outer border boxes, with shared Host-computed pane geometry and a divider separating the companion pane.
+  - Companions are passive attachments; there is no separate focused/unfocused pane state.
+
+### Changed
+- **Capture image pipeline**:
+  - Cache display-sized images, reload after display-size changes, coalesce rapid requests, and bound decode/encode work.
+  - Preserve stateful image rendering across popup layers and document tmux protocol limitations.
+
+### Removed
+- **Legacy Picker Preview Module**:
+  - Completely purged obsolete `src/engine/picker/preview/` module, preview caching, and auxiliary worker hooks from `picker`.
+  - Removed outdated `[views.*.picker.preview]` and `[views.*.preview]` configuration fields across compiler, validators, and engine schemas.
+
 ## [0.1.0-alpha.7] - 2026-10-02
 
 ### Added

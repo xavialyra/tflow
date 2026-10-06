@@ -1,7 +1,6 @@
 use crate::engine::{
-    EngineRegistry, PickerProtocolConfig, PrefixBackspace, PreviewDocumentCache,
-    create_capture_protocol_view, create_embedded_protocol_view, create_picker_protocol_view,
-    picker_mount_data,
+    EngineRegistry, PickerProtocolConfig, PrefixBackspace, create_capture_protocol_view,
+    create_embedded_protocol_view, create_picker_protocol_view, picker_mount_data,
 };
 use crate::input::{InputSourceIdentity, ViewMountId};
 use crate::lifecycle::CancellationToken;
@@ -22,9 +21,6 @@ pub(crate) struct ProtocolViewFactory {
     theme: ResolvedTheme,
     cancellation: CancellationToken,
     engines: EngineRegistry,
-    /// One cache per session so a Picker remounted by navigation or `replace`
-    /// reuses the document another instance already rendered.
-    preview_cache: PreviewDocumentCache,
 }
 
 impl ProtocolViewFactory {
@@ -41,7 +37,6 @@ impl ProtocolViewFactory {
             theme,
             cancellation,
             engines,
-            preview_cache: PreviewDocumentCache::default(),
         }
     }
 
@@ -130,14 +125,13 @@ impl ProtocolViewFactory {
         instance: ViewInstanceId,
         registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
     ) -> Result<crate::engine::PickerViewServices> {
-        let mut services = picker_mount_data(
+        let services = picker_mount_data(
             &self.config,
             self.invocation.input_value(),
             target,
             crate::task::MountTaskLease::new(crate::input::ViewMountId(instance.0)),
             registry,
         )?;
-        services.set_preview_cache(self.preview_cache.clone());
         Ok(services)
     }
 }
@@ -167,12 +161,6 @@ impl ViewFactory for ProtocolViewFactory {
                     ),
                     Some(literal) => Some(literal.to_string()),
                 };
-                let preview = self
-                    .config
-                    .view(target)
-                    .and_then(|view| view.selected_preview())
-                    .map(crate::workflow::config::toml_to_json)
-                    .transpose()?;
                 let config = PickerProtocolConfig {
                     identity: crate::engine::ViewIdentity::new(
                         target,
@@ -198,7 +186,6 @@ impl ViewFactory for ProtocolViewFactory {
                             }
                         }
                     }),
-                    preview,
                     runtime_snapshot,
                     tasks: services
                         .host

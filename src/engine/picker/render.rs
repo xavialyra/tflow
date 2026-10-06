@@ -1,11 +1,10 @@
-use super::preview::{ImageProtocolCache, PickerPreviewRenderState};
 use super::{Item, PickerView};
 use crate::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct PickerRenderState {
@@ -13,8 +12,6 @@ pub(crate) struct PickerRenderState {
     pub(crate) selected: usize,
     pub(crate) unpublished: bool,
     pub(crate) searching: bool,
-    pub(crate) preview_visible: bool,
-    pub(crate) preview: Option<PickerPreviewRenderState>,
     pub(crate) empty_message: String,
     pub(crate) row_height: usize,
 }
@@ -226,37 +223,22 @@ impl PickerView {
             (Arc::new(Vec::new()), 0)
         };
 
-        let preview = Some(self.preview_render_state());
-
         PickerRenderState {
             items,
             selected,
             unpublished,
             searching,
-            preview_visible: self.preview_visible(),
-            preview,
             empty_message,
             row_height: 1,
         }
     }
 }
 
-pub(crate) struct PickerRenderer {
-    image_protocols: Mutex<ImageProtocolCache>,
-}
+pub(crate) struct PickerRenderer;
 
 impl PickerRenderer {
     pub(super) fn new() -> Self {
-        Self {
-            image_protocols: Mutex::new(ImageProtocolCache::new()),
-        }
-    }
-
-    fn clear_image_protocols(&self) {
-        self.image_protocols
-            .lock()
-            .expect("picker image protocol cache was poisoned")
-            .clear();
+        Self
     }
 }
 
@@ -298,31 +280,7 @@ impl crate::engine::ViewRenderer for PickerRenderer {
         let Some(state) = model.downcast_ref::<PickerRenderState>() else {
             return;
         };
-        if state.preview_visible
-            && let Some(preview) = &state.preview
-        {
-            let (items_area, preview_area) = preview.areas(area);
-            render_picker(frame, items_area, state, &context.theme);
-            if let Some(preview_area) = preview_area {
-                let mut image_protocols = self
-                    .image_protocols
-                    .lock()
-                    .expect("picker image protocol cache was poisoned");
-                preview.render(
-                    frame,
-                    preview_area,
-                    &context.theme,
-                    context.image_picker,
-                    &mut image_protocols,
-                );
-                preview.render_separator(frame, items_area, preview_area, &context.theme);
-            } else {
-                self.clear_image_protocols();
-            }
-        } else {
-            self.clear_image_protocols();
-            render_picker(frame, area, state, &context.theme);
-        }
+        render_picker(frame, area, state, &context.theme);
     }
 }
 
@@ -450,8 +408,6 @@ mod tests {
             selected: 0,
             unpublished: false,
             searching: false,
-            preview_visible: false,
-            preview: None,
             empty_message: "(no matches)".to_string(),
             row_height: 1,
         };
@@ -502,8 +458,6 @@ mod tests {
             selected: 2,
             unpublished: false,
             searching: false,
-            preview_visible: false,
-            preview: None,
             empty_message: "(no matches)".to_string(),
             row_height: 1,
         };

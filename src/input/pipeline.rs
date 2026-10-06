@@ -53,6 +53,7 @@ impl InputPipeline {
         self.pending.pop_front()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn pending_is_empty(&self) -> bool {
         self.pending.is_empty()
     }

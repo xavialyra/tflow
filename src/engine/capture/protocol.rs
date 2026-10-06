@@ -111,7 +111,10 @@ fn create_protocol_view_state(
     };
     let bindings = CaptureBindings::from_defaults(config.bindings.defaults.clone())?;
     let renderer = create_renderer(RendererFactoryContext)?;
-    let runtime = create_view(runtime_context)?;
+    let mut runtime = create_view(runtime_context)?;
+    if let Some(data) = &request.companion_data {
+        runtime.update_companion_data(data);
+    }
     let engine_context = engine_context(
         instance,
         &identity,
@@ -120,7 +123,8 @@ fn create_protocol_view_state(
         0,
         None,
     );
-    let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id));
+    let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id))
+        .with_execution_class(request.execution_class);
     let input_raw = parameters.raw_input().to_string();
     Ok(CaptureProtocolView {
         runtime,
@@ -388,6 +392,10 @@ pub(super) const CMD_PAGE_UP: &str = "capture.page_up";
 pub(super) const CMD_PAGE_DOWN: &str = "capture.page_down";
 
 impl View for CaptureProtocolView {
+    fn unhandled_input_behavior(&self) -> crate::view::UnhandledInputBehavior {
+        crate::view::UnhandledInputBehavior::Ignore
+    }
+
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
         for (key, action) in self.bindings.bindings() {
@@ -438,6 +446,25 @@ impl View for CaptureProtocolView {
             publication: self.publication.clone(),
             revision: self.state_revision,
         }
+    }
+
+    fn follows_companion_data(&self) -> bool {
+        true
+    }
+
+    fn on_companion_data_changed(
+        &mut self,
+        data: &crate::view::companion::CompanionData,
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        self.sync_context(context)?;
+        if self.has_async_work {
+            self.cancel_stale_adapter_task();
+            self.starter.cancel_all();
+            self.runtime.update_companion_data(data);
+            self.start_prepared_work();
+        }
+        Ok(ViewDecision::Invalidate)
     }
 
     fn event(&mut self, event: ViewEvent, context: &ViewContext) -> Result<ViewDecision> {
@@ -500,28 +527,44 @@ impl View for CaptureProtocolView {
             }
             ViewEvent::Tick if self.active => {
                 #[cfg(test)]
-                return self.poll_active(context);
+                let decision = self.poll_active(context)?;
                 #[cfg(not(test))]
+                let decision = {
+                    let emission = self.runtime.tick(EngineTick {
+                        context: self.engine_context.clone(),
+                        content_size: self.content_size,
+                    })?;
+                    self.decision(context, emission)?
+                };
+                if self.renderer.poll_render_updates() && decision == ViewDecision::Stay {
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    Ok(decision)
+                }
+            }
+            ViewEvent::Tick => {
+                #[cfg(test)]
+                let decision = self.poll_covered(context)?;
+                #[cfg(not(test))]
+                let decision = ViewDecision::Stay;
+                if self.renderer.poll_render_updates() && decision == ViewDecision::Stay {
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    Ok(decision)
+                }
+            }
+            ViewEvent::Resize(size) => {
+                self.content_size = (size.width, size.height);
                 let emission = self.runtime.tick(EngineTick {
                     context: self.engine_context.clone(),
                     content_size: self.content_size,
                 })?;
-                #[cfg(not(test))]
-                return self.decision(context, emission);
-            }
-            ViewEvent::Tick => {
-                #[cfg(test)]
-                return self.poll_covered(context);
-                #[cfg(not(test))]
-                return Ok(ViewDecision::Stay);
-            }
-            ViewEvent::Resize(size) => {
-                self.content_size = (size.width, size.height);
-                let _ = self.runtime.tick(EngineTick {
-                    context: self.engine_context.clone(),
-                    content_size: self.content_size,
-                });
-                Ok(ViewDecision::Invalidate)
+                let decision = self.decision(context, emission)?;
+                if decision == ViewDecision::Stay {
+                    Ok(ViewDecision::Invalidate)
+                } else {
+                    Ok(decision)
+                }
             }
         }
     }
@@ -754,6 +797,38 @@ mod tests {
             view.on_command(CMD_COPY, &context).unwrap(),
             ViewDecision::Effect(EffectRequest::CopyToClipboard(value)) if value == "hello red world"
         ));
+    }
+
+    #[test]
+    fn resize_preserves_the_runtime_publication() {
+        let mut view = create_protocol_view(
+            config(Value::String("captured".into())),
+            &request(),
+            ViewInstanceId(1),
+        )
+        .unwrap();
+        let context = context();
+        assert_eq!(
+            view.event(
+                ViewEvent::Resize(crate::view::TerminalSize {
+                    width: 20,
+                    height: 5
+                }),
+                &context,
+            )
+            .unwrap(),
+            ViewDecision::Invalidate
+        );
+        let publication = view
+            .publication()
+            .expect("Resize must preserve publication");
+        assert!(publication.ready);
+        assert_eq!(
+            publication.current,
+            serde_json::json!({"value": "captured"})
+        );
+        view.event(ViewEvent::Tick, &context).unwrap();
+        assert!(view.publication().unwrap().ready);
     }
 
     #[test]
@@ -999,7 +1074,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '{{\"version\":1,\"output\":{{\"type\":\"layout\",\"direction\":\"vertical\",\"children\":[{{\"type\":\"paragraph\",\"text\":\"Loaded doc\"}},{{\"type\":\"image\",\"path\":{:?}}}]}}}}\\n'\n",
+                "#!/bin/sh\nprintf '{{\"version\":1,\"output\":{{\"type\":\"layout\",\"direction\":\"vertical\",\"constraints\":[{{\"Length\":1}},{{\"Length\":4}}],\"children\":[{{\"type\":\"paragraph\",\"text\":\"Loaded doc\"}},{{\"type\":\"image\",\"path\":{:?}}}]}}}}\\n'\n",
                 image_path.to_str().unwrap()
             ),
         )
@@ -1051,6 +1126,70 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("Loaded doc"));
+
+        // After the script publishes, both decoding and protocol encoding must
+        // drive redraws themselves, without a key press or unconditional draw.
+        let render_context = RenderContext::new(
+            crate::view::TerminalSize {
+                width: 40,
+                height: 6,
+            },
+            Some(crate::terminal::ImagePicker::test_halfblocks()),
+        );
+        // Rendering with an image-capable terminal schedules visible images.
+        terminal
+            .draw(|frame| {
+                view.render(frame, frame.area(), &render_context).unwrap();
+            })
+            .unwrap();
+        let mut visible_image = false;
+        let mut redraws = 0;
+        for _ in 0..300 {
+            let decision = view.event(ViewEvent::Tick, &context).unwrap();
+            if decision == ViewDecision::Invalidate {
+                redraws += 1;
+                terminal
+                    .draw(|frame| {
+                        view.render(frame, frame.area(), &render_context).unwrap();
+                    })
+                    .unwrap();
+                visible_image = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .any(|cell| cell.symbol().contains('▀'));
+                if visible_image {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(
+            visible_image,
+            "image completion must invalidate the idle view; redraws={redraws}, buffer={:?}",
+            terminal.backend().buffer()
+        );
+        for _ in 0..10 {
+            assert_eq!(
+                view.event(ViewEvent::Tick, &context).unwrap(),
+                ViewDecision::Stay
+            );
+        }
+        // A later redraw must preserve the ready image rather than clear it.
+        terminal
+            .draw(|frame| {
+                view.render(frame, frame.area(), &render_context).unwrap();
+            })
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains('▀'))
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

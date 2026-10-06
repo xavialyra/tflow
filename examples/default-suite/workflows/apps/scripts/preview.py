@@ -113,13 +113,19 @@ def text_value(value):
 
 def main():
     request = json.load(sys.stdin)
-    if request.get("version") != 1 or request.get("entrypoint") != "picker-preview":
-        raise ValueError("expected a version-1 picker-preview request")
+    if request.get("version") != 1:
+        raise ValueError("expected a version-1 request")
 
-    state = request.get("context", {}).get("engine", {}).get("state", {})
+    context = request.get("context", {})
+    state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
     item = state.get("item") if isinstance(state, dict) else None
+    if not isinstance(item, dict) and isinstance(context, dict):
+        inp = context.get("input")
+        if isinstance(inp, dict):
+            item = inp
+
     if not isinstance(item, dict):
-        json.dump({"version": 1, "preview": None}, sys.stdout)
+        json.dump({"version": 1, "output": None}, sys.stdout)
         sys.stdout.write("\n")
         return
 
@@ -174,13 +180,13 @@ def main():
             body,
         ],
     }
-    json.dump({"version": 1, "preview": preview}, sys.stdout, separators=(",", ":"))
+    json.dump({"version": 1, "output": preview}, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(f"apps preview: {error}", file=sys.stderr)
-        raise SystemExit(2)
+    except Exception as error:
+        json.dump({"version": 1, "output": None}, sys.stdout)
+        sys.stdout.write("\n")

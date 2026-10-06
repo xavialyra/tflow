@@ -9,14 +9,56 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-const MAX_CONCURRENT_PROTOCOL_ENCODES: usize = 2;
+// Decoding a source can temporarily allocate tens of MiB. Serialize it across views.
+const MAX_CONCURRENT_PROTOCOL_ENCODES: usize = 1;
 static IMAGE_PROTOCOL_POOL: OnceLock<std::result::Result<ImageProtocolPool, String>> =
     OnceLock::new();
 static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
 type EncodeResult = std::result::Result<StatefulProtocol, String>;
-type Encoder = dyn Fn(Arc<DynamicImage>, ImagePicker, Size) -> EncodeResult + Send + Sync + 'static;
+type Encoder = dyn Fn(Arc<ImageSource>, ImagePicker, Size) -> EncodeResult + Send + Sync + 'static;
+
+pub(crate) struct ImageSource {
+    id: usize,
+    path: std::path::PathBuf,
+    #[cfg(test)]
+    pixels: Option<DynamicImage>,
+}
+
+impl ImageSource {
+    pub(crate) fn file(path: std::path::PathBuf) -> Self {
+        static NEXT_SOURCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        Self {
+            id: NEXT_SOURCE.fetch_add(1, Ordering::Relaxed),
+            path,
+            #[cfg(test)]
+            pixels: None,
+        }
+    }
+
+    fn decode(&self) -> Result<DynamicImage, String> {
+        #[cfg(test)]
+        if let Some(image) = &self.pixels {
+            return Ok(image.clone());
+        }
+        super::image_decode::decode_image(&self.path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_rgba8(width: u32, height: u32) -> Self {
+        Self {
+            pixels: Some(DynamicImage::new_rgba8(width, height)),
+            ..Self::file(Default::default())
+        }
+    }
+
+    #[cfg(test)]
+    fn width(&self) -> u32 {
+        self.pixels.as_ref().unwrap().width()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ImageProtocolKey {
@@ -29,13 +71,13 @@ pub(crate) struct ImageProtocolKey {
 impl ImageProtocolKey {
     pub(crate) fn new(
         block: usize,
-        image: &Arc<DynamicImage>,
+        image: &Arc<ImageSource>,
         area: Size,
         picker: ImagePicker,
     ) -> Self {
         Self {
             block,
-            image: Arc::as_ptr(image) as usize,
+            image: image.id,
             area,
             picker: picker.fingerprint(),
         }
@@ -44,7 +86,7 @@ impl ImageProtocolKey {
 
 pub(crate) struct DesiredImageProtocol {
     pub(crate) key: ImageProtocolKey,
-    pub(crate) image: Arc<DynamicImage>,
+    pub(crate) image: Arc<ImageSource>,
     pub(crate) picker: ImagePicker,
 }
 
@@ -62,10 +104,11 @@ struct ProtocolCompletion {
 struct ProtocolJob {
     owner: u64,
     key: ImageProtocolKey,
-    image: Arc<DynamicImage>,
+    image: Arc<ImageSource>,
     picker: ImagePicker,
     cancellation: Arc<AtomicBool>,
     completion: Sender<ProtocolCompletion>,
+    not_before: Instant,
 }
 
 struct PoolState {
@@ -82,6 +125,7 @@ struct SharedPool {
 struct ImageProtocolPool {
     shared: Arc<SharedPool>,
     workers: Vec<JoinHandle<()>>,
+    debounce: Duration,
 }
 
 impl ImageProtocolPool {
@@ -112,7 +156,11 @@ impl ImageProtocolPool {
                 }
             }
         }
-        Ok(Self { shared, workers })
+        Ok(Self {
+            shared,
+            workers,
+            debounce: Duration::ZERO,
+        })
     }
 
     fn submit(
@@ -129,6 +177,7 @@ impl ImageProtocolPool {
             picker: desired.picker,
             cancellation: Arc::clone(&cancellation),
             completion,
+            not_before: Instant::now() + self.debounce,
         };
         let mut state = self
             .shared
@@ -182,14 +231,29 @@ fn protocol_worker(shared: Arc<SharedPool>) {
                 .state
                 .lock()
                 .expect("image protocol queue was poisoned");
-            while state.jobs.is_empty() && !state.closed {
-                state = shared
-                    .ready
-                    .wait(state)
-                    .expect("image protocol queue was poisoned");
-            }
-            if state.closed {
-                return;
+            loop {
+                if state.closed {
+                    return;
+                }
+                state
+                    .jobs
+                    .retain(|job| !job.cancellation.load(Ordering::Acquire));
+                if let Some(job) = state.jobs.front() {
+                    let remaining = job.not_before.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    state = shared
+                        .ready
+                        .wait_timeout(state, remaining)
+                        .expect("image protocol queue was poisoned")
+                        .0;
+                } else {
+                    state = shared
+                        .ready
+                        .wait(state)
+                        .expect("image protocol queue was poisoned");
+                }
             }
             state
                 .jobs
@@ -215,6 +279,11 @@ fn protocol_worker(shared: Arc<SharedPool>) {
 fn default_pool() -> std::result::Result<&'static ImageProtocolPool, String> {
     match IMAGE_PROTOCOL_POOL.get_or_init(|| {
         ImageProtocolPool::new(MAX_CONCURRENT_PROTOCOL_ENCODES, Arc::new(encode_protocol))
+            .map(|mut pool| {
+                // Coalesce rapid selection/resize events before opening files.
+                pool.debounce = Duration::from_millis(100);
+                pool
+            })
             .map_err(|error| format!("could not start image protocol workers: {error}"))
     }) {
         Ok(pool) => Ok(pool),
@@ -222,8 +291,9 @@ fn default_pool() -> std::result::Result<&'static ImageProtocolPool, String> {
     }
 }
 
-fn encode_protocol(image: Arc<DynamicImage>, picker: ImagePicker, area: Size) -> EncodeResult {
-    let mut protocol = picker.new_resize_protocol(image.as_ref().clone());
+fn encode_protocol(image: Arc<ImageSource>, picker: ImagePicker, area: Size) -> EncodeResult {
+    let image = display_image(&image, picker, area)?;
+    let mut protocol = picker.new_resize_protocol(image);
     let resize = Resize::Fit(None);
     let encoded_size = protocol.size_for(resize.clone(), area);
     protocol.resize_encode(&resize, encoded_size);
@@ -231,6 +301,25 @@ fn encode_protocol(image: Arc<DynamicImage>, picker: ImagePicker, area: Size) ->
         Some(Ok(())) => Ok(protocol),
         Some(Err(error)) => Err(error.to_string()),
         None => Err("image protocol did not produce an encoding result".to_string()),
+    }
+}
+
+fn display_image(
+    source: &ImageSource,
+    picker: ImagePicker,
+    area: Size,
+) -> Result<DynamicImage, String> {
+    if area.width == 0 || area.height == 0 {
+        return Err("image display area is empty".into());
+    }
+    let image = source.decode()?;
+    let (width, height) = picker.image_pixel_bounds(area);
+    // thumbnail never enlarges the source. The full decoded image is dropped
+    // before constructing a protocol, which only owns display-sized pixels.
+    if image.width() <= width && image.height() <= height {
+        Ok(image)
+    } else {
+        Ok(image.thumbnail(width, height))
     }
 }
 
@@ -261,13 +350,15 @@ impl ImageProtocolCache {
     }
 
     pub(crate) fn update(&mut self, desired: Vec<DesiredImageProtocol>) {
-        // Keep completed encodings for reuse, but stop work for images that are
-        // no longer visible before accepting any queued completions.
+        // Encoded protocols can own large, terminal-specific image buffers.
+        // Keep only protocols needed by the current frame: retaining every
+        // previously visible image made scrolling through a few large images
+        // grow the process substantially (up to the entry-count limit).
         self.entries.retain(|key, state| {
-            if let CachedProtocol::Pending(cancellation) = state
-                && !desired.iter().any(|image| image.key == *key)
-            {
-                cancellation.store(true, Ordering::Release);
+            if !desired.iter().any(|image| image.key == *key) {
+                if let CachedProtocol::Pending(cancellation) = state {
+                    cancellation.store(true, Ordering::Release);
+                }
                 return false;
             }
             true
@@ -276,9 +367,7 @@ impl ImageProtocolCache {
         self.collect();
 
         for desired in desired {
-            if let Some(state) = self.entries.get(&desired.key)
-                && !matches!(state, CachedProtocol::Failed(_))
-            {
+            if self.entries.contains_key(&desired.key) {
                 if let Some(pos) = self.order.iter().position(|k| *k == desired.key) {
                     self.order.remove(pos);
                 }
@@ -326,20 +415,25 @@ impl ImageProtocolCache {
         self.order.clear();
     }
 
-    fn collect(&mut self) {
+    pub(crate) fn collect(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(completed) = self.completion_rx.try_recv() {
             let Some(state) = self.entries.get_mut(&completed.key) else {
                 continue;
             };
+            changed = true;
             *state = match completed.result {
                 Ok(protocol) => CachedProtocol::Ready(Box::new(protocol)),
                 Err(error) => CachedProtocol::Failed(error),
             };
         }
+        changed
     }
 
     pub(crate) fn protocol(&mut self, key: ImageProtocolKey) -> Option<&mut StatefulProtocol> {
-        self.collect();
+        // Collect once before traversing the document, not between image leaves.
+        // Otherwise a later leaf can consume an earlier leaf's completion
+        // without painting it or leaving an invalidation for the next tick.
         match self.entries.get_mut(&key) {
             Some(CachedProtocol::Ready(protocol)) => {
                 if let Some(pos) = self.order.iter().position(|k| *k == key) {
@@ -370,7 +464,148 @@ impl Drop for ImageProtocolCache {
 mod tests {
     use super::*;
     use std::sync::Barrier;
-    use std::time::Duration;
+
+    #[test]
+    fn debounced_requests_encode_only_the_latest_size() {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = count.clone();
+        let mut pool = ImageProtocolPool::new(
+            1,
+            Arc::new(move |image, picker, area| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                encode_protocol(image, picker, area)
+            }),
+        )
+        .unwrap();
+        pool.debounce = Duration::from_millis(100);
+        let (tx, rx) = channel();
+        let image = Arc::new(ImageSource::new_rgba8(2, 2));
+        let picker = ImagePicker::test_halfblocks();
+        for width in 20..40 {
+            let key = ImageProtocolKey::new(0, &image, Size::new(width, 10), picker);
+            pool.submit(
+                1,
+                DesiredImageProtocol {
+                    key,
+                    image: image.clone(),
+                    picker,
+                },
+                tx.clone(),
+            );
+        }
+        let completion = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(completion.key.area.width, 39);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn display_pixels_follow_area_without_upscaling() {
+        let source = ImageSource::new_rgba8(1000, 500);
+        let picker = ImagePicker::test_halfblocks();
+        let small = display_image(&source, picker, Size::new(20, 10)).unwrap();
+        assert_eq!((small.width(), small.height()), (200, 100));
+        let large = display_image(&source, picker, Size::new(40, 20)).unwrap();
+        assert_eq!((large.width(), large.height()), (400, 200));
+        let original = display_image(&source, picker, Size::new(200, 100)).unwrap();
+        assert_eq!((original.width(), original.height()), (1000, 500));
+    }
+
+    #[test]
+    fn resizing_reloads_file_and_failed_requests_are_not_retried_each_frame() {
+        let path = std::env::temp_dir().join(format!("tflow-resize-{}.png", std::process::id()));
+        DynamicImage::new_rgba8(1000, 500).save(&path).unwrap();
+        let source = Arc::new(ImageSource::file(path.clone()));
+        let picker = ImagePicker::test_halfblocks();
+        let mut cache = ImageProtocolCache::new();
+        let request = |area| DesiredImageProtocol {
+            key: ImageProtocolKey::new(0, &source, area, picker),
+            image: source.clone(),
+            picker,
+        };
+        let small = Size::new(20, 10);
+        let small_key = request(small).key;
+        cache.update(vec![request(small)]);
+        for _ in 0..1000 {
+            cache.collect();
+            if cache.protocol(small_key).is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(cache.protocol(small_key).is_some());
+        std::fs::remove_file(path).unwrap();
+        cache.update(vec![request(small)]);
+        assert_eq!(cache.submissions, 1);
+        let large = Size::new(40, 20);
+        let large_key = request(large).key;
+        cache.update(vec![request(large)]);
+        for _ in 0..1000 {
+            cache.collect();
+            if cache.error(large_key).is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            cache.error(large_key).is_some(),
+            "resize must reopen the file"
+        );
+        assert!(!cache.entries.contains_key(&small_key));
+        cache.update(vec![request(large)]);
+        assert_eq!(cache.submissions, 2);
+    }
+
+    // Run in separate processes for comparable RSS/HWM. Baseline reproduces
+    // the former source + full-resolution protocol ownership, not the whole UI.
+    #[test]
+    #[ignore = "manual memory probe: TFLOW_IMAGE_DIR and optional TFLOW_IMAGE_BASELINE"]
+    fn wallpaper_memory_probe() {
+        let directory = std::env::var("TFLOW_IMAGE_DIR").expect("set TFLOW_IMAGE_DIR");
+        let baseline = std::env::var_os("TFLOW_IMAGE_BASELINE").is_some();
+        let picker = ImagePicker::test_halfblocks();
+        let area = Size::new(80, 24);
+        let files = [
+            "70022444_p0.jpg",
+            "FtWuV8uWIAg9tYH",
+            "FjWyBEdWYAAu07Q.jpg",
+            "E7okZhGWUAIKu5H.jpg",
+        ];
+        let mut held = Vec::new();
+        for name in files {
+            let source = ImageSource::file(std::path::Path::new(&directory).join(name));
+            if baseline {
+                let original = source.decode().unwrap();
+                let mut protocol = picker.new_resize_protocol(original.clone());
+                let resize = Resize::Fit(None);
+                let size = protocol.size_for(resize.clone(), area);
+                protocol.resize_encode(&resize, size);
+                held.push((Some(original), protocol));
+            } else {
+                let thumbnail = display_image(&source, picker, area).unwrap();
+                eprintln!(
+                    "{name}: display={}x{}, bytes={}",
+                    thumbnail.width(),
+                    thumbnail.height(),
+                    thumbnail.as_bytes().len()
+                );
+                drop(thumbnail);
+                held.push((
+                    None,
+                    encode_protocol(Arc::new(source), picker, area).unwrap(),
+                ));
+            }
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            eprintln!(
+                "{name}: {}",
+                status
+                    .lines()
+                    .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        std::hint::black_box(&held);
+    }
 
     fn key(block: usize, image_id: usize) -> ImageProtocolKey {
         ImageProtocolKey {
@@ -391,7 +626,7 @@ mod tests {
             let started = Arc::clone(&started);
             let executed = Arc::clone(&executed);
             Arc::new(
-                move |image: Arc<DynamicImage>, picker: ImagePicker, area: Size| {
+                move |image: Arc<ImageSource>, picker: ImagePicker, area: Size| {
                     let revision = image.width() as u64;
                     executed.lock().unwrap().push(revision);
                     if !started.swap(true, Ordering::AcqRel) {
@@ -405,7 +640,7 @@ mod tests {
         let (completion_tx, completion) = channel();
         let submit = |revision| DesiredImageProtocol {
             key: key(0, revision),
-            image: Arc::new(DynamicImage::new_rgba8(revision as u32, 1)),
+            image: Arc::new(ImageSource::new_rgba8(revision as u32, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
         let first = pool.submit(1, submit(1), completion_tx.clone());
@@ -438,7 +673,7 @@ mod tests {
             let started = Arc::clone(&started);
             let executed = Arc::clone(&executed);
             Arc::new(
-                move |image: Arc<DynamicImage>, picker: ImagePicker, area: Size| {
+                move |image: Arc<ImageSource>, picker: ImagePicker, area: Size| {
                     executed.lock().unwrap().push(image.width());
                     if !started.swap(true, Ordering::AcqRel) {
                         barrier.wait();
@@ -451,7 +686,7 @@ mod tests {
         let (completion_tx, _completion_rx) = channel();
         let desired = |revision| DesiredImageProtocol {
             key: key(0, revision),
-            image: Arc::new(DynamicImage::new_rgba8(revision as u32, 1)),
+            image: Arc::new(ImageSource::new_rgba8(revision as u32, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
 
@@ -474,9 +709,46 @@ mod tests {
     }
 
     #[test]
+    fn completion_between_image_lookups_remains_available_to_the_next_tick() {
+        let mut cache = ImageProtocolCache::new();
+        let picker = ImagePicker::test_halfblocks();
+        let image = Arc::new(ImageSource::new_rgba8(2, 2));
+        let first = key(0, 1);
+        let second = key(1, 2);
+        cache.entries.insert(
+            first,
+            CachedProtocol::Pending(Arc::new(AtomicBool::new(false))),
+        );
+        cache.entries.insert(
+            second,
+            CachedProtocol::Ready(Box::new(
+                encode_protocol(Arc::clone(&image), picker, second.area).unwrap(),
+            )),
+        );
+        cache.order.extend([first, second]);
+
+        assert!(cache.protocol(first).is_none());
+        // First image finishes after its leaf was skipped in this frame.
+        cache
+            .completion_tx
+            .send(ProtocolCompletion {
+                key: first,
+                result: Ok(encode_protocol(image, picker, first.area).unwrap()),
+            })
+            .unwrap();
+        assert!(cache.protocol(second).is_some());
+        assert!(
+            cache.collect(),
+            "next tick must request a redraw for the first image"
+        );
+        assert!(cache.protocol(first).is_some());
+        assert!(!cache.collect(), "completion must invalidate only once");
+    }
+
+    #[test]
     fn stable_key_is_submitted_only_once() {
         let mut cache = ImageProtocolCache::new();
-        let image = Arc::new(DynamicImage::new_rgba8(2, 2));
+        let image = Arc::new(ImageSource::new_rgba8(2, 2));
         let picker = ImagePicker::test_halfblocks();
         let key = ImageProtocolKey::new(0, &image, Size::new(20, 10), picker);
         let desired = || DesiredImageProtocol {
@@ -496,8 +768,8 @@ mod tests {
     fn stale_completion_does_not_replace_a_new_revision() {
         let mut cache = ImageProtocolCache::new();
         let picker = ImagePicker::test_halfblocks();
-        let old_image = Arc::new(DynamicImage::new_rgba8(1, 1));
-        let new_image = Arc::new(DynamicImage::new_rgba8(2, 2));
+        let old_image = Arc::new(ImageSource::new_rgba8(1, 1));
+        let new_image = Arc::new(ImageSource::new_rgba8(2, 2));
         let old_key = ImageProtocolKey::new(0, &old_image, Size::new(20, 10), picker);
         let new_key = ImageProtocolKey::new(0, &new_image, Size::new(20, 10), picker);
         cache.entries.insert(
@@ -526,7 +798,7 @@ mod tests {
     fn updating_visible_images_cancels_only_obsolete_pending_work() {
         let mut cache = ImageProtocolCache::new();
         let picker = ImagePicker::test_halfblocks();
-        let image = Arc::new(DynamicImage::new_rgba8(2, 2));
+        let image = Arc::new(ImageSource::new_rgba8(2, 2));
         let current = ImageProtocolKey::new(0, &image, Size::new(20, 10), picker);
         let obsolete = key(0, 1);
         let ready = key(1, 2);
@@ -563,7 +835,7 @@ mod tests {
         assert!(!retained.load(Ordering::Acquire));
         assert!(!cache.entries.contains_key(&obsolete));
         assert!(!cache.order.contains(&obsolete));
-        assert!(cache.protocol(ready).is_some());
+        assert!(!cache.entries.contains_key(&ready));
         assert_eq!(cache.submissions, 0);
 
         cache.update(Vec::new());
@@ -571,7 +843,7 @@ mod tests {
         assert!(retained.load(Ordering::Acquire));
         assert!(!cache.entries.contains_key(&current));
         assert!(!cache.order.contains(&current));
-        assert!(cache.protocol(ready).is_some());
+        assert!(!cache.entries.contains_key(&ready));
     }
 
     #[test]
@@ -596,7 +868,7 @@ mod tests {
         let encoder = {
             let calls = Arc::clone(&calls);
             Arc::new(
-                move |image: Arc<DynamicImage>, picker: ImagePicker, area: Size| {
+                move |image: Arc<ImageSource>, picker: ImagePicker, area: Size| {
                     if calls.fetch_add(1, Ordering::AcqRel) == 0 {
                         panic!("test encoder panic");
                     }
@@ -608,7 +880,7 @@ mod tests {
         let (completion_tx, completion_rx) = channel();
         let desired = |revision| DesiredImageProtocol {
             key: key(0, revision),
-            image: Arc::new(DynamicImage::new_rgba8(1, 1)),
+            image: Arc::new(ImageSource::new_rgba8(1, 1)),
             picker: ImagePicker::test_halfblocks(),
         };
 

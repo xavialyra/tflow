@@ -53,7 +53,6 @@ impl BindingAction for CaptureAction {
 
     fn default_bindings() -> &'static [(Key, Self)] {
         &[
-            (Key::Enter, Self::Copy),
             (Key::Escape, Self::Back),
             (Key::Up, Self::ScrollUp),
             (Key::Down, Self::ScrollDown),
@@ -73,9 +72,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn defaults_copy_on_enter_and_go_back_on_escape() {
+    fn defaults_go_back_on_escape_and_scroll() {
         let bindings = CaptureBindings::from_defaults(None).unwrap();
-        assert_eq!(bindings.action(Key::Enter), Some(CaptureAction::Copy));
+        assert_eq!(bindings.action(Key::Enter), None);
         assert_eq!(bindings.action(Key::Escape), Some(CaptureAction::Back));
         assert_eq!(bindings.action(Key::Up), Some(CaptureAction::ScrollUp));
         assert_eq!(bindings.action(Key::Down), Some(CaptureAction::ScrollDown));

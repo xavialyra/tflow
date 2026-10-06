@@ -1,0 +1,124 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/picker_picker.toml
+# Category -> service -> variant -> confirmation, using ordinary Push/Close.
+[workflow]
+api = 1
+name = "Picker + Picker: Cascading Service Selector"
+entrypoint = "main"
+
+[views.main]
+engine = "picker"
+companion = "services"
+
+[views.main.picker]
+input_placeholder = "Category -> Enter -> service -> Enter -> variant"
+items = [
+  { display = "Databases", value = "databases" },
+  { display = "Queues", value = "queues" },
+]
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+enter = "open_services"
+
+[commands.open_services]
+label = "Choose Service"
+type = "navigate"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item") or {}
+json.dump({"version": 1, "operation": {"type": "navigate", "target": "services", "query": json.dumps(item)}}, sys.stdout)
+'''
+
+[views.services]
+engine = "picker"
+
+[views.services.picker]
+# Binding JSON is transport data, not a second search prompt.
+show_input = false
+show_divider = false
+
+[views.services.picker.items]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+raw = (request["context"]["engine"]["state"] or {}).get("input", "")
+try:
+    category = json.loads(raw).get("value", "databases")
+except (ValueError, AttributeError):
+    category = "databases"
+catalog = {"databases": [("PostgreSQL", "postgres"), ("SQLite", "sqlite")],
+           "queues": [("RabbitMQ", "rabbitmq"), ("Redis Streams", "redis")]}
+items = [{"display": label, "value": value, "metadata": {"category": category}}
+         for label, value in catalog.get(category, [])]
+json.dump({"version": 1, "items": items}, sys.stdout)
+'''
+
+[views.services.bindings]
+enter = "open_variants"
+
+[commands.open_variants]
+label = "Choose Variant"
+type = "navigate"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item") or {}
+json.dump({"version": 1, "operation": {"type": "navigate", "target": "variants", "query": {"service": item.get("value", "postgres")}}}, sys.stdout)
+'''
+
+[views.variants]
+engine = "picker"
+
+[views.variants.query]
+type = "object"
+service = { type = "string", default = "postgres" }
+
+[views.variants.picker]
+show_input = false
+show_divider = false
+
+[views.variants.picker.items]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+service = request["context"]["parameters"]["service"]
+variants = {"postgres": ["Standard", "High Availability"], "sqlite": ["In-memory", "Persistent"],
+            "rabbitmq": ["Single Node", "Cluster"], "redis": ["Standalone", "Sentinel"]}
+json.dump({"version": 1, "items": [{"display": name, "value": name, "metadata": {"service": service}}
+          for name in variants.get(service, [])]}, sys.stdout)
+'''
+
+[views.variants.bindings]
+enter = "confirm"
+
+[commands.confirm]
+label = "Confirm Choice"
+type = "navigate"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item") or {}
+json.dump({"version": 1, "operation": {"type": "navigate", "target": "confirmation", "query": {
+    "service": item.get("metadata", {}).get("service", ""), "variant": item.get("value", "")}}}, sys.stdout)
+'''
+
+[views.confirmation]
+engine = "capture"
+
+[views.confirmation.query]
+type = "object"
+service = { type = "string", default = "" }
+variant = { type = "string", default = "" }
+
+[views.confirmation.capture.output]
+script = '''#!/usr/bin/env python3
+import json, sys
+parameters = json.load(sys.stdin)["context"]["parameters"]
+text = "CONFIRMED\nService: " + parameters["service"] + "\nVariant: " + parameters["variant"] + "\n\nEsc returns one level."
+json.dump({"version": 1, "output": text}, sys.stdout)
+'''
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "services"

@@ -85,7 +85,10 @@ fn validate_return_processor(
         super::ExecutionMode::Script => {
             if let Some(operation) = processor.operation.as_deref() {
                 anyhow::ensure!(
-                    matches!(operation, "navigate" | "call" | "return" | "run"),
+                    matches!(
+                        operation,
+                        "navigate" | "call" | "return" | "run" | "companion"
+                    ),
                     "{owner} has unsupported operation {:?}",
                     operation
                 );
@@ -96,6 +99,9 @@ fn validate_return_processor(
     }
     Ok(())
 }
+
+static DEFAULT_PRESENTATION: std::sync::LazyLock<super::ViewPresentation> =
+    std::sync::LazyLock::new(super::ViewPresentation::default);
 
 fn validate_operation_target(
     view_ref: &str,
@@ -114,6 +120,9 @@ fn validate_operation_target(
             presentation,
             ..
         } => ("call", target, presentation),
+        crate::protocol::ProtocolOperation::Companion { target, .. } => {
+            ("companion", target, &*DEFAULT_PRESENTATION)
+        }
         _ => return Ok(()),
     };
 
@@ -234,7 +243,9 @@ impl CompiledConfig {
                     key
                 );
             }
-            if !self.all_commands.contains_key(id) {
+            if !self.all_commands.contains_key(id)
+                && crate::command::host_action_label(id).is_none()
+            {
                 bail!("host command binding {:?} targets unknown command", id);
             }
         }
@@ -257,6 +268,9 @@ impl CompiledConfig {
             // `<workflow>.<command>`. A workflow command landing on an engine
             // action's id would make one identity name two different commands, so
             // the collision is rejected instead of resolved by priority.
+            if crate::command::host_action_label(cmd_id).is_some() {
+                bail!("command {cmd_id:?} collides with a built-in Host action");
+            }
             if let Some((action_fqid, label)) = crate::engine::engine_action_from_id(cmd_id) {
                 bail!(
                     "command {cmd_id:?} collides with the {action_fqid:?} engine action ({label:?}), \
@@ -303,6 +317,31 @@ impl CompiledConfig {
             engines.validate_view(view_ref, view, self.workflow_root(view_ref))?;
             self.chrome_commands_show(view_ref)?;
             let wf_id = super::package_id(view_ref);
+            if let Some(target) = &view.companion {
+                if target.trim().is_empty() {
+                    bail!("view {:?} companion target cannot be empty", view_ref);
+                }
+                let resolved = self
+                    .resolve_view_scoped(target, view_ref)
+                    .with_context(|| {
+                        format!(
+                            "view {:?} companion references unknown view {:?}",
+                            view_ref, target
+                        )
+                    })?;
+                if resolved == *view_ref {
+                    bail!("view {:?} cannot set itself as companion", view_ref);
+                }
+                if let Some(companion_view) = self.views.get(&resolved)
+                    && companion_view.companion.is_some()
+                {
+                    bail!(
+                        "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",
+                        view_ref,
+                        resolved
+                    );
+                }
+            }
             self.validate_unbind(&view.unbind, view_ref, view)?;
             if let Some(bindings) = &view.bindings {
                 // Both modes may declare bindings. `binding_mode = "item_merge"`
@@ -392,4 +431,19 @@ fn validate_view_ref(view_ref: &str) -> Result<()> {
         bail!("invalid view reference {:?}", view_ref);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_return_processor_accepts_companion_operation() {
+        let processor = toml::from_str::<super::super::ReturnProcessor>(
+            "type = 'companion'\nscript = 'printf response'",
+        )
+        .unwrap();
+        validate_return_processor("sample:main", "open", &processor, &BTreeMap::new(), None)
+            .unwrap();
+    }
 }

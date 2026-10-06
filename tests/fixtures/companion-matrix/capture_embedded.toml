@@ -1,0 +1,26 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/capture_embedded.toml
+[workflow]
+api = 1
+name = "Capture + Embedded: Report and Shell"
+entrypoint = "main"
+
+[views.main]
+engine = "capture"
+companion = "shell"
+
+[views.main.capture.output]
+content = "INCIDENT REPORT\n\nIncident: incident-42\nStatus: investigating\n\nEsc returns to this report."
+
+[views.shell]
+engine = "embedded"
+
+[views.shell.embedded]
+command = ["sh", "-c", "printf 'FOLLOW-UP SHELL: %s\\n' \"$TFLOW_INPUT\"; exec sh"]
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "shell"
+query = "incident-42"

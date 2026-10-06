@@ -147,17 +147,20 @@ items = [
 
 The plain `items = [...]` array is also supported as a declared shorthand.
 
-### 5. Customize a Preview
+### 5. Attach a Companion View (ADR 0010)
 
-Press `Ctrl+P` in any Picker to view the selected item's display and value. Every Picker starts with its preview collapsed; no preview configuration is needed for these built-in details. Metadata remains available to custom preview providers.
-
-To customize the content, declare a preview provider. The following example sets the preview sizing and uses a script to turn selected-item metadata into a document:
+Views can attach an interactive companion view (such as a `capture` inspection pane) rendered side-by-side:
 
 ```toml
-[views.branches.picker.preview]
+[views.branches]
+engine = "picker"
+companion = "preview"
+
+[views.preview]
+engine = "capture"
+
+[views.preview.capture.output]
 file = "scripts/preview.py"
-width = "35%"
-min_width = 24
 ```
 
 Create `scripts/preview.py`:
@@ -167,40 +170,26 @@ Create `scripts/preview.py`:
 import json
 import sys
 
-request = json.load(sys.stdin)
-item = request["context"]["engine"]["state"]["item"]
-json.dump({"version": 1, "preview": {
-    "type": "paragraph",
-    "spans": [{"text": item["text"] + "\n", "slot": "accent"},
-              item["metadata"].get("summary", "No summary")],
-}}, sys.stdout)
-sys.stdout.write("\n")
+raw = sys.stdin.read()
+print(f"Details: {raw}")
 ```
 
-Omit `[views.<name>.picker.preview]` to use built-in details. Sizing is controlled by `width` and `min_width`; the pane starts collapsed unless `open = true`. Plain document text uses the theme’s `picker.preview.text`; explicit slots override it. See the [preview reference](../reference/picker-preview.md) for document schemas and nested layouts.
+The companion view attaches side-by-side to display details live. Return or close through the foreground View's normal back/close command (`Esc`).
 
-Run the preview example from the repository root:
+### 6. Toggle Companion Views
 
-```sh
-cargo run -- --suite tests/fixtures/config/default.toml --check
-cargo run -- --suite tests/fixtures/config/default.toml images:menu
-```
-
-Press `Ctrl+P` and select **Mixed preview** to see display rows, rich wrapped text, an image, and scrollable content. Select **Empty preview** to exercise a null response. The fixture's `browser:override` View demonstrates a page-owned provider and `browser:declared` demonstrates a static document.
-
-### 6. Toggle and Scroll the Preview Pane
-
-`Ctrl+P` toggles the preview by default. Use the View bindings to customize the toggle binding or add scrolling keys:
+Use a normal workflow command and bind it at the View layer. `Ctrl-P` has no special meaning and is not reserved:
 
 ```toml
+[commands.toggle_details]
+label = "Toggle Details"
+companion = "preview"
+
 [views.branches.bindings]
-"ctrl+p" = "@engine:picker.toggle_preview"
-"alt+k" = "@engine:picker.preview_scroll_up"
-"alt+j" = "@engine:picker.preview_scroll_down"
+"ctrl+p" = "toggle_details"
 ```
 
-Scroll actions move three rows and clamp the stored offset immediately, including after resize. The query and divider rows reduce the available preview body; an empty body or unmet pane minimum cancels preview work. Preview scripts share one pending slot: the same mount can replace its pending request, while overflow from another mount fails in that incoming preview pane.
-
+The command toggles the companion view on or off. When `query` is omitted in the command, the companion tracks the primary view's live selection. Specify an explicit `query` in the command when custom parameters are intended. Change the key or release it through `[views.branches.unbind]` like any other command.
 ## Troubleshooting
 
 - Put diagnostics on stderr. Any extra stdout text makes the response invalid.

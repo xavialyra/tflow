@@ -1,12 +1,13 @@
 mod bindings;
 pub(crate) mod display;
 mod items;
-mod preview;
 mod protocol;
 mod render;
 mod runtime;
 mod session;
 mod tasks;
+#[cfg(test)]
+mod tests;
 
 use self::bindings::PickerBindings;
 #[cfg_attr(not(test), allow(unused_imports))]
@@ -14,7 +15,6 @@ pub(crate) use self::display::ItemDisplayInput;
 pub(crate) use self::display::SlotToken;
 pub(crate) use self::items::run_items_script_raw;
 use self::items::{ItemsRequest, PickerItemsDefinition, PickerItemsLoader};
-pub(crate) use self::preview::PreviewDocumentCache;
 pub(crate) use self::protocol::{PickerProtocolConfig, create_protocol_view};
 pub(crate) use self::render::PickerRenderer;
 use self::session::PickerOptions;
@@ -25,8 +25,7 @@ use crate::task::{MountTaskLease, MountTaskStarter};
 use crate::workflow::config::{CompiledConfig, Defaults, View, parse_script_source, toml_to_json};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -51,10 +50,6 @@ pub(crate) struct PickerViewServices {
     /// Picker publishes the live command envelope; otherwise it publishes an
     /// empty envelope until the first registry update.
     registry: Option<std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>>>,
-    workflow_roots: BTreeMap<String, PathBuf>,
-    /// Session-scoped cache shared by every Picker instance mounted by one
-    /// factory, so a remount with the same request identity does not flash.
-    preview_cache: PreviewDocumentCache,
     launch_input: Value,
     task_services: Option<Arc<PickerTaskServices>>,
 }
@@ -69,32 +64,6 @@ impl PickerViewServices {
             .as_ref()
             .expect("picker task services are not installed")
             .start_items(starter, request)
-    }
-
-    pub(crate) fn set_preview_cache(&mut self, cache: PreviewDocumentCache) {
-        self.preview_cache = cache;
-    }
-}
-
-impl PickerViewServices {
-    pub(crate) fn from_config(config: &CompiledConfig, root_view_ref: &str) -> Result<Self> {
-        let mut services = Self::default();
-        if let Some(root) = config.workflow_root(root_view_ref) {
-            let package = root_view_ref
-                .split_once(':')
-                .map_or(root_view_ref, |(package, _)| package);
-            services
-                .workflow_roots
-                .insert(package.to_string(), root.to_path_buf());
-        }
-        Ok(services)
-    }
-
-    pub(crate) fn workflow_root(&self, view_ref: &str) -> Option<&Path> {
-        let package = view_ref
-            .split_once(':')
-            .map_or(view_ref, |(package, _)| package);
-        self.workflow_roots.get(package).map(PathBuf::as_path)
     }
 }
 
@@ -135,9 +104,11 @@ pub(crate) fn mount_data(
     let projection = Arc::new(crate::workflow::config::PickerItemsProjection::from_config(
         config, input, view_ref,
     )?);
-    let mut view_services = PickerViewServices::from_config(config, view_ref)?;
-    view_services.registry = registry;
-    view_services.launch_input = input.clone();
+    let view_services = PickerViewServices {
+        registry,
+        launch_input: input.clone(),
+        ..Default::default()
+    };
     let plan = PickerMountPlan {
         definition: PickerItemsDefinition::new(Arc::clone(&projection), view_ref)?,
         view_services,
@@ -172,7 +143,7 @@ impl PickerRuntimeServices {
             .unwrap_or_else(|_| panic!("test presentation definition must compile"));
         let plan = PickerMountPlan {
             definition,
-            view_services: PickerViewServices::from_config(&config, view_ref).unwrap_or_default(),
+            view_services: PickerViewServices::default(),
         };
         Self::from_plan(plan, MountTaskLease::new(starter.mount_id()), view_ref)
     }
@@ -212,7 +183,6 @@ const ALLOWED_PICKER_FIELDS: &[&str] = &[
     "show_left_prefix",
     "input_placeholder",
     "items",
-    "preview",
 ];
 
 /// Subset of [`ALLOWED_PICKER_FIELDS`] that must deserialize as a boolean.
@@ -229,9 +199,6 @@ pub(super) fn definition() -> crate::engine::EngineDefinition {
             crate::engine::ActionSpec::unit("picker.select_previous"),
             crate::engine::ActionSpec::unit("picker.cancel"),
             crate::engine::ActionSpec::unit("picker.retry"),
-            crate::engine::ActionSpec::unit("picker.toggle_preview"),
-            crate::engine::ActionSpec::unit("picker.preview_scroll_up"),
-            crate::engine::ActionSpec::unit("picker.preview_scroll_down"),
             crate::engine::ActionSpec::unit("picker.back"),
             crate::engine::ActionSpec::unit("picker.exit"),
         ])
@@ -253,13 +220,6 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
             && !matches!(value, toml::Value::String(_))
         {
             bail!("view {:?} picker {} must be a string", name, field);
-        }
-    }
-    if let Some(preview_val) = view.selected_preview() {
-        let preview_json = toml_to_json(preview_val)?;
-        let preview = self::preview::parse(Some(&preview_json))?;
-        if let self::preview::PreviewSource::Script(source) = &preview.source {
-            source.validate_target(context.script_root)?;
         }
     }
     if let Some(items) = view.selected_items() {
@@ -330,257 +290,4 @@ fn validate_declared_items_handler(value: &toml::Value) -> Result<()> {
         .context("declared items handler must define items")?;
     let items = toml_to_json(&handler.items)?;
     items::validate_item_array(&items)
-}
-
-#[cfg(test)]
-pub(crate) fn create_preview_test_suite(
-    temp: &std::path::Path,
-) -> crate::workflow::config::CompiledConfig {
-    let wf_dir = temp.join("workflows");
-    let browser_dir = wf_dir.join("browser");
-    let library_dir = wf_dir.join("library");
-    let library_scripts = library_dir.join("scripts");
-    let browser_scripts = browser_dir.join("scripts");
-    std::fs::create_dir_all(&browser_scripts).unwrap();
-    std::fs::create_dir_all(&library_scripts).unwrap();
-
-    std::fs::write(
-        temp.join("suite.toml"),
-        r#"[suite]
-api = 1
-name = "Preview Fixtures"
-entrypoint = "browser:main"
-
-[workflows]
-browser = { dir = "./workflows/browser" }
-library = { dir = "./workflows/library" }
-
-[aliases]
-preview = "browser:main"
-library = "library:main"
-"#,
-    )
-    .unwrap();
-
-    std::fs::write(
-        browser_dir.join("workflow.toml"),
-        r#"[workflow]
-api = 1
-name = "Preview browser"
-entrypoint = "main"
-
-[views.main]
-engine = "picker"
-
-[views.main.query]
-type = "object"
-input = "search"
-search = { type = "string", default = "" }
-owner = { type = "string", default = "browser" }
-[views.main.picker]
-items = [
-  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
-  { display = "Empty preview", value = "empty", metadata = {} },
-]
-[views.main.picker.preview]
-file = "scripts/preview.py"
-width = "35%"
-min_width = 24
-
-[views.override]
-engine = "picker"
-
-[views.override.picker]
-items = [
-  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
-  { display = "Empty preview", value = "empty", metadata = {} },
-]
-[views.override.picker.preview]
-file = "scripts/preview.py"
-
-[views.declared]
-engine = "picker"
-
-[views.declared.picker]
-items = [{ display = "Static document" }]
-"#,
-    )
-    .unwrap();
-
-    std::fs::write(
-        library_dir.join("workflow.toml"),
-        r#"[workflow]
-api = 1
-name = "Preview library"
-entrypoint = "main"
-
-[views.main]
-engine = "picker"
-
-[views.main.query]
-type = "object"
-input = "search"
-search = { type = "string", default = "" }
-owner = { type = "string", default = "library" }
-[views.main.picker]
-items = [
-  { display = "Mixed preview", value = "mixed", metadata = { summary = "Rich paragraphs wrap inside a nested layout.", image = "art.png" } },
-  { display = "Empty preview", value = "empty", metadata = {} },
-]
-[views.main.picker.preview]
-file = "scripts/preview.py"
-[views.main.bindings]
-"ctrl+p" = "toggle_preview"
-"alt+k" = "preview_scroll_up"
-"alt+j" = "preview_scroll_down"
-"#,
-    )
-    .unwrap();
-
-    image::DynamicImage::new_rgb8(2, 2)
-        .save(library_dir.join("art.png"))
-        .unwrap();
-    image::DynamicImage::new_rgb8(2, 2)
-        .save(browser_dir.join("art.png"))
-        .unwrap();
-
-    let preview_script = r#"#!/usr/bin/env python3
-import json, sys
-request = json.load(sys.stdin)
-item = request.get("context", {}).get("engine", {}).get("state", {}).get("item", {})
-preview = None
-if item.get("value") != "empty":
-    preview = {
-        "type": "layout",
-        "direction": "vertical",
-        "constraints": [{"Length": 2}, {"Length": 1}, {"Length": 8}, {"Fill": 1}],
-        "children": [
-            {"type": "display", "display": {"rows": [
-                {"cells": [{"text": item.get("text", "")}]},
-            ]}},
-            {"type": "separator"},
-            {"type": "paragraph", "border": True, "title": "Details", "text": item.get("metadata", {}).get("summary", "Ready")},
-            {"type": "paragraph", "text": "Line 1: generated preview content\nLine 2: more"},
-        ],
-    }
-json.dump({"version": 1, "preview": preview}, sys.stdout)
-sys.stdout.write("\n")
-"#;
-
-    std::fs::write(library_scripts.join("preview.py"), preview_script).unwrap();
-    std::fs::write(browser_scripts.join("preview.py"), preview_script).unwrap();
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(library_scripts.join("preview.py"), perms.clone()).unwrap();
-        std::fs::set_permissions(browser_scripts.join("preview.py"), perms).unwrap();
-    }
-
-    crate::workflow::config::CompiledConfig::load_suite_unvalidated(&temp.join("suite.toml"), None)
-        .unwrap()
-        .compile()
-        .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn input_placeholder_must_be_a_string() {
-        for field in STRING_FIELDS {
-            for value in ["true", "0", "[]", "{}"] {
-                let view: View = toml::from_str(&format!(
-                    "engine = \"picker\"\n[picker]\n{field} = {value}\n"
-                ))
-                .unwrap();
-                let result = validate_config(EngineValidationContext {
-                    view_ref: "core:menu",
-                    view: &view,
-                    script_root: None,
-                });
-                let error = result.unwrap_err().to_string();
-                assert!(error.contains("core:menu"), "{error}");
-                assert!(
-                    error.contains(&format!("{field} must be a string")),
-                    "{error}"
-                );
-            }
-
-            let view: View = toml::from_str(&format!(
-                "engine = \"picker\"\n[picker]\n{field} = \"Search\"\n"
-            ))
-            .unwrap();
-            validate_config(EngineValidationContext {
-                view_ref: "core:menu",
-                view: &view,
-                script_root: None,
-            })
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn display_options_must_be_boolean() {
-        for field in BOOLEAN_FIELDS {
-            for value in ["true", "false", "\"false\"", "0", "[]", "{}"] {
-                let view: View = toml::from_str(&format!(
-                    "engine = \"picker\"\n[picker]\n{field} = {value}\n"
-                ))
-                .unwrap();
-                let result = validate_config(EngineValidationContext {
-                    view_ref: "core:menu",
-                    view: &view,
-                    script_root: None,
-                });
-                if matches!(value, "true" | "false") {
-                    result.unwrap();
-                } else {
-                    let error = result.unwrap_err().to_string();
-                    assert!(error.contains("core:menu"), "{error}");
-                    assert!(
-                        error.contains(&format!("{field} must be a boolean")),
-                        "{error}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn static_item_shapes_are_validated_during_engine_validation() {
-        let valid: View = toml::from_str(
-            r#"
-            engine = "picker"
-            [picker]
-            items = [{ display = "Example item", value = "example-value" }]
-            "#,
-        )
-        .unwrap();
-        validate_config(EngineValidationContext {
-            view_ref: "core:static",
-            view: &valid,
-            script_root: None,
-        })
-        .unwrap();
-
-        let invalid: View = toml::from_str(
-            r#"
-            engine = "picker"
-            [picker]
-            items = [{ value = "missing-display" }]
-            "#,
-        )
-        .unwrap();
-        assert!(
-            validate_config(EngineValidationContext {
-                view_ref: "core:invalid",
-                view: &invalid,
-                script_root: None,
-            })
-            .is_err()
-        );
-    }
 }

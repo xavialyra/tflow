@@ -28,6 +28,10 @@ pub(crate) enum PreparedAction {
         exit: bool,
         success_message: Option<String>,
     },
+    Companion {
+        target: String,
+        query: Option<Value>,
+    },
     Feedback {
         message: String,
         level: crate::protocol::FeedbackLevel,
@@ -303,6 +307,11 @@ fn prepare_protocol_operation(
                 exit,
                 success_message,
             })
+        }
+        crate::protocol::ProtocolOperation::Companion { target, query } => {
+            let caller_view = command_invocation.source_view();
+            let target = config.resolve_view_scoped(&target, caller_view)?;
+            Ok(PreparedAction::Companion { target, query })
         }
     }
 }

@@ -1,0 +1,30 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/picker_embedded.toml
+# A PTY starts with a snapshot, not a live-restarted process. Select, then Ctrl-P.
+[workflow]
+api = 1
+name = "Picker + Embedded: Selected Item Tool"
+entrypoint = "main"
+
+[views.main]
+engine = "picker"
+companion = "tool"
+
+[views.main.picker]
+input_placeholder = "Choose an item; Ctrl-P starts the tool"
+items = [
+  { display = "Current shell", value = "shell" },
+  { display = "System status", value = "status" },
+]
+
+[views.tool]
+engine = "embedded"
+
+[views.tool.embedded]
+command = ["sh", "-c", "printf 'ITEM TOOL\\n%s\\n' \"$TFLOW_INPUT\"; printf 'Esc: close\\n'; while read -r line; do printf 'received: %s\\n' \"$line\"; done"]
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "tool"

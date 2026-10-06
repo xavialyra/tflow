@@ -34,6 +34,20 @@ impl RouteCatalog for CompiledRouteCatalog {
         })
     }
 
+    fn default_companion(&self, target: &str) -> Option<String> {
+        let view = self.config.view(target)?;
+        let companion_target = view.companion.as_ref()?;
+        self.config
+            .resolve_view_scoped(companion_target, target)
+            .ok()
+    }
+
+    fn default_query(&self, target: &str) -> Result<ParsedQuery> {
+        let state = self.config.instantiate_parameters(target)?;
+        let values = self.config.parameter_values(&state)?;
+        Ok(ParsedQuery::new(target, "query", values))
+    }
+
     fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
         query.validate_shape()?;
         let schema = self

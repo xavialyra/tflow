@@ -754,10 +754,10 @@ fn metrics_bound_terminal_retention_and_preserve_correlated_delivery() {
     tasks.shutdown_and_wait();
 }
 
-mod preview_lane_tests {
+mod background_lane_tests {
     use super::*;
     #[test]
-    fn preview_overflow_preserves_other_mount_and_combined_queue_metrics() {
+    fn background_overflow_preserves_other_mount_and_combined_queue_metrics() {
         let tasks = TaskRuntime::new();
         let mount = |id| {
             MountTaskStarter::from_lease(&tasks, MountTaskLease::new(crate::input::ViewMountId(id)))
@@ -775,9 +775,9 @@ mod preview_lane_tests {
                 Ok(())
             }
         };
-        let active = first.for_preview().spawn_latest_tagged(
-            "preview",
-            TaskTags::new("picker", "preview"),
+        let active = first.for_background().spawn_latest_tagged(
+            "background",
+            TaskTags::new("picker", "background"),
             blocker(started_tx.clone()),
         );
         let serial = first.spawn_latest_tagged(
@@ -790,19 +790,19 @@ mod preview_lane_tests {
         }
         let items_pending =
             second.spawn_latest_tagged("items", TaskTags::new("picker", "items"), |_| Ok(3));
-        let pending = second.for_preview().spawn_latest_tagged(
-            "preview",
-            TaskTags::new("picker", "preview"),
+        let pending = second.for_background().spawn_latest_tagged(
+            "background",
+            TaskTags::new("picker", "background"),
             |_| Ok(1),
         );
         let rejected: TaskHandle<()> = third
             .for_task(TaskId(2), 9)
-            .for_preview()
-            .spawn_latest_tagged("preview", TaskTags::new("picker", "preview"), |_| {
+            .for_background()
+            .spawn_latest_tagged("background", TaskTags::new("picker", "background"), |_| {
                 panic!("overflow ran")
             });
         assert!(
-            matches!(rejected.completion.recv_timeout(Duration::from_secs(1)).unwrap(), TaskCompletion::Failed(message) if message == "preview task queue is full")
+            matches!(rejected.completion.recv_timeout(Duration::from_secs(1)).unwrap(), TaskCompletion::Failed(message) if message == "background task queue is full")
         );
         assert!(matches!(
             pending.completion.try_recv(),
@@ -816,17 +816,17 @@ mod preview_lane_tests {
             TaskTags::new("picker", "items")
         );
         assert_eq!(
-            metrics.preview_active.as_ref().unwrap().tags,
-            TaskTags::new("picker", "preview")
+            metrics.background_active.as_ref().unwrap().tags,
+            TaskTags::new("picker", "background")
         );
         assert_eq!(metrics.queue_depth, 2);
         assert_eq!(metrics.queue_high_water, 2);
         assert_eq!(metrics.failed_total, 1);
-        assert!(tasks.drain_events().iter().any(|event| event.task == TaskId(2) && event.generation == 9 && matches!(&event.outcome, TaskOutcome::Failed(message) if message == "preview task queue is full")));
+        assert!(tasks.drain_events().iter().any(|event| event.task == TaskId(2) && event.generation == 9 && matches!(&event.outcome, TaskOutcome::Failed(message) if message == "background task queue is full")));
         // Replacement remains allowed for the mount that owns the pending slot.
-        let replacement = second.for_preview().spawn_latest_tagged(
-            "preview",
-            TaskTags::new("picker", "preview"),
+        let replacement = second.for_background().spawn_latest_tagged(
+            "background",
+            TaskTags::new("picker", "background"),
             |_| Ok(2),
         );
         assert!(matches!(
@@ -866,25 +866,25 @@ mod preview_lane_tests {
     }
 
     #[test]
-    fn shutdown_cancels_preview_before_waiting_for_serial_teardown() {
+    fn shutdown_cancels_background_before_waiting_for_serial_teardown() {
         let tasks = TaskRuntime::new();
         let starter = MountTaskStarter::from_lease(
             &tasks,
             MountTaskLease::new(crate::input::ViewMountId(914)),
         );
         let (started_tx, started_rx) = sync_channel(2);
-        let (preview_cancelled_tx, preview_cancelled_rx) = sync_channel(1);
+        let (background_cancelled_tx, background_cancelled_rx) = sync_channel(1);
         let (observed_tx, observed_rx) = sync_channel(1);
-        let preview_started = started_tx.clone();
-        let preview = starter.for_preview().spawn_latest_tagged(
-            "preview",
-            TaskTags::new("picker", "preview"),
+        let background_started = started_tx.clone();
+        let background = starter.for_background().spawn_latest_tagged(
+            "background",
+            TaskTags::new("picker", "background"),
             move |context| {
-                preview_started.send(()).unwrap();
+                background_started.send(()).unwrap();
                 while !context.cancellation.is_cancelled() {
                     thread::sleep(Duration::from_millis(1));
                 }
-                preview_cancelled_tx.send(()).unwrap();
+                background_cancelled_tx.send(()).unwrap();
                 Ok(())
             },
         );
@@ -896,7 +896,7 @@ mod preview_lane_tests {
                 while !context.cancellation.is_cancelled() {
                     thread::sleep(Duration::from_millis(1));
                 }
-                let cancelled_before_join = preview_cancelled_rx
+                let cancelled_before_join = background_cancelled_rx
                     .recv_timeout(Duration::from_secs(1))
                     .is_ok();
                 observed_tx.send(cancelled_before_join).unwrap();
@@ -909,9 +909,9 @@ mod preview_lane_tests {
         tasks.shutdown_and_wait();
         assert!(
             observed_rx.try_recv().unwrap(),
-            "preview was not cancelled during serial teardown"
+            "background was not cancelled during serial teardown"
         );
-        for handle in [serial, preview] {
+        for handle in [serial, background] {
             assert!(matches!(
                 handle.completion.try_recv(),
                 Ok(TaskCompletion::Cancelled)
@@ -921,19 +921,19 @@ mod preview_lane_tests {
     }
 
     #[test]
-    fn slow_preview_does_not_block_items_and_mount_shutdown_reaps_both_workers() {
+    fn slow_background_does_not_block_items_and_mount_shutdown_reaps_both_workers() {
         let tasks = TaskRuntime::new();
         let starter = MountTaskStarter::from_lease(
             &tasks,
             MountTaskLease::new(crate::input::ViewMountId(910)),
         );
         let (started_tx, started_rx) = sync_channel(1);
-        let mut preview = starter
+        let mut background = starter
             .for_task(TaskId(2), 7)
-            .for_preview()
+            .for_background()
             .spawn_latest_tagged(
-                "preview",
-                TaskTags::new("picker", "preview"),
+                "background",
+                TaskTags::new("picker", "background"),
                 move |context| {
                     started_tx.send(()).unwrap();
                     while !context.cancellation.is_cancelled() {
@@ -955,10 +955,10 @@ mod preview_lane_tests {
                 .unwrap(),
             TaskCompletion::Completed(42)
         ));
-        assert!(matches!(preview.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(background.try_recv(), Err(TryRecvError::Empty)));
         starter.cancel_all();
         assert!(matches!(
-            preview
+            background
                 .completion
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap(),
@@ -980,9 +980,9 @@ mod preview_lane_tests {
         assert_eq!(metrics.worker_started_total, 2);
         assert_eq!(metrics.worker_joined_total, 2);
         assert!(!tasks.has_active_tasks());
-        let mut rejected = starter.for_preview().spawn_latest_tagged(
-            "preview",
-            TaskTags::new("picker", "preview"),
+        let mut rejected = starter.for_background().spawn_latest_tagged(
+            "background",
+            TaskTags::new("picker", "background"),
             |_| Ok(()),
         );
         assert!(matches!(rejected.try_recv(), Ok(TaskCompletion::Cancelled)));

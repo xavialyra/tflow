@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview provider for the sys workflow.
+"""Capture provider for the sys workflow.
 
 Displays host details, user, kernel, uptime, and selected action details.
 """
@@ -31,15 +31,24 @@ def main():
     try:
         request = json.load(sys.stdin)
     except Exception:
-        raise ValueError("failed to parse JSON request")
+        json.dump({"version": 1, "output": None}, sys.stdout)
+        sys.stdout.write("\n")
+        return
 
-    if request.get("version") != 1 or request.get("entrypoint") != "picker-preview":
-        raise ValueError("expected a version-1 picker-preview request")
+    if request.get("version") != 1:
+        json.dump({"version": 1, "output": None}, sys.stdout)
+        sys.stdout.write("\n")
+        return
 
-    state = request.get("context", {}).get("engine", {}).get("state", {})
-    item = state.get("item")
+    context = request.get("context", {})
+    state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
+    item = state.get("item") if isinstance(state, dict) else None
+    if not isinstance(item, dict) and isinstance(context, dict):
+        inp = context.get("input")
+        if isinstance(inp, dict):
+            item = inp
     if not isinstance(item, dict):
-        json.dump({"version": 1, "preview": None}, sys.stdout)
+        json.dump({"version": 1, "output": None}, sys.stdout)
         sys.stdout.write("\n")
         return
 
@@ -76,9 +85,13 @@ def main():
         "children": children,
     }
 
-    json.dump({"version": 1, "preview": preview}, sys.stdout, separators=(",", ":"))
+    json.dump({"version": 1, "output": preview}, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        json.dump({"version": 1, "output": None}, sys.stdout)
+        sys.stdout.write("\n")

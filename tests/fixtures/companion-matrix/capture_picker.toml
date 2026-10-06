@@ -1,0 +1,60 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/capture_picker.toml
+[workflow]
+api = 1
+name = "Capture + Picker: Report and Actions"
+entrypoint = "main"
+
+[views.main]
+engine = "capture"
+companion = "actions"
+
+[views.main.capture.output]
+content = "DEPLOYMENT REPORT\n\nBuild succeeded.\nSelect a follow-up action in the companion.\nEnter: open the action list\nEnter there: show the selected action"
+
+[views.actions]
+engine = "picker"
+
+[views.actions.picker]
+show_input = false
+show_divider = false
+items = [
+  { display = "View deployment logs", value = "logs" },
+  { display = "Inspect configuration", value = "config" },
+  { display = "Review metrics", value = "metrics" },
+]
+
+[views.actions.bindings]
+enter = "open_action"
+
+[commands.open_action]
+label = "Open Action"
+type = "navigate"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item") or {}
+json.dump({"version": 1, "operation": {"type": "navigate", "target": "result", "query": item.get("value", "logs")}}, sys.stdout)
+'''
+
+[views.result]
+engine = "capture"
+
+[views.result.capture.output]
+script = '''#!/usr/bin/env python3
+import json, sys
+choice = json.load(sys.stdin)["context"]["parameters"]
+json.dump({"version": 1, "output": "SELECTED ACTION: " + choice + "\n\nThis demo does not execute deployment commands.\nEsc returns to the action list."}, sys.stdout)
+'''
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+enter = "open_action_list"
+
+[commands.open_action_list]
+label = "Open Actions"
+type = "navigate"
+target = "actions"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "actions"

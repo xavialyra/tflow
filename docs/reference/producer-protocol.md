@@ -27,15 +27,14 @@ The host sends one JSON request to a producer and validates one complete version
 | :--- | :--- | :--- |
 | Command | `context.command` plus `context.parameters`, `context.input`, and `context.engine` | One operation matching the command's declared `type`, or an `error` feedback object |
 | Picker items | `context.parameters`, `context.input`, and `context.engine` | Complete `items` array |
-| Picker preview | `context.parameters`, `context.input`, and Picker `context.engine.state.input/item` | `preview` document or null |
-| Capture output | `context.parameters`, `context.input`, and `context.engine` | `output` string |
+| Capture output | `context.parameters`, `context.input`, and `context.engine` | `output` string or document |
 | Form content | `context.parameters`, `context.input`, and `context.engine` | `content` object with an ordered `fields` array |
 | Return processor | `context.parameters`, `context.input`, `context.engine`, and `context.result` | One operation matching the processor's declared `type`, or an `error` feedback object |
 
 The public context fields are:
 
 - `context.parameters`: bound parameters for the command owner or provider feed;
-- `context.input`: the explicit launch input descriptor;
+- `context.input`: the explicit launch input descriptor, passed through without guessing JSON types. A source-bound Capture companion receives the primary View's publication here; its `context.parameters` and `context.engine.state` are supplied explicitly from the source snapshot. An explicit companion command `query` disables source tracking;
 - `context.engine.type`: the carrying Engine type;
 - `context.engine.state`: the Engine's public state projection. Picker exposes the current query as `state.input` and the normalized selected item as `state.item`. Form exposes edited `values`, raw `drafts`, `valid`, `errors`, `dirty`, and `focused`; its launch parameters remain unchanged. See [Form Content and State](form.md);
 - `context.command`: `{ id, type }` identifying the command for `command` entry points;
@@ -100,7 +99,7 @@ Or a shorthand string message:
 
 ## Configuration Ownership
 
-Route definitions, query schemas, Engine types, preview pane sizing, preview provider configuration, and bindings remain host-owned configuration. A `picker-preview` producer may return an internal document layout; it cannot change the automatic outer items/preview split. Custom preview sources are scripts, declared documents, or inherited feed providers; an absent provider falls back to host-rendered item details. Every Picker preview starts collapsed unless `preview_default_open` is enabled, and preview producers run only when the pane is shown. Preview parameters and relative paths belong to the provider’s workflow: the selected feed for inheritance, or the page for an explicit source. See [Picker Preview Documents and Producers](picker-preview.md) for the complete schema and lifecycle. A producer can supply only the data defined by its entry point and response schema.
+Route definitions, query schemas, Engine types, Companion configuration, and bindings remain host-owned configuration. A Capture producer may return a document layout, but it cannot change the View definition or emit undeclared routes. Picker selection and publication state reach a Companion through query synchronization. See [Picker Details via Companion Views](picker-preview.md) and [Companion View Combinations](../how-to/companion-views.md). A producer can supply only the data defined by its entry point and response schema.
 
 ## Protocol Rules and Limits
 

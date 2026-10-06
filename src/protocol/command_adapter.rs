@@ -28,6 +28,12 @@ pub(crate) trait CommandService {
 
     fn update_active_snapshot(&self, snapshot: &ViewCommandSnapshot);
 
+    fn host_companion_keys(&self) -> Vec<crate::input::Key> {
+        Vec::new()
+    }
+
+
+
     /// Executes a registry entry whose handler is resolved at dispatch time.
     fn execute_entry(
         &self,
@@ -316,6 +322,9 @@ impl ProtocolCommandService {
     ) -> Result<ViewDecision> {
         let depth = crate::command::command_call_depth().saturating_add(1);
         crate::command::execute_at_depth(depth, || {
+            if entry.id == crate::command::OPEN_COMPANION {
+                return Ok(crate::view::ViewDecision::OpenCompanion);
+            }
             let prepared = self
                 .prepare_entry(entry, caller)
                 .map_err(crate::view::operation_failure)?;
@@ -478,6 +487,13 @@ impl ProtocolCommandService {
 }
 
 impl CommandService for ProtocolCommandService {
+    fn host_companion_keys(&self) -> Vec<crate::input::Key> {
+        self.config.host_bindings().iter()
+            .filter(|(_, id)| *id == crate::command::OPEN_COMPANION)
+            .filter_map(|(key, _)| crate::input::Key::parse_binding(key).ok())
+            .collect()
+    }
+
     fn registry(&self) -> std::sync::Arc<std::sync::RwLock<crate::command::CommandRegistry>> {
         std::sync::Arc::clone(&self.registry)
     }
@@ -491,15 +507,18 @@ impl CommandService for ProtocolCommandService {
         let mut entries = Vec::new();
         for (key_name, id) in self.config.host_bindings() {
             let id = id.clone();
-            let cmd = self
-                .config
-                .find_command(&self.config.entrypoint, &id)
-                .cloned()
+            let label = crate::command::host_action_label(&id)
+                .map(str::to_string)
+                .or_else(|| {
+                    self.config
+                        .find_command(&self.config.entrypoint, &id)
+                        .map(|cmd| cmd.label.clone())
+                })
                 .ok_or_else(|| anyhow::anyhow!("host command {:?} is missing", id))?;
             let key = Some(crate::input::Key::parse_binding(key_name)?);
             entries.push(crate::command::CommandEntry::new(
                 id,
-                Some(cmd.label),
+                Some(label),
                 key,
                 crate::command::BindingLayer::Host,
             ));
@@ -706,6 +725,32 @@ pub(crate) fn map_prepared_action(
             }))
         }
         PreparedAction::Return { value } => Ok(ViewDecision::Return(ViewResult::new(value))),
+        PreparedAction::Companion { target, query } => {
+            let (target, query) = if let Some(query) = query {
+                let request = protocol_navigation_request(
+                    &commands.config,
+                    crate::workflow::command::NavigationRequest {
+                        view_ref: target,
+                        input: None,
+                        parameters: Some(query),
+                        presentation: Default::default(),
+                    },
+                )?;
+                (request.target, Some(request.query.values))
+            } else {
+                let request = protocol_navigation_request(
+                    &commands.config,
+                    crate::workflow::command::NavigationRequest {
+                        view_ref: target,
+                        input: None,
+                        parameters: None,
+                        presentation: Default::default(),
+                    },
+                )?;
+                (request.target, None)
+            };
+            Ok(ViewDecision::ToggleCompanion { target, query })
+        }
         PreparedAction::InvokeCommand { command } => {
             let entry = {
                 let registry = commands.registry.read().unwrap();

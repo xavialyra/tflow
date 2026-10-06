@@ -121,10 +121,6 @@ pub(super) fn validate_config(context: EngineValidationContext<'_>) -> Result<()
         view.selected_items().is_none(),
         "form views cannot provide picker items"
     );
-    ensure!(
-        view.selected_preview().is_none(),
-        "form views cannot define preview"
-    );
     crate::engine::validate_fields(context.view_ref, view, &["content"])?;
     crate::engine::require_field(context.view_ref, view, "content")?;
     prepare(
@@ -209,11 +205,16 @@ impl FormView {
             revision: 0,
             script,
             workflow_root: config.engine.workflow_root,
-            launch_input: config.engine.launch_input,
+            launch_input: request
+                .input
+                .as_ref()
+                .map(|seed| Value::String(seed.text.clone()))
+                .unwrap_or(config.engine.launch_input),
             starter: MountTaskStarter::from_lease(
                 &config.tasks,
                 MountTaskLease::new(ViewMountId(instance.0)),
-            ),
+            )
+            .with_execution_class(request.execution_class),
             task: None,
             task_generation: 0,
             registry: ViewTaskRegistry::new(instance),
@@ -490,6 +491,10 @@ pub(super) const CMD_CANCEL: &str = "form.cancel";
 pub(super) const CMD_EXIT: &str = "form.exit";
 
 impl View for FormView {
+    fn unhandled_input_behavior(&self) -> crate::view::UnhandledInputBehavior {
+        crate::view::UnhandledInputBehavior::ConsumeLocally
+    }
+
     fn engine_commands(&self, _context: &ViewContext) -> Vec<crate::command::CommandEntry> {
         let mut entries = Vec::new();
         for (key, action) in self.bindings.bindings() {

@@ -452,7 +452,7 @@ pub struct View {
     #[serde(default)]
     pub engine: Option<toml::Value>,
     #[serde(default)]
-    pub preview: Option<toml::Value>,
+    pub companion: Option<String>,
 }
 
 impl View {
@@ -488,15 +488,6 @@ impl View {
                 "view {:?} has unknown engine {:?} (expected \"picker\", \"capture\", \"form\", or \"embedded\")",
                 view_name,
                 engine_str
-            );
-        }
-
-        if self.preview.is_some() {
-            bail!(
-                "view {:?} defines [views.{}.preview] at view level; preview belongs to the picker engine, configure [views.{}.picker.preview] instead",
-                view_name,
-                view_name,
-                view_name
             );
         }
 
@@ -538,10 +529,6 @@ impl View {
 
     pub(crate) fn selected_items(&self) -> Option<&toml::Value> {
         self.picker.as_ref().and_then(|t| t.get("items"))
-    }
-
-    pub(crate) fn selected_preview(&self) -> Option<&toml::Value> {
-        self.picker.as_ref().and_then(|t| t.get("preview"))
     }
 
     pub(crate) fn engine_field(&self, field: &str) -> Option<&toml::Value> {
@@ -627,6 +614,11 @@ pub enum CommandAction {
         execution: ExecutionMode,
         payload: toml::Value,
     },
+    Companion {
+        #[serde(default)]
+        execution: ExecutionMode,
+        payload: toml::Value,
+    },
 }
 
 impl CommandAction {
@@ -635,7 +627,8 @@ impl CommandAction {
             CommandAction::Run { execution, .. }
             | CommandAction::Navigate { execution, .. }
             | CommandAction::Call { execution, .. }
-            | CommandAction::Return { execution, .. } => *execution,
+            | CommandAction::Return { execution, .. }
+            | CommandAction::Companion { execution, .. } => *execution,
         }
     }
 
@@ -644,7 +637,8 @@ impl CommandAction {
             CommandAction::Run { payload, .. }
             | CommandAction::Navigate { payload, .. }
             | CommandAction::Call { payload, .. }
-            | CommandAction::Return { payload, .. } => payload,
+            | CommandAction::Return { payload, .. }
+            | CommandAction::Companion { payload, .. } => payload,
         }
     }
 
@@ -654,6 +648,7 @@ impl CommandAction {
             CommandAction::Navigate { .. } => "navigate",
             CommandAction::Call { .. } => "call",
             CommandAction::Return { .. } => "return",
+            CommandAction::Companion { .. } => "companion",
         }
     }
 }
@@ -685,15 +680,42 @@ impl<'de> Deserialize<'de> for Command {
             Some(_) => return Err(serde::de::Error::custom("command 'label' must be a string")),
             None => String::new(),
         };
+        let companion_target = fields.remove("companion");
+
         let type_val = match fields.remove("type") {
             Some(toml::Value::String(s)) => s,
             Some(_) => return Err(serde::de::Error::custom("command 'type' must be a string")),
             None => {
-                return Err(serde::de::Error::custom(
-                    "command requires 'type' equal to \"run\", \"navigate\", \"call\", or \"return\"",
-                ));
+                if companion_target.is_some() {
+                    "companion".to_string()
+                } else {
+                    return Err(serde::de::Error::custom(
+                        "command requires 'type' equal to \"run\", \"navigate\", \"call\", \"return\", or \"companion\"",
+                    ));
+                }
             }
         };
+
+        if let Some(target) = companion_target {
+            if type_val != "companion" {
+                return Err(serde::de::Error::custom(
+                    "command 'companion' shorthand requires type 'companion'",
+                ));
+            }
+            let shorthand = match target {
+                toml::Value::Table(table) => table,
+                target => [("target".to_string(), target)].into_iter().collect(),
+            };
+            for (key, value) in shorthand {
+                if fields.contains_key(&key) {
+                    return Err(serde::de::Error::custom(format!(
+                        "command companion shorthand duplicates field {key:?}"
+                    )));
+                }
+                fields.insert(key, value);
+            }
+        }
+
         let return_processor = match fields.remove("return_processor") {
             Some(rp_val) => {
                 let rp: ReturnProcessor =
@@ -724,9 +746,10 @@ impl<'de> Deserialize<'de> for Command {
                 return_processor,
             },
             "return" => CommandAction::Return { execution, payload },
+            "companion" => CommandAction::Companion { execution, payload },
             other => {
                 return Err(serde::de::Error::custom(format!(
-                    "unknown command type {:?}; expected \"run\", \"navigate\", \"call\", or \"return\"",
+                    "unknown command type {:?}; expected \"run\", \"navigate\", \"call\", \"return\", or \"companion\"",
                     other
                 )));
             }
@@ -926,7 +949,7 @@ pub(crate) struct WorkflowHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandAction, ExecutionMode, ResolvedScriptTarget, View, Workflow};
+    use super::{Command, CommandAction, ExecutionMode, ResolvedScriptTarget, View, Workflow};
 
     #[test]
     fn script_source_requires_one_literal_target() {
@@ -1074,5 +1097,47 @@ args = []
         )
         .unwrap();
         assert!(pres_true.show_title);
+    }
+
+    #[test]
+    fn companion_shorthand_rejects_conflicting_fields() {
+        for source in [
+            "type = 'navigate'\ncompanion = 'details'",
+            "companion = 'details'\ntarget = 'other'",
+            "companion = { target = 'details', query = 'nested' }\nquery = 'flat'",
+        ] {
+            assert!(toml::from_str::<Command>(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn companion_command_flat_syntax_and_view_definition() {
+        let toml_str = r#"
+        name = "test"
+
+        [views.main]
+        engine = "picker"
+        companion = "logs"
+
+        [views.logs]
+        engine = "capture"
+
+        [commands.toggle]
+        label = "Toggle Logs"
+        companion = "logs"
+        query = "$item"
+        "#;
+        let wf: Workflow = toml::from_str(toml_str).unwrap();
+        let view = &wf.views["main"];
+        assert_eq!(view.companion.as_deref(), Some("logs"));
+
+        let cmd = &wf.commands["toggle"];
+        assert_eq!(cmd.label, "Toggle Logs");
+        let CommandAction::Companion { execution, payload } = &cmd.action else {
+            panic!("expected companion action");
+        };
+        assert_eq!(*execution, ExecutionMode::Declared);
+        assert_eq!(payload["target"].as_str(), Some("logs"));
+        assert_eq!(payload["query"].as_str(), Some("$item"));
     }
 }

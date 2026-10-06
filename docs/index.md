@@ -29,12 +29,13 @@ This documentation is organized into four core categories following the **Diáta
 *Task-oriented recipes for solving specific practical problems.*
 
 *Engine-specific View configuration:*
-- [Picker Views](how-to/picker-views.md) — Configure static items, item producers, dynamic aggregation, and previews.
+- [Picker Views](how-to/picker-views.md) — Configure static items, item producers, dynamic aggregation, and Companion detail Views.
 - [Capture Views](how-to/capture-views.md) — Configure static or script-produced text output.
 - [Form Views](how-to/form-views.md) — Generate editable fields from query parameters and use commands to submit values.
 - [Embedded Views](how-to/embedded-views.md) — Host interactive terminal programs through a PTY.
 
 *Cross-cutting workflow tasks:*
+- [Companion Views](how-to/companion-views.md) — Configure side-by-side companion views across engines with automatic state synchronization.
 - [Commands and Producer Scripts](how-to/commands-and-producers.md) — Configure commands and read the shared producer context.
 - [View Navigation & Popups](how-to/view-navigation-and-popups.md) — Configure popup modals, view stack transitions, and call/return flows.
 - [Custom Themes](how-to/custom-themes.md) — Define flat color schemes and component style overrides.
@@ -46,13 +47,14 @@ This documentation is organized into four core categories following the **Diáta
 - [Suite Manifest Specification](reference/suite-toml.md) — Suite manifests, explicit workflow mounting, aliases, and entrypoints.
 - [Theme TOML Specification](reference/theme-toml.md) — Flat scheme colors, built-in defaults, and style merge rules.
 - [workflow.toml Specification](reference/workflow-toml.md) — Workflow manifests, view definitions, query schemas, and engine configuration.
-- [Picker Preview](reference/picker-preview.md) — Preview sources, feed ownership, nested documents, scrolling, and limits.
+- [Picker Details via Companion Views](reference/picker-preview.md) — Replacement reference for the removed Picker preview API.
 - [Producer Protocol](reference/producer-protocol.md) — Literal configuration boundaries and the version-1 producer request/response contract.
 
 ### 4. [Explanation](explanation/index.md)
 *Understanding-oriented deep dives into architectural designs and philosophy.*
 - [Architecture Overview](explanation/architecture-overview.md) — Domain separation across configuration, session, engine, and rendering.
 - [Architecture Convergence](explanation/architecture-convergence.md) - Implementable migration plan for runtime ownership, execution lifecycle, task correlation, and measured scheduling decisions.
+- [Companion Navigation and Host Ownership](explanation/companion-host-ownership.md) — Ordinary stack navigation, binding/data semantics, and remaining layout/input ownership work.
 - [Input & Navigation Model](explanation/input-and-navigation-model.md) — Route resolution, key binding precedence, and lossless input transport.
 - [Runtime Guarantees](explanation/runtime-guarantees.md) — Workflow trust boundary, execution resource budgets, and cleanup invariants.
 

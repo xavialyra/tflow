@@ -19,8 +19,8 @@ The Reference section contains formal specifications, configuration schemas, com
 - **[Producer Protocol](producer-protocol.md)**
   Literal configuration values, public producer context, the version-1 request/response boundary, and successful command feedback with a 3-second display timeout.
 
-- **[Picker Preview Documents and Producers](picker-preview.md)**
-  Initially collapsed built-in item details, default toggle binding, script/declared/inherited overrides, source ownership, nested documents, scrolling, and resource bounds.
+- **[Picker Details via Companion Views](picker-preview.md)**
+  Replacement reference for the removed Picker preview API, named Capture companions, and ordinary View bindings.
 
 - **[Form Content and State](form.md)**
   Native editable fields, declared/script content producers, validation, command state, and keyboard behavior.

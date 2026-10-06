@@ -327,6 +327,10 @@ impl RawInputReceiver for EmbeddedProtocolView {
 pub(super) const CMD_CANCEL: &str = "embedded.cancel";
 
 impl View for EmbeddedProtocolView {
+    fn unhandled_input_behavior(&self) -> crate::view::UnhandledInputBehavior {
+        crate::view::UnhandledInputBehavior::ConsumeLocally
+    }
+
     fn is_embedded_terminal(&self) -> bool {
         true
     }

@@ -30,19 +30,22 @@ To ensure reliable, deterministic interaction across complex nested views and em
 [Raw Terminal Event]
          │
          ▼
-[1. Session / Host Bindings] ─► (Global actions, e.g. ctrl+k when command folding is active)
+[1. View Bindings] ───────► (User workflow commands and explicit View overrides)
          │ (unhandled)
          ▼
-[2. Active View Commands] ───► (User-configured commands on the mounted view)
+[2. Engine Bindings] ────► (Engine actions such as up/down and editing)
          │ (unhandled)
          ▼
-[3. Engine Bindings] ──────────► (Engine-specific bindings, e.g. up/down, toggle preview)
+[3. Host Bindings] ──────► (Session-wide commands such as the palette and
+                            registered Companion navigation)
          │ (unhandled)
          ▼
-[4. Engine Input Consumer] ──► (Text editing in picker, byte passthrough in embedded)
+[4. Host Input / Engine Consumer] ─► (Host Omnibar editing, Form fields, or PTY bytes)
 ```
 
 - **Lossless Transport**: Raw byte sequences from the terminal (including complex chords and escape sequences) are preserved without lossy conversions until matched by a binding.
+- **Host-owned editing**: Picker query text and cursor are stored per View instance in the Host Omnibar state. The Picker receives an immutable editor snapshot for parsing and producer requests; it does not maintain a second interactive editor.
+- **Engine-local input**: Form field navigation/editing and Embedded PTY byte input remain local because they are not Host Omnibar editing.
 - **Overlays and Popups**: When a modal popup is mounted via `presentation.mode = "popup"`, only the topmost view receives input. Unmatched input does **not** fall through to background views. The command palette follows this same path as a built-in Popup Picker View; it is not a Session-local overlay.
 
 ## 3. Route Resolution and Query Contracts

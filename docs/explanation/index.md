@@ -10,6 +10,9 @@ This section provides understanding-oriented explanations of `tflow`'s design ph
 - **[Architecture Convergence](architecture-convergence.md)**
   Implementable migration plan for protocol ownership, execution lifecycle, task correlation, scheduling decisions, and contract gates.
 
+- **[Companion Navigation and Host Ownership](companion-host-ownership.md)**
+  Ordinary Push / Close navigation, declared bindings versus computed input, and remaining Host layout/Omnibar ownership work.
+
 - **[Input & Navigation Model](input-and-navigation-model.md)**
   Deep dive into route catalogs, lossless input transport, key binding precedence, and view lifecycle invariants.
 

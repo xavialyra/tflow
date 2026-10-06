@@ -23,7 +23,7 @@ This directory contains the default suite configuration and member workflows for
 ### Global & View Controls
 - `↑` / `↓`: Navigate list items.
 - `Escape`: Go back to the previous view or close popup.
-- `Ctrl+P`: Toggle the preview pane (where available).
+- `Ctrl+P`: Runs the workflow's explicitly bound Companion command, when configured.
 - `Ctrl+K`: Open the command palette.
 - `Ctrl+C` / `Ctrl+D`: Exit `tflow`.
 

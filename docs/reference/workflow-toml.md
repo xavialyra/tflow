@@ -102,7 +102,7 @@ A View binding table is key-centric: each TOML key is a physical key and each va
 [views.main.bindings]
 "enter" = "open"
 "ctrl+o" = "open_detached"
-"ctrl+p" = "@engine:picker.toggle_preview"
+"ctrl+p" = "toggle_details"
 ```
 
 Every value names a command or an engine action, so a View binding always runs something. To take a key *away* from a lower layer, release it with `unbind` below — a View binding is never a bare boolean.
@@ -151,7 +151,7 @@ Every View requires an explicit `engine = "picker" | "capture" | "form" | "embed
 
 ### 1. Picker Engine (`[views.<name>.picker]`)
 
-The Picker engine renders a query-driven candidate list with an optional preview pane. Query input is dispatched to the items producer; filtering and ranking are handled by producer scripts.
+The Picker engine renders a query-driven candidate list. Query input is owned by the Host Omnibar and dispatched to the items producer; filtering and ranking are handled by producer scripts.
 
 #### Items Configuration (`[views.<name>.picker.items]`)
 
@@ -176,32 +176,40 @@ engine = "picker"
 file = "scripts/items.sh"      # or `script = "..."` for inline script
 ```
 
-#### Preview Pane Configuration (`[views.<name>.picker.preview]`)
+#### Companion Views (`companion` - ADR 0010)
 
-Picker preview panes are configured under the Picker engine table using `[views.<name>.picker.preview]`:
+Any view can declare an attached default companion view (rendered side-by-side in split panes) via pure reference syntax:
 
 ```toml
 [views.main]
 engine = "picker"
+companion = "details"          # Target named view; opens by default
 
-[views.main.picker.preview]
-file = "scripts/preview.py"      # Script file path (or `script = "..."` for inline script)
-width = "35%"                   # Sizing: percentage string or float ratio 0.0..=1.0 (default: 0.35)
-min_width = 24                  # Minimum column width required (default: 24)
-open = true                     # Open pane at activation (default: false)
+[views.details]
+engine = "capture"
+
+[views.details.capture.output]
+file = "scripts/preview.py"
 ```
 
-##### Supported Fields (`[views.<name>.picker.preview]`)
+Declaring `companion` on a view mounts it automatically upon entering the view. Primary view selection and publication state are synchronized to the companion view's query.
 
-| Field | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `file` | string | Unset | Path to external preview script file. Mutually exclusive with `script`. |
-| `script` | string | Unset | Inline script content. Mutually exclusive with `file`. |
-| `open` | boolean | `false` | When `true`, the preview pane starts open instead of collapsed. |
-| `width` | number / string | `0.35` | Preview ratio (e.g. `0.35` or `"35%"`). |
-| `min_width` | integer | `24` | Minimum column width required to display the preview pane. |
+##### Command Operations (`companion`)
 
-When neither `file` nor `script` is configured, the Picker displays built-in item details. Unknown fields fail validation.
+Commands can toggle or mount companion views, sharing the same `query` semantics as `navigate`:
+
+```toml
+[commands.toggle_details]
+label = "Toggle Details"
+companion = "details"          # Shorthand for type = "companion", target = "details"
+query = { topic = "overview" } # Optional target query parameter
+```
+
+- **Navigation**: Companion views operate as passive side-by-side attachments while the primary view retains focus. Foreground view navigation uses ordinary push actions, and `Esc` returns or closes the active view.
+- **Query bindings**: Companion operations accept `query` identical to `navigate`. When omitted in a toggle command, the companion tracks the primary view's published state. Explicit command `query` parameters target the companion's query schema directly.
+- **Toggle binding**: A Companion toggle is an ordinary workflow command. There is no Picker-specific default toggle or reserved `Ctrl-P`; bind the command on any View key and release it with `unbind` when needed.
+- **Default query**: Attachment and navigation use the target's validated default query when no explicit query is provided.
+- **Implementation boundary**: Companion configuration, Host Omnibar editing, and shared pane geometry are Host responsibilities; Form and Embedded retain their local field/PTY input behavior.
 
 ---
 

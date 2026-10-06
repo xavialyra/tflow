@@ -12,6 +12,7 @@ bold = true
 
 [views.main]
 engine = "picker"
+companion = "preview"
 
 [views.main.query]
 type = "object"
@@ -25,13 +26,14 @@ input_placeholder = "Search clipboard history"
 [views.main.picker.items]
 file = "scripts/items.py"
 
-[views.main.picker.preview]
+[views.preview]
+engine = "capture"
+
+[views.preview.capture.output]
 file = "scripts/preview.py"
-width = "35%"
-min_width = 24
-open = true
 
 [views.main.bindings]
+"ctrl+p" = "toggle_companion"
 tab = "next_type"
 "shift+tab" = "previous_type"
 enter = "copy"
@@ -50,3 +52,7 @@ file = "scripts/cycle-type.py"
 label = "Copy"
 type = "run"
 file = "scripts/restore.py"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "preview"

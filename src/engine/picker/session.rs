@@ -2,7 +2,6 @@ use super::PickerViewServices;
 use super::items::{
     Item, ItemsEvent, ItemsRequest, ItemsRequestIdentity, ItemsResponse, ItemsTaskHandle,
 };
-use super::preview::{PickerPreview, PickerPreviewConfig};
 #[cfg(test)]
 use crate::engine::ActionInvocation;
 use crate::engine::{
@@ -186,7 +185,6 @@ pub(crate) struct PickerState {
     active: bool,
     started: bool,
     items_task_state: ItemsTaskState,
-    preview_visible: bool,
     items_published: bool,
     initial_focus: Option<String>,
 }
@@ -203,8 +201,6 @@ pub(crate) struct PickerView {
     pub(super) services: PickerViewServices,
     items_task: Option<ItemsTaskHandle>,
     items_completion: Option<ItemsCompletion>,
-    preview: PickerPreview,
-    preview_content_size: Option<(u16, u16)>,
 }
 
 impl Deref for PickerView {
@@ -222,22 +218,7 @@ impl DerefMut for PickerView {
 }
 
 impl PickerView {
-    #[cfg(test)]
     pub(super) fn new(view: &str, services: PickerViewServices) -> Self {
-        Self::new_with_preview(
-            view,
-            services,
-            super::preview::parse(None).expect("default picker preview is valid"),
-        )
-    }
-
-    pub(super) fn new_with_preview(
-        view: &str,
-        services: PickerViewServices,
-        preview: PickerPreviewConfig,
-    ) -> Self {
-        let preview_cache = services.preview_cache.clone();
-        let preview_visible = preview.open;
         Self {
             state: PickerState {
                 frame: PickerFrame::new(view),
@@ -247,15 +228,12 @@ impl PickerView {
                 active: true,
                 started: false,
                 items_task_state: ItemsTaskState::Idle,
-                preview_visible,
                 items_published: false,
                 initial_focus: None,
             },
             services,
             items_task: None,
             items_completion: None,
-            preview: PickerPreview::new(preview, preview_cache),
-            preview_content_size: None,
         }
     }
 
@@ -265,20 +243,6 @@ impl PickerView {
 
     pub(crate) fn current(&self) -> &PickerFrame {
         &self.frame
-    }
-
-    pub(crate) fn preview_visible(&self) -> bool {
-        self.preview_visible
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_preview_visible(&mut self, visible: bool) {
-        self.preview_visible = visible;
-        self.preview.set_visible(visible);
-    }
-
-    pub(crate) fn preview_render_state(&self) -> super::preview::PickerPreviewRenderState {
-        self.preview.render_state()
     }
 
     fn requested_request_ref(&self) -> Option<&ItemsRequest> {
@@ -316,49 +280,6 @@ impl PickerView {
         self.requested_request_ref().is_some_and(|request| {
             request.matches_context(mount_id, view, input, binding_raw, page_parameters)
         })
-    }
-
-    fn sync_preview(&mut self) {
-        if !self.active {
-            return;
-        }
-        let visible = self.preview_visible
-            && self
-                .preview_content_size
-                .is_none_or(|size| self.preview.fits(size));
-        let results_current = self.requested_request.is_none()
-            || self.results_current_snapshot(self.requested_input());
-        let item = (visible && results_current)
-            .then(|| {
-                self.frame
-                    .selection
-                    .items
-                    .get(self.frame.selection.selected)
-                    .cloned()
-            })
-            .flatten();
-        let request = item.map(|item| {
-            let source = self.preview.source().clone();
-            let owner = self.frame.view.clone();
-            let parameters = self
-                .parameter_snapshot
-                .as_ref()
-                .map(|p| p.values().clone())
-                .unwrap_or(Value::Null);
-            let state = serde_json::json!({"input": self.requested_input(), "item": super::preview::item_value(&item)});
-            let request = crate::protocol::preview_request(&parameters, &self.services.launch_input, &state);
-            let identity = serde_json::json!({"owner": owner, "item": item.value, "request": request}).to_string();
-            let root = self.services.workflow_root(&owner).map(std::path::Path::to_path_buf);
-            super::preview::PreviewRequest { identity, owner, request, root, source }
-        });
-        let content_size = self.preview_content_size;
-        self.preview.set_content_size(content_size);
-        self.preview.set_visible(visible);
-        if visible && !results_current {
-            self.preview.hold_for_items_refresh();
-        } else {
-            self.preview.prepare(request);
-        }
     }
 
     pub(super) fn list_presentation(&self) -> String {
@@ -620,7 +541,6 @@ impl PickerView {
         self.frame.results = ResultsState::Invalid;
         self.frame.pending_selection = 0;
         self.frame.selection.clear();
-        self.preview.prepare(None);
         // The failed load discarded the published list, so the Picker is back to
         // having nothing to show and reports itself as loading again.
         self.items_published = false;
@@ -641,7 +561,6 @@ impl PickerView {
             return Ok(EngineDecision::Continue);
         }
         let events = self.collect_items(response);
-        self.sync_preview();
         let decision = self
             .decisions_for_items_events(events, foreground)?
             .unwrap_or(EngineDecision::Continue);
@@ -680,7 +599,6 @@ impl PickerView {
 
     fn move_selection(&mut self, direction: isize) {
         self.frame.selection.move_by(direction);
-        self.sync_preview();
     }
 
     fn current_publication(&self) -> ViewContextPublication {
@@ -761,7 +679,6 @@ impl PickerView {
         self.remember_context(context);
         self.parameter_snapshot = Some(context.parameter_snapshot().clone());
         self.invalidate_items_for_committed_input();
-        self.preview.hold_for_items_refresh();
         Ok(EngineDecision::RuntimeUpdate(self.runtime_update(
             context.runtime_snapshot(),
             context.input_raw(),
@@ -781,7 +698,6 @@ impl PickerView {
     }
 
     fn handle_input_rejected(&mut self) -> Result<EngineDecision> {
-        self.preview.hold_for_items_refresh();
         self.frame.input_refresh = InputRefreshState::Stable;
         self.items_task_state = ItemsTaskState::Idle;
         self.frame.results = ResultsState::Invalid;
@@ -848,20 +764,6 @@ impl PickerView {
             "picker.cancel" => Ok(EngineDecision::Close),
             "picker.back" => Ok(EngineDecision::Close),
             "picker.exit" => Ok(EngineDecision::Exit),
-            "picker.preview_scroll_up" | "picker.preview_scroll_down" => {
-                self.preview
-                    .scroll(if id.as_str() == "picker.preview_scroll_up" {
-                        -3
-                    } else {
-                        3
-                    });
-                Ok(EngineDecision::Continue)
-            }
-            "picker.toggle_preview" => {
-                self.preview_visible = !self.preview_visible;
-                self.sync_preview();
-                Ok(EngineDecision::Invalidate)
-            }
             "picker.retry" => {
                 self.schedule_retry();
                 Ok(EngineDecision::Invalidate)
@@ -922,14 +824,7 @@ impl PickerView {
 
 impl EngineRuntime for PickerView {
     fn action(&mut self, input: EngineActionInput) -> Result<EngineEmission> {
-        let preview_scroll = matches!(
-            input.invocation.id.as_str(),
-            "picker.preview_scroll_up" | "picker.preview_scroll_down"
-        );
         let decision = self.dispatch_action_input(input)?;
-        if preview_scroll {
-            return Ok(EngineEmission::decision(EngineDecision::Invalidate));
-        }
         Ok(EngineEmission::decision(decision).with_publication(self.current_publication()))
     }
 
@@ -1034,7 +929,7 @@ impl EngineRuntime for PickerView {
 
     fn start_prepared_work(&mut self, starter: &crate::task::MountTaskStarter) -> bool {
         let prepared = std::mem::take(&mut self.items_task_state);
-        let started = if let ItemsTaskState::Prepared(request) = prepared {
+        if let ItemsTaskState::Prepared(request) = prepared {
             self.items_completion = None;
             let identity = request.identity.clone();
             let task = self.services.start_items(starter, request);
@@ -1044,33 +939,7 @@ impl EngineRuntime for PickerView {
         } else {
             self.items_task_state = prepared;
             false
-        };
-        self.sync_preview();
-        started
-    }
-
-    fn set_auxiliary_content_size(&mut self, size: (u16, u16)) {
-        self.preview_content_size = Some(size);
-        self.sync_preview();
-    }
-
-    fn suspend_auxiliary_work(&mut self) {
-        self.active = false;
-        self.preview.suspend();
-    }
-
-    fn start_prepared_auxiliary_work(
-        &mut self,
-        starter: &crate::task::MountTaskStarter,
-    ) -> Vec<(crate::protocol::contracts::TaskId, u64)> {
-        self.sync_preview();
-        if !self.active {
-            return Vec::new();
         }
-        self.preview
-            .start(starter)
-            .map(|generation| vec![(crate::protocol::contracts::TaskId(2), generation)])
-            .unwrap_or_default()
     }
 
     fn deactivate(&mut self) {
@@ -1081,7 +950,6 @@ impl EngineRuntime for PickerView {
         if was_loading {
             self.schedule_retry();
         }
-        self.preview.deactivate();
         self.active = false;
     }
 

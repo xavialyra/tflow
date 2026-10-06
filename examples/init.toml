@@ -15,6 +15,7 @@ foreground = "scheme:muted"
 
 [views.main]
 engine = "picker"
+companion = "preview"
 
 [views.main.query]
 type = "object"
@@ -239,10 +240,10 @@ if __name__ == "__main__":
     main()
 '''
 
-[views.main.picker.preview]
-width = "52%"
-min_width = 36
-open = true
+[views.preview]
+engine = "capture"
+
+[views.preview.capture.output]
 script = '''#!/usr/bin/env python3
 import json
 import os
@@ -348,6 +349,7 @@ if __name__ == "__main__":
 '''
 
 [views.main.bindings]
+"ctrl+p" = "toggle_companion"
 tab = "toggle"
 "ctrl+a" = "select_all"
 "ctrl+r" = "clear_all"
@@ -519,7 +521,6 @@ def generate_settings_content():
     return """[picker.bindings]
 \"ctrl+c\" = "exit"
 \"ctrl+d\" = "exit"
-\"ctrl+p\" = "toggle_preview"
 \"escape\" = "back"
 \"up\" = "select_previous"
 \"down\" = "select_next"
@@ -797,7 +798,6 @@ left_prefix_backspace = "root"
 [picker.bindings]
 \"ctrl+c\" = "exit"
 \"ctrl+d\" = "exit"
-\"ctrl+p\" = "toggle_preview"
 \"escape\" = "back"
 \"up\" = "select_previous"
 \"down\" = "select_next"
@@ -987,3 +987,7 @@ json.dump(
 )
 sys.stdout.write("\n")
 '''
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "preview"

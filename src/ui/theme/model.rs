@@ -139,11 +139,10 @@ pub(crate) struct PickerTheme {
     pub(crate) badge_selected: Style,
     pub(crate) marker: Style,
     pub(crate) scrollbar: Style,
-    pub(crate) preview: PreviewTheme,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PreviewTheme {
+pub(crate) struct DocumentTheme {
     pub(crate) text: Style,
     pub(crate) error: Style,
     pub(crate) border: Style,
@@ -152,6 +151,7 @@ pub(crate) struct PreviewTheme {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CaptureTheme {
     pub(crate) text: Style,
+    pub(crate) document: DocumentTheme,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,24 +379,24 @@ impl ResolvedTheme {
             .or(default_raw.chrome.border_type)
             .unwrap_or_default();
 
-        let preview_text = resolve_component(
-            raw.picker.preview.text.as_ref(),
-            default_raw.picker.preview.text.as_ref().unwrap(),
-            "picker.preview.text",
+        let document_text = resolve_component(
+            raw.capture.document.text.as_ref(),
+            default_raw.capture.document.text.as_ref().unwrap(),
+            "capture.document.text",
         )?
         .normal;
 
-        let preview_error = resolve_component(
-            raw.picker.preview.error.as_ref(),
-            default_raw.picker.preview.error.as_ref().unwrap(),
-            "picker.preview.error",
+        let document_error = resolve_component(
+            raw.capture.document.error.as_ref(),
+            default_raw.capture.document.error.as_ref().unwrap(),
+            "capture.document.error",
         )?
         .normal;
 
-        let preview_border = resolve_component(
-            raw.picker.preview.border.as_ref(),
-            default_raw.picker.preview.border.as_ref().unwrap(),
-            "picker.preview.border",
+        let document_border = resolve_component(
+            raw.capture.document.border.as_ref(),
+            default_raw.capture.document.border.as_ref().unwrap(),
+            "capture.document.border",
         )?
         .normal;
 
@@ -445,13 +445,15 @@ impl ResolvedTheme {
                 badge_selected: picker_badge_selected,
                 marker: picker_marker,
                 scrollbar: picker_scrollbar,
-                preview: PreviewTheme {
-                    text: preview_text,
-                    error: preview_error,
-                    border: preview_border,
+            },
+            capture: CaptureTheme {
+                text: capture_text,
+                document: DocumentTheme {
+                    text: document_text,
+                    error: document_error,
+                    border: document_border,
                 },
             },
-            capture: CaptureTheme { text: capture_text },
             form: FormTheme {
                 label: resolve_component(
                     raw.form.label.as_ref(),
@@ -794,8 +796,6 @@ pub(super) struct RawPickerTheme {
     pub(super) marker: Option<RawStyleBinding>,
     #[serde(default)]
     pub(super) scrollbar: Option<RawStyleBinding>,
-    #[serde(default)]
-    pub(super) preview: RawPreviewTheme,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -827,7 +827,7 @@ pub(super) struct RawChromeTheme {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RawPreviewTheme {
+pub(super) struct RawDocumentTheme {
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
     #[serde(default)]
@@ -839,6 +839,8 @@ pub(super) struct RawPreviewTheme {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawCaptureTheme {
+    #[serde(default)]
+    pub(super) document: RawDocumentTheme,
     #[serde(default)]
     pub(super) text: Option<RawStyleBinding>,
 }

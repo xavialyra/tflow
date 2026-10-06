@@ -3,11 +3,11 @@ mod handoff;
 use self::handoff::{NavigationHandoff, SettledFrame, paint_retained};
 use super::command_adapter::CommandService;
 use crate::command::{BindingLayer, ChromeSnapshot, CommandRegistry};
-use crate::input::InputEvent;
+use crate::input::{InputEvent, Key};
 use crate::protocol::contracts::{TaskEvent, ViewInstanceId};
 #[cfg(test)]
 use crate::protocol::contracts::{TaskId, TaskOutcome};
-use crate::ui::chrome::{ContentHost, FooterModel, FooterRenderer};
+use crate::ui::chrome::{ContentHost, FooterModel, FooterRenderer, PaneLayout};
 use crate::view::{
     EffectExecutor, NavigationRequest, RenderContext, RenderResult, Router, TerminalSize,
     ViewDecision, ViewEvent, ViewResult,
@@ -61,6 +61,7 @@ pub(crate) struct ProtocolSession {
     last_diagnostic: Option<(ViewInstanceId, String)>,
     navigation: NavigationHandoff,
     last_view_revision: u64,
+    layout_sizes: std::collections::BTreeMap<ViewInstanceId, TerminalSize>,
 }
 
 #[cfg(test)]
@@ -112,6 +113,9 @@ impl CommandService for TestCommandService {
     ) -> Result<ViewDecision> {
         // Mirrors the real dispatcher: an engine action is not a definition, so
         // it travels as a decision for the instance's own engine to run.
+        if entry.id == crate::command::OPEN_COMPANION {
+            return Ok(ViewDecision::OpenCompanion);
+        }
         if entry.layer == crate::command::BindingLayer::Engine {
             return Ok(ViewDecision::EngineAction(entry.id.clone()));
         }
@@ -122,6 +126,10 @@ impl CommandService for TestCommandService {
         } else {
             Ok(ViewDecision::Stay)
         }
+    }
+
+    fn host_companion_keys(&self) -> Vec<Key> {
+        vec![Key::Ctrl('l')]
     }
 }
 
@@ -148,6 +156,7 @@ impl ProtocolSession {
             last_diagnostic: None,
             navigation: NavigationHandoff::default(),
             last_view_revision: 0,
+            layout_sizes: Default::default(),
         }
     }
 
@@ -191,6 +200,7 @@ impl ProtocolSession {
             last_diagnostic: None,
             navigation: NavigationHandoff::default(),
             last_view_revision: 0,
+            layout_sizes: Default::default(),
         }
     }
 
@@ -293,6 +303,9 @@ impl ProtocolSession {
         event: ViewEvent,
         effects: &mut dyn EffectExecutor,
     ) -> Result<ViewDecision> {
+        let had_info = self.active_info.is_some();
+        let expired_retention =
+            matches!(event, ViewEvent::Tick) && self.navigation.expire(Instant::now());
         // A failed dispatch is reported from its returned error. Discard its
         // Router-side copy before the next event so it cannot be reported twice.
         let _ = self.router.take_recorded_error();
@@ -307,8 +320,9 @@ impl ProtocolSession {
             self.error_source = None;
             self.last_diagnostic = None;
         }
+        let layout_invalidated = self.dispatch_layout_resize(effects)? != ViewDecision::Stay;
         if let Some(active_instance) = self.router.active() {
-            let snapshot = active_instance.view.command_snapshot();
+            let snapshot = active_instance.command_snapshot();
             self.commands.update_active_snapshot(&snapshot);
         }
         let active = self.router.active().map(|entry| entry.id);
@@ -317,45 +331,110 @@ impl ProtocolSession {
         let mut command_decision = ViewDecision::Stay;
 
         if let ViewEvent::Input(InputEvent::Key { key, raw }) = &event {
-            let entry_opt = {
-                let registry = self.registry.read().unwrap();
-                registry.resolve(*key).cloned()
-            };
-            if let Some(entry) = entry_opt {
-                if entry.layer == BindingLayer::View {
-                    let is_loading = self.router.active().is_some_and(|a| {
-                        let snapshot = a.view.command_snapshot();
-                        snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
-                            && snapshot.publication.as_ref().is_some_and(|p| !p.ready)
-                    });
-                    if is_loading {
-                        self.pending_key = Some(*key);
-                        return Ok(ViewDecision::Stay);
+            let is_escape = *key == Key::Escape;
+
+            if !executed_command {
+                let entry_opt = {
+                    let registry = self.registry.read().unwrap();
+                    registry.resolve(*key).cloned()
+                };
+                if let Some(entry) = entry_opt {
+                    if entry.layer == BindingLayer::View {
+                        let is_loading = self.router.active().is_some_and(|a| {
+                            let snapshot = a.view.command_snapshot();
+                            snapshot.engine_type == crate::workflow::config::ENGINE_PICKER
+                                && snapshot.publication.as_ref().is_some_and(|p| !p.ready)
+                        });
+                        if is_loading && self.pending_key.is_none() {
+                            self.pending_key = Some(*key);
+                            return Ok(ViewDecision::Stay);
+                        }
                     }
-                }
-                executed_command = true;
-                let caller = active.unwrap_or(crate::protocol::contracts::ViewInstanceId(1));
-                // Every entry executes the same way; a key press only chooses which
-                // entry, exactly like a command reference does.
-                command_decision = self.commands.execute_entry(&entry, caller, None)?;
-                if let Some(source) = active {
-                    command_decision =
-                        self.router
-                            .process_with_effects(command_decision, source, effects)?;
-                }
-            } else if let Some(active_instance) = self.router.active_mut() {
-                let context = &active_instance.context;
-                if let Some(receiver) = active_instance.view.fallback_receiver() {
                     executed_command = true;
-                    command_decision = receiver.on_unbound_key(*key, raw, context)?;
+                    let caller = active.unwrap_or(crate::protocol::contracts::ViewInstanceId(1));
+                    command_decision = self.commands.execute_entry(&entry, caller, None)?;
                     if let Some(source) = active {
-                        self.router.process_with_effects(
-                            command_decision.clone(),
+                        command_decision =
+                            self.router
+                                .process_with_effects(command_decision, source, effects)?;
+                    }
+                } else if is_escape
+                    && self
+                        .router
+                        .active()
+                        .is_some_and(|a| a.input.mode.is_visible() && !a.input.is_empty())
+                {
+                    executed_command = true;
+                    if let Some(source) = active {
+                        command_decision = self.router.process_with_effects(
+                            ViewDecision::EditInput(crate::view::InputEdit::Clear),
                             source,
                             effects,
                         )?;
                     }
+                } else {
+                    let unhandled = self
+                        .router
+                        .active()
+                        .map(|a| a.view.unhandled_input_behavior())
+                        .unwrap_or_default();
+                    let mut handled = false;
+                    if unhandled == crate::view::UnhandledInputBehavior::ForwardToOmnibar
+                        && self
+                            .router
+                            .active()
+                            .is_some_and(|a| a.input.mode.is_visible())
+                        && let Some(source) = active
+                    {
+                        command_decision = self
+                            .router
+                            .edit_host_input(source, crate::view::InputEdit::Key(*key))?;
+                        if command_decision != ViewDecision::Stay {
+                            handled = true;
+                            executed_command = true;
+                            command_decision = self.router.process_with_effects(
+                                command_decision,
+                                source,
+                                effects,
+                            )?;
+                        }
+                    }
+
+                    if !handled
+                        && unhandled != crate::view::UnhandledInputBehavior::Ignore
+                        && let Some(active_instance) = self.router.active_mut()
+                    {
+                        let context = &active_instance.context;
+                        if let Some(receiver) = active_instance.view.fallback_receiver() {
+                            executed_command = true;
+                            command_decision = receiver.on_unbound_key(*key, raw, context)?;
+                            if let Some(source) = active {
+                                command_decision = self.router.process_with_effects(
+                                    command_decision.clone(),
+                                    source,
+                                    effects,
+                                )?;
+                            }
+                        }
+                    }
                 }
+            }
+        } else if let ViewEvent::Input(InputEvent::Paste {
+            text: Some(text), ..
+        }) = &event
+            && self.router.active().is_some_and(|a| {
+                a.input.mode.is_visible()
+                    && a.view.unhandled_input_behavior()
+                        == crate::view::UnhandledInputBehavior::ForwardToOmnibar
+            })
+        {
+            executed_command = true;
+            if let Some(source) = active {
+                command_decision = self.router.process_with_effects(
+                    ViewDecision::EditInput(crate::view::InputEdit::Paste(text.clone())),
+                    source,
+                    effects,
+                )?;
             }
         }
 
@@ -387,6 +466,7 @@ impl ProtocolSession {
         }
         self.expire_info(Instant::now());
         self.sync_active_commands()?;
+        let companion_invalidated = self.sync_companion_data_flow()?;
 
         if matches!(event, ViewEvent::Task(_))
             && let Some(key) = self.pending_key.take()
@@ -406,14 +486,49 @@ impl ProtocolSession {
             }
         }
 
-        Ok(decision)
+        if decision == ViewDecision::Stay
+            && (layout_invalidated
+                || companion_invalidated
+                || expired_retention
+                || (had_info && self.active_info.is_none()))
+        {
+            Ok(ViewDecision::Invalidate)
+        } else {
+            Ok(decision)
+        }
     }
 
     pub(crate) fn sync_active_commands(&mut self) -> Result<()> {
-        let active_info = self.router.active().map(|active| {
-            let snapshot = active.view.command_snapshot();
-            (active.id, active.context.clone(), snapshot)
-        });
+        let active_info = self
+            .router
+            .active()
+            .map(|active| (active.id, active.context.clone(), active.command_snapshot()));
+        let host_changed = {
+            let mut registry = self.registry.write().unwrap();
+            let mut entries = registry
+                .layer_entries(BindingLayer::Host)
+                .iter()
+                .filter(|e| e.id != crate::command::OPEN_COMPANION)
+                .cloned()
+                .collect::<Vec<_>>();
+            let companion_keys = self.commands.host_companion_keys();
+            if self.router.active_companion().is_some() {
+                for key in companion_keys {
+                    if !entries.iter().any(|entry| entry.key == Some(key)) {
+                        entries.push(crate::command::CommandEntry::new(
+                            crate::command::OPEN_COMPANION,
+                            crate::command::host_action_label(crate::command::OPEN_COMPANION)
+                                .map(str::to_string),
+                            Some(key),
+                            BindingLayer::Host,
+                        ));
+                    }
+                }
+            }
+            registry
+                .replace_layer(BindingLayer::Host, entries)?
+                .is_some()
+        };
 
         if let Some((_, _, ref snapshot)) = active_info {
             self.commands.update_active_snapshot(snapshot);
@@ -445,7 +560,11 @@ impl ProtocolSession {
         let unbind_rules = self.commands.unbind_rules(active_view.as_deref())?;
         let unbind_changed = self.registry.write().unwrap().replace_unbinds(unbind_rules);
 
-        if is_same_instance && (!is_dynamic || !revision_changed) && !unbind_changed {
+        if is_same_instance
+            && (!is_dynamic || !revision_changed)
+            && !unbind_changed
+            && !host_changed
+        {
             if self.chrome_snapshot.active_view != active_view
                 || self.chrome_snapshot.active_parameters != active_parameters
                 || self.chrome_snapshot.active_raw_input != active_raw_input
@@ -529,21 +648,77 @@ impl ProtocolSession {
             }
             self.dispatch_active_resize(effects)?;
         }
+        self.dispatch_layout_resize(effects)?;
         Ok(())
     }
 
     fn dispatch_active_resize(&mut self, effects: &mut dyn EffectExecutor) -> Result<ViewDecision> {
-        let area = active_render_area(
-            self.router.stack(),
-            Rect::new(0, 0, self.terminal.width, self.terminal.height),
-        );
-        self.router.dispatch_with_effects(
-            ViewEvent::Resize(TerminalSize {
-                width: area.width,
-                height: area.height,
-            }),
-            effects,
+        self.dispatch_layout_resize(effects)
+    }
+
+    fn pane_layout(&self, index: usize, area: Rect) -> PaneLayout {
+        let instance = &self.router.stack()[index];
+        PaneLayout::new(
+            area,
+            instance.input.mode.is_visible(),
+            instance.view.input_divider(),
+            instance.companion.is_some(),
         )
+    }
+
+    fn dispatch_layout_resize(&mut self, effects: &mut dyn EffectExecutor) -> Result<ViewDecision> {
+        if self.terminal.width == 0 || self.terminal.height == 0 {
+            return Ok(ViewDecision::Stay);
+        }
+        let host = ContentHost::default();
+        let terminal = Rect::new(0, 0, self.terminal.width, self.terminal.height);
+        let stack = self.router.stack();
+        let Some(active_index) = stack.len().checked_sub(1) else {
+            return Ok(ViewDecision::Stay);
+        };
+        let first = host.visible_base_index(stack, active_index).unwrap_or(0);
+        let mut sizes = Vec::new();
+        for (index, instance) in stack.iter().enumerate().skip(first) {
+            let area = host.view_content_area(stack, index, terminal);
+            let layout = self.pane_layout(index, area);
+            sizes.push((
+                instance.id,
+                TerminalSize {
+                    width: layout.primary.width,
+                    height: layout.primary.height,
+                },
+            ));
+            if let Some(companion) = &instance.companion {
+                let area = layout.companion.unwrap_or_default();
+                sizes.push((
+                    companion.instance.id,
+                    TerminalSize {
+                        width: area.width,
+                        height: area.height,
+                    },
+                ));
+            }
+        }
+        let live_ids = stack
+            .iter()
+            .flat_map(|entry| {
+                std::iter::once(entry.id).chain(entry.companion.iter().map(|c| c.instance.id))
+            })
+            .collect::<Vec<_>>();
+        self.layout_sizes.retain(|id, _| live_ids.contains(id));
+        let mut invalidated = false;
+        for (id, size) in sizes {
+            if self.layout_sizes.get(&id) != Some(&size) {
+                self.router.resize_instance(id, size, effects)?;
+                self.layout_sizes.insert(id, size);
+                invalidated = true;
+            }
+        }
+        Ok(if invalidated {
+            ViewDecision::Invalidate
+        } else {
+            ViewDecision::Stay
+        })
     }
 
     pub(crate) fn render(
@@ -612,30 +787,90 @@ impl ProtocolSession {
             .map(|entry| entry.view.preferred_top_inset())
             .unwrap_or(0);
         let content_area = content_host.content_area(area, top_padding);
-        let render_context = RenderContext::new(self.terminal, image_picker);
+
+        let mut host_cursor = None;
         let (view, active_render_area, active_popup_rect) = content_host.render_views(
             frame,
             area,
             content_area,
             self.router.stack(),
             &self.theme,
-            |index, frame, rect| self.router.render_at(index, frame, rect, &render_context),
+            |index, frame, rect| {
+                let instance = &self.router.stack()[index];
+                // Keep the image-capable context for every visible layer. A
+                // terminal graphics protocol is stateful; suppressing the
+                // covered layer makes its image disappear permanently in tmux
+                // because the protocol may not transmit again after the popup.
+                let layout = self.pane_layout(index, rect);
+                if let Some(omnibar) = layout.omnibar {
+                    let cursor = crate::ui::chrome::render_omnibar_widget(
+                        frame,
+                        omnibar,
+                        &instance.input,
+                        &self.theme,
+                    );
+                    if index == active_index {
+                        host_cursor = cursor;
+                    }
+                }
+                if let Some(divider) = layout.divider {
+                    frame.render_widget(
+                        ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
+                            "─".repeat(divider.width as usize),
+                            self.theme.chrome.divider,
+                        )),
+                        divider,
+                    );
+                }
+                let primary = if layout.primary.width > 0 && layout.primary.height > 0 {
+                    self.router
+                        .render_at(index, frame, layout.primary, &RenderContext::new(self.terminal, image_picker))?
+                } else {
+                    RenderResult::default()
+                };
+                if let Some(separator) = layout.separator {
+                    frame.render_widget(
+                        ratatui::widgets::Block::new()
+                            .borders(ratatui::widgets::Borders::LEFT)
+                            .border_style(self.theme.capture.document.border),
+                        separator,
+                    );
+                }
+                if let Some(companion) = layout.companion {
+                    self.router.render_companion_for_instance(
+                        index,
+                        frame,
+                        companion,
+                        &RenderContext::new(self.terminal, image_picker),
+                    )?;
+                }
+                Ok(primary)
+            },
         )?;
 
+        let active_render_area = self.pane_layout(active_index, active_render_area).primary;
         // While the target is loading, keep the previous frame's pixels. A
         // freshly pushed popup is covered instead of cleared, so the surface
         // underneath stays put until the popup can render itself.
         let covered = match &retained {
             Some(retained) => {
                 let retain_area = active_popup_rect.or_else(|| {
-                    base_entry.and_then(|entry| entry.view.retained_content_area(content_area))
+                    base_index.zip(base_entry).and_then(|(index, entry)| {
+                        entry
+                            .view
+                            .retained_content_area(self.pane_layout(index, content_area).body)
+                    })
                 });
                 paint_retained(frame, retained, content_area, retain_area)
             }
             None => None,
         };
 
-        if active_render_area.width > 0
+        if let Some((x, y)) = host_cursor {
+            if !covered.is_some_and(|covered| covered.contains(Position { x, y })) {
+                frame.set_cursor_position((x, y));
+            }
+        } else if active_render_area.width > 0
             && active_render_area.height > 0
             && let Some(cursor) = &view.cursor
             && cursor.visible
@@ -841,15 +1076,42 @@ impl ProtocolSession {
         self.router.take_result()
     }
 
+    fn sync_companion_data_flow(&mut self) -> Result<bool> {
+        let mut invalidated = false;
+        if let Some(active_instance) = self.router.active() {
+            let snapshot = active_instance.view.command_snapshot();
+            if let Some(companion) = self.router.active_companion() {
+                if companion.explicit_query || !companion.instance.view.follows_companion_data() {
+                    return Ok(false);
+                }
+                let data = crate::view::companion::CompanionData::from_snapshot(&snapshot);
+                let needs_update = companion.last_data.as_ref() != Some(&data);
+                if needs_update && let Some(companion_mut) = self.router.active_companion_mut() {
+                    let instance = &mut companion_mut.instance;
+                    let decision = instance
+                        .view
+                        .on_companion_data_changed(&data, &instance.context)?;
+                    if instance.input.mode.is_visible() {
+                        let raw = instance.view.command_snapshot().raw_input;
+                        let cursor = raw.len();
+                        instance.input.editor.replace_all(raw, cursor);
+                    }
+                    invalidated = decision != ViewDecision::Stay;
+                    companion_mut.last_query = data.query_seed();
+                    companion_mut.last_data = Some(data);
+                }
+            }
+        }
+        Ok(invalidated)
+    }
+
     #[cfg(test)]
     pub(crate) fn take_error(&mut self) -> Option<crate::view::RouterError> {
         self.router.take_error()
     }
 }
 
-fn active_render_area(stack: &[crate::view::ViewInstance], terminal: Rect) -> Rect {
-    ContentHost::default().active_content_area(stack, terminal)
-}
-
+#[cfg(test)]
+mod host_tests;
 #[cfg(test)]
 mod tests;

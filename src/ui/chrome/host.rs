@@ -308,8 +308,10 @@ impl Default for ContentHost {
 
 impl ContentHost {
     pub(crate) fn content_area(&self, terminal: Rect, top_padding: u16) -> Rect {
-        let x = terminal.x.saturating_add(self.left_padding);
-        let y = terminal.y.saturating_add(top_padding);
+        let left = self.left_padding.min(terminal.width);
+        let top = top_padding.min(terminal.height);
+        let x = terminal.x.saturating_add(left);
+        let y = terminal.y.saturating_add(top);
         let width = terminal
             .width
             .saturating_sub(self.left_padding.saturating_add(self.right_padding));
@@ -396,8 +398,8 @@ impl ContentHost {
 
     pub(crate) fn popup_inner(&self, popup: Rect) -> Rect {
         Rect::new(
-            popup.x.saturating_add(1),
-            popup.y.saturating_add(1),
+            popup.x.saturating_add(popup.width.min(1)),
+            popup.y.saturating_add(popup.height.min(1)),
             popup.width.saturating_sub(2),
             popup.height.saturating_sub(2),
         )
@@ -413,22 +415,23 @@ impl ContentHost {
             .find(|&index| stack[index].context.presentation.mode != ViewPresentationMode::Popup)
     }
 
-    pub(crate) fn active_content_area(&self, stack: &[ViewInstance], terminal: Rect) -> Rect {
-        let Some(active_index) = stack.len().checked_sub(1) else {
-            return self.content_area(terminal, 0);
-        };
-        let base_index = self.visible_base_index(stack, active_index);
+    pub(crate) fn view_content_area(
+        &self,
+        stack: &[ViewInstance],
+        index: usize,
+        terminal: Rect,
+    ) -> Rect {
+        let base_index = self.visible_base_index(stack, index);
         let top_padding = base_index
             .or(Some(0))
-            .and_then(|index| stack.get(index))
+            .and_then(|i| stack.get(i))
             .map(|entry| entry.view.preferred_top_inset())
             .unwrap_or(0);
-        let base_area = self.content_area(terminal, top_padding);
-        let active_item = &stack[active_index];
-        if active_item.context.presentation.mode == ViewPresentationMode::Popup {
-            self.popup_inner(self.popup_rect(terminal, &active_item.context.presentation))
+        let instance = &stack[index];
+        if instance.context.presentation.mode == ViewPresentationMode::Popup {
+            self.popup_inner(self.popup_rect(terminal, &instance.context.presentation))
         } else {
-            base_area
+            self.content_area(terminal, top_padding)
         }
     }
 

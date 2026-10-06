@@ -1,4 +1,7 @@
+mod cursor_backend;
 mod sanitize;
+
+use cursor_backend::CursorBackend;
 
 pub(crate) use sanitize::{sanitize_terminal_text, sanitize_text};
 
@@ -34,7 +37,7 @@ pub(crate) enum ImageProtocol {
     Iterm2,
 }
 
-const RESTORE_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H";
+const RESTORE_SCREEN: &[u8] = b"\x1b[?2026l\x1b[?25h\x1b[?1049l\x1b[0m\x1b[2J\x1b[H";
 const OUTPUT_POLL_INTERVAL_MS: i32 = 50;
 const IMAGE_QUERY_TIMEOUT: Duration = Duration::from_millis(350);
 const RESTORE_OUTPUT_DEADLINE: Duration = Duration::from_millis(100);
@@ -150,7 +153,10 @@ impl ImagePicker {
         let protocol = match self.protocol {
             ProtocolType::Halfblocks => StatefulProtocolType::Halfblocks(Halfblocks::default()),
             ProtocolType::Sixel => StatefulProtocolType::Sixel(Sixel {
-                is_tmux: self.is_tmux,
+                // Sixel belongs to tmux's native screen/image model. Passing it
+                // through bypasses pane tracking and is dropped when passthrough
+                // is disabled (the default).
+                is_tmux: false,
                 ..Sixel::default()
             }),
             ProtocolType::Kitty => {
@@ -162,6 +168,13 @@ impl ImagePicker {
             }),
         };
         StatefulProtocol::new(image, self.font_size, None, protocol)
+    }
+
+    pub(crate) fn image_pixel_bounds(self, area: ratatui::layout::Size) -> (u32, u32) {
+        (
+            u32::from(area.width) * u32::from(self.font_size.width.max(1)),
+            u32::from(area.height) * u32::from(self.font_size.height.max(1)),
+        )
     }
 
     pub(crate) fn fingerprint(self) -> ImagePickerFingerprint {
@@ -193,7 +206,7 @@ pub struct Terminal {
     output_fd: libc::c_int,
     _output: File,
     original: libc::termios,
-    renderer: RatatuiTerminal<CrosstermBackend<TerminalWriter>>,
+    renderer: RatatuiTerminal<CursorBackend<CrosstermBackend<TerminalWriter>>>,
     renderer_discard: Arc<AtomicBool>,
     image_picker: ImagePicker,
     pending_input: Vec<u8>,
@@ -202,6 +215,7 @@ pub struct Terminal {
     screen_active: bool,
     cursor_theme: Option<crate::ui::theme::CursorTheme>,
     embedded_cursor: Option<bool>,
+    popup_depth: usize,
 }
 
 impl Terminal {
@@ -240,10 +254,12 @@ impl Terminal {
         set_nonblocking_fd(output.as_raw_fd())?;
         let renderer_output = duplicate_fd(output.as_raw_fd())?;
         let renderer_discard = Arc::new(AtomicBool::new(false));
-        let renderer = RatatuiTerminal::new(CrosstermBackend::new(TerminalWriter::new(
-            renderer_output,
-            cancellation.clone(),
-            Arc::clone(&renderer_discard),
+        let renderer = RatatuiTerminal::new(CursorBackend::new(CrosstermBackend::new(
+            TerminalWriter::new(
+                renderer_output,
+                cancellation.clone(),
+                Arc::clone(&renderer_discard),
+            ),
         )))
         .context("could not initialize Ratatui terminal backend")?;
         let mut terminal = Self {
@@ -260,6 +276,7 @@ impl Terminal {
             screen_active: false,
             cursor_theme: None,
             embedded_cursor: None,
+            popup_depth: 0,
         };
         terminal.resume_screen()?;
         if image_protocol == ImageProtocol::Auto {
@@ -347,13 +364,35 @@ impl Terminal {
         if self.cancellation.is_cancelled() {
             return Err(shutdown_error()).context("could not draw Ratatui frame");
         }
-        self.renderer
-            .draw(render)
-            .context("could not draw Ratatui frame")?;
+        // DEC synchronized updates keep intermediate text/image cursor moves
+        // invisible. Terminals without this mode safely ignore the sequence.
+        self.write_output(b"\x1b[?2026h")?;
+        let draw = self.renderer.draw(render).map(|_| ());
+        if draw.is_err() {
+            self.renderer.backend_mut().abort_draw();
+        }
+        // Always release synchronization, including cancellation/error paths.
+        let finish = write_fd(
+            self.output_fd,
+            b"\x1b[?2026l",
+            None,
+            Some(Instant::now() + RESTORE_OUTPUT_DEADLINE),
+        );
+        draw.context("could not draw Ratatui frame")?;
+        finish.context("could not finish synchronized frame")?;
         Ok(())
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn prepare_popup_layers(&mut self, depth: usize) -> Result<()> {
+        if depth != self.popup_depth {
+            // Erase graphics left by the previous surface as well as cells.
+            // Do not delete global Kitty image IDs: other panes may own them.
+            self.clear()?;
+            self.popup_depth = depth;
+        }
+        Ok(())
+    }
+
     pub fn clear(&mut self) -> Result<()> {
         if self.cancellation.is_cancelled() {
             return Err(shutdown_error()).context("could not clear Ratatui terminal");
@@ -684,9 +723,17 @@ fn auto_image_picker(
     let mut options = QueryStdioOptions::default();
     if is_wezterm || is_konsole {
         options.blacklist_protocols = vec![ProtocolType::Kitty, ProtocolType::Sixel];
+    } else if picker.is_tmux && !tmux_allows_passthrough() {
+        // Kitty does not provide a usable Sixel path here. Without tmux
+        // passthrough, no graphical protocol can reach the outer Kitty.
+        options
+            .blacklist_protocols
+            .extend([ProtocolType::Kitty, ProtocolType::Sixel]);
     }
 
     let (responses, pending_input) =
+        // Keep the tmux wrapper when probing: ratatui-image's capability query
+        // must use the same transport mode as the eventual protocol output.
         query_image_capabilities(input_fd, output_fd, picker.is_tmux, options, cancellation);
     for response in &responses {
         if let Response::CellSize(Some((width, height))) = response {
@@ -866,6 +913,16 @@ fn tmux_environment_for(has_tmux: bool, term: &str, term_program: &str) -> bool 
     has_tmux
         || term.to_ascii_lowercase().starts_with("tmux")
         || term_program.eq_ignore_ascii_case("tmux")
+}
+
+fn tmux_allows_passthrough() -> bool {
+    std::process::Command::new("tmux")
+        .args(["show-options", "-qv", "-s", "allow-passthrough"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|value| value.trim() == "on")
 }
 
 fn font_size_from_fd(fd: libc::c_int) -> Option<FontSize> {
@@ -1074,6 +1131,20 @@ mod tests {
         unsafe {
             libc::close(input[0]);
             libc::close(input[1]);
+        }
+    }
+
+    #[test]
+    fn tmux_sixel_uses_native_transport_not_passthrough() {
+        let picker = ImagePicker {
+            font_size: FontSize::new(10, 20),
+            protocol: ProtocolType::Sixel,
+            is_tmux: true,
+        };
+        let protocol = picker.new_resize_protocol(DynamicImage::new_rgba8(2, 2));
+        match protocol.protocol_type() {
+            StatefulProtocolType::Sixel(sixel) => assert!(!sixel.is_tmux),
+            _ => panic!("expected Sixel"),
         }
     }
 

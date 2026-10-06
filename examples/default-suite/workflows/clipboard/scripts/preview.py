@@ -3,11 +3,28 @@ import json
 import sys
 
 
-request = json.load(sys.stdin)
-if request.get("version") != 1 or request.get("entrypoint") != "picker-preview":
-    raise ValueError("expected a version-1 picker-preview request")
+try:
+    request = json.load(sys.stdin)
+except Exception:
+    json.dump({"version": 1, "output": None}, sys.stdout)
+    sys.exit(0)
 
-item = request["context"]["engine"]["state"]["item"]
+if request.get("version") != 1:
+    json.dump({"version": 1, "output": None}, sys.stdout)
+    sys.exit(0)
+
+context = request.get("context", {})
+state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
+item = state.get("item") if isinstance(state, dict) else None
+if not isinstance(item, dict) and isinstance(context, dict):
+    inp = context.get("input")
+    if isinstance(inp, dict):
+        item = inp
+
+if not isinstance(item, dict):
+    json.dump({"version": 1, "output": None}, sys.stdout)
+    sys.exit(0)
+
 metadata = item.get("metadata") or {}
 children = []
 constraints = []
@@ -43,5 +60,5 @@ preview = None if not children else {
     "constraints": constraints,
     "children": children,
 }
-json.dump({"version": 1, "preview": preview}, sys.stdout)
+json.dump({"version": 1, "output": preview}, sys.stdout)
 sys.stdout.write("\n")

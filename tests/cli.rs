@@ -333,95 +333,31 @@ fn view_query_rejects_cli_positionals_and_unknown_keys() {
 }
 
 #[test]
-fn check_rejects_picker_preview_field_shape_mismatches() {
-    for (field, expected) in [
-        (
-            "width = \"not-a-number\"",
-            "picker preview width \"not-a-number\" must be a number",
-        ),
-        (
-            "width = \"150%\"",
-            "picker preview width percentage must be between 0% and 100%",
-        ),
-        ("min_width = -1", "picker preview is invalid"),
-        ("open = \"yes\"", "picker preview is invalid"),
-        (
-            "file = \"a.py\"\nscript = \"printf ok\"",
-            "picker preview cannot define both file and script",
-        ),
-    ] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-                default_view = "core:default"
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
-                items = []
+fn check_rejects_picker_preview_field() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "core:default"
+        [workflows.core.views.default]
+        engine = "picker"
+        [workflows.core.views.default.picker]
+        items = []
+        preview = {}
+        "#,
+    )
+    .unwrap();
 
-                [workflows.core.views.default.preview]
-                {field}
-                "#
-            ),
-        )
-        .unwrap();
-
-        let output = launcher_command()
-            .args(["--check", "--suite"])
-            .arg(&config)
-            .output()
-            .expect("could not validate picker preview field shape");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "accepted {field}: {stderr}");
-        assert!(
-            stderr.contains(expected),
-            "field: {field}, expected: {expected}, stderr: {stderr}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    // Verify picker table no longer accepts old preview_ratio / preview_min_width / preview_default_open
-    for old_field in [
-        "preview_ratio = 0.35",
-        "preview_min_width = 24",
-        "preview_default_open = true",
-    ] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-                default_view = "core:default"
-                [workflows.core.views.default.engine]
-                type = "picker"
-                [workflows.core.views.default.engine.config]
-                items = []
-                {old_field}
-                "#
-            ),
-        )
-        .unwrap();
-
-        let output = launcher_command()
-            .args(["--check", "--suite"])
-            .arg(&config)
-            .output()
-            .expect("could not validate picker legacy field rejection");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !output.status.success(),
-            "accepted legacy field {old_field}: {stderr}"
-        );
-        assert!(
-            stderr.contains("unsupported field"),
-            "field: {old_field}, stderr: {stderr}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    let output = launcher_command()
+        .args(["--check", "--suite"])
+        .arg(&config)
+        .output()
+        .expect("could not validate picker preview field");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("unsupported field \"preview\""));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -435,8 +371,7 @@ fn check_validates_static_producer_sources_without_running_them() {
 
         [workflows.core.views.default]
         engine = "picker"
-        [workflows.core.views.default.picker.preview]
-        file = "scripts/preview.sh"
+        companion = "capture"
         [workflows.core.views.default.picker.items]
         file = "scripts/items.sh"
 

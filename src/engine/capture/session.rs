@@ -61,6 +61,7 @@ impl CaptureSession {
         &self.body
     }
 
+    #[allow(dead_code)]
     pub(crate) fn body_mut(&mut self) -> &mut CaptureBody {
         &mut self.body
     }
@@ -70,6 +71,7 @@ impl CaptureSession {
         matches!(self.body, CaptureBody::Document { .. })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn document(&self) -> Option<&Document> {
         match &self.body {
             CaptureBody::Document { document, .. } => Some(document),
@@ -85,6 +87,7 @@ impl CaptureSession {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_value(value: serde_json::Value) -> anyhow::Result<Self> {
         let parsed_doc = super::document::parse(value.clone())?;
         if let Some(doc) = parsed_doc {

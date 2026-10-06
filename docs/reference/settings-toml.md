@@ -53,10 +53,7 @@ left_prefix_backspace = "root"
 "escape" = "back"
 "ctrl+u" = "clear_input"
 "up" = "select_previous"
-"ctrl+k" = "select_previous"
 "down" = "select_next"
-"ctrl+j" = "select_next"
-"ctrl+p" = "toggle_preview"
 
 [capture.bindings]
 "enter" = "copy"
@@ -87,7 +84,7 @@ underline = true
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `theme` | string | Unset (terminal default) | Theme name loaded from `themes/<name>.toml` beside the settings file. Overridden by CLI `--theme`. |
-| `image_protocol` | string | `"auto"` | Protocol used for rendering images in previews. Options: `"auto"`, `"halfblocks"`, `"kitty"`, `"sixel"`, `"iterm2"`. In `"auto"` mode, terminal capability replies select Kitty before Sixel; known iTerm2-compatible terminals use iTerm2 when not inside tmux. Unknown or non-responding terminals use halfblocks. Explicit values bypass detection. |
+| `image_protocol` | string | `"auto"` | Protocol used for rendering images in capture documents. Options: `"auto"`, `"halfblocks"`, `"kitty"`, `"sixel"`, `"iterm2"`. In `"auto"` mode, terminal capability replies select Kitty before Sixel; known iTerm2-compatible terminals use iTerm2 when not inside tmux. In tmux, Kitty requires `allow-passthrough on`; when passthrough is unavailable, automatic selection avoids Kitty/Sixel and falls back to Halfblocks. Unknown or non-responding terminals also use Halfblocks. Explicit values bypass detection and require a compatible terminal path. |
 | `log_file` | string (path) | Unset | Destination path for host debug and execution logs. |
 | `chrome_commands_show` | array of strings | `["enter", "ctrl+k"]` | Default footer key hints applied to every View that does not override `chrome_commands_show`. Keys with no bound command are skipped; `[]` hides all hints. |
 | `host` | table | `{}` | Host-layer global shortcuts. See [Host Bindings](#host-layer-hostbindings). |
@@ -99,12 +96,13 @@ Engine defaults (`[picker]`, `[capture]`, `[embedded]`, `[form]`) are declared d
 
 ## Host Scope (`[host.bindings]`)
 
-Host-layer bindings are session-wide shortcuts that target commands by fully qualified ID. Values use dot-delimited command FQIDs (`workflow.command`):
+Host-layer bindings are session-wide shortcuts that target workflow commands by fully qualified ID (`workflow.command`) or host actions using `@host:<action>`:
 
 ```toml
 [host.bindings]
 "ctrl+k" = "__commands.palette"
 "ctrl+g" = "__parameters.edit"
+"ctrl+l" = "@host:open_companion"
 ```
 
 The same table is accepted in a Suite Manifest. The two are merged in increasing precedence, so `settings.toml` wins for a key both declare, and a `false` there also overrides the suite's binding.
@@ -117,7 +115,7 @@ The same table is accepted in a Suite Manifest. The two are merged in increasing
 
 Global engine defaults define baseline bindings inherited by all matching views unless overridden per-view. Binding tables are key-centric: the physical key is the TOML map key and the value is the engine action.
 
-A value of `false` removes that engine's own binding for the key (`"ctrl+p" = false` drops the default preview shortcut). No entry is built at all, so the key falls through to raw input, and an action left without any key is no longer published as invokable by id. See [View bindings and unbinding](workflow-toml.md) for how this differs from a View's `unbind`, which releases a key while keeping the command reachable.
+Engine defaults do not provide a Companion toggle key. If a Picker should toggle its configured companion, declare a normal workflow command and bind it in `[views.<name>.bindings]`; see [Companion View Combinations](workflow-toml.md#companion-views).
 
 ### 1. Picker Engine (`[picker]`)
 
@@ -129,9 +127,7 @@ Configures presentation and navigation behaviors for Picker views.
 | `left_prefix_backspace` | string | Unset | Action when pressing Backspace on an empty input line while a left prefix is rendered. `"parent"` returns to the parent view (like Escape); `"root"` returns to the root view in a single step; unset leaves Backspace inert. |
 | `bindings` | table | See below | Key-centric bindings table for picker navigation and actions. |
 
-#### Picker Default Bindings (`[picker.bindings]`)
-
-Configures physical key mappings to standard Picker actions:
+Picker has no preview-specific engine actions. Selection, editing, and ordinary View commands are configured through the Picker engine bindings and the View/workflow command tables.
 
 | Built-in Key | Action | Description |
 | :--- | :--- | :--- |
@@ -140,11 +136,8 @@ Configures physical key mappings to standard Picker actions:
 | `"ctrl+u"` | `clear_input` | Clears the active query buffer. |
 | `"ctrl+w"` | `delete_word` | Deletes the word before the cursor. |
 | `"backspace"` | `delete_backward` | Deletes the character before the cursor. |
-| `"up"` | `select_previous` | Moves the cursor selection up one item. |
-| `"down"` | `select_next` | Moves the cursor selection down one item. |
-| `"ctrl+p"` | `toggle_preview` | Toggles visibility of the item preview pane. |
-| Unset | `preview_scroll_up` | Scrolls the preview document up by three rows. |
-| Unset | `preview_scroll_down` | Scrolls the preview document down by three rows. |
+| `"up"` | `select_previous` | Moves the selection up one item. |
+| `"down"` | `select_next` | Moves the selection down one item. |
 
 *Note: Enter behavior is configured explicitly by each View's command bindings. The Picker engine intentionally provides no implicit primary selection action.*
 
@@ -162,8 +155,13 @@ Configures presentation and keybindings for Capture views.
 
 | Built-in Key | Action | Description |
 | :--- | :--- | :--- |
-| `"enter"` | `copy` | Copies captured output text to the system clipboard. |
 | `"escape"` | `back` | Returns to the previous view or closes the Capture view. |
+| `"up"`, `"k"` | `scroll_up` | Scrolls the capture content up by one line. |
+| `"down"`, `"j"` | `scroll_down` | Scrolls the capture content down by one line. |
+| `"ctrl+u"` | `page_up` | Scrolls the capture content up by half a page. |
+| `"ctrl+d"` | `page_down` | Scrolls the capture content down by half a page. |
+
+*Note: `copy` (`capture.copy`) is not bound by default. In views where copying is desired, bind it explicitly in `[capture.bindings]` (e.g. `"ctrl+y" = "copy"`) or in a specific View's `[views.<name>.bindings]` (e.g. `"enter" = "@engine:capture.copy"`).*
 
 ---
 

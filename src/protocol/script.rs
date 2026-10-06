@@ -36,6 +36,10 @@ pub(crate) enum ProtocolOperation {
         success_message: Option<String>,
         timeout_ms: Option<u64>,
     },
+    Companion {
+        target: String,
+        query: Option<Value>,
+    },
 }
 
 impl ProtocolOperation {
@@ -46,6 +50,7 @@ impl ProtocolOperation {
             Self::Return { .. } => "return",
             Self::InvokeCommand { .. } => "invoke-command",
             Self::Run { .. } => "run",
+            Self::Companion { .. } => "companion",
         }
     }
 }
@@ -92,10 +97,20 @@ enum RawError {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawCompanionOperation {
+    target: String,
+    #[serde(default)]
+    query: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawResponse {
     version: u64,
     #[serde(default)]
     operation: Option<RawOperation>,
+    #[serde(default)]
+    companion: Option<RawCompanionOperation>,
     #[serde(default)]
     error: Option<RawError>,
 }
@@ -136,6 +151,11 @@ enum RawOperation {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    Companion {
+        target: String,
+        #[serde(default)]
+        query: Option<Value>,
+    },
 }
 
 pub(crate) fn parse_response(
@@ -146,12 +166,23 @@ pub(crate) fn parse_response(
     if stdout.iter().all(u8::is_ascii_whitespace) {
         return Ok(ProtocolOutcome::Noop);
     }
-    let response: RawResponse = serde_json::from_slice(stdout).with_context(|| {
+    let mut response: RawResponse = serde_json::from_slice(stdout).with_context(|| {
         format!(
             "{} producer must write exactly one valid JSON protocol response",
             source_label
         )
     })?;
+    anyhow::ensure!(
+        response.operation.is_none() || response.companion.is_none(),
+        "{} producer response cannot define both operation and companion",
+        source_label
+    );
+    if let Some(c) = response.companion.take() {
+        response.operation = Some(RawOperation::Companion {
+            target: c.target,
+            query: c.query,
+        });
+    }
     if response.version != PROTOCOL_VERSION {
         bail!(
             "{} producer protocol version {} is unsupported; expected {}",
@@ -200,6 +231,9 @@ pub(crate) fn parse_response(
                     success_message,
                     timeout_ms,
                 },
+                RawOperation::Companion { target, query } => {
+                    ProtocolOperation::Companion { target, query }
+                }
             };
             if let Some(expected_operation) = expected_operation
                 && operation.operation_type() != expected_operation
@@ -328,6 +362,13 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
             }
         }
         ProtocolOperation::Return { .. } => {}
+        ProtocolOperation::Companion { target, .. } => {
+            anyhow::ensure!(
+                !target.is_empty(),
+                "{} companion operation target must not be empty",
+                source_label
+            );
+        }
     }
     Ok(())
 }
@@ -450,7 +491,8 @@ pub(crate) fn run_script_capture_response(
         cancellation,
     );
     let managed_child_reaped = output.managed_child_reaped;
-    let result = output.result.and_then(|output| {
+    let result = (|| {
+        let output = output.result?;
         let response: RawCaptureResponse =
             serde_json::from_slice(&output.stdout).with_context(|| {
                 format!(
@@ -467,7 +509,7 @@ pub(crate) fn run_script_capture_response(
             );
         }
         Ok(response.output)
-    });
+    })();
     ScriptResponseOutcome {
         result,
         managed_child_reaped,
@@ -518,67 +560,6 @@ fn parse_form_response(stdout: &[u8]) -> Result<Value> {
         response.version
     );
     Ok(response.content)
-}
-
-pub(crate) fn parse_preview_response(stdout: &[u8]) -> Result<Value> {
-    let mut val: serde_json::Value = serde_json::from_slice(stdout)
-        .context("picker-preview producer must write exactly one JSON response")?;
-    let map = val
-        .as_object_mut()
-        .context("picker-preview producer must write a JSON object")?;
-    let version = map
-        .remove("version")
-        .context("missing field `version`")?
-        .as_u64()
-        .context("field `version` must be an integer")?;
-    anyhow::ensure!(
-        version == PROTOCOL_VERSION,
-        "unsupported picker-preview protocol version {}; expected 1",
-        version
-    );
-    let preview_val = match (map.remove("preview"), map.remove("output")) {
-        (Some(p), None) => p,
-        (None, Some(o)) => o,
-        (Some(_), Some(_)) => bail!("cannot specify both preview and output"),
-        (None, None) => bail!("picker-preview response missing preview or output field"),
-    };
-    if !map.is_empty() {
-        let extra_keys: Vec<_> = map.keys().cloned().collect();
-        bail!(
-            "unknown fields in picker-preview response: {}",
-            extra_keys.join(", ")
-        );
-    }
-    Ok(preview_val)
-}
-
-pub(crate) fn run_script_preview_response(
-    owner: &str,
-    root: Option<&std::path::Path>,
-    source: &ResolvedScriptSource,
-    request: &Value,
-    cancellation: &dyn CancellationStatus,
-) -> ScriptResponseOutcome<Value> {
-    let output = run_script_output(
-        owner,
-        "picker-preview",
-        root,
-        source,
-        request,
-        Some(1024 * 1024),
-        cancellation,
-    );
-    ScriptResponseOutcome {
-        managed_child_reaped: output.managed_child_reaped,
-        result: output
-            .result
-            .and_then(|output| parse_preview_response(&output.stdout)),
-    }
-}
-
-pub(crate) fn preview_request(parameters: &Value, input: &Value, state: &Value) -> Value {
-    json!({"version": PROTOCOL_VERSION, "entrypoint": "picker-preview",
-        "context": script_context(parameters, input, "picker", state)})
 }
 
 #[derive(Debug, Deserialize)]
@@ -654,6 +635,12 @@ fn script_context(
     engine_type: &str,
     engine_state: &Value,
 ) -> Value {
+    let empty_obj = json!({});
+    let parameters = if parameters.is_null() {
+        &empty_obj
+    } else {
+        parameters
+    };
     json!({
         "parameters": parameters,
         "input": input,
@@ -1032,5 +1019,38 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn response_rejects_ambiguous_companion_operations() {
+        for response in [
+            br#"{"version":1,"operation":{"type":"return","value":1},"companion":{"target":"details"}}"#.as_slice(),
+            br#"{"version":1,"companion":{"target":"details"},"error":"failed"}"#.as_slice(),
+        ] {
+            assert!(parse_response(response, None, "test").is_err());
+        }
+    }
+
+    #[test]
+    fn companion_operation_parsed_from_standard_and_shorthand() {
+        let standard = br#"{"version":1,"operation":{"type":"companion","target":"pod_logs","query":"pod-123"}}"#;
+        let parsed = parse_response(standard, None, "test").unwrap();
+        assert_eq!(
+            parsed,
+            ProtocolOutcome::Operation(ProtocolOperation::Companion {
+                target: "pod_logs".to_string(),
+                query: Some(serde_json::Value::String("pod-123".to_string())),
+            })
+        );
+
+        let shorthand = br#"{"version":1,"companion":{"target":"pod_logs","query":"pod-123"}}"#;
+        let parsed_shorthand = parse_response(shorthand, None, "test").unwrap();
+        assert_eq!(
+            parsed_shorthand,
+            ProtocolOutcome::Operation(ProtocolOperation::Companion {
+                target: "pod_logs".to_string(),
+                query: Some(serde_json::Value::String("pod-123".to_string())),
+            })
+        );
     }
 }

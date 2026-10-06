@@ -5,6 +5,7 @@ entrypoint = "main"
 
 [views.main]
 engine = "picker"
+companion = "preview"
 
 [views.main.picker]
 input_placeholder = "Search applications"
@@ -12,13 +13,14 @@ input_placeholder = "Search applications"
 [views.main.picker.items]
 file = "scripts/items.sh"
 
-[views.main.picker.preview]
+[views.preview]
+engine = "capture"
+
+[views.preview.capture.output]
 file = "scripts/preview.py"
-width = "35%"
-min_width = 24
-open = false
 
 [views.main.bindings]
+"ctrl+p" = "toggle_companion"
 enter = "open"
 "ctrl+o" = "openx"
 "ctrl+w" = "weight"
@@ -55,3 +57,7 @@ file = "scripts/weight-popup.sh"
 label = "Save"
 type = "return"
 file = "scripts/set-weight.sh"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "preview"

@@ -90,6 +90,14 @@ impl View for SyntheticView {
         }
     }
 
+    fn follows_companion_data(&self) -> bool { true }
+
+    fn on_companion_data_changed(&mut self, data: &crate::view::companion::CompanionData, _: &ViewContext) -> Result<ViewDecision> {
+        self.runtime = data.input.clone();
+        self.revision = self.revision.wrapping_add(1);
+        Ok(ViewDecision::Invalidate)
+    }
+
     fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
         match event {
             ViewEvent::Lifecycle(_) => Ok(ViewDecision::Stay),
@@ -188,6 +196,9 @@ impl View for SyntheticView {
         _context: &RenderContext,
     ) -> Result<RenderResult> {
         let mut lines = vec![ratatui::text::Line::from(self.target.clone())];
+        if _context.image_picker.is_some() {
+            lines.push(ratatui::text::Line::from("GRAPHICS_ENABLED"));
+        }
         if self.target.starts_with("body_") {
             lines.push(ratatui::text::Line::from("old body"));
         }
@@ -437,7 +448,7 @@ fn idle_tick_expires_info_in_footer_and_popup_without_clearing_errors() {
         session.report_info("temporary feedback");
         assert!(render_text(&mut session, &mut terminal).contains("temporary feedback"));
         session.active_info.as_mut().unwrap().expires_at = Instant::now();
-        session.tick().unwrap();
+        assert_eq!(session.tick().unwrap(), ViewDecision::Invalidate);
         let text = render_text(&mut session, &mut terminal);
         assert!(!text.contains("temporary feedback"));
         assert!(text.contains("ok"));
@@ -1915,6 +1926,27 @@ fn navigation_grace_does_not_flash_a_closed_view_when_returning() {
 }
 
 #[test]
+fn popup_keeps_graphics_context_for_all_visible_layers() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session.resize(TerminalSize { width: 60, height: 20 }).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let draw = |session: &mut ProtocolSession, terminal: &mut Terminal<TestBackend>| {
+        terminal.draw(|frame| {
+            session.render(frame, frame.area(), Some(crate::terminal::ImagePicker::test_halfblocks())).unwrap();
+        }).unwrap();
+        terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>()
+    };
+    assert_eq!(draw(&mut session, &mut terminal).matches("GRAPHICS_ENABLED").count(), 1);
+    let mut popup = request("child");
+    popup.presentation = crate::workflow::config::ViewPresentation::popup(30, 8);
+    session.router.push(popup).unwrap();
+    session.sync_active_commands().unwrap();
+    assert_eq!(draw(&mut session, &mut terminal).matches("GRAPHICS_ENABLED").count(), 2,
+        "the base and popup retain the graphics-capable context");
+}
+
+#[test]
 fn nested_popups_use_shared_viewport_dimensions_without_clipping() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
@@ -2400,4 +2432,54 @@ fn inactive_popup_respects_border_type() {
     assert_eq!(buffer.cell((5, 1)).unwrap().symbol(), "╭");
     // Grandchild popup (16x4 centered) top-left is at (12, 3) -> must be "╭"
     assert_eq!(buffer.cell((12, 3)).unwrap().symbol(), "╭");
+}
+
+#[test]
+fn companion_input_update_invalidates_a_staying_primary() {
+    let (mut session, _, _) = session();
+    session.start_root(request("root")).unwrap();
+    session
+        .router
+        .toggle_companion(None, "child", None)
+        .unwrap();
+    session.router.active_companion_mut().unwrap().last_data = None;
+
+    let original_query = session.router.active_companion().unwrap().instance.context.query.clone();
+    assert_eq!(session.tick().unwrap(), ViewDecision::Invalidate);
+    assert_eq!(session.tick().unwrap(), ViewDecision::Stay);
+    assert_eq!(session.router.active_companion().unwrap().instance.context.query, original_query,
+        "source updates must not rewrite the validated target query");
+}
+
+#[test]
+fn companion_renders_side_by_side_with_primary() {
+    let (mut session, _, _) = session();
+    session.theme.chrome.border_type = crate::ui::theme::PopupBorderType::Rounded;
+    session.start_root(request("root")).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 80,
+            height: 24,
+        })
+        .unwrap();
+
+    // Toggle companion "child"
+    session
+        .router
+        .toggle_companion(None, "child", None)
+        .unwrap();
+    assert!(session.router.active_companion().is_some());
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            session.render(frame, frame.area(), None).unwrap();
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    // ContentHost has left_padding=1 and right_padding=1, so content_area width is 78 starting at x=1.
+    // Omnibar/top offset occupies row 0/1. Primary view renders directly on left without bordered box.
+    // Right pane (companion) starts at 1 + 39 = 40 and has a left separator "│".
+    assert_eq!(buffer.cell((40, 1)).unwrap().symbol(), "│");
 }

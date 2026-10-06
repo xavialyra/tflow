@@ -1,5 +1,8 @@
 mod footer;
 mod host;
+mod panes;
+pub(crate) use panes::PaneLayout;
+pub(crate) mod input;
 #[cfg(test)]
 mod layout;
 
@@ -8,6 +11,9 @@ mod frame;
 
 pub(crate) use footer::{FooterModel, FooterRenderer, spans_from_footer_content};
 pub(crate) use host::ContentHost;
+#[allow(unused_imports)]
+pub(crate) use input::render_omnibar_widget;
+pub(crate) use input::{HostInputState, InputPresentationMode};
 
 #[cfg(test)]
 use crate::input::previous_char_boundary;

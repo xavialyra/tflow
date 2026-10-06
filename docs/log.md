@@ -1,6 +1,36 @@
 # Development Log
 
+## 2026-10-06: Alpha.8 release alignment
+
+- Aligned the alpha.8 changelog and Companion guide with the implemented passive attachment model: ordinary stack navigation, explicit source payloads, Picker/Capture live updates, and Form/Embedded mount snapshots.
+- Marked the obsolete pane-focus, promotion/demotion, and Escape-ladder proposal as historical rather than runtime behavior.
+- Documented display-sized Capture image caching, resize reloads, request coalescing, popup-layer handling, and tmux protocol limitations.
+
 > **Note:** This log records only concise summaries of notable architectural, configuration, and documentation changes. For detailed design rationale and implementation history, refer to the [Architecture Decision Records](adr/index.md) and commit history.
+
+## 2026-10-05: Companion data and scheduling boundaries
+
+- Introduced typed source payloads shared by attachment and live updates; Capture no longer parses JSON-looking input or removes business fields to infer source context.
+- Made live updates explicit for Picker/Capture, while Form/Embedded retain mount snapshots; documented that foreground entry creates a new instance.
+- Routed producer tasks by mount role rather than engine: companion work uses the background class and foreground work uses the serial class.
+- Updated Host layout ownership documentation and separated the historical ADR proposal from current configuration contracts.
+
+## 2026-10-02: Companion convergence amendment
+
+- Clarified ordinary Push / Close companion navigation and marked the obsolete focus handoff, Escape ladder, and focus-border contracts in ADR 0010 as historical.
+- Unified validated default-query construction for companion attachment and navigation, and shared declared input binding resolution while preserving dynamic script input as computed data.
+- Documented remaining Omnibar ownership and pane geometry/Resize work in [Companion Navigation and Host Ownership](explanation/companion-host-ownership.md). The earlier alpha.8 entries below describe the original design intent and must not be read as proof that all convergence goals are implemented.
+- Replaced the shared Companion matrix entrypoint with eight standalone test fixtures in `tests/fixtures/companion-matrix/`, including cascading Picker + Picker, Capture + Picker, and Embedded + Capture.
+- Fixed the Form + Capture example to initialize field values explicitly and render live published draft state through `$item`; headerless primary Views now render within the left pane rather than underneath the companion. Pane-specific Resize and complete Host chrome ownership remain pending.
+- Form content producers now receive explicit navigation/companion input seeds when supplied. Added PTY coverage for live Form summaries, selected-job Form seeds, and multi-level Picker navigation.
+
+## 2026-10-02 (v0.1.0-alpha.8)
+
+- **Universal Companion Views ([ADR 0010](adr/0010-companion-views-and-unified-host-layout-architecture.md)):** Promoted preview mechanisms into first-class named companion views across all engines (`companion = "<target>"`, `companion_input = "$item"`).
+- **Single-Stack Projection Topology (`[A|B]` vs `[A, B]`):** Modeled companion side-by-side presentation as linear stack projections (`[A|B]`) that can be cleanly promoted to active top views (`[A, B]`) and demoted on return without window manager bloat.
+- **Companion Navigation & Deterministic Escape Ladder:** Monotonic Escape unwinding (clear query -> pop view -> exit). Ordinary navigation stack replaces dedicated pane-focus keys.
+- **Decoupled Host Omnibar & Input Policies:** Extracted logical input buffer into host-level `HostInputState` with presentation modes (`Omnibar`, `BorderTitle`, `FloatingPrompt`) and engine `UnhandledInputBehavior` declarations (`ForwardToOmnibar`, `ConsumeLocally`, `Ignore`).
+- **Split Pane Rendering:** Automatic split pane horizontal layout with focused/inactive border styling and theme integration.
 
 ## 2026-10-01 (v0.1.0-alpha.6)
 

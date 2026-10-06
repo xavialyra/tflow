@@ -172,38 +172,6 @@ pub(super) fn render_capture_document(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render_capture_session(
-    frame: &mut Frame,
-    area: Rect,
-    session: &super::session::CaptureSession,
-    _package: &str,
-    _revision: u64,
-    theme: &Theme,
-    image_picker: Option<crate::terminal::ImagePicker>,
-    image_protocols: &mut super::image_protocol::ImageProtocolCache,
-) {
-    match session.body() {
-        super::session::CaptureBody::Text { lines } => {
-            image_protocols.update(Vec::new());
-            render_capture(frame, area, lines.as_ref(), session.scroll_offset(), theme);
-        }
-        super::session::CaptureBody::Document { document, images } => {
-            render_capture_document(
-                frame,
-                area,
-                document,
-                images,
-                session.scroll_offset(),
-                session.total_height(),
-                theme,
-                image_picker,
-                image_protocols,
-            );
-        }
-    }
-}
-
 pub(crate) struct CaptureRenderer {
     image_protocols: std::sync::Mutex<super::image_protocol::ImageProtocolCache>,
 }
@@ -232,6 +200,10 @@ impl crate::engine::ViewRenderer for CaptureRenderer {
             );
         }
         Ok(())
+    }
+
+    fn poll_render_updates(&self) -> bool {
+        self.image_protocols.lock().unwrap().collect()
     }
 
     fn chrome(&self, model: &crate::engine::RenderModel) -> crate::ui::chrome::EngineChrome {

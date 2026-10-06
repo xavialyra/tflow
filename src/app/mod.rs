@@ -203,6 +203,7 @@ impl App {
     pub fn run(&mut self, terminal: &mut Terminal) -> Result<SessionOutcome> {
         let mut pipeline = InputPipeline::default();
         let mut previous_size = TerminalSize::default();
+        let mut needs_draw = true;
         loop {
             if self.cancellation.is_cancelled() {
                 return Ok(SessionOutcome::Exited);
@@ -222,6 +223,11 @@ impl App {
                     terminal,
                 };
                 self.session.resize_with_effects(size, &mut effects)?;
+                needs_draw = true;
+            }
+            if needs_draw {
+                self.draw(terminal)?;
+                needs_draw = false;
             }
             let poll_timeout = if self.tasks.has_active_tasks() || self.tasks.has_pending_events() {
                 5
@@ -229,13 +235,16 @@ impl App {
                 50
             };
             let read = pipeline.read_normal(terminal, poll_timeout)?;
-            if let Some(outcome) = self.tick_session(terminal, &mut pipeline)? {
+            let (outcome, ticked) = self.tick_session(terminal, &mut pipeline)?;
+            if let Some(outcome) = outcome {
                 return Ok(outcome);
             }
-            if pipeline.pending_is_empty() {
-                self.draw(terminal)?;
+            if ticked {
+                needs_draw = true;
             }
+            let mut had_input = false;
             while let Some(event) = pipeline.pop_input() {
+                had_input = true;
                 let eof = matches!(event, crate::input::InputEvent::Eof);
                 let active_before = self.session.router().active().map(|view| view.id);
                 let cancellation = self.cancellation.clone();
@@ -258,13 +267,12 @@ impl App {
                     return Ok(outcome);
                 }
             }
+            if had_input {
+                needs_draw = true;
+            }
             if matches!(read, InputRead::Eof) {
                 return Ok(SessionOutcome::Exited);
             }
-            if let Some(outcome) = self.tick_session(terminal, &mut pipeline)? {
-                return Ok(outcome);
-            }
-            self.draw(terminal)?;
         }
     }
 
@@ -272,7 +280,7 @@ impl App {
         &mut self,
         terminal: &mut Terminal,
         pipeline: &mut InputPipeline,
-    ) -> Result<Option<SessionOutcome>> {
+    ) -> Result<(Option<SessionOutcome>, bool)> {
         let active_before = self.session.router().active().map(|view| view.id);
         let cancellation = self.cancellation.clone();
         let mut effects = ProtocolEffects {
@@ -280,19 +288,30 @@ impl App {
             pipeline,
             terminal,
         };
+        let mut invalidated = false;
         for event in self.tasks.drain_events() {
+            invalidated = true;
             if let Err(error) = self.session.task_with_effects(event, &mut effects) {
                 self.handle_protocol_error(error);
             }
         }
-        if let Err(error) = self.session.tick_with_effects(&mut effects) {
-            self.handle_protocol_error(error);
+        match self.session.tick_with_effects(&mut effects) {
+            Ok(decision) => {
+                if !matches!(decision, crate::view::ViewDecision::Stay) {
+                    invalidated = true;
+                }
+            }
+            Err(error) => {
+                self.handle_protocol_error(error);
+                invalidated = true;
+            }
         }
         let active_after = self.session.router().active().map(|view| view.id);
         if active_after != active_before {
             pipeline.preserve_decoder_pending();
+            invalidated = true;
         }
-        Ok(self.pending_outcome())
+        Ok((self.pending_outcome(), invalidated))
     }
 
     fn handle_protocol_error(&mut self, error: anyhow::Error) {
@@ -311,6 +330,11 @@ impl App {
     }
 
     fn draw(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let popup_depth = self.session.router().stack().iter().rev()
+            .take_while(|entry| entry.context.presentation.mode
+                == crate::workflow::config::ViewPresentationMode::Popup)
+            .count();
+        terminal.prepare_popup_layers(popup_depth)?;
         let embedded = self
             .session
             .router()

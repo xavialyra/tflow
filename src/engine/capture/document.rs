@@ -22,11 +22,9 @@ pub(crate) enum Direction {
 
 #[derive(Clone, Default)]
 pub(crate) struct DocumentImageState {
-    pub(crate) image: Option<std::sync::Arc<image::DynamicImage>>,
+    pub(crate) image: Option<std::sync::Arc<super::image_protocol::ImageSource>>,
     pub(crate) error: Option<String>,
 }
-
-pub(crate) type PreviewImageState = DocumentImageState;
 
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
@@ -126,6 +124,7 @@ fn yes() -> bool {
 }
 
 /// Generic item details use literal text; metadata never selects a renderer or loads files.
+#[cfg(test)]
 pub(crate) fn item_details(item: &Value) -> Document {
     fn value_text(value: &Value) -> String {
         match value {
@@ -140,7 +139,7 @@ pub(crate) fn item_details(item: &Value) -> Document {
         text.push_str(&value_text(value));
     }
     const LIMIT: usize = 256 * 1024;
-    const TRUNCATED: &str = "\n… (preview truncated)";
+    const TRUNCATED: &str = "\n… (document truncated)";
     if text.len() > LIMIT {
         let mut end = LIMIT - TRUNCATED.len();
         while !text.is_char_boundary(end) {
@@ -161,12 +160,12 @@ pub(crate) fn parse(value: Value) -> Result<Option<Document>> {
         *nodes += 1;
         ensure!(
             depth <= 48 && *nodes <= 4096,
-            "preview JSON exceeds depth/node limit"
+            "document JSON exceeds depth/node limit"
         );
         match v {
             Value::String(s) => {
                 *bytes += s.len();
-                ensure!(*bytes <= 256 * 1024, "preview text exceeds 256 KiB");
+                ensure!(*bytes <= 256 * 1024, "document text exceeds 256 KiB");
             }
             Value::Array(a) => {
                 for v in a {
@@ -190,15 +189,15 @@ pub(crate) fn parse(value: Value) -> Result<Option<Document>> {
 fn constraints(cs: &[ConstraintInput], count: usize) -> Result<()> {
     ensure!(
         cs.is_empty() || cs.len() == count,
-        "preview constraints must match children/cells"
+        "document constraints must match children/cells"
     );
     for c in cs {
         ensure!(
             !matches!(c, ConstraintInput::Ratio(_, 0) | ConstraintInput::Fill(0)),
-            "preview ratio denominator and fill must be positive"
+            "document ratio denominator and fill must be positive"
         );
         if let ConstraintInput::Percentage(p) = c {
-            ensure!(*p <= 100, "preview percentage exceeds 100");
+            ensure!(*p <= 100, "document percentage exceeds 100");
         }
     }
     Ok(())
@@ -208,7 +207,7 @@ impl Document {
         *nodes += 1;
         ensure!(
             depth <= 16 && *nodes <= 128,
-            "preview document exceeds depth 16 or 128 nodes"
+            "document exceeds depth 16 or 128 nodes"
         );
         match self {
             Self::Node(Node::Layout {
@@ -216,7 +215,7 @@ impl Document {
                 children,
                 ..
             }) => {
-                ensure!(!children.is_empty(), "preview layout needs children");
+                ensure!(!children.is_empty(), "document layout needs children");
                 constraints(cs, children.len())?;
                 for child in children {
                     child.validate(depth + 1, nodes, images)?;
@@ -236,13 +235,13 @@ impl Document {
             },
             Self::Node(Node::Paragraph { text, spans, .. }) => ensure!(
                 text.is_some() != spans.is_some(),
-                "preview paragraph requires exactly one of text or spans"
+                "document paragraph requires exactly one of text or spans"
             ),
             Self::Node(Node::Image { path, .. }) => {
                 *images += 1;
                 ensure!(
                     *images <= 4 && !path.is_empty() && !path.contains('\0'),
-                    "preview supports at most 4 images with nonempty paths"
+                    "document supports at most 4 images with nonempty paths"
                 );
             }
             _ => {}
@@ -309,7 +308,7 @@ impl Document {
                         .map(|theme| {
                             slot.as_ref()
                                 .map(|slot| theme.resolve_slot(package, slot, false))
-                                .unwrap_or(theme.picker.preview.text)
+                                .unwrap_or(theme.capture.document.text)
                         })
                         .unwrap_or_default(),
                 ));
@@ -417,7 +416,7 @@ impl Document {
         package: &str,
         scroll: u16,
         _revision: u64,
-        images: &[PreviewImageState],
+        images: &[DocumentImageState],
         picker: Option<crate::terminal::ImagePicker>,
         protocols: &mut ImageProtocolCache,
     ) {
@@ -443,7 +442,7 @@ impl Document {
                 continue;
             }
             let (border, title) = doc.decoration();
-            let mut block = Block::new().border_style(theme.picker.preview.border);
+            let mut block = Block::new().border_style(theme.capture.document.border);
             let original_inner = doc.inner(*rect);
             let inner = projected(original_inner);
             let top_visible = rect.y >= viewport.y;
@@ -464,7 +463,7 @@ impl Document {
             frame.render_widget(block, visible);
             if let Some((text, wrap)) = doc.text(Some(theme), package) {
                 let mut p = Paragraph::new(text)
-                    .style(theme.picker.preview.text)
+                    .style(theme.capture.document.text)
                     .scroll((scroll.saturating_sub(original_inner.y), 0));
                 if wrap {
                     p = p.wrap(Wrap { trim: false });
@@ -504,13 +503,13 @@ impl Document {
                     Self::Node(Node::Separator {}) => frame.render_widget(
                         Block::new()
                             .borders(Borders::TOP)
-                            .border_style(theme.picker.preview.border),
+                            .border_style(theme.capture.document.border),
                         inner,
                     ),
                     Self::Node(Node::Image { .. }) => {
                         if let Some(index) = image_index {
                             match images.get(*index) {
-                                Some(PreviewImageState {
+                                Some(DocumentImageState {
                                     image: Some(image), ..
                                 }) => {
                                     if let Some(picker) = picker.filter(|_| !inner.is_empty()) {
@@ -527,11 +526,11 @@ impl Document {
                                         });
                                     }
                                 }
-                                Some(PreviewImageState {
+                                Some(DocumentImageState {
                                     error: Some(error), ..
                                 }) => frame.render_widget(
                                     Paragraph::new(error.as_str())
-                                        .style(theme.picker.preview.error)
+                                        .style(theme.capture.document.error)
                                         .wrap(Wrap { trim: false }),
                                     inner,
                                 ),
@@ -555,7 +554,7 @@ impl Document {
             }
             if let (
                 Some(picker),
-                Some(PreviewImageState {
+                Some(DocumentImageState {
                     image: Some(image), ..
                 }),
             ) = (picker, images.get(index))
@@ -574,7 +573,7 @@ impl Document {
                     );
                 } else if let Some(error) = protocols.error(key) {
                     frame.render_widget(
-                        Paragraph::new(error).style(theme.picker.preview.error),
+                        Paragraph::new(error).style(theme.capture.document.error),
                         inner,
                     );
                 }
@@ -662,7 +661,7 @@ mod tests {
             panic!("expected literal details")
         };
         assert!(text.len() <= 256 * 1024);
-        assert!(text.ends_with("… (preview truncated)"));
+        assert!(text.ends_with("… (document truncated)"));
         assert!(parse(json!(text)).is_ok());
         let Document::Text(text) = item_details(&json!({"text": "Title only", "metadata": {}}))
         else {
@@ -706,8 +705,10 @@ mod tests {
             ]}
         ]})).unwrap().unwrap();
         let theme = crate::ui::theme::Theme::terminal();
-        let images = vec![PreviewImageState {
-            image: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(2, 2))),
+        let images = vec![DocumentImageState {
+            image: Some(std::sync::Arc::new(
+                crate::engine::capture::image_protocol::ImageSource::new_rgba8(2, 2),
+            )),
             error: None,
         }];
         let mut protocols = ImageProtocolCache::new();
@@ -994,10 +995,10 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_uses_preview_style_and_sanitizes_controls_preserving_newlines() {
+    fn plain_text_uses_document_style_and_sanitizes_controls_preserving_newlines() {
         use ratatui::style::{Color, Style};
         let mut theme = crate::ui::theme::Theme::terminal();
-        theme.picker.preview.text = Style::default().fg(Color::Magenta).bg(Color::Blue);
+        theme.capture.document.text = Style::default().fg(Color::Magenta).bg(Color::Blue);
         for value in [
             json!("a\u{1b}[31mb\u{1b}[0m\nnext\u{7}"),
             json!({"type":"paragraph", "text":"ab\nnext"}),

@@ -1,0 +1,307 @@
+mod support;
+
+use std::fs;
+use std::io::Write;
+use support::{
+    spawn_launcher_with_args_and_env, temporary_root, wait_for_fresh_screen,
+    wait_for_launcher_exit, write_test_config,
+};
+
+#[test]
+fn companion_static_binding_and_dynamic_literal_have_distinct_semantics() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        image_protocol = "halfblocks"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Selected entry", value = "selected-value" }]
+
+        [workflows.sample.views.main.bindings]
+        "alt+s" = "sample.static_details"
+        "alt+d" = "sample.dynamic_details"
+
+        [workflows.sample.commands.static_details]
+        label = "Static Details"
+        companion = "details"
+        query = "static-query"
+
+        [workflows.sample.commands.dynamic_details]
+        label = "Dynamic Details"
+        type = "companion"
+        script = '''#!/usr/bin/env python3
+import json, sys
+json.dump({"version": 1, "companion": {"target": "details", "query": "dynamic-query"}}, sys.stdout)
+'''
+
+        [workflows.sample.views.details]
+        engine = "capture"
+
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+ctx = request.get("context", {})
+raw = ctx.get("input") or ""
+val = raw if isinstance(raw, str) else json.dumps(raw)
+json.dump({"version": 1, "output": "VAL_" + val}, sys.stdout)
+'''
+    "#,
+    )
+    .unwrap();
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected entry"));
+    process.master.write_all(b"\x1bs").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("VAL_static-query")
+    });
+    // Same target toggles off, then a dynamic response mounts its query.
+    process.master.write_all(b"\x1bs").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Selected entry") && !screen.contains("VAL_static-query")
+    });
+    process.master.write_all(b"\x1bd").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("VAL_dynamic-query"));
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ctrl_p_without_a_binding_or_after_unbind_does_not_toggle_companion() {
+    for unbind in [false, true] {
+        let root = temporary_root();
+        let config = root.join("config.toml");
+        let binding = if unbind {
+            r#"
+            [workflows.sample.views.main.bindings]
+            "ctrl+p" = "sample.details"
+            [workflows.sample.views.main.unbind]
+            keys = ["ctrl+p"]
+            "#
+        } else {
+            ""
+        };
+        write_test_config(
+            &config,
+            &format!(
+                r#"
+                default_view = "sample:main"
+                [workflows.sample.views.main]
+                engine = "picker"
+                [workflows.sample.views.main.picker]
+                items = [{{ display = "Selected entry", value = "entry" }}]
+                {binding}
+                [workflows.sample.commands.details]
+                label = "Toggle Details"
+                companion = "details"
+                [workflows.sample.views.details]
+                engine = "capture"
+                [workflows.sample.views.details.capture.output]
+                script = '''#!/usr/bin/env python3
+import json, pathlib, sys
+pathlib.Path("{marker}").write_text("started")
+json.dump({{"version": 1, "output": "UNEXPECTED_COMPANION"}}, sys.stdout)
+'''
+                "#,
+                marker = root.join("companion-started").display(),
+            ),
+        )
+        .unwrap();
+        let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+        wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected entry"));
+        // A printable query is a redraw barrier, avoiding a negative timeout.
+        process.master.write_all(b"\x10barrier").unwrap();
+        process.master.flush().unwrap();
+        let screen = wait_for_fresh_screen(&process.master, |screen| screen.contains("barrier"));
+        assert!(!String::from_utf8_lossy(&screen).contains("UNEXPECTED_COMPANION"));
+        process.master.write_all(b"\x04").unwrap();
+        process.master.flush().unwrap();
+        let (status, _) = wait_for_launcher_exit(&mut process);
+        assert_eq!(status, 0);
+        assert!(!root.join("companion-started").exists(), "unbind={unbind}");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn ctrl_p_bound_to_an_ordinary_run_command_only_executes_that_command() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        &format!(
+            r#"
+            default_view = "sample:main"
+            [workflows.sample.views.main]
+            engine = "picker"
+            [workflows.sample.views.main.picker]
+            items = [{{ display = "Selected entry", value = "entry" }}]
+            [workflows.sample.views.main.bindings]
+            "ctrl+p" = "sample.marker"
+            [workflows.sample.commands.marker]
+            label = "Run Marker"
+            type = "run"
+            argv = ["sh", "-c", "printf 'ORDINARY_COMMAND_EXECUTED\\n'"]
+            exit = true
+            [workflows.sample.views.details]
+            engine = "capture"
+            [workflows.sample.views.details.capture.output]
+            script = '''#!/usr/bin/env python3
+import json, pathlib, sys
+pathlib.Path("{marker}").write_text("started")
+json.dump({{"version": 1, "output": "UNEXPECTED_COMPANION"}}, sys.stdout)
+'''
+            "#,
+            marker = root.join("companion-started").display(),
+        ),
+    )
+    .unwrap();
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected entry"));
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+    let (status, output) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    assert!(String::from_utf8_lossy(&output).contains("ORDINARY_COMMAND_EXECUTED"));
+    assert!(!root.join("companion-started").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_ctrl_p_companion_command_and_an_alternate_key_toggle_equivalently() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        [workflows.sample.views.main]
+        engine = "picker"
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Selected entry", value = "selected-value" }]
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.details"
+        "alt+p" = "sample.details"
+        [workflows.sample.commands.details]
+        label = "Toggle Details"
+        companion = "details"
+        [workflows.sample.views.details]
+        engine = "capture"
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+ctx = request.get("context", {})
+raw = ctx.get("parameters") or ctx.get("input") or ""
+if isinstance(raw, str):
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+else:
+    data = raw or {}
+item = data.get("item") or data
+val = item.get("value", "val") if isinstance(item, dict) else str(item)
+json.dump({"version": 1, "output": "DETAILS_" + val}, sys.stdout)
+'''
+        "#,
+    )
+    .unwrap();
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected entry"));
+    // Either key can open or close the same attachment, across key changes.
+    for keys in [b"\x10".as_slice(), b"\x1bp".as_slice()] {
+        process.master.write_all(keys).unwrap();
+        process.master.flush().unwrap();
+        wait_for_fresh_screen(&process.master, |screen| {
+            screen.contains("DETAILS_selected-value")
+        });
+        process.master.write_all(keys).unwrap();
+        process.master.flush().unwrap();
+        wait_for_fresh_screen(&process.master, |screen| {
+            screen.contains("Selected entry") && !screen.contains("DETAILS_selected-value")
+        });
+    }
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn host_bindings_customize_open_companion_and_allow_disabling() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+
+        [host.bindings]
+        "ctrl+l" = false
+        "ctrl+o" = "@host:open_companion"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "details"
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "First App", value = "app1" }]
+
+        [workflows.sample.views.details]
+        engine = "capture"
+
+        [workflows.sample.views.details.capture.output]
+        content = "DETAILS_PAGE"
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("First App") && screen.contains("DETAILS_PAGE")
+    });
+
+    // 1. Pressing Ctrl-L followed by a barrier input should keep First App visible and not open companion
+    process.master.write_all(b"\x0cxyz").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_fresh_screen(&process.master, |screen| screen.contains("xyz"));
+    assert!(String::from_utf8_lossy(&screen).contains("First App"));
+    assert!(String::from_utf8_lossy(&screen).contains("│"));
+
+    // 2. Clear query barrier with Ctrl-U
+    process.master.write_all(b"\x15").unwrap();
+    wait_for_fresh_screen(&process.master, |screen| !screen.contains("xyz"));
+
+    // 3. Pressing Ctrl-O should navigate into companion view
+    process.master.write_all(b"\x0f").unwrap();
+    process.master.flush().unwrap();
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("DETAILS_PAGE") && !screen.contains("First App")
+    });
+    assert!(String::from_utf8_lossy(&screen).contains("DETAILS_PAGE"));
+
+    // 4. Escape unwinds back to main
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("First App"));
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

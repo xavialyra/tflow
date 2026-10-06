@@ -63,7 +63,7 @@ foreground = "scheme:muted"
 dim = true
 
 # -----------------------------------------------------------------------------
-# Picker List & Preview Component Styles
+# Picker List Component Styles
 # -----------------------------------------------------------------------------
 [picker.text]
 foreground = "scheme:foreground"
@@ -111,21 +111,21 @@ foreground = "scheme:accent"
 background = "scheme:surface"
 bold = true
 
-[picker.preview.text]
-foreground = "scheme:foreground"
-background = "scheme:background"
-
-[picker.preview.border]
-foreground = "scheme:border"
-background = "scheme:background"
-
-[picker.preview.error]
-foreground = "scheme:background"
-background = "scheme:error"
-
 # -----------------------------------------------------------------------------
 # Capture Component Styles
 # -----------------------------------------------------------------------------
+[capture.document.text]
+foreground = "scheme:foreground"
+background = "scheme:background"
+
+[capture.document.border]
+foreground = "scheme:border"
+background = "scheme:background"
+
+[capture.document.error]
+foreground = "scheme:background"
+background = "scheme:error"
+
 [capture.text]
 foreground = "scheme:foreground"
 background = "scheme:background"

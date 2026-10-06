@@ -1345,3 +1345,178 @@ fn router_commits_a_mounted_view_and_owns_stack() {
         Some(Value::String("done".into()))
     );
 }
+
+#[test]
+fn companion_toggle_mount_and_unmount() {
+    let mut routes = MapRouteCatalog::default();
+    routes.insert("main", "app:main");
+    routes.insert("side", "app:side");
+    let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
+    let mut executor = EffectRecorder { calls: Vec::new() };
+    let request =
+        NavigationRequest::new("main", ParsedQuery::new("app:main", "query", Value::Null));
+    let id = router.push(request).expect("mount succeeds");
+    assert_eq!(router.active().map(|view| view.id), Some(id));
+    assert!(router.active_companion().is_none());
+
+    // Toggle companion "side" on
+    router
+        .dispatch(ViewEvent::Input(InputEvent::Key {
+            key: Key::Char('c'),
+            raw: b"c".to_vec(),
+        }))
+        .unwrap();
+    // Dispatch ToggleCompanion decision
+    router
+        .process_with_effects(
+            ViewDecision::ToggleCompanion {
+                target: "side".to_string(),
+                query: Some(Value::String("item-1".to_string())),
+            },
+            id,
+            &mut executor,
+        )
+        .unwrap();
+
+    assert!(router.active_companion().is_some());
+    assert_eq!(router.active_companion().unwrap().target, "side");
+
+    // Toggle companion "side" again -> should unmount (toggle off)
+    router
+        .process_with_effects(
+            ViewDecision::ToggleCompanion {
+                target: "side".to_string(),
+                query: None,
+            },
+            id,
+            &mut executor,
+        )
+        .unwrap();
+    assert!(router.active_companion().is_none());
+}
+
+struct TickFactory;
+struct TickView {
+    target: String,
+    changed: bool,
+}
+impl ViewFactory for TickFactory {
+    fn create(
+        &self,
+        request: &NavigationRequest,
+        _: ViewInstanceId,
+        _: &ViewServices<'_>,
+    ) -> Result<Box<dyn View>> {
+        Ok(Box::new(TickView {
+            target: request.target.clone(),
+            changed: false,
+        }))
+    }
+}
+impl View for TickView {
+    fn event(&mut self, event: ViewEvent, _: &ViewContext) -> Result<ViewDecision> {
+        if matches!(event, ViewEvent::Tick) && self.target == "side" && !self.changed {
+            self.changed = true;
+            return Ok(ViewDecision::Invalidate);
+        }
+        Ok(ViewDecision::Stay)
+    }
+    fn render(&self, _: &mut Frame, _: Rect, _: &RenderContext) -> Result<RenderResult> {
+        Ok(RenderResult::default())
+    }
+}
+
+#[test]
+fn companion_tick_invalidation_survives_a_staying_primary_and_popup() {
+    let mut routes = MapRouteCatalog::default();
+    for target in ["main", "side", "popup"] {
+        routes.insert(target, target);
+    }
+    let mut router = Router::new(Box::new(routes), Box::new(TickFactory));
+    router.push(request("main")).unwrap();
+    router.toggle_companion(None, "side", None).unwrap();
+    let mut popup = request("popup");
+    popup.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
+    router.push(popup).unwrap();
+    assert_eq!(
+        router.dispatch(ViewEvent::Tick).unwrap(),
+        ViewDecision::Invalidate
+    );
+    assert_eq!(
+        router.dispatch(ViewEvent::Tick).unwrap(),
+        ViewDecision::Stay
+    );
+    assert!(router.active_companion().is_none());
+    assert!(router.active_companion_mut().is_none());
+    assert!(router.stack()[0].companion.is_some());
+}
+
+#[test]
+fn covered_base_tick_invalidation_is_not_overwritten_by_popup_stay() {
+    let mut routes = MapRouteCatalog::default();
+    for target in ["side", "popup"] {
+        routes.insert(target, target);
+    }
+    let mut router = Router::new(Box::new(routes), Box::new(TickFactory));
+    router.push(request("side")).unwrap();
+    let mut popup = request("popup");
+    popup.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
+    router.push(popup).unwrap();
+    assert_eq!(
+        router.dispatch(ViewEvent::Tick).unwrap(),
+        ViewDecision::Invalidate
+    );
+    assert_eq!(
+        router.dispatch(ViewEvent::Tick).unwrap(),
+        ViewDecision::Stay
+    );
+}
+
+#[test]
+fn companion_navigate_and_return_lifecycle() {
+    let mut routes = MapRouteCatalog::default();
+    routes.insert("main", "app:main");
+    routes.insert("side", "app:side");
+    let mut router = Router::new(Box::new(routes), Box::new(TestFactory));
+    let mut executor = EffectRecorder { calls: Vec::new() };
+    let request =
+        NavigationRequest::new("main", ParsedQuery::new("app:main", "query", Value::Null));
+    let main_id = router.push(request).expect("mount main succeeds");
+
+    // Attach companion
+    router
+        .process_with_effects(
+            ViewDecision::ToggleCompanion {
+                target: "side".to_string(),
+                query: None,
+            },
+            main_id,
+            &mut executor,
+        )
+        .unwrap();
+    assert!(router.active_companion().is_some());
+    assert_eq!(router.stack().len(), 1);
+
+    // Navigate to companion: Push side view to stack
+    let nav_request =
+        NavigationRequest::new("side", ParsedQuery::new("app:side", "query", Value::Null));
+    router
+        .process_with_effects(
+            ViewDecision::Transition(crate::view::TransitionRequest::Push(nav_request)),
+            main_id,
+            &mut executor,
+        )
+        .unwrap();
+    assert_eq!(router.stack().len(), 2);
+    assert_eq!(router.active().unwrap().context.location.target, "app:side");
+
+    // Exit companion: Close pop back to primary
+    let side_id = router.active().unwrap().id;
+    router
+        .process_with_effects(ViewDecision::Close, side_id, &mut executor)
+        .unwrap();
+    assert_eq!(router.stack().len(), 1);
+    assert_eq!(router.active().unwrap().id, main_id);
+    assert!(router.active_companion().is_some());
+    assert_eq!(router.active_companion().unwrap().target, "side");
+}

@@ -1,0 +1,25 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/embedded_capture.toml
+[workflow]
+api = 1
+name = "Embedded + Capture: Shell and Reference"
+entrypoint = "main"
+
+[views.main]
+engine = "embedded"
+companion = "reference"
+
+[views.main.embedded]
+command = ["sh", "-c", "printf 'DEMO SHELL\\nTry: printf hello\\n'; exec sh"]
+
+[views.reference]
+engine = "capture"
+
+[views.reference.capture.output]
+content = "SHELL REFERENCE\n\nprintf hello\npwd\n\nThe shell is the primary input owner.\nEsc in the shell cancels the shell View.\n\nCommands run in your current directory; use only commands you trust."
+
+[views.main.bindings]
+"ctrl+p" = "toggle_companion"
+
+[commands.toggle_companion]
+label = "Toggle Companion"
+companion = "reference"

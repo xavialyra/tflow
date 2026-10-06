@@ -1,7 +1,7 @@
 //! Protocol-native adapter for the Picker engine.
 //!
-//! The adapter owns the interactive editor. The existing PickerView remains
-//! responsible for item loading, selection, and preview
+//! The Host owns editing and input presentation. Picker retains a read-only
+//! input snapshot and owns item loading, selection, and parameter parsing.
 
 use super::{
     PickerBindings, PickerOptions, PickerView, PickerViewServices, PrefixBackspace, create_renderer,
@@ -13,38 +13,28 @@ use crate::engine::{
     ViewContext as EngineContext, ViewIdentity,
 };
 use crate::input::bindings::BindingAction;
-use crate::input::{EditorBuffer, InputEvent, InputSourceIdentity, Key, ViewMountId};
+use crate::input::{
+    EditorBuffer, EditorSnapshot, InputEvent, InputSourceIdentity, Key, ViewMountId,
+};
 #[cfg(test)]
 use crate::protocol::contracts::{TaskEvent, TaskOutcome};
 use crate::protocol::contracts::{TaskId, ViewInstanceId};
 use crate::task::{MountTaskLease, MountTaskStarter, TaskRuntime};
 use crate::ui::theme::ResolvedTheme;
 use crate::view::{
-    EffectRequest, FallbackInputReceiver, LifecycleEvent, NavigationRequest, ParsedQuery,
-    RelativeCursor, RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext,
-    ViewDecision, ViewEvent, ViewPublication, ViewTaskRegistry,
+    EffectRequest, FallbackInputReceiver, InputEdit, LifecycleEvent, NavigationRequest,
+    ParsedQuery, RenderContext, RenderResult, View, ViewCommandSnapshot, ViewContext, ViewDecision,
+    ViewEvent, ViewPublication, ViewTaskRegistry,
 };
 use crate::workflow::parameter::{ParameterBinding, ParameterSnapshot};
 use anyhow::Result;
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    text::{Line, Span},
-    widgets::Paragraph,
-};
+use ratatui::{Frame, layout::Rect};
 use serde_json::Value;
-use std::ops::Range;
-
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub(super) const CMD_EXIT: &str = "picker.exit";
 pub(super) const CMD_BACK: &str = "picker.back";
 pub(super) const CMD_SELECT_PREVIOUS: &str = "picker.select_previous";
 pub(super) const CMD_SELECT_NEXT: &str = "picker.select_next";
-pub(super) const CMD_TOGGLE_PREVIEW: &str = "picker.toggle_preview";
-pub(super) const CMD_PREVIEW_SCROLL_UP: &str = "picker.preview_scroll_up";
-pub(super) const CMD_PREVIEW_SCROLL_DOWN: &str = "picker.preview_scroll_down";
 pub(super) const CMD_CLEAR_INPUT: &str = "picker.clear_input";
 pub(super) const CMD_DELETE_WORD: &str = "picker.delete_word";
 pub(super) const CMD_DELETE_BACKWARD: &str = "picker.delete_backward";
@@ -63,7 +53,6 @@ pub(crate) struct PickerProtocolConfig {
     /// Backspace behavior on an empty, prefixed input line. `None` leaves
     /// Backspace inert.
     pub(crate) prefix_backspace: Option<super::PrefixBackspace>,
-    pub(crate) preview: Option<Value>,
     pub(crate) runtime_snapshot: Value,
     pub(crate) tasks: TaskRuntime,
 }
@@ -94,11 +83,9 @@ pub(crate) fn create_protocol_view(
             .filter(|placeholder| !placeholder.is_empty())
             .map(str::to_string),
     };
-    let preview = super::preview::parse(config.preview.as_ref())?;
     let mut runtime_services = config.services.clone();
     runtime_services.launch_input = config.engine.launch_input.clone();
-    let mut runtime =
-        PickerView::new_with_preview(&config.identity.view_ref, runtime_services, preview);
+    let mut runtime = PickerView::new(&config.identity.view_ref, runtime_services);
     if let Some(focus) = &request.focus {
         runtime.set_initial_focus(Some(focus.clone()));
     }
@@ -123,9 +110,10 @@ pub(crate) fn create_protocol_view(
         &Value::Null,
         0,
         None,
-        editor.snapshot(),
+        editor.clone(),
     );
-    let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id));
+    let starter = MountTaskStarter::from_lease(&config.tasks, MountTaskLease::new(mount_id))
+        .with_execution_class(request.execution_class);
     Ok(Box::new(PickerProtocolView {
         runtime,
         renderer,
@@ -147,7 +135,6 @@ pub(crate) fn create_protocol_view(
         activated_once: false,
         closed: false,
         defer_work_poll: false,
-        task_completion_pending: false,
         publication_ready: false,
         diagnostic: None,
         content_size: (1, 1),
@@ -167,13 +154,13 @@ fn initial_editor(
     binding: &ParameterBinding,
     snapshot: &ParameterSnapshot,
     input: Option<&crate::view::ViewInputSeed>,
-) -> Result<EditorBuffer> {
+) -> Result<EditorSnapshot> {
     if let Some(seed) = input {
-        return Ok(EditorBuffer::from_raw(seed.text.clone(), seed.cursor));
+        return Ok(EditorBuffer::from_raw(seed.text.clone(), seed.cursor).snapshot());
     }
     let state = binding.state_from_snapshot(snapshot, false)?;
     let rendered = binding.render_input(&state)?;
-    Ok(EditorBuffer::from_raw(rendered.clone(), rendered.len()))
+    Ok(EditorBuffer::from_raw(rendered.clone(), rendered.len()).snapshot())
 }
 
 fn parameter_snapshot(
@@ -223,7 +210,7 @@ struct PickerProtocolView {
     left_prefix: Option<String>,
     theme: ResolvedTheme,
     parameter_binding: ParameterBinding,
-    editor: EditorBuffer,
+    editor: EditorSnapshot,
     parameters: ParameterSnapshot,
     engine_context: EngineContext,
     runtime_snapshot: Value,
@@ -237,7 +224,6 @@ struct PickerProtocolView {
     activated_once: bool,
     closed: bool,
     defer_work_poll: bool,
-    task_completion_pending: bool,
     publication_ready: bool,
     diagnostic: Option<String>,
     content_size: (u16, u16),
@@ -268,7 +254,7 @@ impl PickerProtocolView {
             self.publication
                 .as_ref()
                 .map(|publication| &publication.current),
-            self.editor.snapshot(),
+            self.editor.clone(),
         );
     }
 
@@ -308,7 +294,6 @@ impl PickerProtocolView {
     }
 
     fn edit_changed(&mut self, context: &ViewContext) -> Result<ViewDecision> {
-        self.task_completion_pending = false;
         if self.parse_editor(context)? {
             let committed = self.runtime.input_committed(self.engine_context.clone())?;
             let committed = self.map_emission(context, committed)?;
@@ -330,45 +315,12 @@ impl PickerProtocolView {
         Ok(ready)
     }
 
-    fn body_layout(&self, area: Rect) -> [Rect; 3] {
-        let query_height = if self.options.show_input {
-            area.height.min(1)
-        } else {
-            0
-        };
-        let divider_height = if self.options.show_divider && query_height > 0 {
-            area.height.saturating_sub(query_height).min(1)
-        } else {
-            0
-        };
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(query_height),
-                Constraint::Length(divider_height),
-                Constraint::Min(0),
-            ])
-            .split(area);
-
-        std::array::from_fn(|i| layout[i])
-    }
-
-    fn sync_auxiliary_size(&mut self) {
-        let body = self.body_layout(Rect::new(0, 0, self.content_size.0, self.content_size.1))[2];
-        self.runtime
-            .set_auxiliary_content_size((body.width, body.height));
-    }
-
     fn start_prepared_work(&mut self) {
-        self.sync_auxiliary_size();
         let task = TaskId(1);
         let generation = self.task_generation.wrapping_add(1).max(1);
         let starter = self.starter.for_task(task, generation);
         if self.runtime.start_prepared_work(&starter) {
             self.task_generation = generation;
-            self.task_registry.register(task, generation);
-        }
-        for (task, generation) in self.runtime.start_prepared_auxiliary_work(&self.starter) {
             self.task_registry.register(task, generation);
         }
     }
@@ -482,65 +434,99 @@ impl PickerProtocolView {
                 _ => Ok(ViewDecision::Stay),
             };
         }
-        match key {
-            Key::Char(character) => {
-                self.editor.insert(character);
-                self.edit_changed(context)
-            }
-            Key::Left => {
-                self.editor.move_left();
-                Ok(ViewDecision::Invalidate)
-            }
-            Key::Right => {
-                self.editor.move_right();
-                Ok(ViewDecision::Invalidate)
-            }
-            Key::Home => {
-                self.editor.move_home();
-                Ok(ViewDecision::Invalidate)
-            }
-            Key::End => {
-                self.editor.move_end();
-                Ok(ViewDecision::Invalidate)
-            }
-            Key::Backspace => {
-                if self.editor.delete_backward() {
-                    self.edit_changed(context)
-                } else if self.editor.raw.is_empty() && self.rendered_left_prefix().is_some() {
-                    // The only editable thing left is the rendered left prefix.
-                    // Both opt-in behaviors consume it by leaving this View;
-                    // unset (or a View without a prefix) leaves Backspace inert.
-                    match self.options.prefix_backspace {
-                        Some(PrefixBackspace::Parent) => Ok(ViewDecision::Close),
-                        Some(PrefixBackspace::Root) => Ok(ViewDecision::CloseToRoot),
-                        None => Ok(ViewDecision::Invalidate),
-                    }
-                } else {
-                    Ok(ViewDecision::Invalidate)
+        if key == Key::Backspace && self.editor.raw.is_empty() {
+            return Ok(if self.rendered_left_prefix().is_some() {
+                match self.options.prefix_backspace {
+                    Some(PrefixBackspace::Parent) => ViewDecision::Close,
+                    Some(PrefixBackspace::Root) => ViewDecision::CloseToRoot,
+                    None => ViewDecision::Invalidate,
                 }
-            }
-            Key::Delete => {
-                if self.editor.delete_forward() {
-                    self.edit_changed(context)
-                } else {
-                    Ok(ViewDecision::Invalidate)
-                }
-            }
-            _ => Ok(ViewDecision::Stay),
+            } else {
+                ViewDecision::Invalidate
+            });
         }
+        Ok(ViewDecision::EditInput(InputEdit::Key(key)))
     }
 }
 
 impl View for PickerProtocolView {
+    fn unhandled_input_behavior(&self) -> crate::view::UnhandledInputBehavior {
+        crate::view::UnhandledInputBehavior::ForwardToOmnibar
+    }
+
+    fn input_mode(&self) -> crate::ui::chrome::InputPresentationMode {
+        if self.options.show_input {
+            crate::ui::chrome::InputPresentationMode::Omnibar { show_cursor: true }
+        } else {
+            crate::ui::chrome::InputPresentationMode::Hidden
+        }
+    }
+
+    fn input_placeholder(&self) -> Option<String> {
+        self.options.input_placeholder.clone()
+    }
+
+    fn input_left_prefix(&self) -> Option<String> {
+        self.rendered_left_prefix().map(str::to_string)
+    }
+
+    fn initial_input(&self) -> EditorSnapshot {
+        self.editor.clone()
+    }
+
+    fn input_divider(&self) -> bool {
+        self.options.show_divider
+    }
+
+    fn follows_companion_data(&self) -> bool {
+        true
+    }
+
+    fn on_companion_data_changed(
+        &mut self,
+        data: &crate::view::companion::CompanionData,
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        let value = data.query_seed().unwrap_or(Value::Null);
+        let text = match value {
+            Value::String(text) => text,
+            Value::Null => String::new(),
+            value => value.to_string(),
+        };
+        let input = crate::input::EditorBuffer::from_raw(text.clone(), text.len()).snapshot();
+        self.on_host_input_changed(&input, context)
+    }
+
+    fn on_host_input_changed(
+        &mut self,
+        input: &EditorSnapshot,
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        let text_changed = self.editor.raw != input.raw;
+        self.editor = input.clone();
+        self.rebuild_context(context);
+        if text_changed {
+            self.edit_changed(context)
+        } else {
+            Ok(ViewDecision::Invalidate)
+        }
+    }
+
+    fn on_input_changed(&mut self, text: &str, context: &ViewContext) -> Result<ViewDecision> {
+        let input = EditorSnapshot {
+            raw: text.to_string(),
+            cursor: text.len(),
+            revision: self.editor.revision.wrapping_add(1),
+        };
+        self.on_host_input_changed(&input, context)
+    }
+
     fn preferred_top_inset(&self) -> u16 {
         1
     }
 
     fn retained_content_area(&self, area: Rect) -> Option<Rect> {
-        // The freshly mounted input line and divider belong to this instance.
-        // Only the item list and preview may briefly show pixels retained from
-        // the View this Picker replaced.
-        Some(self.body_layout(area)[2])
+        Some(area)
     }
 
     fn publication(&self) -> Option<&ViewPublication> {
@@ -567,9 +553,6 @@ impl View for PickerProtocolView {
                 super::bindings::PickerAction::Back => CMD_BACK,
                 super::bindings::PickerAction::SelectPrevious => CMD_SELECT_PREVIOUS,
                 super::bindings::PickerAction::SelectNext => CMD_SELECT_NEXT,
-                super::bindings::PickerAction::TogglePreview => CMD_TOGGLE_PREVIEW,
-                super::bindings::PickerAction::PreviewScrollUp => CMD_PREVIEW_SCROLL_UP,
-                super::bindings::PickerAction::PreviewScrollDown => CMD_PREVIEW_SCROLL_DOWN,
                 super::bindings::PickerAction::ClearInput => CMD_CLEAR_INPUT,
                 super::bindings::PickerAction::DeleteWord => CMD_DELETE_WORD,
                 super::bindings::PickerAction::DeleteBackward => CMD_DELETE_BACKWARD,
@@ -592,44 +575,22 @@ impl View for PickerProtocolView {
 
     fn on_command(&mut self, id: &str, context: &ViewContext) -> Result<ViewDecision> {
         self.rebuild_context(context);
-        let result = match id {
+        match id {
             CMD_EXIT => Ok(ViewDecision::Exit),
             CMD_BACK => {
                 if !context.has_parent && !self.editor.raw.is_empty() {
-                    self.editor.clear();
-                    self.edit_changed(context)
+                    Ok(ViewDecision::EditInput(InputEdit::Clear))
                 } else {
                     self.action(context, "picker.back")
                 }
             }
             CMD_SELECT_PREVIOUS => self.action(context, "picker.select_previous"),
             CMD_SELECT_NEXT => self.action(context, "picker.select_next"),
-            CMD_TOGGLE_PREVIEW => self.action(context, "picker.toggle_preview"),
-            CMD_PREVIEW_SCROLL_UP => self.action(context, "picker.preview_scroll_up"),
-            CMD_PREVIEW_SCROLL_DOWN => self.action(context, "picker.preview_scroll_down"),
-            CMD_CLEAR_INPUT => {
-                self.editor.clear();
-                self.edit_changed(context)
-            }
-            CMD_DELETE_WORD => {
-                self.editor.delete_word();
-                self.edit_changed(context)
-            }
+            CMD_CLEAR_INPUT => Ok(ViewDecision::EditInput(InputEdit::Clear)),
+            CMD_DELETE_WORD => Ok(ViewDecision::EditInput(InputEdit::DeleteWord)),
             CMD_DELETE_BACKWARD => self.apply_key(context, Key::Backspace),
             _ => Ok(ViewDecision::Stay),
-        };
-        self.sync_auxiliary_size();
-        result
-    }
-
-    fn clear_input(&mut self, context: &ViewContext) -> Result<()> {
-        if self.editor.raw.is_empty() {
-            return Ok(());
         }
-        self.editor.clear();
-        self.parse_editor(context)?;
-        self.sync_auxiliary_size();
-        Ok(())
     }
 
     fn command_snapshot(&self) -> ViewCommandSnapshot {
@@ -649,7 +610,7 @@ impl View for PickerProtocolView {
             "picker protocol context belongs to a different instance"
         );
         self.rebuild_context(context);
-        let result = (|| match event {
+        match event {
             ViewEvent::Lifecycle(LifecycleEvent::Mounted) => Ok(ViewDecision::Stay),
             ViewEvent::Lifecycle(LifecycleEvent::Activated) => {
                 self.active = true;
@@ -669,17 +630,13 @@ impl View for PickerProtocolView {
             }
             ViewEvent::Lifecycle(LifecycleEvent::Covered) => {
                 self.active = false;
-                self.runtime.suspend_auxiliary_work();
-                self.task_registry.invalidate(TaskId(2));
                 self.defer_work_poll = false;
-                self.task_completion_pending = false;
                 Ok(ViewDecision::Stay)
             }
             ViewEvent::Lifecycle(LifecycleEvent::Closing) => {
                 self.active = false;
                 self.task_registry.invalidate_all();
                 self.defer_work_poll = false;
-                self.task_completion_pending = false;
                 self.runtime.deactivate();
                 self.starter.cancel_all();
                 Ok(ViewDecision::Stay)
@@ -697,23 +654,13 @@ impl View for PickerProtocolView {
             }
             ViewEvent::Input(InputEvent::Paste {
                 text: Some(text), ..
-            }) => {
-                self.editor.insert_text(&text);
-                self.edit_changed(context)
-            }
+            }) => Ok(ViewDecision::EditInput(InputEdit::Paste(text))),
             ViewEvent::Input(InputEvent::Paste { text: None, .. })
             | ViewEvent::Input(InputEvent::Bytes(_)) => Ok(ViewDecision::Stay),
             ViewEvent::Input(InputEvent::Eof) => Ok(ViewDecision::Exit),
             ViewEvent::Task(task) => {
                 if !self.task_registry.accepts(&task) {
                     return Ok(ViewDecision::Stay);
-                }
-                if task.task == TaskId(2) {
-                    self.task_registry.invalidate(task.task);
-                    if self.active {
-                        self.start_prepared_work();
-                    }
-                    return Ok(ViewDecision::Invalidate);
                 }
                 if self.active {
                     if let Some(emission) = self.runtime.poll_work()? {
@@ -735,13 +682,6 @@ impl View for PickerProtocolView {
                     self.defer_work_poll = false;
                     return Ok(ViewDecision::Invalidate);
                 }
-                if self.task_completion_pending {
-                    self.task_completion_pending = false;
-                    if let Some(emission) = self.runtime.poll_work()? {
-                        let decision = self.map_emission(context, emission)?;
-                        return Ok(decision);
-                    }
-                }
                 let emission = self.runtime.tick(EngineTick {
                     context: self.engine_context.clone(),
                     content_size: self.content_size,
@@ -755,9 +695,7 @@ impl View for PickerProtocolView {
                 self.content_size = (size.width, size.height);
                 Ok(ViewDecision::Invalidate)
             }
-        })();
-        self.sync_auxiliary_size();
-        result
+        }
     }
 
     fn render(
@@ -766,70 +704,6 @@ impl View for PickerProtocolView {
         area: Rect,
         context: &RenderContext,
     ) -> Result<RenderResult> {
-        let layout = self.body_layout(area);
-        let query_height = layout[0].height;
-        let divider_height = layout[1].height;
-        let left_prefix = self.rendered_left_prefix();
-        let query = visible_editor_query(
-            left_prefix,
-            self.options.input_placeholder.as_deref(),
-            &self.editor.raw,
-            self.editor.cursor,
-            layout[0].width as usize,
-        );
-        if query_height > 0 {
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    " ".repeat(layout[0].width as usize),
-                    self.theme.picker.text,
-                )),
-                layout[0],
-            );
-            let mut spans = Vec::new();
-            let mut offset = 0;
-            if let Some(highlight) = query.highlight.clone() {
-                if highlight.start > 0 {
-                    spans.push(Span::styled(
-                        query.text[..highlight.start].to_string(),
-                        self.theme.picker.text,
-                    ));
-                }
-                spans.push(Span::styled(
-                    query.text[highlight.clone()].to_string(),
-                    self.theme.picker.input_prefix,
-                ));
-                offset = highlight.end;
-            }
-            if let Some(placeholder) = query.placeholder.clone() {
-                if placeholder.start > offset {
-                    spans.push(Span::styled(
-                        query.text[offset..placeholder.start].to_string(),
-                        self.theme.picker.text,
-                    ));
-                }
-                spans.push(Span::styled(
-                    query.text[placeholder.clone()].to_string(),
-                    self.theme.picker.placeholder,
-                ));
-                offset = placeholder.end;
-            }
-            if offset < query.text.len() {
-                spans.push(Span::styled(
-                    query.text[offset..].to_string(),
-                    self.theme.picker.text,
-                ));
-            }
-            frame.render_widget(Paragraph::new(Line::from(spans)), layout[0]);
-        }
-        if divider_height > 0 {
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    "─".repeat(layout[1].width as usize),
-                    self.theme.chrome.divider,
-                )),
-                layout[1],
-            );
-        }
         let model = self.runtime.render_model();
         self.renderer.validate_model(&model)?;
         self.renderer.render(
@@ -839,18 +713,10 @@ impl View for PickerProtocolView {
                 image_picker: context.image_picker,
             },
             frame,
-            layout[2],
+            area,
         );
-        let cursor = (self.active && self.options.show_input && query_height > 0).then_some(
-            RelativeCursor {
-                x: query.cursor,
-                y: 0,
-                visible: true,
-            },
-        );
-
         Ok(RenderResult {
-            cursor,
+            cursor: None,
             metadata: crate::view::ViewMetadata {
                 status: self.renderer.chrome(&model).status,
                 error: self.diagnostic.clone(),
@@ -868,115 +734,7 @@ impl FallbackInputReceiver for PickerProtocolView {
         context: &ViewContext,
     ) -> Result<ViewDecision> {
         self.rebuild_context(context);
-        let result = self.apply_key(context, key);
-        self.sync_auxiliary_size();
-        result
-    }
-}
-
-struct VisibleEditorQuery {
-    text: String,
-    cursor: u16,
-    highlight: Option<Range<usize>>,
-    /// Byte range of the rendered input placeholder, if any. Never overlaps
-    /// `highlight`: it only exists while the raw input is empty.
-    placeholder: Option<Range<usize>>,
-}
-
-fn visible_editor_query(
-    left_prefix: Option<&str>,
-    placeholder: Option<&str>,
-    raw: &str,
-    cursor: usize,
-    width: usize,
-) -> VisibleEditorQuery {
-    let cursor = crate::input::previous_char_boundary(raw, cursor);
-    let left_prefix = left_prefix.filter(|prefix| !prefix.is_empty());
-    let prefix = left_prefix
-        .map(|prefix| format!("{prefix} "))
-        .unwrap_or_default();
-    let prefix_width = UnicodeWidthStr::width(prefix.as_str());
-    let highlight = |output_end: usize| {
-        left_prefix
-            .filter(|prefix| prefix.len() <= output_end)
-            .map(|prefix| 0..prefix.len())
-    };
-    if width <= prefix_width {
-        let text = crate::ui::chrome::clip(&prefix, width);
-        return VisibleEditorQuery {
-            highlight: highlight(text.len()),
-            text,
-            cursor: width.saturating_sub(1) as u16,
-            placeholder: None,
-        };
-    }
-
-    let available = width - prefix_width;
-    let input_width = UnicodeWidthStr::width(raw);
-    let cursor_width = UnicodeWidthStr::width(&raw[..cursor]);
-    if input_width <= available {
-        if raw.is_empty()
-            && let Some(placeholder) = placeholder.filter(|placeholder| !placeholder.is_empty())
-        {
-            let clipped = crate::ui::chrome::clip(placeholder, available);
-            let text = format!("{prefix}{clipped}");
-            let placeholder = (!clipped.is_empty()).then_some(prefix.len()..text.len());
-            return VisibleEditorQuery {
-                highlight: highlight(prefix.len()),
-                placeholder,
-                text,
-                cursor: prefix_width as u16,
-            };
-        }
-        let text = format!("{prefix}{raw}");
-        return VisibleEditorQuery {
-            highlight: highlight(text.len()),
-            text,
-            cursor: (prefix_width + cursor_width) as u16,
-            placeholder: None,
-        };
-    }
-
-    let needs_left_clip = cursor_width > available;
-    let marker = if needs_left_clip && available >= 4 {
-        "..."
-    } else {
-        ""
-    };
-    let marker_width = UnicodeWidthStr::width(marker);
-    let budget = available.saturating_sub(marker_width);
-    let start_width = if needs_left_clip {
-        cursor_width.saturating_sub(budget.saturating_sub(1))
-    } else {
-        0
-    };
-    let mut start = 0;
-    let mut used = 0;
-    for (index, grapheme) in raw[..cursor].grapheme_indices(true) {
-        if used >= start_width {
-            start = index;
-            break;
-        }
-        used += UnicodeWidthStr::width(grapheme);
-        start = index + grapheme.len();
-    }
-    let mut visible = String::new();
-    let mut visible_width = 0;
-    for grapheme in raw[start..].graphemes(true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if visible_width + grapheme_width > budget {
-            break;
-        }
-        visible.push_str(grapheme);
-        visible_width += grapheme_width;
-    }
-    let local_cursor = UnicodeWidthStr::width(&raw[start..cursor]);
-    let text = format!("{prefix}{marker}{visible}");
-    VisibleEditorQuery {
-        highlight: highlight(text.len()),
-        text,
-        cursor: (prefix_width + marker_width + local_cursor) as u16,
-        placeholder: None,
+        self.apply_key(context, key)
     }
 }
 

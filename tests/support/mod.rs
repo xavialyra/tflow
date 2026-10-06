@@ -516,14 +516,6 @@ fn materialize_test_workflow(
                         toml::Value::String(inferred.to_string()),
                     );
                 }
-                if let Some(preview_val) = view_tbl.remove("preview") {
-                    let picker_tbl = view_tbl
-                        .entry("picker".to_string())
-                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    picker_tbl.insert("preview".to_string(), preview_val);
-                }
                 if let Some(alias_val) = view_tbl.remove("alias")
                     && let Some(alias_str) = alias_val.as_str()
                 {

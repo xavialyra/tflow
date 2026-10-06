@@ -20,7 +20,7 @@ pub(crate) use embedded::{
     EmbeddedProtocolConfig, EmbeddedTerminal, create_protocol_view as create_embedded_protocol_view,
 };
 pub(crate) use picker::{
-    PickerProtocolConfig, PickerViewServices, PrefixBackspace, PreviewDocumentCache, SlotToken,
+    PickerProtocolConfig, PickerViewServices, PrefixBackspace, SlotToken,
     create_protocol_view as create_picker_protocol_view, mount_data as picker_mount_data,
     run_items_script_raw,
 };

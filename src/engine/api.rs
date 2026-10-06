@@ -38,8 +38,6 @@ pub(crate) struct PickerConfig {
     #[serde(default)]
     pub(crate) items: Option<toml::Value>,
     #[serde(default)]
-    pub(crate) preview: Option<toml::Value>,
-    #[serde(default)]
     pub(crate) input_placeholder: Option<String>,
     #[serde(default)]
     pub(crate) show_input: Option<bool>,

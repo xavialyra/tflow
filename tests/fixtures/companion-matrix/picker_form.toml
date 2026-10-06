@@ -1,0 +1,66 @@
+# Run: tflow --workflow tests/fixtures/companion-matrix/picker_form.toml
+# Alt-E captures the selected job once. Close/toggle and reopen for another job.
+[workflow]
+api = 1
+name = "Picker + Form: Selected Job Editor"
+entrypoint = "main"
+
+[views.main]
+engine = "picker"
+
+[views.main.picker]
+input_placeholder = "Select a job; Alt-E opens its editor"
+items = [
+  { display = "Build release", value = "release", metadata = { retries = 2 } },
+  { display = "Run tests", value = "tests", metadata = { retries = 1 } },
+]
+
+[views.main.bindings]
+"ctrl+p" = "edit_job"
+"alt+e" = "edit_job"
+enter = "open_editor"
+
+[commands.open_editor]
+label = "Edit Job"
+type = "navigate"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = (request["context"]["engine"]["state"] or {}).get("item") or {}
+json.dump({"version": 1, "operation": {"type": "navigate", "target": "editor", "query": json.dumps(item)}}, sys.stdout)
+'''
+
+[commands.edit_job]
+label = "Toggle Job Editor"
+companion = "editor"
+
+[views.editor]
+engine = "form"
+
+[views.editor.form.content]
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+raw = request["context"].get("parameters") or request["context"].get("input")
+item = json.loads(raw) if isinstance(raw, str) and raw else (raw if isinstance(raw, dict) else {})
+json.dump({"version": 1, "content": {"fields": [
+    {"name": "job", "label": "Job", "type": "string", "value": item.get("value", "new-job"), "required": True},
+    {"name": "retries", "label": "Retries", "type": "integer", "value": item.get("metadata", {}).get("retries", 0)},
+]}}, sys.stdout)
+'''
+
+[views.editor.bindings]
+enter = "submit"
+
+[commands.submit]
+label = "Return Draft"
+type = "return"
+script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+state = request["context"]["engine"]["state"]
+if state.get("valid"):
+    json.dump({"version": 1, "operation": {"type": "return", "value": state["values"]}}, sys.stdout)
+else:
+    json.dump({"version": 1, "error": {"message": "Complete the required fields"}}, sys.stdout)
+'''

@@ -1304,7 +1304,7 @@ fn queued_keys_observe_dynamic_picker_bindings() {
 }
 
 #[test]
-fn toggle_preview_without_configuration_consumes_its_bound_key() {
+fn check_rejects_removed_picker_toggle_preview_action() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
@@ -1313,43 +1313,30 @@ fn toggle_preview_without_configuration_consumes_its_bound_key() {
         default_view = "core:default"
 
         [workflows.core.views.default]
-        [workflows.core.views.default.engine]
-        type = "picker"
-        [workflows.core.views.default.engine.config]
+        engine = "picker"
+        [workflows.core.views.default.picker]
         items = [{display = "First", value = "first"}]
         [workflows.core.views.default.bindings]
-        space = "@engine:picker.toggle_preview"
-
-        [workflows.core.views.default.commands.inspect]
-        key = "enter"
-        label = "Inspect"
-        type = "run"
-
-        argv = ["sh", "-c", "printf 'toggle-query::end\\n'"]
-        exit = true
+        "ctrl+p" = "@engine:picker.toggle_preview"
         "#,
     )
-    .expect("could not write default preview config");
-    write_workflow_script(
-        &root,
-        "core",
-        "scripts/inspect.sh",
-        "printf 'toggle-query:%s:end\\n' \"$1\"\n",
+    .expect("could not write removed preview action config");
+
+    let output = std::process::Command::new(support::binary_path())
+        .args(["--check", "--suite"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-
-    let mut process = spawn_launcher(&config);
-    wait_for_ready(&process.master);
-    let initial = wait_for_text(&process.master, "First");
-    let initial = String::from_utf8_lossy(&initial);
-    assert!(initial.contains("Inspect"), "output: {initial}");
-
-    process.master.write_all(b" \r").unwrap();
-    process.master.flush().unwrap();
-    let (status, output) = wait_for_launcher_exit(&mut process);
-    let output = String::from_utf8_lossy(&output);
-    assert_eq!(status, 0, "output: {output}");
-    assert!(output.contains("toggle-query::end"), "output: {output}");
-    assert!(!output.contains("space-command"), "output: {output}");
+    assert!(!output.status.success(), "output: {diagnostic}");
+    assert!(
+        diagnostic.contains("picker.toggle_preview"),
+        "output: {diagnostic}"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2819,21 +2806,22 @@ fn command_selector_displays_keybindings_for_commands() {
     process.master.flush().unwrap();
     let output = wait_for_text(&process.master, "Run");
     let screen = String::from_utf8_lossy(&output);
+    let visible = screen.rsplit("--- visible screen ---").next().unwrap();
     assert!(
-        screen.contains("Run"),
-        "screen should contain command label 'Run': {screen}"
+        visible.contains("Run"),
+        "screen should contain command label 'Run': {visible}"
     );
     assert!(
-        screen.contains("enter"),
-        "screen should contain command keybinding 'enter': {screen}"
+        visible.contains("enter"),
+        "screen should contain command keybinding 'enter': {visible}"
     );
     assert!(
-        screen.contains("Info"),
-        "screen should contain command label 'Info': {screen}"
+        visible.contains("Info"),
+        "screen should contain command label 'Info': {visible}"
     );
     assert!(
-        !screen.contains("Commands"),
-        "command palette must not list the command palette command itself: {screen}"
+        !visible.contains("Commands"),
+        "command palette must not list the command palette command itself: {visible}"
     );
 
     process.master.write_all(b"\x1b").unwrap();

@@ -1,7 +1,10 @@
 //! Engine-neutral input, View, and navigation contracts.
 //!
 
-use crate::input::{InputEvent, Key};
+pub(crate) mod companion;
+
+use crate::input::{EditorSnapshot, InputEvent, Key};
+use crate::ui::chrome::HostInputState;
 use crate::workflow::config::ViewPresentation;
 use anyhow::{Context, Result, bail};
 use ratatui::{Frame, layout::Rect};
@@ -255,6 +258,8 @@ pub(crate) struct NavigationRequest {
     pub(crate) input: Option<ViewInputSeed>,
     pub(crate) presentation: ViewPresentation,
     pub(crate) focus: Option<String>,
+    pub(crate) companion_data: Option<companion::CompanionData>,
+    pub(crate) execution_class: crate::task::TaskExecutionClass,
 }
 
 impl NavigationRequest {
@@ -265,6 +270,8 @@ impl NavigationRequest {
             input: None,
             presentation: ViewPresentation::default(),
             focus: None,
+            companion_data: None,
+            execution_class: crate::task::TaskExecutionClass::Serial,
         }
     }
 
@@ -387,11 +394,21 @@ pub(crate) fn operation_failure(error: impl std::fmt::Display) -> anyhow::Error 
     .into()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputEdit {
+    Key(Key),
+    Paste(String),
+    Clear,
+    DeleteWord,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ViewDecision {
     Stay,
     Invalidate,
     ClearInput,
+    EditInput(InputEdit),
+    OpenCompanion,
     /// Hand this action id to the View's own engine. Execution reaches an engine
     /// action long after the instance that owns it was located, and only the
     /// router holds live instances, so the action travels as a decision and the
@@ -405,6 +422,10 @@ pub(crate) enum ViewDecision {
     Close,
     CloseToRoot,
     CloseWithError(String),
+    ToggleCompanion {
+        target: String,
+        query: Option<Value>,
+    },
     Exit,
 }
 
@@ -417,6 +438,8 @@ impl ViewDecision {
                 | Self::Close
                 | Self::CloseToRoot
                 | Self::CloseWithError(_)
+                | Self::ToggleCompanion { .. }
+                | Self::OpenCompanion
                 | Self::Exit
         )
     }
@@ -509,9 +532,76 @@ pub(crate) fn dispatch_test_key(
     Ok(ViewDecision::Stay)
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum UnhandledInputBehavior {
+    /// Printable characters and line-editing keys flow to the Host Omnibar (e.g. Picker filtering)
+    #[default]
+    ForwardToOmnibar,
+    /// Unhandled input is consumed directly by the engine (e.g. Embedded PTY, Form field focus)
+    ConsumeLocally,
+    /// Unhandled input is safely ignored (e.g. Capture read-only viewport)
+    Ignore,
+}
+
 pub(crate) trait View {
+    /// Declare how unhandled input (such as unbound printable characters)
+    /// should be treated by the host session.
+    #[allow(dead_code)]
+    fn unhandled_input_behavior(&self) -> UnhandledInputBehavior {
+        UnhandledInputBehavior::ForwardToOmnibar
+    }
     fn is_embedded_terminal(&self) -> bool {
         false
+    }
+
+    /// Input presentation mode desired by this view (e.g. Omnibar for search, Hidden for full-screen read).
+    fn input_mode(&self) -> crate::ui::chrome::InputPresentationMode {
+        crate::ui::chrome::InputPresentationMode::Hidden
+    }
+
+    fn input_placeholder(&self) -> Option<String> {
+        None
+    }
+
+    fn input_left_prefix(&self) -> Option<String> {
+        None
+    }
+
+    /// Initial Host input seed. Engines retain only read-only input snapshots.
+    fn initial_input(&self) -> crate::input::EditorSnapshot {
+        let raw = self.command_snapshot().raw_input;
+        crate::input::EditorBuffer::from_raw(raw.clone(), raw.len()).snapshot()
+    }
+
+    fn input_divider(&self) -> bool {
+        false
+    }
+
+    fn on_host_input_changed(
+        &mut self,
+        input: &EditorSnapshot,
+        context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        self.on_input_changed(&input.raw, context)
+    }
+
+    /// Live source updates are opt-in; Form and Embedded retain mount snapshots.
+    fn follows_companion_data(&self) -> bool {
+        false
+    }
+
+    fn on_companion_data_changed(
+        &mut self,
+        _data: &companion::CompanionData,
+        _context: &ViewContext,
+    ) -> Result<ViewDecision> {
+        Ok(ViewDecision::Stay)
+    }
+
+    /// Legacy text-input adapter for Views without a Host editor implementation.
+    fn on_input_changed(&mut self, _text: &str, _context: &ViewContext) -> Result<ViewDecision> {
+        Ok(ViewDecision::Stay)
     }
 
     fn preferred_top_inset(&self) -> u16 {
@@ -593,6 +683,16 @@ pub(crate) trait RouteCatalog {
     /// suite alias (when any) that the footer and route prefixes display.
     fn resolve(&self, selector: &str) -> Option<ViewLocation>;
     fn query_schema(&self, target: &str) -> Option<QuerySchema>;
+
+    /// Return the declared default companion view for this view, if any.
+    fn default_companion(&self, _target: &str) -> Option<String> {
+        None
+    }
+
+    /// Construct a default, schema-valid ParsedQuery for the given target view.
+    fn default_query(&self, target: &str) -> Result<ParsedQuery> {
+        Ok(ParsedQuery::new(target, "query", Value::Null))
+    }
 
     fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
         query.validate_shape()?;
@@ -677,12 +777,32 @@ fn deliver_lifecycle(
     Ok(())
 }
 
+pub(crate) struct CompanionMount {
+    pub(crate) target: String,
+    pub(crate) instance: Box<ViewInstance>,
+    pub(crate) last_query: Option<Value>,
+    pub(crate) last_data: Option<companion::CompanionData>,
+    pub(crate) explicit_query: bool,
+}
+
 pub(crate) struct ViewInstance {
     pub(crate) id: ViewInstanceId,
     pub(crate) context: ViewContext,
     pub(crate) view: Box<dyn View>,
     state: StackState,
     pub(crate) continuation: Continuation,
+    pub(crate) companion: Option<CompanionMount>,
+    pub(crate) input: HostInputState,
+}
+
+impl ViewInstance {
+    pub(crate) fn command_snapshot(&self) -> ViewCommandSnapshot {
+        let mut snapshot = self.view.command_snapshot();
+        if self.input.mode.is_visible() {
+            snapshot.raw_input = self.input.raw().to_string();
+        }
+        snapshot
+    }
 }
 
 #[cfg(test)]
@@ -740,6 +860,238 @@ impl Router {
 
     pub(crate) fn active_mut(&mut self) -> Option<&mut ViewInstance> {
         self.stack.last_mut()
+    }
+
+    pub(crate) fn edit_host_input(
+        &mut self,
+        owner: ViewInstanceId,
+        edit: InputEdit,
+    ) -> Result<ViewDecision> {
+        let Some(entry) = self.stack.iter_mut().find(|entry| entry.id == owner) else {
+            return Ok(ViewDecision::Stay);
+        };
+        if !entry.input.edit(edit) {
+            return Ok(ViewDecision::Stay);
+        }
+        let snapshot = entry.input.editor.snapshot();
+        let decision = entry
+            .view
+            .on_host_input_changed(&snapshot, &entry.context)?;
+        Ok(if decision == ViewDecision::Stay {
+            ViewDecision::Invalidate
+        } else {
+            decision
+        })
+    }
+
+    pub(crate) fn resize_instance(
+        &mut self,
+        owner: ViewInstanceId,
+        size: TerminalSize,
+        effects: &mut dyn EffectExecutor,
+    ) -> Result<ViewDecision> {
+        if let Some(entry) = self.stack.iter_mut().find(|entry| entry.id == owner) {
+            let decision = entry.view.event(ViewEvent::Resize(size), &entry.context)?;
+            return self.process_with_effects(decision, owner, effects);
+        }
+        for entry in &mut self.stack {
+            if let Some(companion) = &mut entry.companion
+                && companion.instance.id == owner
+            {
+                let instance = &mut companion.instance;
+                let decision = instance
+                    .view
+                    .event(ViewEvent::Resize(size), &instance.context)?;
+                return Ok(if decision == ViewDecision::Stay {
+                    ViewDecision::Stay
+                } else {
+                    ViewDecision::Invalidate
+                });
+            }
+        }
+        Ok(ViewDecision::Stay)
+    }
+
+    // Input and commands address only the foreground owner. A popup covers
+    // its parent's companion; it must never supply that companion's input.
+    pub(crate) fn active_companion(&self) -> Option<&CompanionMount> {
+        self.stack.last().and_then(|entry| entry.companion.as_ref())
+    }
+
+    pub(crate) fn active_companion_mut(&mut self) -> Option<&mut CompanionMount> {
+        self.stack
+            .last_mut()
+            .and_then(|entry| entry.companion.as_mut())
+    }
+
+    pub(crate) fn companion_navigation_request(
+        &self,
+        target: &str,
+        query: Option<Value>,
+    ) -> Result<NavigationRequest> {
+        let location = self
+            .routes
+            .resolve(target)
+            .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?;
+        let default_query = self.routes.default_query(&location.target)?;
+        anyhow::ensure!(
+            default_query.target == location.target,
+            "companion query target does not match route"
+        );
+        let parsed_query = match query {
+            Some(values) => {
+                let pq = ParsedQuery::new(location.target.clone(), "query", values.clone());
+                if self.routes.validate_query(&pq).is_err() && !values.is_string() {
+                    let str_val = Value::String(values.to_string());
+                    let pq_str = ParsedQuery::new(location.target.clone(), "query", str_val);
+                    if self.routes.validate_query(&pq_str).is_ok() {
+                        pq_str
+                    } else {
+                        self.routes.validate_query(&pq)?;
+                        pq
+                    }
+                } else {
+                    self.routes.validate_query(&pq)?;
+                    pq
+                }
+            }
+            None => {
+                self.routes.validate_query(&default_query)?;
+                default_query
+            }
+        };
+        let mut request = NavigationRequest::new(location.target, parsed_query.clone());
+        let text = match &parsed_query.values {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            other => other.to_string(),
+        };
+        if !text.is_empty() {
+            let cursor = text.len();
+            if let Ok(req) = request.clone().with_input(text, cursor) {
+                request = req;
+            }
+        }
+        Ok(request)
+    }
+
+    fn instantiate_companion(
+        &mut self,
+        target: &str,
+        query: Option<Value>,
+        explicit_query: bool,
+    ) -> Result<CompanionMount> {
+        let location = self
+            .routes
+            .resolve(target)
+            .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?;
+        let instance_id = ViewInstanceId(self.next_instance);
+        self.next_instance = self.next_instance.wrapping_add(1).max(1);
+
+        let mut request = self.companion_navigation_request(target, query.clone())?;
+        request.execution_class = crate::task::TaskExecutionClass::Background;
+        if !explicit_query {
+            request.companion_data = self.active().map(|view| {
+                companion::CompanionData::from_snapshot(&view.command_snapshot())
+            });
+        }
+        let services = ViewServices {
+            host: &*self.host,
+            routes: &*self.routes,
+        };
+        let mut view = self.factory.create(&request, instance_id, &services)?;
+        let context = ViewContext {
+            instance: instance_id,
+            location,
+            has_parent: true,
+            presentation: ViewPresentation::default(),
+            query: request.query.clone(),
+        };
+        if let Err(error) =
+            deliver_lifecycle(&mut *view, &context, instance_id, LifecycleEvent::Mounted).and_then(
+                |_| deliver_lifecycle(&mut *view, &context, instance_id, LifecycleEvent::Activated),
+            )
+        {
+            let _ = deliver_lifecycle(&mut *view, &context, instance_id, LifecycleEvent::Closing);
+            let _ = deliver_lifecycle(&mut *view, &context, instance_id, LifecycleEvent::Closed);
+            return Err(error);
+        }
+        let input = HostInputState::for_view(view.as_ref());
+        let mount = CompanionMount {
+            target: target.to_string(),
+            last_query: query,
+            last_data: request.companion_data.clone(),
+            explicit_query,
+            instance: Box::new(ViewInstance {
+                id: instance_id,
+                context,
+                view,
+                state: StackState::Active,
+                continuation: Continuation::None,
+                companion: None,
+                input,
+            }),
+        };
+        Ok(mount)
+    }
+
+    fn close_companion_mount(&mut self, mut mount: CompanionMount) -> Result<()> {
+        deliver_lifecycle(
+            &mut *mount.instance.view,
+            &mount.instance.context,
+            mount.instance.id,
+            LifecycleEvent::Closing,
+        )?;
+        deliver_lifecycle(
+            &mut *mount.instance.view,
+            &mount.instance.context,
+            mount.instance.id,
+            LifecycleEvent::Closed,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn toggle_companion(
+        &mut self,
+        _source: Option<ViewInstanceId>,
+        target: &str,
+        query: Option<Value>,
+    ) -> Result<()> {
+        let canonical_target = self
+            .routes
+            .resolve(target)
+            .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?
+            .target;
+        if self
+            .active_companion()
+            .is_some_and(|current| {
+                current.target == canonical_target
+                    || current.instance.context.location.target == canonical_target
+            })
+        {
+            let current = self
+                .active_mut()
+                .expect("active view")
+                .companion
+                .take()
+                .expect("companion");
+            return self.close_companion_mount(current);
+        }
+        let explicit_query = query.is_some();
+        let query = query.or_else(|| {
+            companion::CompanionData::from_snapshot(&self.active()?.command_snapshot()).query_seed()
+        });
+        // Prepare the replacement before removing the settled companion. Failed
+        // query validation, creation, or activation must leave it intact.
+        let mount = self.instantiate_companion(target, query, explicit_query)?;
+        if let Some(current) = self.active_mut().expect("active view").companion.take()
+            && let Err(error) = self.close_companion_mount(current)
+        {
+            let _ = self.close_companion_mount(mount);
+            return Err(error);
+        }
+        self.active_mut().expect("active view").companion = Some(mount);
+        Ok(())
     }
 
     fn pop_view(&mut self) -> Option<ViewInstance> {
@@ -898,12 +1250,15 @@ impl Router {
             }
             previous.state = StackState::Covered;
         }
+        let input = HostInputState::for_view(view.as_ref());
         self.stack.push(ViewInstance {
             id: instance,
             context,
             view,
             state: StackState::Active,
             continuation,
+            companion: None,
+            input,
         });
         let activated = {
             let active = self.stack.last_mut().expect("new View was committed");
@@ -972,6 +1327,16 @@ impl Router {
         // observational, so its failure must not report the committed
         // transition as rejected or roll it back.
         self.notify_transition_committed(source_id, instance);
+
+        if let Some(companion_target) =
+            self.routes.default_companion(&canonical_request.target)
+            && let Err(error) = self.toggle_companion(Some(instance), &companion_target, None)
+        {
+            // The primary transition is already committed. Report attachment
+            // failure without presenting the primary navigation as rejected.
+            self.record_error(Some(instance), &error);
+        }
+
         Ok(instance)
     }
 
@@ -1018,6 +1383,13 @@ impl Router {
             .get(index)
             .map(|entry| entry.id)
             .ok_or_else(|| anyhow::anyhow!("View stack index {index} is out of bounds"))?;
+        let mount_opt = self
+            .stack
+            .get_mut(index)
+            .and_then(|entry| entry.companion.take());
+        if let Some(mount) = mount_opt {
+            let _ = self.close_companion_mount(mount);
+        }
         let result = {
             let entry = self
                 .stack
@@ -1157,28 +1529,60 @@ impl Router {
     ) -> Result<ViewDecision> {
         if matches!(event, ViewEvent::Tick) {
             let ids = self.stack.iter().map(|entry| entry.id).collect::<Vec<_>>();
-            let mut decision = ViewDecision::Stay;
+            let mut combined = ViewDecision::Stay;
             for id in ids {
                 let Some(index) = self.stack.iter().position(|entry| entry.id == id) else {
                     continue;
                 };
                 let entry = &mut self.stack[index];
-                decision = match entry.view.event(event.clone(), &entry.context) {
+                let decision = match entry.view.event(event.clone(), &entry.context) {
                     Ok(decision) => decision,
                     Err(error) => {
                         self.record_error(Some(id), &error);
                         return Err(error);
                     }
                 };
-                self.process_decision_inner(decision.clone(), executor, Some(id))?;
+                if let Some(companion) = &mut entry.companion {
+                    let companion_decision = companion
+                        .instance
+                        .view
+                        .event(event.clone(), &companion.instance.context)?;
+                    if companion_decision != ViewDecision::Stay && combined == ViewDecision::Stay {
+                        combined = ViewDecision::Invalidate;
+                    }
+                }
+                let applied = self.process_decision_inner(decision, executor, Some(id))?;
+                if applied != ViewDecision::Stay {
+                    combined = applied;
+                }
             }
-            return Ok(decision);
+            return Ok(combined);
         }
         let target = match &event {
-            ViewEvent::Task(task) => self
-                .stack
-                .iter()
-                .position(|entry| entry.id == task.instance),
+            ViewEvent::Task(task) => {
+                let pos = self
+                    .stack
+                    .iter()
+                    .position(|entry| entry.id == task.instance);
+                if pos.is_none() {
+                    for entry in &mut self.stack {
+                        if let Some(companion) = &mut entry.companion
+                            && companion.instance.id == task.instance
+                        {
+                            let decision = companion
+                                .instance
+                                .view
+                                .event(event, &companion.instance.context)?;
+                            return Ok(if decision == ViewDecision::Stay {
+                                ViewDecision::Invalidate
+                            } else {
+                                decision
+                            });
+                        }
+                    }
+                }
+                pos
+            }
             _ => self.stack.len().checked_sub(1),
         };
         let Some(target) = target else {
@@ -1245,7 +1649,28 @@ impl Router {
                     && let Some(index) = self.stack.iter().position(|entry| entry.id == source)
                 {
                     let context = self.stack[index].context.clone();
-                    self.stack[index].view.clear_input(&context)?;
+                    let entry = &mut self.stack[index];
+                    entry.input.clear();
+                    entry.view.clear_input(&context)?;
+                    let snapshot = entry.input.editor.snapshot();
+                    let resolved = entry.view.on_host_input_changed(&snapshot, &context)?;
+                    self.process_decision_inner(resolved, executor, Some(source))?;
+                }
+            }
+            ViewDecision::EditInput(edit) => {
+                if let Some(source) = source {
+                    let resolved = self.edit_host_input(source, edit)?;
+                    return self.process_decision_inner(resolved, executor, Some(source));
+                }
+            }
+            ViewDecision::OpenCompanion => {
+                if let Some(companion) = self.active_companion() {
+                    let mut request = self.companion_navigation_request(
+                        &companion.target,
+                        companion.last_query.clone(),
+                    )?;
+                    request.companion_data = companion.last_data.clone();
+                    self.transition_new(request, false, Continuation::None, source)?;
                 }
             }
             ViewDecision::Batch(decisions) => {
@@ -1360,6 +1785,22 @@ impl Router {
                 let context = self.stack[index].context.clone();
                 let resolved = self.stack[index].view.on_command(&id, &context)?;
                 return self.process_decision_inner(resolved, executor, Some(source));
+            }
+            ViewDecision::ToggleCompanion { target, query } => {
+                let target = if target.is_empty() {
+                    self.stack
+                        .last()
+                        .and_then(|inst| {
+                            self.routes
+                                .default_companion(&inst.context.location.target)
+                        })
+                        .unwrap_or_default()
+                } else {
+                    target
+                };
+                if !target.is_empty() {
+                    self.toggle_companion(source, &target, query)?;
+                }
             }
             ViewDecision::Stay | ViewDecision::Invalidate => {}
         }
@@ -1538,6 +1979,23 @@ impl Router {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn render_companion_for_instance(
+        &self,
+        index: usize,
+        frame: &mut Frame,
+        area: Rect,
+        context: &RenderContext,
+    ) -> Result<Option<RenderResult>> {
+        if let Some(entry) = self.stack.get(index)
+            && let Some(companion) = &entry.companion
+        {
+            let res = companion.instance.view.render(frame, area, context)?;
+            Ok(Some(res))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn render_at(

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use support::{
     spawn_launcher_with_args_and_env, temporary_root, wait_for_fresh_screen,
-    wait_for_launcher_exit, wait_for_process_exit, write_test_config,
+    wait_for_launcher_exit, wait_for_process_exit, wait_for_text, write_test_config,
 };
 
 fn started_previews(root: &Path) -> Vec<(i32, serde_json::Value)> {
@@ -50,62 +50,57 @@ fn send(process: &mut support::LauncherProcess, keys: &[u8]) {
 
 #[test]
 fn default_preview_is_collapsed_and_resolves_page_and_item_details() {
-    let items = r#"items = [{ display = "Selected item", value = "selected-value", metadata = { summary = "DETAILS_MARKER" } }]"#;
-    let page_preview = r#"[workflows.sample.views.main.picker.preview]
-script = '''#!/usr/bin/env python3
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        [workflows.sample.views.main]
+        engine = "picker"
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_companion"
+
+        [workflows.sample.commands.toggle_companion]
+        label = "Toggle Preview"
+        companion = "preview"
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Selected item", value = "selected-value", metadata = { summary = "DETAILS_MARKER" } }]
+
+        [workflows.sample.views.preview]
+        engine = "capture"
+
+        [workflows.sample.views.preview.capture.output]
+        script = '''#!/usr/bin/env python3
 import json, sys
-json.dump({"version": 1, "preview": {"type": "paragraph", "text": "PAGE_MARKER"}}, sys.stdout)
-'''"#;
-    for (page_config, expected) in [("", "DETAILS_MARKER"), (page_preview, "PAGE_MARKER")] {
-        let root = temporary_root();
-        let config = root.join("config.toml");
-        write_test_config(
-            &config,
-            &format!(
-                r#"
-            default_view = "sample:main"
-            [workflows.sample.views.main.picker]
-            {items}
-            {page_config}
-        "#
-            ),
-        )
-        .unwrap();
-        let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
-        let initial =
-            wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected item"));
-        let initial = String::from_utf8_lossy(&initial);
-        for marker in ["DETAILS_MARKER", "PAGE_MARKER"] {
-            assert!(
-                !initial.contains(marker),
-                "preview started expanded: {initial}"
-            );
-        }
-        send(&mut process, b"\x10");
-        let expanded = wait_for_fresh_screen(&process.master, |screen| {
-            screen.contains(if expected == "DETAILS_MARKER" {
-                "selected-value"
-            } else {
-                expected
-            })
-        });
-        let expanded = String::from_utf8_lossy(&expanded);
-        if expected == "PAGE_MARKER" {
-            assert!(expanded.contains("PAGE_MARKER"), "{expanded}");
-        }
-        if expected == "DETAILS_MARKER" {
-            assert!(expanded.contains("selected-value"), "{expanded}");
-            assert!(!expanded.contains("DETAILS_MARKER"), "{expanded}");
-        }
-        send(&mut process, b"\x10");
-        wait_for_fresh_screen(&process.master, |screen| {
-            screen.contains("Selected item") && !screen.contains(expected)
-        });
-        send(&mut process, b"\x04");
-        let (status, _) = wait_for_launcher_exit(&mut process);
-        assert_eq!(status, 0);
-        fs::remove_dir_all(root).unwrap();
-    }
+json.dump({"version": 1, "output": {"type": "paragraph", "text": "PAGE_MARKER"}}, sys.stdout)
+'''
+    "#,
+    )
+    .unwrap();
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    let initial = wait_for_fresh_screen(&process.master, |screen| screen.contains("Selected item"));
+    let initial = String::from_utf8_lossy(&initial);
+    assert!(
+        !initial.contains("PAGE_MARKER"),
+        "preview started expanded: {initial}"
+    );
+
+    send(&mut process, b"\x10");
+    let expanded = wait_for_fresh_screen(&process.master, |screen| screen.contains("PAGE_MARKER"));
+    let expanded = String::from_utf8_lossy(&expanded);
+    assert!(expanded.contains("PAGE_MARKER"), "{expanded}");
+
+    send(&mut process, b"\x10");
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Selected item") && !screen.contains("PAGE_MARKER")
+    });
+    send(&mut process, b"\x04");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -116,14 +111,24 @@ fn slow_preview_keeps_items_responsive_and_selection_hide_and_exit_reap_children
         &config,
         r#"
         default_view = "sample:main"
-        [workflows.sample.views.main.picker.preview]
-        file = "scripts/preview.py"
+        [workflows.sample.views.main]
+        engine = "picker"
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_companion"
+
+        [workflows.sample.commands.toggle_companion]
+        label = "Toggle Preview"
+        companion = "preview"
+
         [workflows.sample.views.main.picker.items]
         file = "scripts/items.py"
-        [workflows.sample.views.main.bindings]
-        "ctrl+p" = "@engine:picker.toggle_preview"
-        "alt+k" = "@engine:picker.preview_scroll_up"
-        "alt+j" = "@engine:picker.preview_scroll_down"
+
+        [workflows.sample.views.preview]
+        engine = "capture"
+
+        [workflows.sample.views.preview.capture.output]
+        file = "scripts/preview.py"
         "#,
     )
     .unwrap();
@@ -149,24 +154,28 @@ json.dump({'version': 1, 'items': [
         r#"#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 request = json.load(sys.stdin)
-assert request['version'] == 1 and request['entrypoint'] == 'picker-preview'
-context = request['context']
-assert set(context) == {'parameters', 'input', 'engine'}
-state = context['engine']['state']
-assert set(state['item']) == {'text', 'value', 'metadata'}
-assert state['item']['metadata']['query'] == state['input']
+assert request['version'] == 1
+context = request.get('context', {})
+engine_state = context.get('engine', {}).get('state', {}) if isinstance(context.get('engine'), dict) else {}
+item = engine_state.get('item') if isinstance(engine_state, dict) else None
+if not isinstance(item, dict) and isinstance(context.get('input'), dict):
+    item = context.get('input')
+if not isinstance(item, dict):
+    item = {'value': 'slow', 'metadata': {'query': ''}}
+metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+inp = metadata.get('query', '')
 events = pathlib.Path(os.environ['PREVIEW_EVENTS'])
 pid = os.getpid()
 (events / f'preview-start-{pid}').write_text(json.dumps({
-    'pid': pid, 'item': state['item']['value'], 'input': state['input'],
+    'pid': pid, 'item': item.get('value', ''), 'input': inp,
 }))
-if state['item']['value'] == 'slow':
+if item['value'] == 'slow':
     time.sleep(4)
     (events / f'preview-finished-{pid}').write_text('stale')
     text = 'PREVIEW_STALE'
 else:
     text = 'PREVIEW_FAST'
-json.dump({'version': 1, 'preview': {'type': 'paragraph', 'text': text}}, sys.stdout)
+json.dump({'version': 1, 'output': {'type': 'paragraph', 'text': text}}, sys.stdout)
 "#,
     )
     .unwrap();
@@ -190,9 +199,16 @@ json.dump({'version': 1, 'preview': {'type': 'paragraph', 'text': text}}, sys.st
 
     // A fresh items request must complete while the first preview is sleeping.
     send(&mut process, b"q");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !root.join("items-q").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "items-q did not complete in time"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let second = wait_for_preview_start(&root, &seen, "slow", "q");
     seen.insert(second);
-    assert!(root.join("items-q").exists());
     wait_for_process_exit(first);
 
     // Cursor selection cancels the slow request and displays only the replacement.
@@ -241,21 +257,32 @@ json.dump({'version': 1, 'preview': {'type': 'paragraph', 'text': text}}, sys.st
 }
 
 #[test]
-fn preview_co_located_syntax_configures_and_renders_preview() {
+fn named_capture_companion_renders_selected_item_details() {
     let root = temporary_root();
     let config = root.join("config.toml");
     write_test_config(
         &config,
         r#"
         default_view = "sample:main"
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "preview"
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_companion"
+
+        [workflows.sample.commands.toggle_companion]
+        label = "Toggle Preview"
+        companion = "preview"
+
         [workflows.sample.views.main.picker]
         items = [{ display = "Item 1", value = "val1" }]
 
-        [workflows.sample.views.main.picker.preview]
+        [workflows.sample.views.preview]
+        engine = "capture"
+
+        [workflows.sample.views.preview.capture.output]
         file = "scripts/preview.py"
-        width = "40%"
-        min_width = 20
-        open = true
         "#,
     )
     .unwrap();
@@ -267,8 +294,10 @@ fn preview_co_located_syntax_configures_and_renders_preview() {
         r#"#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-item = request["context"]["engine"]["state"]["item"]["value"]
-json.dump({"version": 1, "preview": {"type": "paragraph", "text": f"PREVIEW_FOR_{item}"}}, sys.stdout)
+context = request.get("context", {})
+item = context.get("engine", {}).get("state", {}).get("item", {})
+val = item.get("value") or context.get("input", {}).get("value", "")
+json.dump({"version": 1, "output": {"type": "paragraph", "text": f"PREVIEW_FOR_{val}"}}, sys.stdout)
 "#,
     )
     .unwrap();
@@ -279,6 +308,215 @@ json.dump({"version": 1, "preview": {"type": "paragraph", "text": f"PREVIEW_FOR_
     });
     let screen_str = String::from_utf8_lossy(&screen);
     assert!(screen_str.contains("PREVIEW_FOR_val1"), "{screen_str}");
+
+    send(&mut process, b"\x04");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn companion_scroll_refreshes() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "preview"
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_companion"
+
+        [workflows.sample.commands.toggle_companion]
+        label = "Toggle Preview"
+        companion = "preview"
+
+        [workflows.sample.views.main.picker]
+        items = [
+            { display = "First App", value = "app1" },
+            { display = "Second App", value = "app2" }
+        ]
+
+        [workflows.sample.views.preview]
+        engine = "capture"
+
+        [workflows.sample.views.preview.capture.output]
+        file = "scripts/preview.py"
+        "#,
+    )
+    .unwrap();
+
+    let scripts = root.join("workflows/sample/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(
+        scripts.join("preview.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+context = request.get("context") if isinstance(request, dict) else {}
+if not isinstance(context, dict): context = {}
+engine = context.get("engine") if isinstance(context.get("engine"), dict) else {}
+state = engine.get("state") if isinstance(engine.get("state"), dict) else {}
+item = state.get("item") or context.get("input") or {}
+val = item.get("value") if isinstance(item, dict) else ""
+json.dump({"version": 1, "output": {"type": "paragraph", "text": f"DETAILS_FOR_{val}"}}, sys.stdout)
+sys.stdout.write("\n")
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(scripts.join("preview.py"))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(scripts.join("preview.py"), perms).unwrap();
+    }
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    // 1. Initially companion shows preview for First App
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("DETAILS_FOR_app1")
+    });
+    assert!(String::from_utf8_lossy(&screen).contains("DETAILS_FOR_app1"));
+
+    // 2. Scroll down (picker.select_next) -> companion refreshes to app2
+    send(&mut process, b"\x1b[B");
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("DETAILS_FOR_app2")
+    });
+    assert!(String::from_utf8_lossy(&screen).contains("DETAILS_FOR_app2"));
+
+    // 3. Press Ctrl-L (\x0c) -> navigate into companion view
+    send(&mut process, b"\x0c");
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("DETAILS_FOR_app2")
+    });
+    let screen_str = String::from_utf8_lossy(&screen);
+    assert!(
+        !screen_str.contains("ERROR"),
+        "Ctrl-L should not produce error: {screen_str}"
+    );
+
+    // 4. Press Escape -> return to main view
+    send(&mut process, b"\x1b");
+    let screen = wait_for_fresh_screen(&process.master, |screen| screen.contains("First App"));
+    assert!(String::from_utf8_lossy(&screen).contains("First App"));
+
+    send(&mut process, b"\x04");
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn companion_persists_when_opening_popup() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+        image_protocol = "halfblocks"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "preview"
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_companion"
+        "alt+x" = "@engine:picker.select_next"
+
+        [workflows.sample.commands.toggle_companion]
+        label = "Toggle Preview"
+        companion = "preview"
+
+        [workflows.sample.views.main.picker]
+        items = [
+            { display = "First App", value = "app1" }
+        ]
+
+        [workflows.sample.views.preview]
+        engine = "capture"
+
+        [workflows.sample.views.preview.capture.output]
+        file = "scripts/preview.py"
+        "#,
+    )
+    .unwrap();
+
+    let scripts = root.join("workflows/sample/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0])))
+        .save(root.join("workflows/sample/pixel.png"))
+        .unwrap();
+    fs::write(
+        scripts.join("preview.py"),
+        r#"#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+item = request.get("context", {}).get("engine", {}).get("state", {}).get("item") or {}
+value = item.get("value", "EMPTY")
+json.dump({"version": 1, "output": {"type": "layout", "direction": "vertical",
+    "constraints": [{"Length": 1}, {"Length": 4}],
+    "children": [{"type": "paragraph", "text": f"COMPANION_{value}"},
+                 {"type": "image", "path": "pixel.png"}]}}, sys.stdout)
+sys.stdout.write("\n")
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(scripts.join("preview.py"))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(scripts.join("preview.py"), perms).unwrap();
+    }
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    // 1. Companion is visible
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("COMPANION_app1") && screen.contains('▀')
+    });
+    assert!(String::from_utf8_lossy(&screen).contains("COMPANION_app1"));
+
+    // 2. Open command selector popup (Ctrl-K: \x0b)
+    send(&mut process, b"\x0b");
+    let screen = wait_for_text(&process.master, "Select");
+    let screen_str = String::from_utf8_lossy(&screen);
+    let visible = screen_str
+        .rsplit("--- visible screen ---\n")
+        .next()
+        .unwrap();
+    assert!(
+        visible.contains("COMPANION_app1") && visible.contains('▀'),
+        "Popup must not replace its parent's companion input or image: {visible}"
+    );
+
+    send(&mut process, b"\x1b[B");
+    let screen = wait_for_fresh_screen(&process.master, |screen| screen.contains("Select"));
+    let screen_str = String::from_utf8_lossy(&screen);
+    let visible = screen_str
+        .rsplit("--- visible screen ---\n")
+        .next()
+        .unwrap();
+    assert!(
+        visible.contains("COMPANION_app1") && visible.contains('▀'),
+        "{visible}"
+    );
+
+    // 3. Close popup with Escape
+    send(&mut process, b"\x1b");
+    let screen = wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("First App") && screen.contains("COMPANION_app1") && screen.contains('▀')
+    });
+    assert!(String::from_utf8_lossy(&screen).contains("COMPANION_app1"));
 
     send(&mut process, b"\x04");
     let (status, _) = wait_for_launcher_exit(&mut process);

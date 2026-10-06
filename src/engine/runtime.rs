@@ -338,6 +338,11 @@ pub(crate) trait ViewRenderer {
 
     fn render(&self, model: &RenderModel, context: &RenderContext, frame: &mut Frame, area: Rect);
 
+    /// Collect renderer-owned asynchronous work and report a changed surface.
+    fn poll_render_updates(&self) -> bool {
+        false
+    }
+
     fn chrome(&self, _model: &RenderModel) -> crate::ui::chrome::EngineChrome {
         crate::ui::chrome::EngineChrome::default()
     }
@@ -468,6 +473,9 @@ pub(crate) trait EngineRuntime {
         Ok(EngineEmission::decision(EngineDecision::Continue))
     }
 
+    /// Update the input for this runtime and reset completion state.
+    fn update_companion_data(&mut self, _data: &crate::view::companion::CompanionData) {}
+
     /// Start work that was made ready by the live Engine change. Session
     /// calls this only after publishing the corresponding Host runtime state.
     /// The starter is tied to that committed mount state. An `External`
@@ -475,19 +483,6 @@ pub(crate) trait EngineRuntime {
     /// phase instead of using this prepared-work hook.
     fn start_prepared_work(&mut self, _starter: &crate::task::MountTaskStarter) -> bool {
         false
-    }
-
-    /// Update the body available to auxiliary content before starting committed work.
-    fn set_auxiliary_content_size(&mut self, _size: (u16, u16)) {}
-
-    fn suspend_auxiliary_work(&mut self) {}
-
-    /// Start independently correlated auxiliary work after the same host commit.
-    fn start_prepared_auxiliary_work(
-        &mut self,
-        _starter: &crate::task::MountTaskStarter,
-    ) -> Vec<(crate::protocol::contracts::TaskId, u64)> {
-        Vec::new()
     }
 
     /// Poll foreground Engine-owned work. A completion is consumed once and

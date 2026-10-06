@@ -99,6 +99,20 @@ impl NavigationHandoff {
         Some(retained)
     }
 
+    /// Timer expiry is a surface change even when the active View stays idle.
+    pub(super) fn expire(&mut self, now: Instant) -> bool {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|frame| now >= frame.expires_at)
+        {
+            self.active = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Record the base View's frame once it is settled and may be retained later.
     pub(super) fn settle(&mut self, frame: SettledFrame) {
         self.settled = Some(frame);
@@ -205,6 +219,19 @@ mod tests {
             "a still-loading instance must not re-arm retention every frame"
         );
         assert!(!handoff.is_retaining());
+    }
+
+    #[test]
+    fn timer_expiry_requests_one_surface_update_without_rearming() {
+        let mut handoff = NavigationHandoff::default();
+        handoff.settle(frame(1));
+        let now = Instant::now();
+        assert!(handoff.begin(id(2), true, now).is_some());
+        assert!(!handoff.expire(now + Duration::from_millis(149)));
+        let after = now + Duration::from_millis(151);
+        assert!(handoff.expire(after));
+        assert!(!handoff.expire(after));
+        assert!(handoff.begin(id(2), true, after).is_none());
     }
 
     #[test]
