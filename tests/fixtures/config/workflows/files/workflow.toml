@@ -1,0 +1,57 @@
+[workflow]
+api = 1
+name = "files"
+
+[views.main]
+engine = "picker"
+companion = "preview"
+companion_size = ["55%", "40%"]
+
+[views.main.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+dir = { type = "string", default = "" }
+
+[views.main.picker]
+input_placeholder = "Search files & directories"
+
+[views.main.picker.items]
+file = "scripts/items.py"
+
+[views.preview]
+engine = "capture"
+
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
+
+[views.preview.capture.output]
+file = "scripts/preview.py"
+
+[views.main.bindings]
+"ctrl+p" = "preview"
+enter = "open"
+"ctrl+u" = "parent_dir"
+"ctrl+y" = "copy_path"
+
+[commands.open]
+label = "Open / Enter Directory"
+type = "navigate"
+file = "scripts/open.py"
+
+[commands.parent_dir]
+label = "Go to Parent Directory"
+type = "navigate"
+file = "scripts/parent.py"
+
+[commands.copy_path]
+label = "Copy Path"
+type = "run"
+file = "scripts/copy_path.py"
+
+[commands.preview]
+label = "Toggle Preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection" }
