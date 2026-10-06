@@ -725,7 +725,12 @@ pub(crate) fn map_prepared_action(
             }))
         }
         PreparedAction::Return { value } => Ok(ViewDecision::Return(ViewResult::new(value))),
-        PreparedAction::Companion { target, query } => {
+        PreparedAction::Companion {
+            target,
+            slot,
+            args_template,
+            query,
+        } => {
             let (target, query) = if let Some(query) = query {
                 let request = protocol_navigation_request(
                     &commands.config,
@@ -749,7 +754,12 @@ pub(crate) fn map_prepared_action(
                 )?;
                 (request.target, None)
             };
-            Ok(ViewDecision::ToggleCompanion { target, query })
+            Ok(ViewDecision::ToggleCompanion {
+                target,
+                slot,
+                args_template,
+                query,
+            })
         }
         PreparedAction::InvokeCommand { command } => {
             let entry = {

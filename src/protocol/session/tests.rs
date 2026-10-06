@@ -2475,7 +2475,7 @@ fn companion_input_update_invalidates_a_staying_primary() {
     session.start_root(request("root")).unwrap();
     session
         .router
-        .toggle_companion(None, "child", None)
+        .toggle_companion(None, "child", None, None, None)
         .unwrap();
     session.router.active_companion_mut().unwrap().last_data = None;
 
@@ -2517,7 +2517,7 @@ fn companion_renders_side_by_side_with_primary() {
     // Toggle companion "child"
     session
         .router
-        .toggle_companion(None, "child", None)
+        .toggle_companion(None, "child", None, None, None)
         .unwrap();
     assert!(session.router.active_companion().is_some());
 

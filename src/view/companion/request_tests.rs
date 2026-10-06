@@ -102,7 +102,7 @@ fn router(auto_open: bool) -> Router {
 fn companion_mount_and_navigation_share_canonical_validated_defaults() {
     let mut router = router(false);
     router
-        .toggle_companion(None, "alias", Some(json!({"limit": 10})))
+        .toggle_companion(None, "alias", None, None, Some(json!({"limit": 10})))
         .unwrap();
     let mount = router.active_companion().unwrap();
     assert_eq!(mount.instance.context.location.target, "side");
@@ -127,7 +127,9 @@ fn companion_auto_open_and_toggle_resolve_initial_binding_before_mount() {
     for auto_open in [false, true] {
         let mut router = router(auto_open);
         if !auto_open {
-            router.toggle_companion(None, "side", None).unwrap();
+            router
+                .toggle_companion(None, "side", None, None, None)
+                .unwrap();
         }
         let mount = router.active_companion().unwrap();
         assert_eq!(mount.target, "side");
@@ -139,7 +141,7 @@ fn companion_auto_open_and_toggle_resolve_initial_binding_before_mount() {
 fn companion_explicit_data_does_not_inherit_configured_live_binding() {
     let mut router = router(false);
     router
-        .toggle_companion(None, "side", Some(json!({"limit": 10})))
+        .toggle_companion(None, "side", None, None, Some(json!({"limit": 10})))
         .unwrap();
     let mount = router.active_companion().unwrap();
     assert_eq!(mount.last_query, Some(json!({"limit": 10})));
@@ -149,22 +151,36 @@ fn companion_explicit_data_does_not_inherit_configured_live_binding() {
 fn companion_failed_replacement_keeps_existing_mount() {
     let mut router = router(true);
     let original = router.active_companion().unwrap().instance.id;
-    assert!(router.toggle_companion(None, "broken", None).is_err());
+    assert!(
+        router
+            .toggle_companion(None, "broken", None, None, None)
+            .is_err()
+    );
     assert_eq!(router.active_companion().unwrap().instance.id, original);
-    assert!(router.toggle_companion(None, "missing", None).is_err());
+    assert!(
+        router
+            .toggle_companion(None, "missing", None, None, None)
+            .is_err()
+    );
     assert_eq!(router.active_companion().unwrap().instance.id, original);
     router.routes = Box::new(Routes {
         auto_open: false,
         invalid: true,
     });
-    assert!(router.toggle_companion(None, "broken", None).is_err());
+    assert!(
+        router
+            .toggle_companion(None, "broken", None, None, None)
+            .is_err()
+    );
     assert_eq!(router.active_companion().unwrap().instance.id, original);
 }
 
 #[test]
 fn companion_alias_toggle_addresses_the_same_canonical_target() {
     let mut router = router(true);
-    router.toggle_companion(None, "alias", None).unwrap();
+    router
+        .toggle_companion(None, "alias", None, None, None)
+        .unwrap();
     assert!(router.active_companion().is_none());
 }
 

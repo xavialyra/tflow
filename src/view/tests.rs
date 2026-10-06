@@ -1371,6 +1371,8 @@ fn companion_toggle_mount_and_unmount() {
         .process_with_effects(
             ViewDecision::ToggleCompanion {
                 target: "side".to_string(),
+                slot: None,
+                args_template: None,
                 query: Some(Value::String("item-1".to_string())),
             },
             id,
@@ -1386,6 +1388,8 @@ fn companion_toggle_mount_and_unmount() {
         .process_with_effects(
             ViewDecision::ToggleCompanion {
                 target: "side".to_string(),
+                slot: None,
+                args_template: None,
                 query: None,
             },
             id,
@@ -1434,7 +1438,9 @@ fn companion_tick_invalidation_survives_a_staying_primary_and_popup() {
     }
     let mut router = Router::new(Box::new(routes), Box::new(TickFactory));
     router.push(request("main")).unwrap();
-    router.toggle_companion(None, "side", None).unwrap();
+    router
+        .toggle_companion(None, "side", None, None, None)
+        .unwrap();
     let mut popup = request("popup");
     popup.presentation.mode = crate::workflow::config::ViewPresentationMode::Popup;
     router.push(popup).unwrap();
@@ -1488,6 +1494,8 @@ fn companion_navigate_and_return_lifecycle() {
         .process_with_effects(
             ViewDecision::ToggleCompanion {
                 target: "side".to_string(),
+                slot: None,
+                args_template: None,
                 query: None,
             },
             main_id,

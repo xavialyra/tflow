@@ -1085,7 +1085,54 @@ impl ProtocolSession {
         if let Some(active_instance) = self.router.active() {
             let snapshot = active_instance.view.command_snapshot();
             if let Some(companion) = self.router.active_companion() {
-                if companion.explicit_query || !companion.instance.view.follows_companion_data() {
+                if !companion.instance.view.follows_companion_data() {
+                    return Ok(false);
+                }
+
+                if let Some(args_tmpl) = &companion.args_template {
+                    let current_val = snapshot
+                        .publication
+                        .as_ref()
+                        .map(|p| p.current.clone())
+                        .unwrap_or(serde_json::Value::Null);
+                    let proj_ctx = crate::workflow::projection::ContextSource {
+                        selection: if current_val.is_object() || current_val.is_array() {
+                            if let Some(item) = current_val.get("item") {
+                                Some(item)
+                            } else {
+                                Some(&current_val)
+                            }
+                        } else {
+                            None
+                        },
+                        input: if snapshot.raw_input.is_empty() {
+                            None
+                        } else {
+                            Some(&snapshot.raw_input)
+                        },
+                        query: Some(&snapshot.parameters),
+                    };
+                    let json_tmpl = crate::workflow::config::toml_to_json(args_tmpl)?;
+                    let new_query =
+                        crate::workflow::projection::project_value(&json_tmpl, &proj_ctx);
+                    if companion.last_query.as_ref() != Some(&new_query)
+                        && let Some(companion_mut) = self.router.active_companion_mut()
+                    {
+                        let mut data =
+                            crate::view::companion::CompanionData::from_snapshot(&snapshot);
+                        data.parameters = new_query.clone();
+                        companion_mut.last_query = Some(new_query.clone());
+                        companion_mut.instance.context.query.values = new_query;
+                        let decision = companion_mut
+                            .instance
+                            .view
+                            .on_companion_data_changed(&data, &companion_mut.instance.context)?;
+                        invalidated = decision != ViewDecision::Stay;
+                    }
+                    return Ok(invalidated);
+                }
+
+                if companion.explicit_query {
                     return Ok(false);
                 }
                 let data = crate::view::companion::CompanionData::from_snapshot(&snapshot);

@@ -249,7 +249,7 @@ fn runtime_resize_matches_render_after_toggle_and_under_popup() {
     let primary = session.router.active().unwrap().id;
     session
         .router
-        .toggle_companion(None, "details", None)
+        .toggle_companion(None, "details", None, None, None)
         .unwrap();
     let companion = session.router.active_companion().unwrap().instance.id;
     session.tick().unwrap();
@@ -314,7 +314,7 @@ fn runtime_resize_matches_render_after_toggle_and_under_popup() {
     key(&mut session, Key::Escape);
     session
         .router
-        .toggle_companion(None, "details", None)
+        .toggle_companion(None, "details", None, None, None)
         .unwrap();
     session.tick().unwrap();
     assert_eq!(

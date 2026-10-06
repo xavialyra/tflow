@@ -30,6 +30,8 @@ pub(crate) enum PreparedAction {
     },
     Companion {
         target: String,
+        slot: Option<String>,
+        args_template: Option<toml::Value>,
         query: Option<Value>,
     },
     Feedback {
@@ -391,8 +393,17 @@ fn prepare_protocol_operation(
             query,
         } => {
             let caller_view = command_invocation.source_view();
-            let (target, query) = if let Some(slot_name) = slot {
-                let view_def = config.view(caller_view);
+            let view_def = config.view(caller_view);
+
+            // Match slot first; if no explicit slot but target matches a companion slot name, use it
+            let resolved_slot_name = slot.or_else(|| {
+                target
+                    .as_ref()
+                    .filter(|t| view_def.is_some_and(|v| v.companions.contains_key(*t)))
+                    .cloned()
+            });
+
+            let (target, slot, args_template, query) = if let Some(slot_name) = resolved_slot_name {
                 let slot_def = view_def.and_then(|v| v.companions.get(&slot_name));
                 if let Some(slot_def) = slot_def {
                     let resolved_target =
@@ -405,12 +416,12 @@ fn prepare_protocol_operation(
                     } else {
                         query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx))
                     };
-                    (resolved_target, projected_query)
-                } else if let Some(t) = target {
-                    let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
-                    let projected_query =
-                        query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx));
-                    (resolved_target, projected_query)
+                    (
+                        resolved_target,
+                        Some(slot_name),
+                        slot_def.args.clone(),
+                        projected_query,
+                    )
                 } else {
                     anyhow::bail!(
                         "unknown companion slot {:?} for view {:?}",
@@ -422,11 +433,16 @@ fn prepare_protocol_operation(
                 let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
                 let projected_query =
                     query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx));
-                (resolved_target, projected_query)
+                (resolved_target, None, None, projected_query)
             } else {
                 anyhow::bail!("companion operation requires either 'slot' or 'target'");
             };
-            Ok(PreparedAction::Companion { target, query })
+            Ok(PreparedAction::Companion {
+                target,
+                slot,
+                args_template,
+                query,
+            })
         }
     }
 }
@@ -695,7 +711,7 @@ mod tests {
         )
         .expect("prepared comp");
 
-        if let PreparedAction::Companion { target, query } = prepared_comp {
+        if let PreparedAction::Companion { target, query, .. } = prepared_comp {
             assert_eq!(target, "core:default");
             assert_eq!(
                 query,

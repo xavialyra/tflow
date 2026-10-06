@@ -425,6 +425,8 @@ pub(crate) enum ViewDecision {
     CloseWithError(String),
     ToggleCompanion {
         target: String,
+        slot: Option<String>,
+        args_template: Option<toml::Value>,
         query: Option<Value>,
     },
     Exit,
@@ -780,6 +782,8 @@ fn deliver_lifecycle(
 
 pub(crate) struct CompanionMount {
     pub(crate) target: String,
+    pub(crate) slot: Option<String>,
+    pub(crate) args_template: Option<toml::Value>,
     pub(crate) instance: Box<ViewInstance>,
     pub(crate) last_query: Option<Value>,
     pub(crate) last_data: Option<companion::CompanionData>,
@@ -979,6 +983,8 @@ impl Router {
     fn instantiate_companion(
         &mut self,
         target: &str,
+        slot: Option<String>,
+        args_template: Option<toml::Value>,
         query: Option<Value>,
         explicit_query: bool,
     ) -> Result<CompanionMount> {
@@ -992,9 +998,13 @@ impl Router {
         let mut request = self.companion_navigation_request(target, query.clone())?;
         request.execution_class = crate::task::TaskExecutionClass::Background;
         if !explicit_query {
-            request.companion_data = self
-                .active()
-                .map(|view| companion::CompanionData::from_snapshot(&view.command_snapshot()));
+            request.companion_data = self.active().map(|view| {
+                let mut data = companion::CompanionData::from_snapshot(&view.command_snapshot());
+                if let Some(ref q) = query {
+                    data.parameters = q.clone();
+                }
+                data
+            });
         }
         let services = ViewServices {
             host: &*self.host,
@@ -1020,6 +1030,8 @@ impl Router {
         let input = HostInputState::for_view(view.as_ref());
         let mount = CompanionMount {
             target: target.to_string(),
+            slot,
+            args_template,
             last_query: query,
             last_data: request.companion_data.clone(),
             explicit_query,
@@ -1056,6 +1068,8 @@ impl Router {
         &mut self,
         _source: Option<ViewInstanceId>,
         target: &str,
+        slot: Option<String>,
+        args_template: Option<toml::Value>,
         query: Option<Value>,
     ) -> Result<()> {
         let canonical_target = self
@@ -1064,8 +1078,12 @@ impl Router {
             .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?
             .target;
         if self.active_companion().is_some_and(|current| {
-            current.target == canonical_target
-                || current.instance.context.location.target == canonical_target
+            if let (Some(slot_name), Some(current_slot)) = (&slot, &current.slot) {
+                slot_name == current_slot
+            } else {
+                current.target == canonical_target
+                    || current.instance.context.location.target == canonical_target
+            }
         }) {
             let current = self
                 .active_mut()
@@ -1075,13 +1093,14 @@ impl Router {
                 .expect("companion");
             return self.close_companion_mount(current);
         }
-        let explicit_query = query.is_some();
+        let explicit_query = query.is_some() && args_template.is_none();
         let query = query.or_else(|| {
             companion::CompanionData::from_snapshot(&self.active()?.command_snapshot()).query_seed()
         });
         // Prepare the replacement before removing the settled companion. Failed
         // query validation, creation, or activation must leave it intact.
-        let mount = self.instantiate_companion(target, query, explicit_query)?;
+        let mount =
+            self.instantiate_companion(target, slot, args_template, query, explicit_query)?;
         if let Some(current) = self.active_mut().expect("active view").companion.take()
             && let Err(error) = self.close_companion_mount(current)
         {
@@ -1327,7 +1346,8 @@ impl Router {
         self.notify_transition_committed(source_id, instance);
 
         if let Some(companion_target) = self.routes.default_companion(&canonical_request.target)
-            && let Err(error) = self.toggle_companion(Some(instance), &companion_target, None)
+            && let Err(error) =
+                self.toggle_companion(Some(instance), &companion_target, None, None, None)
         {
             // The primary transition is already committed. Report attachment
             // failure without presenting the primary navigation as rejected.
@@ -1783,7 +1803,12 @@ impl Router {
                 let resolved = self.stack[index].view.on_command(&id, &context)?;
                 return self.process_decision_inner(resolved, executor, Some(source));
             }
-            ViewDecision::ToggleCompanion { target, query } => {
+            ViewDecision::ToggleCompanion {
+                target,
+                slot,
+                args_template,
+                query,
+            } => {
                 let target = if target.is_empty() {
                     self.stack
                         .last()
@@ -1795,7 +1820,7 @@ impl Router {
                     target
                 };
                 if !target.is_empty() {
-                    self.toggle_companion(source, &target, query)?;
+                    self.toggle_companion(source, &target, slot, args_template, query)?;
                 }
             }
             ViewDecision::Stay | ViewDecision::Invalidate => {}
