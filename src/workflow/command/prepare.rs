@@ -393,18 +393,13 @@ fn prepare_protocol_operation(
             query,
         } => {
             let caller_view = command_invocation.source_view();
-            let view_def = config.view(caller_view);
             let command_id = command_invocation.id();
 
-            let (target_name, slot_name, explicit_tmpl) = if let Some(t) = target {
+            let (target_name, slot_name) = if let Some(t) = target {
                 let slot_n = slot.unwrap_or_else(|| command_id.to_string());
-                (t, Some(slot_n), None)
+                (t, Some(slot_n))
             } else if let Some(s) = slot {
-                if let Some(slot_def) = view_def.and_then(|v| v.companions.get(&s)) {
-                    (slot_def.target.clone(), Some(s), slot_def.args.clone())
-                } else {
-                    (s.clone(), Some(command_id.to_string()), None)
-                }
+                (s, Some(command_id.to_string()))
             } else {
                 anyhow::bail!("companion operation requires either 'target' or 'slot'");
             };
@@ -428,10 +423,6 @@ fn prepare_protocol_operation(
                 let toml_val = crate::workflow::config::json_to_toml(&q).ok();
                 let projected = crate::workflow::projection::project_value(&q, &proj_ctx);
                 (toml_val, Some(projected))
-            } else if let Some(args_tmpl) = explicit_tmpl {
-                let json_tmpl = crate::workflow::config::toml_to_json(&args_tmpl)?;
-                let projected = crate::workflow::projection::project_value(&json_tmpl, &proj_ctx);
-                (Some(args_tmpl), Some(projected))
             } else {
                 let json_tmpl = crate::workflow::config::toml_to_json(&default_template)?;
                 (
@@ -685,34 +676,17 @@ mod tests {
             panic!("expected PreparedAction::Navigate");
         }
 
-        // 3. Test Companion slot projection
+        // 3. Test Companion command projection
         let comp_op = crate::protocol::ProtocolOperation::Companion {
-            target: None,
+            target: Some("core:default".to_string()),
             slot: Some("preview".to_string()),
-            query: None,
+            query: Some(serde_json::json!({
+                "item": "$selection"
+            })),
         };
 
-        // Inject slot into config
-        let mut config_clone = config.clone();
-        if let Some(view) = config_clone.views_mut().get_mut("core:default") {
-            view.companions.insert(
-                "preview".to_string(),
-                crate::workflow::config::CompanionSlot {
-                    target: "core:default".to_string(),
-                    args: Some(toml::Value::Table(
-                        [(
-                            "item".to_string(),
-                            toml::Value::String("$selection".to_string()),
-                        )]
-                        .into_iter()
-                        .collect(),
-                    )),
-                },
-            );
-        }
-
         let prepared_comp = prepare_protocol_operation(
-            &config_clone,
+            &config,
             &invocation_ctx,
             None,
             invocation,

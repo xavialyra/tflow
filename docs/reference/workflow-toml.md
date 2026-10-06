@@ -205,17 +205,14 @@ companion = "details"          # Shorthand for type = "companion", target = "det
 query = { topic = "overview" } # Optional target query parameter
 ```
 
-Views may also declare named slots under `[views.<name>.companions.<slot>]` with dynamic parameter projection templates:
+Companion commands declare target attachments with dynamic parameter projection templates:
 
 ```toml
-[views.main.companions.preview]
-target = "details"
-args = { title = "$selection.display", code = "$selection.value" }
-
-[commands.toggle_preview]
+[commands.preview]
 label = "Toggle Preview"
 type = "companion"
-slot = "preview"
+target = "details"
+args = { title = "$selection.display", code = "$selection.value" }
 ```
 
 - **Navigation**: Companion views operate as passive side-by-side attachments while the primary view retains focus. Foreground view navigation uses ordinary push actions, and `Esc` returns or closes the active view.

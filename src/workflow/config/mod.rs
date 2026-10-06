@@ -257,11 +257,6 @@ impl CompiledConfig {
         self.views.get(view_ref)
     }
 
-    #[cfg(test)]
-    pub(crate) fn views_mut(&mut self) -> &mut std::collections::BTreeMap<ViewRef, View> {
-        &mut self.views
-    }
-
     pub(crate) fn find_command(&self, current_workflow: &str, cmd_id: &str) -> Option<&Command> {
         if cmd_id.contains('.') {
             self.all_commands.get(cmd_id)

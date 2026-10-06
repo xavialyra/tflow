@@ -124,15 +124,7 @@ fn validate_operation_target(
             if let Some(target) = target {
                 ("companion", target.as_str(), &*DEFAULT_PRESENTATION)
             } else if let Some(slot_name) = slot {
-                let slot_target = views
-                    .get(view_ref)
-                    .and_then(|view| view.companions.get(slot_name))
-                    .map(|s| s.target.as_str());
-                if let Some(st) = slot_target {
-                    ("companion", st, &*DEFAULT_PRESENTATION)
-                } else {
-                    ("companion", slot_name.as_str(), &*DEFAULT_PRESENTATION)
-                }
+                ("companion", slot_name.as_str(), &*DEFAULT_PRESENTATION)
             } else {
                 bail!(
                     "view {:?} command {:?} requires target or slot",
@@ -351,40 +343,7 @@ impl CompiledConfig {
                     bail!("view {:?} cannot set itself as companion", view_ref);
                 }
                 if let Some(companion_view) = self.views.get(&resolved)
-                    && (companion_view.companion.is_some() || !companion_view.companions.is_empty())
-                {
-                    bail!(
-                        "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",
-                        view_ref,
-                        resolved
-                    );
-                }
-            }
-            for (slot_name, slot) in &view.companions {
-                if slot.target.trim().is_empty() {
-                    bail!(
-                        "view {:?} companion slot {:?} target cannot be empty",
-                        view_ref,
-                        slot_name
-                    );
-                }
-                let resolved = self
-                    .resolve_view_scoped(&slot.target, view_ref)
-                    .with_context(|| {
-                        format!(
-                            "view {:?} companion slot {:?} references unknown view {:?}",
-                            view_ref, slot_name, slot.target
-                        )
-                    })?;
-                if resolved == *view_ref {
-                    bail!(
-                        "view {:?} cannot set itself as companion in slot {:?}",
-                        view_ref,
-                        slot_name
-                    );
-                }
-                if let Some(companion_view) = self.views.get(&resolved)
-                    && (companion_view.companion.is_some() || !companion_view.companions.is_empty())
+                    && companion_view.companion.is_some()
                 {
                     bail!(
                         "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",

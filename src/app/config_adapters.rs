@@ -65,32 +65,23 @@ impl RouteCatalog for CompiledRouteCatalog {
             });
         }
 
-        // 2. Check if companion_target refers to a view companion slot
-        if let Some(slot) = view.companions.get(companion_target) {
-            let resolved_target = self.config.resolve_view_scoped(&slot.target, target).ok()?;
-            Some(crate::view::DefaultCompanionInfo {
-                target: resolved_target,
-                slot: Some(companion_target.clone()),
-                args_template: slot.args.clone(),
-            })
-        } else {
-            let resolved_target = self
-                .config
-                .resolve_view_scoped(companion_target, target)
-                .ok()?;
-            Some(crate::view::DefaultCompanionInfo {
-                target: resolved_target,
-                slot: Some(companion_target.clone()),
-                args_template: Some(toml::Value::Table(
-                    [(
-                        "item".to_string(),
-                        toml::Value::String("$selection".to_string()),
-                    )]
-                    .into_iter()
-                    .collect(),
-                )),
-            })
-        }
+        // 2. Otherwise resolve as direct view target, default args template is { item = "$selection" }
+        let resolved_target = self
+            .config
+            .resolve_view_scoped(companion_target, target)
+            .ok()?;
+        Some(crate::view::DefaultCompanionInfo {
+            target: resolved_target,
+            slot: Some(companion_target.clone()),
+            args_template: Some(toml::Value::Table(
+                [(
+                    "item".to_string(),
+                    toml::Value::String("$selection".to_string()),
+                )]
+                .into_iter()
+                .collect(),
+            )),
+        })
     }
 
     fn parse_query(&self, target: &str, query: Option<serde_json::Value>) -> Result<ParsedQuery> {

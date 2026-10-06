@@ -182,24 +182,6 @@ pub(crate) fn parse_atomic_workflow_package(
                 alias
             );
         }
-        if let Some(target) = &view.companion
-            && !view.companions.contains_key(target)
-        {
-            view.companions.insert(
-                target.clone(),
-                super::CompanionSlot {
-                    target: target.clone(),
-                    args: Some(toml::Value::Table(
-                        [(
-                            "item".to_string(),
-                            toml::Value::String("$selection".to_string()),
-                        )]
-                        .into_iter()
-                        .collect(),
-                    )),
-                },
-            );
-        }
     }
 
     if !views.contains_key(&header.entrypoint) {

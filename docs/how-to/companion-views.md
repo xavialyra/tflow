@@ -45,37 +45,31 @@ companion = "details"
 
 When `query` is omitted in the toggle command, Picker/Capture companions track the primary view's live selection; Form/Embedded companions retain a mount snapshot. To pass static or custom parameters instead, specify `query = { ... }` in the command.
 
-## 3. Multiple Companion Slots and Dynamic Projections
+## 3. Multiple Companions and Dynamic Projections
 
-For complex views that need multiple companion attachments (such as a code preview and an inspector) with explicit parameter contracts, declare companion slots on the primary view and reference them by slot:
+For complex views that need multiple companion attachments (such as a code preview and an inspector) with explicit parameter contracts, declare companion commands directly:
 
 ```toml
 [views.main]
 engine = "picker"
+companion = "preview"  # Default companion command or view
 
-# Declare companion slots with dynamic parameter projection templates
-[views.main.companions.preview]
+[views.main.bindings]
+"ctrl+p" = "preview"
+"ctrl+i" = "inspector"
+
+# Companion commands declare target and dynamic parameter projections directly
+[commands.preview]
+label = "Toggle Preview"
+type = "companion"
 target = "details"
 args = { title = "$selection.display", code = "$selection.value" }
 
-[views.main.companions.inspector]
-target = "meta_info"
-args = { id = "$selection.value", search = "$input" }
-
-[views.main.bindings]
-"ctrl+p" = "toggle_preview"
-"ctrl+i" = "toggle_inspector"
-
-# Pure toggle commands targeting explicit slots
-[commands.toggle_preview]
-label = "Toggle Preview"
-type = "companion"
-slot = "preview"
-
-[commands.toggle_inspector]
+[commands.inspector]
 label = "Inspect"
 type = "companion"
-slot = "inspector"
+target = "meta_info"
+args = { id = "$selection.value", search = "$input" }
 ```
 
 Available projection tokens include:
@@ -101,4 +95,4 @@ Available projection tokens include:
 - **Picker Companion**: When selecting an item in a Picker, the companion view automatically receives the selected item and query parameters.
 - **Form Companion**: Form companions retain their mount snapshot, including drafts, rather than restarting or replacing local editing state on source updates.
 - **Static Snapshots**: Form companions and embedded PTY processes retain their initial source data rather than discarding drafts or continuously restarting. Toggle off/on to capture another selection.
-- **Capture producers**: For source-bound companions, `context.input` is the primary publication, `context.parameters` contains source parameters, and `context.engine.state` is the explicitly supplied source state. JSON-looking input and business fields are not decoded or removed by Capture. Explicit command `query` remains target data and does not enable source tracking.
+- **Capture producers**: Companion scripts receive projected parameters directly in `context.parameters` (matching the target view's declared query schema). No private engine states are leaked. Explicit command `args`/`query` templates enable dynamic context projection and live selection tracking.
