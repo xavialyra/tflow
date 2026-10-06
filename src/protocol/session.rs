@@ -823,8 +823,12 @@ impl ProtocolSession {
                     );
                 }
                 let primary = if layout.primary.width > 0 && layout.primary.height > 0 {
-                    self.router
-                        .render_at(index, frame, layout.primary, &RenderContext::new(self.terminal, image_picker))?
+                    self.router.render_at(
+                        index,
+                        frame,
+                        layout.primary,
+                        &RenderContext::new(self.terminal, image_picker),
+                    )?
                 } else {
                     RenderResult::default()
                 };

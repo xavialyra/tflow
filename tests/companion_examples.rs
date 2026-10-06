@@ -46,7 +46,9 @@ fn finish(root: PathBuf, mut process: support::LauncherProcess) {
 fn slow_picker_companion_does_not_block_foreground_picker() {
     let root = temporary_root();
     let workflow = root.join("workflow.toml");
-    fs::write(&workflow, r#"
+    fs::write(
+        &workflow,
+        r#"
 [workflow]
 api = 1
 name = "Scheduling regression"
@@ -70,7 +72,9 @@ json.load(sys.stdin)
 time.sleep(30)
 print(json.dumps({"version": 1, "items": []}))
 '''
-"#).unwrap();
+"#,
+    )
+    .unwrap();
     let suite = root.join("default.toml");
     fs::write(&suite, "[suite]\napi=1\nname='Scheduling'\nentrypoint='demo:main'\n[workflows]\ndemo={file='workflow.toml'}\n").unwrap();
     let mut process = spawn_launcher_with_args(&suite, &[]);

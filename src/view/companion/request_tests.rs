@@ -48,9 +48,15 @@ impl ViewFactory for Factory {
     ) -> anyhow::Result<Box<dyn View>> {
         anyhow::ensure!(request.target != "broken", "factory rejected target");
         if request.target == "main" {
-            assert_eq!(request.execution_class, crate::task::TaskExecutionClass::Serial);
+            assert_eq!(
+                request.execution_class,
+                crate::task::TaskExecutionClass::Serial
+            );
         } else {
-            assert_eq!(request.execution_class, crate::task::TaskExecutionClass::Background);
+            assert_eq!(
+                request.execution_class,
+                crate::task::TaskExecutionClass::Background
+            );
         }
         Ok(Box::new(TestView))
     }
@@ -106,8 +112,14 @@ fn companion_mount_and_navigation_share_canonical_validated_defaults() {
         .unwrap();
     assert_eq!(request.target, "side");
     assert_eq!(request.query, mount.instance.context.query);
-    assert_eq!(request.execution_class, crate::task::TaskExecutionClass::Serial);
-    assert!(mount.last_data.is_none(), "explicit query must not inherit source data");
+    assert_eq!(
+        request.execution_class,
+        crate::task::TaskExecutionClass::Serial
+    );
+    assert!(
+        mount.last_data.is_none(),
+        "explicit query must not inherit source data"
+    );
 }
 
 #[test]

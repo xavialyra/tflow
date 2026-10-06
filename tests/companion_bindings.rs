@@ -70,7 +70,9 @@ json.dump({"version": 1, "output": "VAL_" + val}, sys.stdout)
     });
     process.master.write_all(b"\x1bd").unwrap();
     process.master.flush().unwrap();
-    wait_for_fresh_screen(&process.master, |screen| screen.contains("VAL_dynamic-query"));
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("VAL_dynamic-query")
+    });
     process.master.write_all(b"\x04").unwrap();
     process.master.flush().unwrap();
     let (status, _) = wait_for_launcher_exit(&mut process);

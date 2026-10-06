@@ -90,9 +90,15 @@ impl View for SyntheticView {
         }
     }
 
-    fn follows_companion_data(&self) -> bool { true }
+    fn follows_companion_data(&self) -> bool {
+        true
+    }
 
-    fn on_companion_data_changed(&mut self, data: &crate::view::companion::CompanionData, _: &ViewContext) -> Result<ViewDecision> {
+    fn on_companion_data_changed(
+        &mut self,
+        data: &crate::view::companion::CompanionData,
+        _: &ViewContext,
+    ) -> Result<ViewDecision> {
         self.runtime = data.input.clone();
         self.revision = self.revision.wrapping_add(1);
         Ok(ViewDecision::Invalidate)
@@ -1929,21 +1935,50 @@ fn navigation_grace_does_not_flash_a_closed_view_when_returning() {
 fn popup_keeps_graphics_context_for_all_visible_layers() {
     let (mut session, _, _) = session();
     session.start_root(request("root")).unwrap();
-    session.resize(TerminalSize { width: 60, height: 20 }).unwrap();
+    session
+        .resize(TerminalSize {
+            width: 60,
+            height: 20,
+        })
+        .unwrap();
     let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
     let draw = |session: &mut ProtocolSession, terminal: &mut Terminal<TestBackend>| {
-        terminal.draw(|frame| {
-            session.render(frame, frame.area(), Some(crate::terminal::ImagePicker::test_halfblocks())).unwrap();
-        }).unwrap();
-        terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>()
+        terminal
+            .draw(|frame| {
+                session
+                    .render(
+                        frame,
+                        frame.area(),
+                        Some(crate::terminal::ImagePicker::test_halfblocks()),
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
     };
-    assert_eq!(draw(&mut session, &mut terminal).matches("GRAPHICS_ENABLED").count(), 1);
+    assert_eq!(
+        draw(&mut session, &mut terminal)
+            .matches("GRAPHICS_ENABLED")
+            .count(),
+        1
+    );
     let mut popup = request("child");
     popup.presentation = crate::workflow::config::ViewPresentation::popup(30, 8);
     session.router.push(popup).unwrap();
     session.sync_active_commands().unwrap();
-    assert_eq!(draw(&mut session, &mut terminal).matches("GRAPHICS_ENABLED").count(), 2,
-        "the base and popup retain the graphics-capable context");
+    assert_eq!(
+        draw(&mut session, &mut terminal)
+            .matches("GRAPHICS_ENABLED")
+            .count(),
+        2,
+        "the base and popup retain the graphics-capable context"
+    );
 }
 
 #[test]
@@ -2444,11 +2479,27 @@ fn companion_input_update_invalidates_a_staying_primary() {
         .unwrap();
     session.router.active_companion_mut().unwrap().last_data = None;
 
-    let original_query = session.router.active_companion().unwrap().instance.context.query.clone();
+    let original_query = session
+        .router
+        .active_companion()
+        .unwrap()
+        .instance
+        .context
+        .query
+        .clone();
     assert_eq!(session.tick().unwrap(), ViewDecision::Invalidate);
     assert_eq!(session.tick().unwrap(), ViewDecision::Stay);
-    assert_eq!(session.router.active_companion().unwrap().instance.context.query, original_query,
-        "source updates must not rewrite the validated target query");
+    assert_eq!(
+        session
+            .router
+            .active_companion()
+            .unwrap()
+            .instance
+            .context
+            .query,
+        original_query,
+        "source updates must not rewrite the validated target query"
+    );
 }
 
 #[test]

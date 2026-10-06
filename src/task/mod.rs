@@ -383,7 +383,8 @@ impl MountTaskStarter {
 
     #[cfg(test)]
     pub(crate) fn for_background(&self) -> Self {
-        self.clone().with_execution_class(TaskExecutionClass::Background)
+        self.clone()
+            .with_execution_class(TaskExecutionClass::Background)
     }
 
     pub(crate) fn cancel_all(&self) {

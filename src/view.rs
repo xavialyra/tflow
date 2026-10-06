@@ -991,9 +991,9 @@ impl Router {
         let mut request = self.companion_navigation_request(target, query.clone())?;
         request.execution_class = crate::task::TaskExecutionClass::Background;
         if !explicit_query {
-            request.companion_data = self.active().map(|view| {
-                companion::CompanionData::from_snapshot(&view.command_snapshot())
-            });
+            request.companion_data = self
+                .active()
+                .map(|view| companion::CompanionData::from_snapshot(&view.command_snapshot()));
         }
         let services = ViewServices {
             host: &*self.host,
@@ -1062,13 +1062,10 @@ impl Router {
             .resolve(target)
             .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?
             .target;
-        if self
-            .active_companion()
-            .is_some_and(|current| {
-                current.target == canonical_target
-                    || current.instance.context.location.target == canonical_target
-            })
-        {
+        if self.active_companion().is_some_and(|current| {
+            current.target == canonical_target
+                || current.instance.context.location.target == canonical_target
+        }) {
             let current = self
                 .active_mut()
                 .expect("active view")
@@ -1328,8 +1325,7 @@ impl Router {
         // transition as rejected or roll it back.
         self.notify_transition_committed(source_id, instance);
 
-        if let Some(companion_target) =
-            self.routes.default_companion(&canonical_request.target)
+        if let Some(companion_target) = self.routes.default_companion(&canonical_request.target)
             && let Err(error) = self.toggle_companion(Some(instance), &companion_target, None)
         {
             // The primary transition is already committed. Report attachment
@@ -1791,8 +1787,7 @@ impl Router {
                     self.stack
                         .last()
                         .and_then(|inst| {
-                            self.routes
-                                .default_companion(&inst.context.location.target)
+                            self.routes.default_companion(&inst.context.location.target)
                         })
                         .unwrap_or_default()
                 } else {

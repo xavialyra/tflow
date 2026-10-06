@@ -32,8 +32,6 @@ pub(crate) trait CommandService {
         Vec::new()
     }
 
-
-
     /// Executes a registry entry whose handler is resolved at dispatch time.
     fn execute_entry(
         &self,
@@ -488,7 +486,9 @@ impl ProtocolCommandService {
 
 impl CommandService for ProtocolCommandService {
     fn host_companion_keys(&self) -> Vec<crate::input::Key> {
-        self.config.host_bindings().iter()
+        self.config
+            .host_bindings()
+            .iter()
             .filter(|(_, id)| *id == crate::command::OPEN_COMPANION)
             .filter_map(|(key, _)| crate::input::Key::parse_binding(key).ok())
             .collect()

@@ -956,9 +956,8 @@ mod tests {
         )
         .unwrap();
         let targets = merge_host_binding_targets([Some(&host)]).unwrap();
-        let resolved =
-            resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
-                .expect("@host:open_companion must resolve");
+        let resolved = resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
+            .expect("@host:open_companion must resolve");
         assert_eq!(resolved["ctrl+o"], crate::command::OPEN_COMPANION);
     }
 

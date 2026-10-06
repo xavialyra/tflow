@@ -330,9 +330,16 @@ impl App {
     }
 
     fn draw(&mut self, terminal: &mut Terminal) -> Result<()> {
-        let popup_depth = self.session.router().stack().iter().rev()
-            .take_while(|entry| entry.context.presentation.mode
-                == crate::workflow::config::ViewPresentationMode::Popup)
+        let popup_depth = self
+            .session
+            .router()
+            .stack()
+            .iter()
+            .rev()
+            .take_while(|entry| {
+                entry.context.presentation.mode
+                    == crate::workflow::config::ViewPresentationMode::Popup
+            })
             .count();
         terminal.prepare_popup_layers(popup_depth)?;
         let embedded = self

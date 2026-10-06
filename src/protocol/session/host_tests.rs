@@ -331,4 +331,3 @@ fn runtime_resize_matches_render_after_toggle_and_under_popup() {
         }
     );
 }
-
