@@ -403,6 +403,7 @@ pub(crate) enum InputEdit {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ViewDecision {
     Stay,
     Invalidate,
