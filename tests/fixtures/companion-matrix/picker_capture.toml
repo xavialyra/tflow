@@ -8,6 +8,10 @@ entrypoint = "main"
 engine = "picker"
 companion = "details"
 
+[views.main.companions.details]
+target = "details"
+args = { item = "$selection" }
+
 [views.main.picker]
 input_placeholder = "Select a service"
 items = [
@@ -18,11 +22,26 @@ items = [
 [views.details]
 engine = "capture"
 
+[views.details.query]
+type = "object"
+item = { type = "object", default = {} }
+
 [views.details.capture.output]
 script = '''#!/usr/bin/env python3
 import json, sys
 request = json.load(sys.stdin)
-item = (request["context"]["engine"]["state"] or {}).get("item", {})
+ctx = request.get("context", {})
+raw_params = ctx.get("parameters") if isinstance(ctx, dict) else {}
+if isinstance(raw_params, str):
+    try:
+        params = json.loads(raw_params)
+    except Exception:
+        params = {}
+elif isinstance(raw_params, dict):
+    params = raw_params
+else:
+    params = {}
+item = params.get("item") or (request.get("context", {}).get("engine", {}).get("state") or {}).get("item", {})
 meta = item.get("metadata", {})
 lines = ["SERVICE DETAILS", "", "Service: " + item.get("value", "No selection"),
          "Port: " + str(meta.get("port", "-")), "Owner: " + meta.get("owner", "-"),

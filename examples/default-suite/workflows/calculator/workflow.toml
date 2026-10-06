@@ -6,11 +6,19 @@ name = "calculator"
 engine = "picker"
 companion = "preview"
 
+[views.main.companions.preview]
+target = "preview"
+args = { item = "$selection" }
+
 [views.main.picker.items]
 file = "scripts/items.py"
 
 [views.preview]
 engine = "capture"
+
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
 
 [views.preview.capture.output]
 file = "scripts/preview.py"

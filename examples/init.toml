@@ -17,6 +17,10 @@ foreground = "scheme:muted"
 engine = "picker"
 companion = "preview"
 
+[views.main.companions.preview]
+target = "preview"
+args = { item = "$selection", selected = "$query.selected" }
+
 [views.main.query]
 type = "object"
 input = "search"
@@ -243,6 +247,11 @@ if __name__ == "__main__":
 [views.preview]
 engine = "capture"
 
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
+selected = { type = "array<string>", default = ["calculator", "apps", "sys"] }
+
 [views.preview.capture.output]
 script = '''#!/usr/bin/env python3
 import json
@@ -262,11 +271,17 @@ def main():
 
     context = request.get("context", {})
     parameters = context.get("parameters", {})
+    if isinstance(parameters, str):
+        try:
+            parameters = json.loads(parameters)
+        except Exception:
+            parameters = {}
     selected = parameters.get("selected", [])
-
-    engine = context.get("engine", {})
-    state = engine.get("state", {}) if isinstance(engine, dict) else {}
-    item = state.get("item")
+    item = parameters.get("item")
+    if not isinstance(item, dict):
+        engine = context.get("engine", {})
+        state = engine.get("state", {}) if isinstance(engine, dict) else {}
+        item = state.get("item")
 
     children = []
 

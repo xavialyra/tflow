@@ -22,8 +22,18 @@ def main():
         return
 
     context = request.get("context", {})
-    state = context.get("engine", {}).get("state", {}) if isinstance(context, dict) else {}
-    item = state.get("item") if isinstance(state, dict) else None
+    raw_params = context.get("parameters") if isinstance(context, dict) else {}
+    if isinstance(raw_params, str):
+        try:
+            params = json.loads(raw_params)
+        except Exception:
+            params = {}
+    elif isinstance(raw_params, dict):
+        params = raw_params
+    else:
+        params = {}
+
+    item = params.get("item")
     if not isinstance(item, dict) and isinstance(context, dict):
         inp = context.get("input")
         if isinstance(inp, dict):

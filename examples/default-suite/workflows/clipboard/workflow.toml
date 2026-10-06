@@ -14,6 +14,10 @@ bold = true
 engine = "picker"
 companion = "preview"
 
+[views.main.companions.preview]
+target = "preview"
+args = { item = "$selection" }
+
 [views.main.query]
 type = "object"
 input = "search"
@@ -28,6 +32,10 @@ file = "scripts/items.py"
 
 [views.preview]
 engine = "capture"
+
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
 
 [views.preview.capture.output]
 file = "scripts/preview.py"
