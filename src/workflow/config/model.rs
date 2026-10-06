@@ -337,6 +337,50 @@ impl serde::Serialize for DimensionConstraint {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CompanionSize {
+    pub width: DimensionConstraint,
+    pub height: DimensionConstraint,
+}
+
+impl Default for CompanionSize {
+    fn default() -> Self {
+        Self {
+            width: DimensionConstraint::Percentage(50),
+            height: DimensionConstraint::Percentage(50),
+        }
+    }
+}
+
+impl CompanionSize {
+    #[cfg(test)]
+    pub fn new(width: DimensionConstraint, height: DimensionConstraint) -> Self {
+        Self { width, height }
+    }
+}
+
+impl<'de> Deserialize<'de> for CompanionSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawCompanionSize {
+            Pair(DimensionConstraint, DimensionConstraint),
+            Single(DimensionConstraint),
+        }
+
+        match RawCompanionSize::deserialize(deserializer)? {
+            RawCompanionSize::Pair(width, height) => Ok(CompanionSize { width, height }),
+            RawCompanionSize::Single(constraint) => Ok(CompanionSize {
+                width: constraint.clone(),
+                height: constraint,
+            }),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -453,6 +497,8 @@ pub struct View {
     pub engine: Option<toml::Value>,
     #[serde(default)]
     pub companion: Option<String>,
+    #[serde(default)]
+    pub companion_size: Option<CompanionSize>,
 }
 
 impl View {
@@ -1139,5 +1185,57 @@ args = []
         assert_eq!(*execution, ExecutionMode::Declared);
         assert_eq!(payload["target"].as_str(), Some("logs"));
         assert_eq!(payload["query"].as_str(), Some("$item"));
+    }
+
+    #[test]
+    fn companion_size_deserialization() {
+        let view: super::View = toml::from_str(
+            r#"
+            engine = "picker"
+            companion = "preview"
+            companion_size = ["40%", 12]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(view.companion.as_deref(), Some("preview"));
+        assert_eq!(
+            view.companion_size,
+            Some(super::CompanionSize::new(
+                super::DimensionConstraint::Percentage(40),
+                super::DimensionConstraint::Cells(12),
+            ))
+        );
+
+        let view_single: super::View = toml::from_str(
+            r#"
+            engine = "picker"
+            companion = "preview"
+            companion_size = "35%"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            view_single.companion_size,
+            Some(super::CompanionSize::new(
+                super::DimensionConstraint::Percentage(35),
+                super::DimensionConstraint::Percentage(35),
+            ))
+        );
+
+        let view_cells: super::View = toml::from_str(
+            r#"
+            engine = "picker"
+            companion = "preview"
+            companion_size = 50
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            view_cells.companion_size,
+            Some(super::CompanionSize::new(
+                super::DimensionConstraint::Cells(50),
+                super::DimensionConstraint::Cells(50),
+            ))
+        );
     }
 }

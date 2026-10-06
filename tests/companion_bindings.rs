@@ -421,3 +421,47 @@ json.dump({"version": 1, "output": f"COMMAND_INSPECTOR: {ident}"}, sys.stdout)
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn companion_size_auto_layout_integration() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let _ = write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "details"
+        companion_size = ["40%", 10]
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Entry", value = "val" }]
+
+        [workflows.sample.views.details]
+        engine = "capture"
+
+        [workflows.sample.views.details.query]
+        type = "object"
+        item = { type = "object", default = {} }
+
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+json.dump({"version": 1, "output": "PREVIEW_CONTENT"}, sys.stdout)
+'''
+        "#,
+    );
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Entry") && screen.contains("PREVIEW_CONTENT")
+    });
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

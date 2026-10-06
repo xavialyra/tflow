@@ -32,6 +32,7 @@ pub(crate) enum PreparedAction {
         target: String,
         slot: Option<String>,
         args_template: Option<toml::Value>,
+        size: Option<crate::workflow::config::CompanionSize>,
         query: Option<Value>,
     },
     Feedback {
@@ -439,10 +440,15 @@ fn prepare_protocol_operation(
                 projected_query = Some(Value::String(val.to_string()));
             }
 
+            let companion_size = config
+                .view(caller_view)
+                .and_then(|v| v.companion_size.clone());
+
             Ok(PreparedAction::Companion {
                 target: resolved_target,
                 slot: slot_name,
                 args_template: tmpl,
+                size: companion_size,
                 query: projected_query,
             })
         }

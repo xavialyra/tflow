@@ -45,9 +45,9 @@ impl RouteCatalog for CompiledRouteCatalog {
     fn default_companion_info(&self, target: &str) -> Option<crate::view::DefaultCompanionInfo> {
         let view = self.config.view(target)?;
         let companion_target = view.companion.as_ref()?;
+        let companion_size = view.companion_size.clone();
         let pkg = crate::workflow::config::package_id(target);
 
-        // 1. Check if companion_target refers to a companion command
         if let Some(cmd) = self.config.find_command(pkg, companion_target)
             && let crate::workflow::config::CommandAction::Companion { payload, .. } = &cmd.action
             && let toml::Value::Table(table) = payload
@@ -62,10 +62,10 @@ impl RouteCatalog for CompiledRouteCatalog {
                 target: resolved_target,
                 slot: Some(companion_target.clone()),
                 args_template: args,
+                size: companion_size,
             });
         }
 
-        // 2. Otherwise resolve as direct view target, default args template is { item = "$selection" }
         let resolved_target = self
             .config
             .resolve_view_scoped(companion_target, target)
@@ -81,6 +81,7 @@ impl RouteCatalog for CompiledRouteCatalog {
                 .into_iter()
                 .collect(),
             )),
+            size: companion_size,
         })
     }
 

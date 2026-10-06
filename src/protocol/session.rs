@@ -658,11 +658,16 @@ impl ProtocolSession {
 
     fn pane_layout(&self, index: usize, area: Rect) -> PaneLayout {
         let instance = &self.router.stack()[index];
+        let default_size = crate::workflow::config::CompanionSize::default();
+        let companion_size = instance
+            .companion
+            .as_ref()
+            .map(|c| c.size.as_ref().unwrap_or(&default_size));
         PaneLayout::new(
             area,
             instance.input.mode.is_visible(),
             instance.view.input_divider(),
-            instance.companion.is_some(),
+            companion_size,
         )
     }
 
@@ -833,9 +838,14 @@ impl ProtocolSession {
                     RenderResult::default()
                 };
                 if let Some(separator) = layout.separator {
+                    let border = if separator.height == 1 && separator.width > 1 {
+                        ratatui::widgets::Borders::TOP
+                    } else {
+                        ratatui::widgets::Borders::LEFT
+                    };
                     frame.render_widget(
                         ratatui::widgets::Block::new()
-                            .borders(ratatui::widgets::Borders::LEFT)
+                            .borders(border)
                             .border_style(self.theme.capture.document.border),
                         separator,
                     );

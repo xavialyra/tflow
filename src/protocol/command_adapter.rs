@@ -711,6 +711,7 @@ pub(crate) fn map_prepared_action(
             target,
             slot,
             args_template,
+            size,
             query,
         } => {
             let (target, query) = if let Some(query) = query {
@@ -740,6 +741,7 @@ pub(crate) fn map_prepared_action(
                 target,
                 slot,
                 args_template,
+                size,
                 query,
             })
         }

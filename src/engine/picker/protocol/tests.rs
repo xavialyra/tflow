@@ -46,7 +46,7 @@ fn render_hosted(
         area,
         input.mode.is_visible(),
         view.input_divider(),
-        false,
+        None,
     );
     if let Some(omnibar) = layout.omnibar {
         crate::ui::chrome::render_omnibar_widget(

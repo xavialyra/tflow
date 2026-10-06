@@ -425,6 +425,7 @@ pub(crate) enum ViewDecision {
         target: String,
         slot: Option<String>,
         args_template: Option<toml::Value>,
+        size: Option<crate::workflow::config::CompanionSize>,
         query: Option<Value>,
     },
     Exit,
@@ -684,6 +685,7 @@ pub(crate) struct DefaultCompanionInfo {
     pub(crate) target: String,
     pub(crate) slot: Option<String>,
     pub(crate) args_template: Option<toml::Value>,
+    pub(crate) size: Option<crate::workflow::config::CompanionSize>,
 }
 
 pub(crate) trait RouteCatalog {
@@ -704,6 +706,7 @@ pub(crate) trait RouteCatalog {
                 target: t,
                 slot: None,
                 args_template: None,
+                size: None,
             })
     }
 
@@ -807,6 +810,7 @@ pub(crate) struct CompanionMount {
     pub(crate) target: String,
     pub(crate) slot: Option<String>,
     pub(crate) args_template: Option<toml::Value>,
+    pub(crate) size: Option<crate::workflow::config::CompanionSize>,
     pub(crate) instance: Box<ViewInstance>,
     pub(crate) last_query: Option<Value>,
 }
@@ -980,6 +984,7 @@ impl Router {
         target: &str,
         slot: Option<String>,
         args_template: Option<toml::Value>,
+        size: Option<crate::workflow::config::CompanionSize>,
         query: Option<Value>,
     ) -> Result<CompanionMount> {
         let location = self
@@ -1017,6 +1022,7 @@ impl Router {
             target: target.to_string(),
             slot,
             args_template,
+            size,
             last_query: query,
             instance: Box::new(ViewInstance {
                 id: instance_id,
@@ -1058,6 +1064,7 @@ impl Router {
         target: &str,
         slot: Option<String>,
         args_template: Option<toml::Value>,
+        size: Option<crate::workflow::config::CompanionSize>,
         query: Option<Value>,
     ) -> Result<()> {
         let canonical_target = self
@@ -1083,7 +1090,7 @@ impl Router {
         }
         // Prepare the replacement before removing the settled companion. Failed
         // query validation, creation, or activation must leave it intact.
-        let mount = self.instantiate_companion(target, slot, args_template, query)?;
+        let mount = self.instantiate_companion(target, slot, args_template, size, query)?;
         if let Some(current) = self.active_mut().expect("active view").companion.take()
             && let Err(error) = self.close_companion_mount(current)
         {
@@ -1387,6 +1394,7 @@ impl Router {
                 &info.target,
                 info.slot,
                 info.args_template,
+                info.size,
                 initial_query,
             ) {
                 eprintln!("TOGGLE ERR: {error:#}");
@@ -1848,6 +1856,7 @@ impl Router {
                 target,
                 slot,
                 args_template,
+                size,
                 query,
             } => {
                 let target = if target.is_empty() {
@@ -1861,7 +1870,7 @@ impl Router {
                     target
                 };
                 if !target.is_empty() {
-                    self.toggle_companion(source, &target, slot, args_template, query)?;
+                    self.toggle_companion(source, &target, slot, args_template, size, query)?;
                 }
             }
             ViewDecision::Stay | ViewDecision::Invalidate => {}
