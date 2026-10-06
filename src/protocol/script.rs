@@ -37,7 +37,8 @@ pub(crate) enum ProtocolOperation {
         timeout_ms: Option<u64>,
     },
     Companion {
-        target: String,
+        target: Option<String>,
+        slot: Option<String>,
         query: Option<Value>,
     },
 }
@@ -98,7 +99,10 @@ enum RawError {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCompanionOperation {
-    target: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    slot: Option<String>,
     #[serde(default)]
     query: Option<Value>,
 }
@@ -152,7 +156,10 @@ enum RawOperation {
         timeout_ms: Option<u64>,
     },
     Companion {
-        target: String,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
+        slot: Option<String>,
         #[serde(default)]
         query: Option<Value>,
     },
@@ -180,6 +187,7 @@ pub(crate) fn parse_response(
     if let Some(c) = response.companion.take() {
         response.operation = Some(RawOperation::Companion {
             target: c.target,
+            slot: c.slot,
             query: c.query,
         });
     }
@@ -231,9 +239,15 @@ pub(crate) fn parse_response(
                     success_message,
                     timeout_ms,
                 },
-                RawOperation::Companion { target, query } => {
-                    ProtocolOperation::Companion { target, query }
-                }
+                RawOperation::Companion {
+                    target,
+                    slot,
+                    query,
+                } => ProtocolOperation::Companion {
+                    target,
+                    slot,
+                    query,
+                },
             };
             if let Some(expected_operation) = expected_operation
                 && operation.operation_type() != expected_operation
@@ -362,10 +376,11 @@ fn validate_operation(operation: &ProtocolOperation, source_label: &str) -> Resu
             }
         }
         ProtocolOperation::Return { .. } => {}
-        ProtocolOperation::Companion { target, .. } => {
+        ProtocolOperation::Companion { target, slot, .. } => {
             anyhow::ensure!(
-                !target.is_empty(),
-                "{} companion operation target must not be empty",
+                target.as_ref().is_some_and(|t| !t.is_empty())
+                    || slot.as_ref().is_some_and(|s| !s.is_empty()),
+                "{} companion operation requires non-empty target or slot",
                 source_label
             );
         }
@@ -1038,7 +1053,8 @@ mod tests {
         assert_eq!(
             parsed,
             ProtocolOutcome::Operation(ProtocolOperation::Companion {
-                target: "pod_logs".to_string(),
+                target: Some("pod_logs".to_string()),
+                slot: None,
                 query: Some(serde_json::Value::String("pod-123".to_string())),
             })
         );
@@ -1048,7 +1064,8 @@ mod tests {
         assert_eq!(
             parsed_shorthand,
             ProtocolOutcome::Operation(ProtocolOperation::Companion {
-                target: "pod_logs".to_string(),
+                target: Some("pod_logs".to_string()),
+                slot: None,
                 query: Some(serde_json::Value::String("pod-123".to_string())),
             })
         );

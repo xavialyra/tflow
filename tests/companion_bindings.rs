@@ -307,3 +307,77 @@ fn host_bindings_customize_open_companion_and_allow_disabling() {
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn companion_slot_declaration_with_dynamic_projection_and_pure_command_toggle() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+
+        [workflows.sample.views.main.companions.preview]
+        target = "details"
+        args = { title = "$selection.display", code = "$selection.value" }
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Database Server", value = "db-01" }]
+
+        [workflows.sample.views.main.bindings]
+        "ctrl+p" = "sample.toggle_preview"
+
+        [workflows.sample.commands.toggle_preview]
+        label = "Toggle Preview"
+        type = "companion"
+        slot = "preview"
+
+        [workflows.sample.views.details]
+        engine = "capture"
+        [workflows.sample.views.details.query]
+        type = "object"
+        title = { type = "string", default = "" }
+        code = { type = "string", default = "" }
+
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+request = json.load(sys.stdin)
+params = request.get("context", {}).get("parameters", {})
+title = params.get("title", "no-title")
+code = params.get("code", "no-code")
+json.dump({"version": 1, "output": f"PREVIEW: {title} [{code}]"}, sys.stdout)
+'''
+        "#,
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| screen.contains("Database Server"));
+
+    // Press Ctrl-P to toggle companion slot
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify projected parameters reached companion script and rendered
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("PREVIEW: Database Server [db-01]")
+    });
+
+    // Press Ctrl-P again to close companion slot
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Database Server") && !screen.contains("PREVIEW:")
+    });
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

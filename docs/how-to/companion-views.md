@@ -45,7 +45,46 @@ companion = "details"
 
 When `query` is omitted in the toggle command, Picker/Capture companions track the primary view's live selection; Form/Embedded companions retain a mount snapshot. To pass static or custom parameters instead, specify `query = { ... }` in the command.
 
-## 3. Navigation and Keyboard Focus
+## 3. Multiple Companion Slots and Dynamic Projections
+
+For complex views that need multiple companion attachments (such as a code preview and an inspector) with explicit parameter contracts, declare companion slots on the primary view and reference them by slot:
+
+```toml
+[views.main]
+engine = "picker"
+
+# Declare companion slots with dynamic parameter projection templates
+[views.main.companions.preview]
+target = "details"
+args = { title = "$selection.display", code = "$selection.value" }
+
+[views.main.companions.inspector]
+target = "meta_info"
+args = { id = "$selection.value", search = "$input" }
+
+[views.main.bindings]
+"ctrl+p" = "toggle_preview"
+"ctrl+i" = "toggle_inspector"
+
+# Pure toggle commands targeting explicit slots
+[commands.toggle_preview]
+label = "Toggle Preview"
+type = "companion"
+slot = "preview"
+
+[commands.toggle_inspector]
+label = "Inspect"
+type = "companion"
+slot = "inspector"
+```
+
+Available projection tokens include:
+- `$selection`: The complete selected item object.
+- `$selection.<path>` (e.g. `$selection.value`, `$selection.display`): Specific scalar or nested fields from the active item.
+- `$input`: The active query or omnibar buffer string.
+- `$query.<path>`: The caller's existing parameters.
+
+## 4. Navigation and Keyboard Focus
 
 - **Input focus**: The companion is a passive attachment; keyboard focus remains on the primary view.
 - **Entering companion**: Bind or invoke `@host:open_companion` to open a new instance of the companion target in the foreground. This does not transfer existing drafts, scroll position, or a running PTY. There is no separate pane-focus state.

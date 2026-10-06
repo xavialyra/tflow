@@ -422,6 +422,14 @@ pub struct Unbind {
 
 static EMPTY_TABLE: std::sync::LazyLock<toml::Table> = std::sync::LazyLock::new(toml::Table::new);
 
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionSlot {
+    pub target: String,
+    #[serde(default)]
+    pub args: Option<toml::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct View {
@@ -453,6 +461,8 @@ pub struct View {
     pub engine: Option<toml::Value>,
     #[serde(default)]
     pub companion: Option<String>,
+    #[serde(default)]
+    pub companions: std::collections::BTreeMap<String, CompanionSlot>,
 }
 
 impl View {

@@ -231,6 +231,31 @@ pub(crate) fn prepare_return_processor(
     }
 }
 
+fn context_source_from_command_context<'a>(
+    context: &'a CommandContext,
+) -> crate::workflow::projection::ContextSource<'a> {
+    let selection = if context.current.is_object() || context.current.is_array() {
+        if let Some(item) = context.current.get("item") {
+            Some(item)
+        } else {
+            Some(&context.current)
+        }
+    } else {
+        None
+    };
+
+    let input = context
+        .current
+        .get("input")
+        .and_then(serde_json::Value::as_str);
+    let query = Some(context.page.parameters.values());
+
+    crate::workflow::projection::ContextSource::new()
+        .with_selection(selection)
+        .with_input(input)
+        .with_query(query)
+}
+
 fn prepare_protocol_operation(
     config: &CompiledConfig,
     _invocation: &crate::workflow::InvocationContext,
@@ -240,6 +265,7 @@ fn prepare_protocol_operation(
     operation: crate::protocol::ProtocolOperation,
     _cancellation: &CancellationToken,
 ) -> Result<PreparedAction> {
+    let proj_ctx = context_source_from_command_context(&context);
     match operation {
         crate::protocol::ProtocolOperation::Navigate {
             target,
@@ -249,9 +275,24 @@ fn prepare_protocol_operation(
             clear_input,
         } => {
             let caller_view = command_invocation.source_view();
+            let target = if target.contains('$') {
+                match crate::workflow::projection::project_value(
+                    &serde_json::Value::String(target.clone()),
+                    &proj_ctx,
+                ) {
+                    serde_json::Value::String(s) if !s.is_empty() => s,
+                    _ => target,
+                }
+            } else {
+                target
+            };
             let target = config.resolve_view_scoped(&target, caller_view)?;
             let request = match query {
-                Some(query) => NavigationRequest::new(target, "").with_parameters(query),
+                Some(query) => {
+                    let projected_query =
+                        crate::workflow::projection::project_value(&query, &proj_ctx);
+                    NavigationRequest::new(target, "").with_parameters(projected_query)
+                }
                 None => NavigationRequest::with_defaults(target),
             }
             .with_presentation(presentation);
@@ -271,9 +312,24 @@ fn prepare_protocol_operation(
             presentation,
         } => {
             let caller_view = command_invocation.source_view();
+            let target = if target.contains('$') {
+                match crate::workflow::projection::project_value(
+                    &serde_json::Value::String(target.clone()),
+                    &proj_ctx,
+                ) {
+                    serde_json::Value::String(s) if !s.is_empty() => s,
+                    _ => target,
+                }
+            } else {
+                target
+            };
             let target = config.resolve_view_scoped(&target, caller_view)?;
             let request = match query {
-                Some(query) => NavigationRequest::new(target, "").with_parameters(query),
+                Some(query) => {
+                    let projected_query =
+                        crate::workflow::projection::project_value(&query, &proj_ctx);
+                    NavigationRequest::new(target, "").with_parameters(projected_query)
+                }
                 None => NavigationRequest::with_defaults(target),
             }
             .with_presentation(presentation);
@@ -298,7 +354,28 @@ fn prepare_protocol_operation(
             ..
         } => {
             let root = command_root(config, &command_invocation);
-            let mut prepared = prepared_direct_process(root, argv)?;
+            let projected_argv = argv
+                .into_iter()
+                .map(|arg| {
+                    if arg.contains('$') {
+                        match crate::workflow::projection::project_value(
+                            &serde_json::Value::String(arg.clone()),
+                            &proj_ctx,
+                        ) {
+                            serde_json::Value::String(s) => s,
+                            other if !other.is_null() => match other {
+                                serde_json::Value::Number(n) => n.to_string(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                _ => arg,
+                            },
+                            _ => arg,
+                        }
+                    } else {
+                        arg
+                    }
+                })
+                .collect();
+            let mut prepared = prepared_direct_process(root, projected_argv)?;
             if let Some(ms) = timeout_ms {
                 prepared.timeout = Some(std::time::Duration::from_millis(ms));
             }
@@ -308,9 +385,47 @@ fn prepare_protocol_operation(
                 success_message,
             })
         }
-        crate::protocol::ProtocolOperation::Companion { target, query } => {
+        crate::protocol::ProtocolOperation::Companion {
+            target,
+            slot,
+            query,
+        } => {
             let caller_view = command_invocation.source_view();
-            let target = config.resolve_view_scoped(&target, caller_view)?;
+            let (target, query) = if let Some(slot_name) = slot {
+                let view_def = config.view(caller_view);
+                let slot_def = view_def.and_then(|v| v.companions.get(&slot_name));
+                if let Some(slot_def) = slot_def {
+                    let resolved_target =
+                        config.resolve_view_scoped(&slot_def.target, caller_view)?;
+                    let projected_query = if let Some(args_tmpl) = &slot_def.args {
+                        let json_tmpl = crate::workflow::config::toml_to_json(args_tmpl)?;
+                        Some(crate::workflow::projection::project_value(
+                            &json_tmpl, &proj_ctx,
+                        ))
+                    } else {
+                        query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx))
+                    };
+                    (resolved_target, projected_query)
+                } else if let Some(t) = target {
+                    let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
+                    let projected_query =
+                        query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx));
+                    (resolved_target, projected_query)
+                } else {
+                    anyhow::bail!(
+                        "unknown companion slot {:?} for view {:?}",
+                        slot_name,
+                        caller_view
+                    );
+                }
+            } else if let Some(t) = target {
+                let resolved_target = config.resolve_view_scoped(&t, caller_view)?;
+                let projected_query =
+                    query.map(|q| crate::workflow::projection::project_value(&q, &proj_ctx));
+                (resolved_target, projected_query)
+            } else {
+                anyhow::bail!("companion operation requires either 'slot' or 'target'");
+            };
             Ok(PreparedAction::Companion { target, query })
         }
     }
@@ -419,5 +534,180 @@ mod tests {
             "local command must resolve the caller root, got {}",
             local_root.display()
         );
+    }
+
+    #[test]
+    fn dynamic_projection_evaluates_argv_and_navigation_parameters() {
+        let config = crate::workflow::config::load_test_fixture().unwrap();
+        let cancellation = CancellationToken::new();
+
+        let cmd = config
+            .find_command("core", "apps.open")
+            .cloned()
+            .expect("fixture command");
+        let invocation = CommandInvocation::view(
+            "core:default",
+            crate::workflow::command::CommandRef {
+                id: "apps.open".to_string(),
+                revision: 0,
+            },
+            cmd,
+        );
+
+        use super::super::CommandOwnerContext;
+
+        let invocation_ctx = crate::workflow::InvocationContext::new(
+            "core:default".to_string(),
+            serde_json::Value::Null,
+            config.instantiate_parameters("core:default").unwrap(),
+        )
+        .unwrap();
+
+        let param_snapshot = crate::workflow::parameter::ParameterSnapshot::from_parts(
+            serde_json::Value::Null,
+            String::new(),
+            crate::input::InputSourceIdentity::default(),
+            0,
+        );
+
+        let context = CommandContext {
+            page: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: param_snapshot.clone(),
+            },
+            owner: CommandOwnerContext {
+                view_ref: "core:default".to_string(),
+                parameters: param_snapshot,
+            },
+            current: serde_json::json!({
+                "item": {
+                    "service": "postgres",
+                    "port": 5432
+                },
+                "input": "staging-db"
+            }),
+            engine_type: "picker".to_string(),
+            commands: serde_json::Value::Null,
+        };
+
+        // 1. Test Run argv projection
+        let run_op = crate::protocol::ProtocolOperation::Run {
+            argv: vec![
+                "echo".to_string(),
+                "$selection.service".to_string(),
+                "port:$selection.port".to_string(),
+                "$input".to_string(),
+            ],
+            exit: false,
+            success_message: None,
+            timeout_ms: None,
+        };
+
+        let prepared_run = prepare_protocol_operation(
+            &config,
+            &invocation_ctx,
+            None,
+            invocation.clone(),
+            context.clone(),
+            run_op,
+            &cancellation,
+        )
+        .expect("prepared run");
+
+        if let PreparedAction::Execute { prepared, .. } = prepared_run {
+            assert_eq!(
+                prepared.argv,
+                vec!["echo", "postgres", "port:5432", "staging-db"]
+            );
+        } else {
+            panic!("expected PreparedAction::Execute");
+        }
+
+        // 2. Test Navigate query projection
+        let nav_op = crate::protocol::ProtocolOperation::Navigate {
+            target: "core:default".to_string(),
+            query: Some(serde_json::json!({
+                "db": "$selection.service",
+                "active_input": "$input"
+            })),
+            presentation: crate::workflow::config::ViewPresentation::default(),
+            replace: false,
+            clear_input: false,
+        };
+
+        let prepared_nav = prepare_protocol_operation(
+            &config,
+            &invocation_ctx,
+            None,
+            invocation.clone(),
+            context.clone(),
+            nav_op,
+            &cancellation,
+        )
+        .expect("prepared nav");
+
+        if let PreparedAction::Navigate { request, .. } = prepared_nav {
+            assert_eq!(
+                request.parameters,
+                Some(serde_json::json!({
+                    "db": "postgres",
+                    "active_input": "staging-db"
+                }))
+            );
+        } else {
+            panic!("expected PreparedAction::Navigate");
+        }
+
+        // 3. Test Companion slot projection
+        let comp_op = crate::protocol::ProtocolOperation::Companion {
+            target: None,
+            slot: Some("preview".to_string()),
+            query: None,
+        };
+
+        // Inject slot into config
+        let mut config_clone = config.clone();
+        if let Some(view) = config_clone.views_mut().get_mut("core:default") {
+            view.companions.insert(
+                "preview".to_string(),
+                crate::workflow::config::CompanionSlot {
+                    target: "core:default".to_string(),
+                    args: Some(toml::Value::Table(
+                        [(
+                            "item".to_string(),
+                            toml::Value::String("$selection".to_string()),
+                        )]
+                        .into_iter()
+                        .collect(),
+                    )),
+                },
+            );
+        }
+
+        let prepared_comp = prepare_protocol_operation(
+            &config_clone,
+            &invocation_ctx,
+            None,
+            invocation,
+            context,
+            comp_op,
+            &cancellation,
+        )
+        .expect("prepared comp");
+
+        if let PreparedAction::Companion { target, query } = prepared_comp {
+            assert_eq!(target, "core:default");
+            assert_eq!(
+                query,
+                Some(serde_json::json!({
+                    "item": {
+                        "service": "postgres",
+                        "port": 5432
+                    }
+                }))
+            );
+        } else {
+            panic!("expected PreparedAction::Companion");
+        }
     }
 }

@@ -205,6 +205,19 @@ companion = "details"          # Shorthand for type = "companion", target = "det
 query = { topic = "overview" } # Optional target query parameter
 ```
 
+Views may also declare named slots under `[views.<name>.companions.<slot>]` with dynamic parameter projection templates:
+
+```toml
+[views.main.companions.preview]
+target = "details"
+args = { title = "$selection.display", code = "$selection.value" }
+
+[commands.toggle_preview]
+label = "Toggle Preview"
+type = "companion"
+slot = "preview"
+```
+
 - **Navigation**: Companion views operate as passive side-by-side attachments while the primary view retains focus. Foreground view navigation uses ordinary push actions, and `Esc` returns or closes the active view.
 - **Query bindings**: Companion operations accept `query` identical to `navigate`. When omitted in a toggle command, the companion tracks the primary view's published state. Explicit command `query` parameters target the companion's query schema directly.
 - **Toggle binding**: A Companion toggle is an ordinary workflow command. There is no Picker-specific default toggle or reserved `Ctrl-P`; bind the command on any View key and release it with `unbind` when needed.

@@ -3,6 +3,7 @@ pub(crate) mod command;
 pub(crate) mod config;
 pub(crate) mod invocation;
 pub(crate) mod parameter;
+pub(crate) mod projection;
 pub(crate) mod runtime;
 
 pub(crate) use invocation::InvocationContext;

@@ -114,14 +114,35 @@ fn validate_operation_target(
             target,
             presentation,
             ..
-        } => ("navigation", target, presentation),
+        } => ("navigation", target.as_str(), presentation),
         crate::protocol::ProtocolOperation::Call {
             target,
             presentation,
             ..
-        } => ("call", target, presentation),
-        crate::protocol::ProtocolOperation::Companion { target, .. } => {
-            ("companion", target, &*DEFAULT_PRESENTATION)
+        } => ("call", target.as_str(), presentation),
+        crate::protocol::ProtocolOperation::Companion { target, slot, .. } => {
+            if let Some(target) = target {
+                ("companion", target.as_str(), &*DEFAULT_PRESENTATION)
+            } else if let Some(slot_name) = slot {
+                let Some(view) = views.get(view_ref) else {
+                    return Ok(());
+                };
+                let Some(slot) = view.companions.get(slot_name) else {
+                    bail!(
+                        "view {:?} command {:?} references missing companion slot {:?}",
+                        view_ref,
+                        command_id,
+                        slot_name
+                    );
+                };
+                ("companion", slot.target.as_str(), &*DEFAULT_PRESENTATION)
+            } else {
+                bail!(
+                    "view {:?} command {:?} requires target or slot",
+                    view_ref,
+                    command_id
+                );
+            }
         }
         _ => return Ok(()),
     };
@@ -333,7 +354,40 @@ impl CompiledConfig {
                     bail!("view {:?} cannot set itself as companion", view_ref);
                 }
                 if let Some(companion_view) = self.views.get(&resolved)
-                    && companion_view.companion.is_some()
+                    && (companion_view.companion.is_some() || !companion_view.companions.is_empty())
+                {
+                    bail!(
+                        "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",
+                        view_ref,
+                        resolved
+                    );
+                }
+            }
+            for (slot_name, slot) in &view.companions {
+                if slot.target.trim().is_empty() {
+                    bail!(
+                        "view {:?} companion slot {:?} target cannot be empty",
+                        view_ref,
+                        slot_name
+                    );
+                }
+                let resolved = self
+                    .resolve_view_scoped(&slot.target, view_ref)
+                    .with_context(|| {
+                        format!(
+                            "view {:?} companion slot {:?} references unknown view {:?}",
+                            view_ref, slot_name, slot.target
+                        )
+                    })?;
+                if resolved == *view_ref {
+                    bail!(
+                        "view {:?} cannot set itself as companion in slot {:?}",
+                        view_ref,
+                        slot_name
+                    );
+                }
+                if let Some(companion_view) = self.views.get(&resolved)
+                    && (companion_view.companion.is_some() || !companion_view.companions.is_empty())
                 {
                     bail!(
                         "view {:?} references companion {:?}, which also defines a companion; nested companions are disallowed",
