@@ -5,6 +5,7 @@ name = "applications"
 [views.main]
 engine = "picker"
 companion = "preview"
+companion_size = ["50%", "40%"]
 
 [views.main.picker]
 input_placeholder = "Search applications"

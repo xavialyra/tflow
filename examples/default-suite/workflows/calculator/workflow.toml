@@ -5,6 +5,7 @@ name = "calculator"
 [views.main]
 engine = "picker"
 companion = "preview"
+companion_size = ["40%", "35%"]
 
 [views.main.picker.items]
 file = "scripts/items.py"

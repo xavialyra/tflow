@@ -5,6 +5,7 @@ name = "sys"
 [views.main]
 engine = "picker"
 companion = "preview"
+companion_size = ["45%", "35%"]
 
 [views.main.picker.items]
 file = "scripts/items.py"

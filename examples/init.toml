@@ -16,6 +16,7 @@ foreground = "scheme:muted"
 [views.main]
 engine = "picker"
 companion = "preview"
+companion_size = ["60%", "45%"]
 
 [views.main.query]
 type = "object"

@@ -13,6 +13,7 @@ bold = true
 [views.main]
 engine = "picker"
 companion = "preview"
+companion_size = ["55%", "45%"]
 
 [views.main.query]
 type = "object"
