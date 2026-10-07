@@ -79,7 +79,11 @@ impl EffectExecutor for ProtocolEffects<'_> {
             }
             EffectRequest::RunPrepared { prepared, .. } => {
                 self.pipeline.discard_pending();
-                run_prepared_effect(prepared, self.cancellation)
+                self.terminal.suspend_for_foreground()?;
+                let outcome =
+                    run_prepared_effect(&prepared, self.cancellation, Some(self.terminal));
+                self.terminal.resume_after_foreground()?;
+                outcome
             }
             EffectRequest::ShowFeedback { .. } => Ok(EffectResult::Complete),
         }
@@ -87,10 +91,11 @@ impl EffectExecutor for ProtocolEffects<'_> {
 }
 
 fn run_prepared_effect(
-    prepared: PreparedProcess,
+    prepared: &PreparedProcess,
     cancellation: &CancellationToken,
+    terminal: Option<&mut crate::terminal::Terminal>,
 ) -> Result<EffectResult> {
-    match run_command_process(&prepared, cancellation) {
+    match run_command_process(prepared, cancellation, terminal.as_deref()) {
         Ok(status) if status.success() => Ok(EffectResult::Complete),
         Ok(status) => Ok(EffectResult::Error(EffectError::Failed(format!(
             "command exited with {status}"

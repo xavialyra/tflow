@@ -216,6 +216,7 @@ pub struct Terminal {
     cursor_theme: Option<crate::ui::theme::CursorTheme>,
     embedded_cursor: Option<bool>,
     popup_depth: usize,
+    launcher_process_group: Option<libc::pid_t>,
 }
 
 impl Terminal {
@@ -277,6 +278,7 @@ impl Terminal {
             cursor_theme: None,
             embedded_cursor: None,
             popup_depth: 0,
+            launcher_process_group: launcher_foreground_process_group(input_fd),
         };
         terminal.resume_screen()?;
         if image_protocol == ImageProtocol::Auto {
@@ -337,6 +339,54 @@ impl Terminal {
         self.screen_active = true;
         self.embedded_cursor = None;
         self.set_cursor_owner(false)?;
+        Ok(())
+    }
+
+    pub(crate) fn configure_foreground_command(
+        &self,
+        command: &mut std::process::Command,
+    ) -> io::Result<bool> {
+        if self.launcher_process_group.is_none() {
+            return Ok(false);
+        }
+        command.stdin(std::process::Stdio::from(open_controlling_terminal()?));
+        command.stdout(std::process::Stdio::from(open_controlling_terminal()?));
+        command.stderr(std::process::Stdio::from(open_controlling_terminal()?));
+        Ok(true)
+    }
+
+    pub(crate) fn foreground_terminal_fd(&self) -> Option<RawFd> {
+        self.launcher_process_group.map(|_| self.input_fd)
+    }
+
+    pub(crate) fn reclaim_foreground_process(&self) -> io::Result<()> {
+        if let Some(process_group) = self.launcher_process_group {
+            set_terminal_foreground_process_group(self.input_fd, process_group)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn suspend_for_foreground(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let (screen, settings) = self.restore_terminal_state();
+        screen?;
+        settings?;
+        Ok(())
+    }
+
+    pub(crate) fn resume_after_foreground(&mut self) -> Result<()> {
+        if !self.active {
+            bail!("launcher terminal is not active");
+        }
+        let mut raw = self.original;
+        unsafe { libc::cfmakeraw(&mut raw) };
+        if unsafe { libc::tcsetattr(self.input_fd, libc::TCSAFLUSH, &raw) } != 0 {
+            return Err(io::Error::last_os_error()).context("could not resume terminal settings");
+        }
+        self.resume_screen()?;
+        self.clear()?;
         Ok(())
     }
 
@@ -939,6 +989,51 @@ fn font_size_from_fd(fd: libc::c_int) -> Option<FontSize> {
         window.ws_xpixel / window.ws_col,
         window.ws_ypixel / window.ws_row,
     ))
+}
+
+fn open_controlling_terminal() -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+}
+
+fn launcher_foreground_process_group(fd: RawFd) -> Option<libc::pid_t> {
+    let process_group = unsafe { libc::getpgrp() };
+    let terminal_foreground_group = unsafe { libc::tcgetpgrp(fd) };
+    (process_group > 0 && terminal_foreground_group == process_group).then_some(process_group)
+}
+
+pub(crate) fn set_terminal_foreground_process_group(
+    fd: RawFd,
+    process_group: libc::pid_t,
+) -> io::Result<()> {
+    let mut signal = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    unsafe {
+        libc::sigemptyset(&mut signal);
+        libc::sigaddset(&mut signal, libc::SIGTTOU);
+    }
+    let mut previous = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    let blocked = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signal, &mut previous) };
+    if blocked != 0 {
+        return Err(io::Error::from_raw_os_error(blocked));
+    }
+
+    let handoff = loop {
+        if unsafe { libc::tcsetpgrp(fd, process_group) } == 0 {
+            break Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            break Err(error);
+        }
+    };
+    let restored =
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut()) };
+    if restored != 0 {
+        return Err(io::Error::from_raw_os_error(restored));
+    }
+    handoff
 }
 
 impl Drop for Terminal {

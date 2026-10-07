@@ -24,11 +24,17 @@ pub(crate) enum ProcessWait {
 }
 
 impl ProcessGroupGuard {
-    pub(crate) fn spawn(mut command: Command) -> io::Result<Self> {
+    pub(crate) fn spawn(
+        mut command: Command,
+        terminal_fd: Option<std::os::fd::RawFd>,
+    ) -> io::Result<Self> {
         unsafe {
             command.pre_exec(move || {
                 if libc::setpgid(0, 0) != 0 {
                     return Err(io::Error::last_os_error());
+                }
+                if let Some(fd) = terminal_fd {
+                    crate::terminal::set_terminal_foreground_process_group(fd, libc::getpgrp())?;
                 }
                 Ok(())
             });
@@ -227,6 +233,7 @@ impl PreparedProcess {
 pub(crate) fn run_command_process(
     prepared: &PreparedProcess,
     cancellation: &dyn CancellationStatus,
+    terminal: Option<&crate::terminal::Terminal>,
 ) -> io::Result<ExitStatus> {
     if cancellation.is_cancelled() {
         return Err(io::Error::new(
@@ -237,11 +244,17 @@ pub(crate) fn run_command_process(
 
     let deadline = prepared.timeout.map(|t| Instant::now() + t);
     let mut command = prepared.command()?;
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::inherit());
-    command.stderr(Stdio::inherit());
-
-    let mut process = ProcessGroupGuard::spawn(command)?;
+    let terminal_handoff = terminal
+        .map(|term| term.configure_foreground_command(&mut command))
+        .transpose()?
+        .unwrap_or(false);
+    if !terminal_handoff {
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+    }
+    let terminal_fd = terminal.and_then(|term| term.foreground_terminal_fd());
+    let mut process = ProcessGroupGuard::spawn(command, terminal_fd)?;
 
     let result = loop {
         if cancellation.is_cancelled() {
@@ -282,6 +295,10 @@ pub(crate) fn run_command_process(
         process.force_kill();
     }
 
+    if terminal_handoff && let Some(term) = terminal {
+        let _ = term.reclaim_foreground_process();
+    }
+
     result
 }
 
@@ -301,7 +318,8 @@ mod tests {
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
         let started = std::time::Instant::now();
-        let worker = thread::spawn(move || run_command_process(&prepared, &worker_cancellation));
+        let worker =
+            thread::spawn(move || run_command_process(&prepared, &worker_cancellation, None));
         thread::sleep(Duration::from_millis(50));
         cancellation.cancel();
 
@@ -327,7 +345,7 @@ mod tests {
         };
         let started = std::time::Instant::now();
 
-        let error = run_command_process(&prepared, &CancellationToken::new())
+        let error = run_command_process(&prepared, &CancellationToken::new(), None)
             .expect_err("a stopped process should interrupt execution");
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
@@ -347,7 +365,7 @@ mod tests {
             current_dir: None,
             timeout: None,
         };
-        let status = run_command_process(&prepared, &CancellationToken::new()).unwrap();
+        let status = run_command_process(&prepared, &CancellationToken::new(), None).unwrap();
         assert!(status.success());
         let descendant = fs::read_to_string(&pid_file)
             .unwrap()
@@ -384,7 +402,8 @@ mod tests {
         };
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
-        let worker = thread::spawn(move || run_command_process(&prepared, &worker_cancellation));
+        let worker =
+            thread::spawn(move || run_command_process(&prepared, &worker_cancellation, None));
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !pid_file.is_file() {
             assert!(
@@ -420,7 +439,7 @@ mod tests {
     fn guard_drop_kills_a_live_process() {
         let mut command = Command::new("sleep");
         command.arg("30");
-        let mut guard = ProcessGroupGuard::spawn(command).unwrap();
+        let mut guard = ProcessGroupGuard::spawn(command, None).unwrap();
         assert!(guard.try_wait().unwrap().is_none());
         let pid = guard.pid();
         guard.force_kill();
@@ -443,7 +462,7 @@ mod tests {
             timeout: Some(Duration::from_millis(100)),
         };
         let started = std::time::Instant::now();
-        let error = run_command_process(&prepared, &CancellationToken::new())
+        let error = run_command_process(&prepared, &CancellationToken::new(), None)
             .expect_err("command should time out");
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
