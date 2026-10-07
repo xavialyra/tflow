@@ -1077,14 +1077,22 @@ impl Router {
             .resolve(target)
             .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?
             .target;
-        if self.active_companion().is_some_and(|current| {
-            if let (Some(slot_name), Some(current_slot)) = (&slot, &current.slot) {
-                slot_name == current_slot
-            } else {
-                current.target == canonical_target
-                    || current.instance.context.location.target == canonical_target
-            }
-        }) {
+        let is_same_companion = self.active_companion().is_some_and(|current| {
+            let target_matches = current.target == canonical_target
+                || current.instance.context.location.target == canonical_target;
+
+            let slot_matches = match (&slot, &current.slot) {
+                (Some(a), Some(b)) => {
+                    a == b
+                        || a.rsplit_once('.').map(|(_, s)| s).unwrap_or(a)
+                            == b.rsplit_once('.').map(|(_, s)| s).unwrap_or(b)
+                }
+                _ => false,
+            };
+
+            target_matches || slot_matches
+        });
+        if is_same_companion {
             let current = self
                 .active_mut()
                 .expect("active view")

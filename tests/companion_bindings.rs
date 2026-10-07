@@ -400,3 +400,120 @@ json.dump({"version": 1, "output": "PREVIEW_CONTENT"}, sys.stdout)
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn default_companion_command_target_toggles_off_on_first_key_press() {
+    let root = temporary_root();
+    let config = root.join("config.toml");
+    let _ = write_test_config(
+        &config,
+        r#"
+        default_view = "sample:main"
+
+        [workflows.sample.views.main]
+        engine = "picker"
+        companion = "toggle_details"
+
+        [workflows.sample.views.main.picker]
+        items = [{ display = "Entry", value = "val" }]
+
+        [workflows.sample.views.main.bindings]
+        "alt+p" = "sample.toggle_details"
+
+        [workflows.sample.commands.toggle_details]
+        label = "Toggle Details"
+        type = "companion"
+        target = "details"
+
+        [workflows.sample.views.details]
+        engine = "capture"
+
+        [workflows.sample.views.details.query]
+        type = "object"
+        item = { type = "object", default = {} }
+
+        [workflows.sample.views.details.capture.output]
+        script = '''#!/usr/bin/env python3
+import json, sys
+json.dump({"version": 1, "output": "PREVIEW_CONTENT"}, sys.stdout)
+'''
+        "#,
+    );
+
+    let mut process = spawn_launcher_with_args_and_env(&config, &[], &[]);
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Entry") && screen.contains("PREVIEW_CONTENT")
+    });
+
+    process.master.write_all(b"\x1bp").unwrap();
+    process.master.flush().unwrap();
+
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Entry") && !screen.contains("PREVIEW_CONTENT")
+    });
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn files_workflow_default_companion_toggle_first_time() {
+    let workflow = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/config/workflows/files/workflow.toml");
+    let root = temporary_root();
+    let suite = root.join("default.toml");
+    fs::write(
+        &suite,
+        format!(
+            "[suite]\napi=1\nname='Files'\nentrypoint='files:main'\n[workflows]\nfiles={{file={:?}}}\n",
+            workflow.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("settings.toml"),
+        format!(
+            "image_protocol = 'halfblocks'\nlog_file = {:?}\n",
+            root.join("runtime.log").to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&suite, &[], &[]);
+    // Wait for the files picker and companion border to render
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Search files") && (screen.contains("│") || screen.contains("─"))
+    });
+
+    // Press Ctrl+P (0x10) to toggle preview off on FIRST press
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+
+    // Verify companion pane vertical border disappears on first press
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Search files") && !screen.contains("│")
+    });
+
+    // Press Ctrl+P again to toggle preview back ON
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Search files") && screen.contains("│")
+    });
+
+    // Press Ctrl+P once more to toggle preview back OFF
+    process.master.write_all(b"\x10").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Search files") && !screen.contains("│")
+    });
+
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

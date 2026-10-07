@@ -69,9 +69,13 @@ impl RouteCatalog for CompiledRouteCatalog {
                 .unwrap_or(companion_target);
             let resolved_target = self.config.resolve_view_scoped(target_name, target).ok()?;
             let args = table.get("args").or_else(|| table.get("query")).cloned();
+            let fqid = self
+                .config
+                .resolve_command_fqid(pkg, companion_target)
+                .unwrap_or_else(|| companion_target.clone());
             return Some(crate::view::DefaultCompanionInfo {
                 target: resolved_target,
-                slot: Some(companion_target.clone()),
+                slot: Some(fqid),
                 args_template: args,
                 size: companion_size,
             });
