@@ -40,7 +40,7 @@ def main():
             },
         }
     elif path:
-        editor = os.environ.get("EDITOR") or "xdg-open"
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "xdg-open"
         response = {
             "version": 1,
             "operation": {

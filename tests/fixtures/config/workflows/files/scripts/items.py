@@ -64,13 +64,7 @@ def main():
             parameters = {}
 
     dir_param = parameters.get("dir")
-    if dir_param == "":
-        response = {"version": 1, "items": []}
-        json.dump(response, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    if dir_param is None:
+    if not dir_param or dir_param == ".":
         current_dir = os.getcwd()
     else:
         current_dir = str(dir_param)
