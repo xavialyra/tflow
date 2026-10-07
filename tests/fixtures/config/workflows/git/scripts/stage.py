@@ -11,7 +11,7 @@ def extract_info(context):
         .get("item", {})
     )
     if isinstance(state_item, dict):
-        meta = state_item.get("meta", {})
+        meta = state_item.get("metadata") or state_item.get("meta") or {}
         if isinstance(meta, dict) and meta.get("path"):
             return meta["path"], meta.get("status", "")
         if state_item.get("value"):
@@ -19,7 +19,7 @@ def extract_info(context):
 
     raw_item = context.get("item")
     if isinstance(raw_item, dict):
-        meta = raw_item.get("meta", {})
+        meta = raw_item.get("metadata") or raw_item.get("meta") or {}
         if isinstance(meta, dict) and meta.get("path"):
             return meta["path"], meta.get("status", "")
         if raw_item.get("value"):

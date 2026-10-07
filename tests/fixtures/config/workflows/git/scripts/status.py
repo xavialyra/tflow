@@ -43,37 +43,31 @@ def main():
 
         if "?" in status:
             icon = "❓"
-            desc = "Untracked"
         elif "A" in status:
             icon = "➕"
-            desc = "Added"
         elif "M" in status:
             icon = "📝"
-            desc = "Modified"
         elif "D" in status:
             icon = "🗑️"
-            desc = "Deleted"
         elif "R" in status:
             icon = "🔄"
-            desc = "Renamed"
         else:
             icon = "📄"
-            desc = status
 
         items.append({
-            "display": f"{icon} {path}",
-            "description": f"[{status}] {desc}",
+            "display": f"{icon} {path} [{status}]",
             "value": path,
-            "meta": {
+            "metadata": {
                 "path": path,
                 "status": status,
+                "is_commit": False,
             },
         })
 
     if not items and not query_str:
         try:
             log_res = subprocess.run(
-                ["git", "log", "-n", "10", "--oneline"],
+                ["git", "log", "-n", "15", "--oneline"],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -85,11 +79,11 @@ def main():
                 subject = parts[1] if len(parts) > 1 else ""
                 items.append({
                     "display": f"🔖 {commit_hash} {subject}",
-                    "description": "Recent Commit",
                     "value": commit_hash,
-                    "meta": {
+                    "metadata": {
                         "commit": commit_hash,
                         "subject": subject,
+                        "is_commit": True,
                     },
                 })
         except Exception:
@@ -98,9 +92,8 @@ def main():
     if not items:
         items.append({
             "display": "Working tree clean",
-            "description": "No changes detected",
             "value": "",
-            "meta": {},
+            "metadata": {},
         })
 
     print(json.dumps({"version": 1, "items": items}))

@@ -597,3 +597,14 @@ fn git_workflow_multi_companion_switching_and_toggle() {
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn git_workflow_loaded_directly_via_w_flag() {
+    let workflow = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/config/workflows/git/workflow.toml");
+    let result = support::run_tty_invocation_with_redirected_stdout(
+        &["-w", workflow.to_str().unwrap()],
+        b"\x04",
+    );
+    assert_eq!(result.status, 0);
+}
