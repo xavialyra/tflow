@@ -24,6 +24,8 @@ file = "scripts/preview.py"
 
 [views.main.bindings]
 "ctrl+p" = "preview"
+"ctrl+l" = "inspect"
+"alt+p" = "inspect"
 enter = "open"
 "ctrl+o" = "openx"
 "ctrl+w" = "weight"
@@ -64,5 +66,11 @@ file = "scripts/set-weight.sh"
 [commands.preview]
 label = "Toggle Preview"
 type = "companion"
+target = "preview"
+args = { item = "$selection" }
+
+[commands.inspect]
+label = "Inspect Details"
+type = "navigate"
 target = "preview"
 args = { item = "$selection" }

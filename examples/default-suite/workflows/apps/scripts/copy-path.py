@@ -30,6 +30,15 @@ def main():
     context = request.get("context", {})
     state = context.get("engine", {}).get("state", {})
     item = state.get("item") if isinstance(state, dict) else None
+    if not isinstance(item, dict):
+        params = context.get("parameters", {})
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = {}
+        if isinstance(params, dict):
+            item = params.get("item")
     value = item.get("value") if isinstance(item, dict) else None
     if not isinstance(value, str) or not value:
         raise SystemExit("requires a selected application")

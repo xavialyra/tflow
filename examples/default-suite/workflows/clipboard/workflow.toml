@@ -39,8 +39,13 @@ file = "scripts/preview.py"
 
 [views.main.bindings]
 "ctrl+p" = "preview"
+"ctrl+l" = "inspect"
+"alt+p" = "inspect"
 tab = "next_type"
 "shift+tab" = "previous_type"
+enter = "copy"
+
+[views.preview.bindings]
 enter = "copy"
 
 [commands.previous_type]
@@ -61,5 +66,11 @@ file = "scripts/restore.py"
 [commands.preview]
 label = "Toggle Companion"
 type = "companion"
+target = "preview"
+args = { item = "$selection" }
+
+[commands.inspect]
+label = "Inspect Preview"
+type = "navigate"
 target = "preview"
 args = { item = "$selection" }

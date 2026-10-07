@@ -519,15 +519,70 @@ fn files_workflow_default_companion_toggle_first_time() {
 }
 
 #[test]
-fn git_workflow_multi_companion_switching_and_toggle() {
-    let workflow = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/config/workflows/git/workflow.toml");
+fn multi_companion_switching_and_toggle() {
     let root = temporary_root();
+    let workflow = root.join("workflow.toml");
+    fs::write(
+        &workflow,
+        r#"
+[workflow]
+api = 1
+name = "Multi Companion Switching"
+
+[views.main]
+engine = "picker"
+companion = "comp_a"
+companion_size = ["60%", "40%"]
+
+[views.main.picker]
+items = [
+  { display = "First Entry", value = "entry-1" },
+  { display = "Second Entry", value = "entry-2" },
+]
+
+[views.main.bindings]
+"alt+a" = "switch_a"
+"alt+b" = "switch_b"
+"alt+c" = "switch_c"
+
+[commands.switch_a]
+label = "Companion A"
+type = "companion"
+target = "comp_a"
+
+[commands.switch_b]
+label = "Companion B"
+type = "companion"
+target = "comp_b"
+
+[commands.switch_c]
+label = "Companion C"
+type = "companion"
+target = "comp_c"
+
+[views.comp_a]
+engine = "capture"
+[views.comp_a.capture.output]
+content = "COMP_A_VIEW_ACTIVE"
+
+[views.comp_b]
+engine = "capture"
+[views.comp_b.capture.output]
+content = "COMP_B_VIEW_ACTIVE"
+
+[views.comp_c]
+engine = "capture"
+[views.comp_c.capture.output]
+content = "COMP_C_VIEW_ACTIVE"
+"#,
+    )
+    .unwrap();
+
     let suite = root.join("default.toml");
     fs::write(
         &suite,
         format!(
-            "[suite]\napi=1\nname='Git Inspector'\nentrypoint='git:main'\n[workflows]\ngit={{file={:?}}}\n",
+            "[suite]\napi=1\nname='Multi Companion Suite'\nentrypoint='multi:main'\n[workflows]\nmulti={{file={:?}}}\n",
             workflow.to_str().unwrap(),
         ),
     )
@@ -543,51 +598,55 @@ fn git_workflow_multi_companion_switching_and_toggle() {
 
     let mut process = spawn_launcher_with_args_and_env(&suite, &[], &[]);
 
-    // 1. Initial state: Main view rendered with default companion (diff) open
+    // 1. Initial state: Main view rendered with default companion (comp_a) open
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && screen.contains("│")
+        screen.contains("COMP_A_VIEW_ACTIVE") && screen.contains("│")
     });
 
-    // 2. Switch from Diff companion to Log companion via Alt+L
-    process.master.write_all(b"\x1bl").unwrap();
+    // 2. Switch from comp_a to comp_b via Alt+B
+    process.master.write_all(b"\x1bb").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && screen.contains("│")
+        screen.contains("COMP_B_VIEW_ACTIVE") && screen.contains("│")
     });
 
-    // 3. Switch from Log companion to Stat companion via Alt+S
-    process.master.write_all(b"\x1bs").unwrap();
+    // 3. Switch from comp_b to comp_c via Alt+C
+    process.master.write_all(b"\x1bc").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && screen.contains("│")
+        screen.contains("COMP_C_VIEW_ACTIVE") && screen.contains("│")
     });
 
-    // 4. Toggle Stat companion OFF by pressing Alt+S again
-    process.master.write_all(b"\x1bs").unwrap();
+    // 4. Toggle comp_c OFF by pressing Alt+C again
+    process.master.write_all(b"\x1bc").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && !screen.contains("│")
+        screen.contains("First Entry")
+            && !screen.contains("COMP_C_VIEW_ACTIVE")
+            && !screen.contains("│")
     });
 
-    // 5. Open Log companion directly from closed state via Alt+L
-    process.master.write_all(b"\x1bl").unwrap();
+    // 5. Open comp_b directly from closed state via Alt+B
+    process.master.write_all(b"\x1bb").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && screen.contains("│")
+        screen.contains("COMP_B_VIEW_ACTIVE") && screen.contains("│")
     });
 
-    // 6. Switch directly from Log companion back to Diff companion via Alt+D
-    process.master.write_all(b"\x1bd").unwrap();
+    // 6. Switch directly from comp_b back to comp_a via Alt+A
+    process.master.write_all(b"\x1ba").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && screen.contains("│")
+        screen.contains("COMP_A_VIEW_ACTIVE") && screen.contains("│")
     });
 
-    // 7. Toggle Diff companion OFF by pressing Alt+D again
-    process.master.write_all(b"\x1bd").unwrap();
+    // 7. Toggle comp_a OFF by pressing Alt+A again
+    process.master.write_all(b"\x1ba").unwrap();
     process.master.flush().unwrap();
     wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("Inspect git") && !screen.contains("│")
+        screen.contains("First Entry")
+            && !screen.contains("COMP_A_VIEW_ACTIVE")
+            && !screen.contains("│")
     });
 
     // Exit cleanly
@@ -599,12 +658,119 @@ fn git_workflow_multi_companion_switching_and_toggle() {
 }
 
 #[test]
-fn git_workflow_loaded_directly_via_w_flag() {
+fn workflow_with_companion_loaded_directly_via_w_flag() {
     let workflow = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/config/workflows/git/workflow.toml");
+        .join("tests/fixtures/config/workflows/files/workflow.toml");
     let result = support::run_tty_invocation_with_redirected_stdout(
         &["-w", workflow.to_str().unwrap()],
         b"\x04",
     );
     assert_eq!(result.status, 0);
+}
+
+#[test]
+fn companion_preview_navigate_shortcut_and_return() {
+    let root = temporary_root();
+    let workflow = root.join("workflow.toml");
+    fs::write(
+        &workflow,
+        r#"
+[workflow]
+api = 1
+name = "Preview Navigation"
+
+[views.main]
+engine = "picker"
+companion = "preview"
+companion_size = ["55%", "45%"]
+
+[views.main.picker]
+items = [
+  { display = "Selected Target Item", value = "target-123" },
+]
+
+[views.main.bindings]
+"ctrl+p" = "preview"
+"ctrl+l" = "inspect"
+
+[commands.preview]
+label = "Companion Preview"
+type = "companion"
+target = "preview"
+args = { item = "$selection" }
+
+[commands.inspect]
+label = "Inspect Preview"
+type = "navigate"
+target = "preview"
+args = { item = "$selection" }
+
+[views.preview]
+engine = "capture"
+
+[views.preview.query]
+type = "object"
+item = { type = "object", default = {} }
+
+[views.preview.capture.output]
+script = '''#!/usr/bin/env python3
+import json, sys
+req = json.load(sys.stdin)
+item = req.get("context", {}).get("parameters", {}).get("item", {})
+val = item.get("value", "NONE")
+json.dump({"version": 1, "output": f"FULLSCREEN_PREVIEW_ACTIVE: {val}"}, sys.stdout)
+'''
+"#,
+    )
+    .unwrap();
+
+    let suite = root.join("default.toml");
+    fs::write(
+        &suite,
+        format!(
+            "[suite]\napi=1\nname='Preview Navigation Suite'\nentrypoint='nav:main'\n[workflows]\nnav={{file={:?}}}\n",
+            workflow.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("settings.toml"),
+        format!(
+            "image_protocol = 'halfblocks'\nlog_file = {:?}\n",
+            root.join("runtime.log").to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&suite, &[], &[]);
+
+    // 1. Initial state: Main view rendered with split-screen companion preview
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("FULLSCREEN_PREVIEW_ACTIVE: target-123") && screen.contains("│")
+    });
+
+    // 2. Press Ctrl+L to navigate (push) directly into the preview view
+    process.master.write_all(b"\x0c").unwrap();
+    process.master.flush().unwrap();
+
+    // 3. Screen now displays the full-screen preview without split divider
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("FULLSCREEN_PREVIEW_ACTIVE: target-123") && !screen.contains("│")
+    });
+
+    // 4. Press Escape to return back to the main picker view
+    process.master.write_all(b"\x1b").unwrap();
+    process.master.flush().unwrap();
+
+    // 5. Main picker view is restored with companion split-screen intact
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Selected Target Item") && screen.contains("│")
+    });
+
+    // Exit cleanly
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
 }

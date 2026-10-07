@@ -17,7 +17,6 @@ core = { dir = "./workflows/core" }
 calculator = { dir = "./workflows/calculator" }
 apps = { dir = "./workflows/apps" }
 sys = { dir = "./workflows/sys" }
-git = { dir = "./workflows/git" }
 clipboard = { dir = "./workflows/clipboard" }
 shell = { dir = "./workflows/shell" }
 dmenu = { dir = "./workflows/dmenu" }
