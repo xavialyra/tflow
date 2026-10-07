@@ -299,14 +299,25 @@ pub(crate) struct ParsedQuery {
     pub(crate) target: String,
     pub(crate) schema: String,
     pub(crate) values: Value,
+    pub(crate) initial_input: String,
 }
 
 impl ParsedQuery {
     pub(crate) fn new(target: impl Into<String>, schema: impl Into<String>, values: Value) -> Self {
+        Self::with_initial_input(target, schema, values, String::new())
+    }
+
+    pub(crate) fn with_initial_input(
+        target: impl Into<String>,
+        schema: impl Into<String>,
+        values: Value,
+        initial_input: impl Into<String>,
+    ) -> Self {
         Self {
             target: target.into(),
             schema: schema.into(),
             values,
+            initial_input: initial_input.into(),
         }
     }
 
@@ -965,17 +976,7 @@ impl Router {
             .ok_or_else(|| anyhow::anyhow!("unknown companion target {:?}", target))?;
         let parsed_query = self.routes.parse_query(&location.target, query)?;
         let mut request = NavigationRequest::new(location.target, parsed_query.clone());
-        let text = match &parsed_query.values {
-            Value::String(s) => s.clone(),
-            Value::Object(map) => map
-                .get("search")
-                .or_else(|| map.get("input"))
-                .or_else(|| map.get("query"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            _ => String::new(),
-        };
+        let text = parsed_query.initial_input.clone();
         if !text.is_empty() {
             let cursor = text.len();
             if let Ok(req) = request.clone().with_input(text, cursor) {

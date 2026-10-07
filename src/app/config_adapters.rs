@@ -124,13 +124,31 @@ impl RouteCatalog for CompiledRouteCatalog {
             }
         }
         let values = self.config.parameter_values(&state)?;
-        Ok(ParsedQuery::new(target, "query", values))
+        let initial_input = self
+            .config
+            .render_parameter_input(&state)
+            .unwrap_or_default();
+        Ok(ParsedQuery::with_initial_input(
+            target,
+            "query",
+            values,
+            initial_input,
+        ))
     }
 
     fn default_query(&self, target: &str) -> Result<ParsedQuery> {
         let state = self.config.instantiate_parameters(target)?;
         let values = self.config.parameter_values(&state)?;
-        Ok(ParsedQuery::new(target, "query", values))
+        let initial_input = self
+            .config
+            .render_parameter_input(&state)
+            .unwrap_or_default();
+        Ok(ParsedQuery::with_initial_input(
+            target,
+            "query",
+            values,
+            initial_input,
+        ))
     }
 
     fn validate_query(&self, query: &ParsedQuery) -> Result<()> {
