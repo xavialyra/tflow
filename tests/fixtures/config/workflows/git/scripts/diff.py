@@ -5,44 +5,62 @@ import subprocess
 import sys
 
 
-def extract_target(context):
-    state_item = (
-        context.get("engine", {})
-        .get("state", {})
-        .get("item", {})
-    )
-    if isinstance(state_item, dict):
-        meta = state_item.get("metadata") or state_item.get("meta") or {}
-        if isinstance(meta, dict) and meta.get("path"):
-            return "path", meta["path"]
-        if isinstance(meta, dict) and meta.get("commit"):
-            return "commit", meta["commit"]
-        if state_item.get("value"):
-            return "value", state_item["value"]
+def extract_item(request):
+    context = request.get("context", {})
+    params = context.get("parameters", {})
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except Exception:
+            params = {}
+    if isinstance(params, dict) and params.get("item"):
+        return params["item"]
+    if context.get("item"):
+        return context["item"]
+    eng_item = context.get("engine", {}).get("state", {}).get("item")
+    if eng_item:
+        return eng_item
+    return None
 
-    raw_item = context.get("item")
-    if isinstance(raw_item, dict):
-        meta = raw_item.get("metadata") or raw_item.get("meta") or {}
-        if isinstance(meta, dict) and meta.get("path"):
-            return "path", meta["path"]
-        if isinstance(meta, dict) and meta.get("commit"):
-            return "commit", meta["commit"]
-        if raw_item.get("value"):
-            return "value", raw_item["value"]
-    elif isinstance(raw_item, str) and raw_item:
-        return "value", raw_item
+
+def extract_target(item):
+    if not item:
+        return None, None
+    if isinstance(item, str):
+        val = item.strip()
+        if not val:
+            return None, None
+        return "value", val
+    if not isinstance(item, dict):
+        return None, None
+
+    meta = item.get("metadata") or item.get("meta") or {}
+    if isinstance(meta, dict):
+        if meta.get("path"):
+            return "path", str(meta["path"]).strip()
+        if meta.get("commit"):
+            return "commit", str(meta["commit"]).strip()
+        if meta.get("is_commit"):
+            return "commit", str(item.get("value", "")).strip()
+
+    val = str(item.get("value", "")).strip()
+    if val:
+        if len(val) >= 7 and all(c in "0123456789abcdefABCDEF" for c in val):
+            return "commit", val
+        return "path", val
 
     return None, None
 
 
 def main():
     try:
-        request = json.load(sys.stdin)
+        raw_input = sys.stdin.read()
+        request = json.loads(raw_input) if raw_input.strip() else {}
     except Exception:
         request = {}
 
-    context = request.get("context", {})
-    kind, target = extract_target(context)
+    item = extract_item(request)
+    kind, target = extract_target(item)
 
     if not target:
         print(json.dumps({"version": 1, "output": "Select a file or commit to preview diff"}))
@@ -50,43 +68,41 @@ def main():
 
     output = ""
     if kind == "commit":
-        try:
-            res = subprocess.run(
-                ["git", "--no-pager", "show", "--color=always", "--stat", "-p", target],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+        res = subprocess.run(
+            ["git", "--no-pager", "show", "--color=always", "--stat", "-p", target],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
             output = res.stdout
-        except Exception as e:
-            output = f"Could not inspect commit {target}: {e}"
+        else:
+            output = res.stderr or f"Could not inspect commit {target}"
     else:
-        try:
-            res = subprocess.run(
-                ["git", "--no-pager", "diff", "--color=always", "HEAD", "--", target],
+        res = subprocess.run(
+            ["git", "--no-pager", "diff", "--color=always", "HEAD", "--", target],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        diff_text = res.stdout if res.returncode == 0 else ""
+        if not diff_text and os.path.exists(target):
+            res_untracked = subprocess.run(
+                ["git", "--no-pager", "diff", "--color=always", "--no-index", "/dev/null", target],
                 capture_output=True,
                 text=True,
-                check=True,
+                check=False,
             )
-            diff_text = res.stdout
-            if not diff_text and os.path.exists(target):
-                try:
-                    res_untracked = subprocess.run(
-                        ["git", "--no-pager", "diff", "--color=always", "--no-index", "/dev/null", target],
-                        capture_output=True,
-                        text=True,
-                    )
-                    diff_text = res_untracked.stdout
-                except Exception:
-                    pass
+            diff_text = res_untracked.stdout
 
-            if not diff_text and os.path.exists(target):
+        if not diff_text and os.path.exists(target):
+            try:
                 with open(target, "r", errors="replace") as f:
                     diff_text = f.read()
+            except Exception:
+                pass
 
-            output = diff_text or f"No diff detected for {target}"
-        except Exception as e:
-            output = f"Could not compute diff for {target}: {e}"
+        output = diff_text or f"No working changes detected for {target}"
 
     print(json.dumps({"version": 1, "output": output}))
 
