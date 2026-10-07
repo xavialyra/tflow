@@ -40,12 +40,8 @@ file = "scripts/preview.py"
 [views.main.bindings]
 "ctrl+p" = "preview"
 "ctrl+l" = "inspect"
-"alt+p" = "inspect"
 tab = "next_type"
 "shift+tab" = "previous_type"
-enter = "copy"
-
-[views.preview.bindings]
 enter = "copy"
 
 [commands.previous_type]
@@ -73,4 +69,4 @@ args = { item = "$selection" }
 label = "Inspect Preview"
 type = "navigate"
 target = "preview"
-args = { item = "$selection" }
+query = { item = "$selection" }

@@ -25,15 +25,9 @@ file = "scripts/preview.py"
 [views.main.bindings]
 "ctrl+p" = "preview"
 "ctrl+l" = "inspect"
-"alt+p" = "inspect"
 enter = "open"
 "ctrl+o" = "open_detached"
 "ctrl+w" = "weight"
-"ctrl+y" = "copy_path"
-
-[views.preview.bindings]
-enter = "open"
-"ctrl+o" = "open_detached"
 "ctrl+y" = "copy_path"
 
 [views.weight]
@@ -85,4 +79,4 @@ args = { item = "$selection" }
 label = "Inspect Details"
 type = "navigate"
 target = "preview"
-args = { item = "$selection" }
+query = { item = "$selection" }

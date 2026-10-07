@@ -703,7 +703,7 @@ args = { item = "$selection" }
 label = "Inspect Preview"
 type = "navigate"
 target = "preview"
-args = { item = "$selection" }
+query = { item = "$selection" }
 
 [views.preview]
 engine = "capture"

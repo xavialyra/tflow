@@ -124,7 +124,7 @@ struct RawResponse {
 enum RawOperation {
     Navigate {
         target: String,
-        #[serde(default, alias = "args")]
+        #[serde(default)]
         query: Option<Value>,
         #[serde(default)]
         presentation: ViewPresentation,
@@ -135,7 +135,7 @@ enum RawOperation {
     },
     Call {
         target: String,
-        #[serde(default, alias = "args")]
+        #[serde(default)]
         query: Option<Value>,
         #[serde(default)]
         presentation: ViewPresentation,
@@ -821,13 +821,13 @@ mod tests {
             })
         ));
 
-        let with_args = parse_response(
-            br#"{"version":1,"operation":{"type":"navigate","target":"a:b","args":{"item":123}}}"#,
+        let with_query = parse_response(
+            br#"{"version":1,"operation":{"type":"navigate","target":"a:b","query":{"item":123}}}"#,
             Some("navigate"),
             "test",
         )
         .unwrap();
-        match with_args {
+        match with_query {
             ProtocolOutcome::Operation(ProtocolOperation::Navigate { query, .. }) => {
                 assert_eq!(query, Some(json!({"item": 123})));
             }
