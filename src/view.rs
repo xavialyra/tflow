@@ -418,7 +418,6 @@ pub(crate) enum ViewDecision {
     Invalidate,
     ClearInput,
     EditInput(InputEdit),
-    OpenCompanion,
     /// Hand this action id to the View's own engine. Execution reaches an engine
     /// action long after the instance that owns it was located, and only the
     /// router holds live instances, so the action travels as a decision and the
@@ -452,7 +451,6 @@ impl ViewDecision {
                 | Self::CloseToRoot
                 | Self::CloseWithError(_)
                 | Self::ToggleCompanion { .. }
-                | Self::OpenCompanion
                 | Self::Exit
         )
     }
@@ -1735,15 +1733,6 @@ impl Router {
                 if let Some(source) = source {
                     let resolved = self.edit_host_input(source, edit)?;
                     return self.process_decision_inner(resolved, executor, Some(source));
-                }
-            }
-            ViewDecision::OpenCompanion => {
-                if let Some(companion) = self.active_companion() {
-                    let request = self.companion_navigation_request(
-                        &companion.target,
-                        companion.last_query.clone(),
-                    )?;
-                    self.transition_new(request, false, Continuation::None, source)?;
                 }
             }
             ViewDecision::Batch(decisions) => {

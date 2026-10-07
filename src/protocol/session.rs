@@ -113,9 +113,6 @@ impl CommandService for TestCommandService {
     ) -> Result<ViewDecision> {
         // Mirrors the real dispatcher: an engine action is not a definition, so
         // it travels as a decision for the instance's own engine to run.
-        if entry.id == crate::command::OPEN_COMPANION {
-            return Ok(ViewDecision::OpenCompanion);
-        }
         if entry.layer == crate::command::BindingLayer::Engine {
             return Ok(ViewDecision::EngineAction(entry.id.clone()));
         }
@@ -126,10 +123,6 @@ impl CommandService for TestCommandService {
         } else {
             Ok(ViewDecision::Stay)
         }
-    }
-
-    fn host_companion_keys(&self) -> Vec<Key> {
-        vec![Key::Ctrl('l')]
     }
 }
 
@@ -503,32 +496,7 @@ impl ProtocolSession {
             .router
             .active()
             .map(|active| (active.id, active.context.clone(), active.command_snapshot()));
-        let host_changed = {
-            let mut registry = self.registry.write().unwrap();
-            let mut entries = registry
-                .layer_entries(BindingLayer::Host)
-                .iter()
-                .filter(|e| e.id != crate::command::OPEN_COMPANION)
-                .cloned()
-                .collect::<Vec<_>>();
-            let companion_keys = self.commands.host_companion_keys();
-            if self.router.active_companion().is_some() {
-                for key in companion_keys {
-                    if !entries.iter().any(|entry| entry.key == Some(key)) {
-                        entries.push(crate::command::CommandEntry::new(
-                            crate::command::OPEN_COMPANION,
-                            crate::command::host_action_label(crate::command::OPEN_COMPANION)
-                                .map(str::to_string),
-                            Some(key),
-                            BindingLayer::Host,
-                        ));
-                    }
-                }
-            }
-            registry
-                .replace_layer(BindingLayer::Host, entries)?
-                .is_some()
-        };
+        let host_changed = false;
 
         if let Some((_, _, ref snapshot)) = active_info {
             self.commands.update_active_snapshot(snapshot);

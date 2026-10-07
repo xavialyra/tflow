@@ -684,10 +684,9 @@ fn parse_host_binding_target(key: &str, val: &toml::Value) -> Result<Option<Stri
 
 /// Default host-layer bindings, present unless a `[host.bindings]` entry
 /// explicitly disables them.
-const DEFAULT_HOST_BINDING_TARGETS: [(&str, &str); 3] = [
+const DEFAULT_HOST_BINDING_TARGETS: [(&str, &str); 2] = [
     ("ctrl+k", "__commands.palette"),
     ("ctrl+g", "__parameters.edit"),
-    ("ctrl+l", "@host:open_companion"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -927,41 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn host_binding_rejects_bare_host_prefix_and_requires_host_sigil() {
-        let mut workflows = sample_workflows();
-        inject_builtin_workflows(&mut workflows);
-
-        let host: HostConfig = toml::from_str(
-            r#"
-            [bindings]
-            "ctrl+o" = "host.open_companion"
-            "#,
-        )
-        .unwrap();
-        let targets = merge_host_binding_targets([Some(&host)]).unwrap();
-        let error = resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
-            .expect_err("bare host.open_companion must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("host actions must use '@host:<action>' syntax"),
-            "{error}"
-        );
-
-        let host: HostConfig = toml::from_str(
-            r#"
-            [bindings]
-            "ctrl+o" = "@host:open_companion"
-            "#,
-        )
-        .unwrap();
-        let targets = merge_host_binding_targets([Some(&host)]).unwrap();
-        let resolved = resolve_host_bindings(targets, &workflows, HostBindingPolicy::Strict)
-            .expect("@host:open_companion must resolve");
-        assert_eq!(resolved["ctrl+o"], crate::command::OPEN_COMPANION);
-    }
-
-    #[test]
     fn default_host_bindings_drop_when_their_builtin_is_absent() {
         let resolved = resolve_host_bindings(
             merge_host_binding_targets([]).unwrap(),
@@ -969,9 +933,8 @@ mod tests {
             HostBindingPolicy::Lenient,
         )
         .unwrap();
-        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved.len(), 1);
         assert_eq!(resolved["ctrl+k"], "__commands.palette");
-        assert_eq!(resolved["ctrl+l"], crate::command::OPEN_COMPANION);
         // `__parameters` is absent from the sample, so its default is dropped.
         assert!(!resolved.contains_key("ctrl+g"));
     }

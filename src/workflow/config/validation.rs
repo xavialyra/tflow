@@ -332,10 +332,14 @@ impl CompiledConfig {
                     bail!("view {:?} companion target cannot be empty", view_ref);
                 }
                 let target_view = if let Some(cmd) = self.find_command(wf_id, target)
-                    && let crate::workflow::config::CommandAction::Companion { payload, .. } = &cmd.action
+                    && let crate::workflow::config::CommandAction::Companion { payload, .. } =
+                        &cmd.action
                     && let toml::Value::Table(table) = payload
                 {
-                    table.get("target").and_then(|v| v.as_str()).unwrap_or(target)
+                    table
+                        .get("target")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(target)
                 } else {
                     target.as_str()
                 };

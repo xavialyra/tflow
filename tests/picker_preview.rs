@@ -421,22 +421,6 @@ sys.stdout.write("\n")
     });
     assert!(String::from_utf8_lossy(&screen).contains("DETAILS_FOR_app2"));
 
-    // 3. Press Ctrl-L (\x0c) -> navigate into companion view
-    send(&mut process, b"\x0c");
-    let screen = wait_for_fresh_screen(&process.master, |screen| {
-        screen.contains("DETAILS_FOR_app2")
-    });
-    let screen_str = String::from_utf8_lossy(&screen);
-    assert!(
-        !screen_str.contains("ERROR"),
-        "Ctrl-L should not produce error: {screen_str}"
-    );
-
-    // 4. Press Escape -> return to main view
-    send(&mut process, b"\x1b");
-    let screen = wait_for_fresh_screen(&process.master, |screen| screen.contains("First App"));
-    assert!(String::from_utf8_lossy(&screen).contains("First App"));
-
     send(&mut process, b"\x04");
     let (status, _) = wait_for_launcher_exit(&mut process);
     assert_eq!(status, 0);

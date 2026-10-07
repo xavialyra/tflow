@@ -6,8 +6,6 @@ pub(crate) use registry::{
 };
 pub(crate) use snapshot::ChromeSnapshot;
 
-pub(crate) const OPEN_COMPANION: &str = "host.open_companion";
-
-pub(crate) fn host_action_label(id: &str) -> Option<&'static str> {
-    (id == OPEN_COMPANION).then_some("Open Companion")
+pub(crate) fn host_action_label(_id: &str) -> Option<&'static str> {
+    None
 }

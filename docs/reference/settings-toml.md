@@ -102,7 +102,6 @@ Host-layer bindings are session-wide shortcuts that target workflow commands by 
 [host.bindings]
 "ctrl+k" = "__commands.palette"
 "ctrl+g" = "__parameters.edit"
-"ctrl+l" = "@host:open_companion"
 ```
 
 The same table is accepted in a Suite Manifest. The two are merged in increasing precedence, so `settings.toml` wins for a key both declare, and a `false` there also overrides the suite's binding.

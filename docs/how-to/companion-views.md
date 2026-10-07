@@ -88,14 +88,8 @@ Available projection tokens include:
 
 ## 4. Navigation and Keyboard Focus
 
-- **Input focus**: The companion is a passive attachment; keyboard focus remains on the primary view.
-- **Entering companion**: Bind or invoke `@host:open_companion` to open a new instance of the companion target in the foreground. This does not transfer existing drafts, scroll position, or a running PTY. There is no separate pane-focus state.
-- **Customizing key in host.bindings**: Rebind or disable the host command in `settings.toml` or `suite.toml`:
-  ```toml
-  [host.bindings]
-  "ctrl+l" = false                    # Disable the shortcut
-  "ctrl+o" = "@host:open_companion"   # Or remap to another key
-  ```
+- **Input focus**: The companion is a pure passive attachment; keyboard focus remains on the primary view.
+- **Navigation**: Forward navigation is driven by explicit workflow `navigate` commands (such as `enter = "open"`). The host does not provide implicit companion focus hijacking.
 - **Unwinding**: Pressing `Escape` in a pushed view returns to the parent view or exits.
 
 ## 4. State Synchronization
