@@ -56,23 +56,21 @@ def format_directory_preview(path):
         entries = list(os.scandir(path))
         entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
         total = len(entries)
-        lines.append(f"Total entries: {total}")
-        lines.append("")
-        for entry in entries[:20]:
+        for entry in entries[:30]:
             tag = "📁" if entry.is_dir() else EXTENSION_ICONS.get(os.path.splitext(entry.name)[1].lower(), "📄")
             lines.append(f"{tag} {entry.name}")
-        if total > 20:
-            lines.append(f"... and {total - 20} more")
+        if total > 30:
+            lines.append(f"... and {total - 30} more")
     except Exception as e:
         lines.append(f"Could not read directory: {e}")
     return "\n".join(lines)
 
-def run_bat(path, max_lines=100):
+def run_bat(path, max_lines=120):
     bat_cmd = shutil.which("bat") or shutil.which("batcat")
     if bat_cmd:
         try:
             res = subprocess.run(
-                [bat_cmd, "--color=always", "--style=numbers,changes", f"--line-range=:{max_lines}", path],
+                [bat_cmd, "--color=always", "--style=plain", f"--line-range=:{max_lines}", path],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -89,7 +87,7 @@ def run_bat(path, max_lines=100):
                 if idx > max_lines:
                     lines.append(f"... (truncated after {max_lines} lines)")
                     break
-                lines.append(f"{idx:3d} │ {line.rstrip(chr(13) + chr(10))}")
+                lines.append(line.rstrip(chr(13) + chr(10)))
     except Exception as e:
         lines.append(f"Error reading file: {e}")
     return "\n".join(lines)
@@ -151,54 +149,35 @@ def main():
     name = metadata.get("name") or os.path.basename(path)
     is_dir = metadata.get("is_dir", False)
     size = metadata.get("size", 0)
-    size_str = metadata.get("size_str", "")
-    mtime = metadata.get("mtime", "")
 
     if not path or not os.path.exists(path):
         json.dump({"version": 1, "output": None}, sys.stdout)
         sys.stdout.write("\n")
         return
 
-    children = []
-    constraints = []
-
-    def add(doc, constraint):
-        children.append(doc)
-        constraints.append(constraint)
-
     ext = os.path.splitext(name)[1].lower()
 
     if is_dir:
-        add({"type": "paragraph", "text": f"📁 Directory: {name}\nPath: {path}\nModified: {mtime}"}, {"Length": 3})
-        add({"type": "separator"}, {"Length": 1})
-        body = format_directory_preview(path)
-        add({"type": "paragraph", "text": body}, {"Fill": 1})
-    elif ext in IMAGE_EXTENSIONS:
-        add({"type": "paragraph", "text": f"🖼️ Image: {name} ({size_str})\nPath: {path}\nModified: {mtime}"}, {"Length": 3})
-        add({"type": "separator"}, {"Length": 1})
-        add({"type": "image", "path": path}, {"Fill": 1})
-    elif is_text_file(path):
-        header = f"📄 File: {name} ({size_str}) - {mtime}\nPath: {path}\n"
-        body = run_bat(path)
-        output_text = header + "\n" + body
+        output_text = format_directory_preview(path)
         json.dump({"version": 1, "output": output_text}, sys.stdout)
         sys.stdout.write("\n")
-        return
+    elif ext in IMAGE_EXTENSIONS:
+        preview = {
+            "type": "layout",
+            "direction": "vertical",
+            "constraints": [{"Fill": 1}],
+            "children": [{"type": "image", "path": path}],
+        }
+        json.dump({"version": 1, "output": preview}, sys.stdout)
+        sys.stdout.write("\n")
+    elif is_text_file(path):
+        output_text = run_bat(path)
+        json.dump({"version": 1, "output": output_text}, sys.stdout)
+        sys.stdout.write("\n")
     else:
-        add({"type": "paragraph", "text": f"⚙️ Binary: {name} ({size_str})\nPath: {path}\nModified: {mtime}"}, {"Length": 3})
-        add({"type": "separator"}, {"Length": 1})
-        body = format_binary_preview(path, size)
-        add({"type": "paragraph", "text": body}, {"Fill": 1})
-
-    preview = {
-        "type": "layout",
-        "direction": "vertical",
-        "constraints": constraints,
-        "children": children,
-    }
-
-    json.dump({"version": 1, "output": preview}, sys.stdout)
-    sys.stdout.write("\n")
+        output_text = format_binary_preview(path, size)
+        json.dump({"version": 1, "output": output_text}, sys.stdout)
+        sys.stdout.write("\n")
 
 if __name__ == "__main__":
     main()

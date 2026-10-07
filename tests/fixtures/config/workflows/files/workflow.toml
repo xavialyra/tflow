@@ -31,13 +31,19 @@ file = "scripts/preview.py"
 
 [views.main.bindings]
 "ctrl+p" = "preview"
-enter = "open"
+enter = "enter"
+"ctrl+o" = "open"
 "ctrl+u" = "parent_dir"
 "ctrl+y" = "copy_path"
 
-[commands.open]
-label = "Open / Enter Directory"
+[commands.enter]
+label = "Enter (Directory / Edit File)"
 type = "navigate"
+file = "scripts/enter.py"
+
+[commands.open]
+label = "Open in Editor"
+type = "run"
 file = "scripts/open.py"
 
 [commands.parent_dir]

@@ -15,7 +15,24 @@ def main():
     metadata = selection.get("metadata") or {}
 
     path = metadata.get("path") or selection.get("value") or ""
-    if path:
+    is_dir = metadata.get("is_dir")
+    if is_dir is None and path:
+        is_dir = os.path.isdir(path)
+
+    if is_dir and path:
+        response = {
+            "version": 1,
+            "operation": {
+                "type": "navigate",
+                "target": "main",
+                "clear_input": True,
+                "query": {
+                    "dir": path,
+                    "search": "",
+                },
+            },
+        }
+    elif path:
         editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "xdg-open"
         response = {
             "version": 1,
