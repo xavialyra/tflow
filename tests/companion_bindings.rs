@@ -517,3 +517,83 @@ fn files_workflow_default_companion_toggle_first_time() {
     assert_eq!(status, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn git_workflow_multi_companion_switching_and_toggle() {
+    let workflow = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/config/workflows/git/workflow.toml");
+    let root = temporary_root();
+    let suite = root.join("default.toml");
+    fs::write(
+        &suite,
+        format!(
+            "[suite]\napi=1\nname='Git Inspector'\nentrypoint='git:main'\n[workflows]\ngit={{file={:?}}}\n",
+            workflow.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("settings.toml"),
+        format!(
+            "image_protocol = 'halfblocks'\nlog_file = {:?}\n",
+            root.join("runtime.log").to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let mut process = spawn_launcher_with_args_and_env(&suite, &[], &[]);
+
+    // 1. Initial state: Main view rendered with default companion (diff) open
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && screen.contains("│")
+    });
+
+    // 2. Switch from Diff companion to Log companion via Alt+L
+    process.master.write_all(b"\x1bl").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && screen.contains("│")
+    });
+
+    // 3. Switch from Log companion to Stat companion via Alt+S
+    process.master.write_all(b"\x1bs").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && screen.contains("│")
+    });
+
+    // 4. Toggle Stat companion OFF by pressing Alt+S again
+    process.master.write_all(b"\x1bs").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && !screen.contains("│")
+    });
+
+    // 5. Open Log companion directly from closed state via Alt+L
+    process.master.write_all(b"\x1bl").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && screen.contains("│")
+    });
+
+    // 6. Switch directly from Log companion back to Diff companion via Alt+D
+    process.master.write_all(b"\x1bd").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && screen.contains("│")
+    });
+
+    // 7. Toggle Diff companion OFF by pressing Alt+D again
+    process.master.write_all(b"\x1bd").unwrap();
+    process.master.flush().unwrap();
+    wait_for_fresh_screen(&process.master, |screen| {
+        screen.contains("Inspect git") && !screen.contains("│")
+    });
+
+    // Exit cleanly
+    process.master.write_all(b"\x04").unwrap();
+    process.master.flush().unwrap();
+    let (status, _) = wait_for_launcher_exit(&mut process);
+    assert_eq!(status, 0);
+    fs::remove_dir_all(root).unwrap();
+}

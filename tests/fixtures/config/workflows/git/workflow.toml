@@ -1,0 +1,87 @@
+[workflow]
+api = 1
+name = "git"
+
+[views.main]
+engine = "picker"
+companion = "diff"
+companion_size = ["60%", "45%"]
+
+[views.main.query]
+type = "object"
+input = "search"
+search = { type = "string", default = "" }
+
+[views.main.picker]
+input_placeholder = "Inspect git status & history"
+
+[views.main.picker.items]
+file = "scripts/status.py"
+
+[views.diff]
+engine = "capture"
+
+[views.diff.query]
+type = "object"
+item = { type = "object", default = {} }
+
+[views.diff.capture.output]
+file = "scripts/diff.py"
+
+[views.log]
+engine = "capture"
+
+[views.log.query]
+type = "object"
+item = { type = "object", default = {} }
+
+[views.log.capture.output]
+file = "scripts/log.py"
+
+[views.stat]
+engine = "capture"
+
+[views.stat.query]
+type = "object"
+item = { type = "object", default = {} }
+
+[views.stat.capture.output]
+file = "scripts/stat.py"
+
+[views.main.bindings]
+"ctrl+p" = "diff"
+"alt+d" = "diff"
+"ctrl+l" = "log"
+"alt+l" = "log"
+"ctrl+s" = "stat"
+"alt+s" = "stat"
+enter = "open"
+"ctrl+a" = "stage"
+
+[commands.diff]
+label = "Diff Preview"
+type = "companion"
+target = "diff"
+args = { item = "$selection" }
+
+[commands.log]
+label = "Commit History"
+type = "companion"
+target = "log"
+args = { item = "$selection" }
+
+[commands.stat]
+label = "File Statistics"
+type = "companion"
+target = "stat"
+args = { item = "$selection" }
+
+[commands.open]
+label = "Edit File"
+type = "run"
+file = "scripts/open.py"
+
+[commands.stage]
+label = "Toggle Stage"
+type = "run"
+file = "scripts/stage.py"
